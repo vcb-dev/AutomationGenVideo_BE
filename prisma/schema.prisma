@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  EDITOR
+  CONTENT
+}
+
+model User {
+  id                   String    @id @default(uuid())
+  email                String    @unique
+  password_hash        String?   // Make nullable for Google users
+  full_name            String
+  avatar               String?   // Add avatar
+  google_id            String?   @unique // Add google_id
+  role                 UserRole
+  manager_id           String?
+  is_active            Boolean   @default(true)
+  last_login_at        DateTime?
+  last_activity_at     DateTime?
+  total_login_count    Int       @default(0)
+  total_action_count   Int       @default(0)
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  // Self-relation: Manager manages Editors
+  manager              User?                @relation("ManagerEditors", fields: [manager_id], references: [id], onDelete: SetNull)
+  editors              User[]               @relation("ManagerEditors")
+
+  // Relations
+  activity_logs        UserActivityLog[]
+  usage_stats          UserUsageStat[]
+  rate_limits          UserRateLimit[]
+
+  @@index([email])
+  @@index([role])
+  @@index([manager_id])
+  @@index([last_login_at])
+  @@map("users")
+}
+
+model UserActivityLog {
+  id           String    @id @default(uuid())
+  user_id      String
+  role         UserRole
+  action       String    // login, logout, create_video, delete_video, etc.
+  target_type  String?   // video, project, user
+  target_id    String?
+  description  String?   @db.Text
+  ip_address   String?
+  user_agent   String?
+  metadata     Json?
+  created_at   DateTime  @default(now())
+
+  user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([action])
+  @@index([created_at])
+  @@index([target_type, target_id])
+  @@map("user_activity_logs")
+}
+
+model UserUsageStat {
+  id                String    @id @default(uuid())
+  user_id           String
+  date              DateTime  @db.Date
+  login_count       Int       @default(0)
+  action_count      Int       @default(0)
+  video_generated   Int       @default(0)
+  api_request_count Int       @default(0)
+  last_action_at    DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, date])
+  @@index([user_id])
+  @@index([date])
+  @@map("user_usage_stats")
+}
+
+model UserRateLimit {
+  id              String    @id @default(uuid())
+  user_id         String
+  action_type     String    // login, generate_video, api
+  max_per_minute  Int       @default(60)
+  max_per_day     Int       @default(1000)
+  current_count   Int       @default(0)
+  window_start    DateTime  @default(now())
+  blocked_until   DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, action_type])
+  @@index([user_id])
+  @@index([action_type])
+  @@index([blocked_until])
+  @@map("user_rate_limits")
+}
+
