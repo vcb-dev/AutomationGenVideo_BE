@@ -42,6 +42,7 @@ model User {
   activity_logs        UserActivityLog[]
   usage_stats          UserUsageStat[]
   rate_limits          UserRateLimit[]
+  tracked_channels     TrackedChannel[]
 
   @@index([email])
   @@index([role])
@@ -111,5 +112,39 @@ model UserRateLimit {
   @@index([action_type])
   @@index([blocked_until])
   @@map("user_rate_limits")
+}
+
+enum Platform {
+  TIKTOK
+  INSTAGRAM
+  FACEBOOK
+  DOUYIN
+  XIAOHONGSHU
+}
+
+model TrackedChannel {
+  id                String    @id @default(uuid())
+  user_id           String
+  platform          Platform
+  username          String
+  display_name      String?
+  avatar_url        String?
+  total_followers   Int?
+  total_likes       BigInt    @default(0)
+  total_views       BigInt    @default(0)
+  total_videos      Int       @default(0)
+  engagement_rate   Float     @default(0)
+  is_active         Boolean   @default(true)
+  last_synced_at    DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, platform, username])
+  @@index([user_id])
+  @@index([platform])
+  @@index([is_active])
+  @@map("tracked_channels")
 }
 

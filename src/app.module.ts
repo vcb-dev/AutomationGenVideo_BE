@@ -7,6 +7,8 @@ import { PrismaModule } from "./common/prisma/prisma.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
+import { CollectionModule } from "./modules/collection/collection.module";
+import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.mod
     AuthModule,
     UsersModule,
     AiIntegrationModule,
+    CollectionModule,
+    TrackedChannelsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,50 +1,71 @@
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting database seed...');
-
   // Create default manager account
-  const managerEmail = 'manager@vietchibao.com';
-  const managerPassword = 'Manager123!';
+  const managerPassword = await bcrypt.hash('manager123', 10);
   
-  // Check if manager already exists
-  const existingManager = await prisma.user.findUnique({
-    where: { email: managerEmail },
-  });
-
-  if (existingManager) {
-    console.log('✅ Default manager already exists:', managerEmail);
-    return;
-  }
-
-  // Hash password
-  const password_hash = await bcrypt.hash(managerPassword, 10);
-
-  // Create manager
-  const manager = await prisma.user.create({
-    data: {
-      email: managerEmail,
-      password_hash,
+  const manager = await prisma.user.upsert({
+    where: { email: 'manager@vietchibao.com' },
+    update: {},
+    create: {
+      email: 'manager@vietchibao.com',
+      password_hash: managerPassword,
       full_name: 'Default Manager',
-      role: UserRole.MANAGER,
+      role: 'MANAGER',
       is_active: true,
     },
   });
 
-  console.log('✅ Created default manager account:');
-  console.log('   Email:', managerEmail);
-  console.log('   Password:', managerPassword);
-  console.log('   ID:', manager.id);
-  console.log('');
-  console.log('🎉 Database seed completed!');
+  console.log('✅ Manager account created:', manager.email);
+
+  // Create test editor account
+  const editorPassword = await bcrypt.hash('editor123', 10);
+  
+  const editor = await prisma.user.upsert({
+    where: { email: 'editor@vietchibao.com' },
+    update: {},
+    create: {
+      email: 'editor@vietchibao.com',
+      password_hash: editorPassword,
+      full_name: 'Test Editor',
+      role: 'EDITOR',
+      manager_id: manager.id,
+      is_active: true,
+    },
+  });
+
+  console.log('✅ Editor account created:', editor.email);
+
+  // Create test content creator account
+  const contentPassword = await bcrypt.hash('content123', 10);
+  
+  const content = await prisma.user.upsert({
+    where: { email: 'content@vietchibao.com' },
+    update: {},
+    create: {
+      email: 'content@vietchibao.com',
+      password_hash: contentPassword,
+      full_name: 'Test Content Creator',
+      role: 'CONTENT',
+      manager_id: manager.id,
+      is_active: true,
+    },
+  });
+
+  console.log('✅ Content Creator account created:', content.email);
+
+  console.log('\n📋 Test Accounts:');
+  console.log('Manager: manager@vietchibao.com / manager123');
+  console.log('Editor: editor@vietchibao.com / editor123');
+  console.log('Content: content@vietchibao.com / content123');
 }
 
 main()
   .catch((e) => {
-    console.error('❌ Seed error:', e);
+    console.error(e);
     process.exit(1);
   })
   .finally(async () => {
