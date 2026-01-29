@@ -43,6 +43,7 @@ model User {
   usage_stats          UserUsageStat[]
   rate_limits          UserRateLimit[]
   tracked_channels     TrackedChannel[]
+  videos               Video[]
 
   @@index([email])
   @@index([role])
@@ -133,6 +134,7 @@ model TrackedChannel {
   total_likes       BigInt    @default(0)
   total_views       BigInt    @default(0)
   total_videos      Int       @default(0)
+  initial_video_count Int     @default(0) // Videos count when channel was first tracked/assigned
   engagement_rate   Float     @default(0)
   is_active         Boolean   @default(true)
   last_synced_at    DateTime?
@@ -140,11 +142,72 @@ model TrackedChannel {
   updated_at        DateTime  @updatedAt
 
   user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  video_posts       VideoPost[]
 
   @@unique([user_id, platform, username])
   @@index([user_id])
   @@index([platform])
   @@index([is_active])
   @@map("tracked_channels")
+}
+
+// Video: Represents a unique video content created by an editor
+model Video {
+  id                String      @id @default(uuid())
+  user_id           String      // Editor who created this video
+  title             String?
+  description       String?     @db.Text
+  thumbnail_url     String?
+  duration          Int?        // Duration in seconds
+  file_url          String?     // URL to the original video file
+  content_hash      String?     // MD5/SHA256 hash for deduplication
+  created_at        DateTime    @default(now())
+  updated_at        DateTime    @updatedAt
+
+  user              User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  posts             VideoPost[] // Content deduplication: one video can be posted many times
+
+  @@index([user_id])
+  @@index([content_hash])
+  @@map("videos")
+}
+
+
+// VideoPost: Represents a single post of a video to a specific platform/channel
+model VideoPost {
+  id                String         @id @default(uuid())
+  video_id          String         // Link to the unique video
+  channel_id        String         // Which channel it was posted to
+  platform          Platform       // Platform where it was posted
+  
+  // Platform-specific data
+  platform_video_id String?        // Video ID on the platform (e.g., TikTok video ID)
+  platform_url      String?        // Direct URL to the video on platform
+  
+  // Post metadata
+  title             String?
+  description       String?        @db.Text
+  hashtags          String[]       @default([])
+  
+  // Stats (synced from platform)
+  views             BigInt         @default(0)
+  likes             BigInt         @default(0)
+  comments          Int            @default(0)
+  shares            Int            @default(0)
+  
+  posted_at         DateTime       @default(now())
+  last_synced_at    DateTime?      // Last time stats were synced
+  created_at        DateTime       @default(now())
+  updated_at        DateTime       @updatedAt
+  
+  video             Video          @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  channel           TrackedChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
+  
+  @@unique([video_id, channel_id]) // Same video can't be posted twice to same channel
+  @@index([video_id])
+  @@index([channel_id])
+  @@index([platform])
+  @@index([posted_at])
+  @@map("video_posts")
 }
 

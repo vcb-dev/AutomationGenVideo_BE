@@ -9,6 +9,8 @@ import {
   UseGuards,
   ClassSerializerInterceptor,
   UseInterceptors,
+  Request,
+  Query,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -20,6 +22,7 @@ import { UsersService } from "./users.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
+import { GetEditorStatsQueryDto, MyEditorsResponseDto } from "./dto/editor-stats.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -60,6 +63,20 @@ export class UsersController {
   async findAll() {
     const users = await this.usersService.findAll();
     return users.map((user) => new UserResponseDto(user));
+  }
+
+  @Get("my-editors")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get all editors managed by current manager with their channel statistics" })
+  @ApiResponse({
+    status: 200,
+    description: "List of editors with statistics",
+    type: MyEditorsResponseDto,
+  })
+  async getMyEditors(@Request() req, @Query() query: GetEditorStatsQueryDto) {
+    return this.usersService.getMyEditors(req.user.id, query.platform);
   }
 
   @Get(":id")
@@ -103,4 +120,29 @@ export class UsersController {
   remove(@Param("id") id: string) {
     return this.usersService.remove(id);
   }
+
+  @Get("available-managers")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get list of available managers for selection" })
+  @ApiResponse({
+    status: 200,
+    description: "List of managers",
+  })
+  async getAvailableManagers() {
+    return this.usersService.getAvailableManagers();
+  }
+
+  @Patch("select-manager/:managerId")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Select a manager for current user (EDITOR only)" })
+  @ApiResponse({
+    status: 200,
+    description: "Manager assigned successfully",
+  })
+  async selectManager(@Request() req, @Param("managerId") managerId: string) {
+    return this.usersService.selectManager(req.user.id, managerId);
+  }
 }
+
