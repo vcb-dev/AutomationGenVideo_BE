@@ -8,11 +8,15 @@ import {
   Delete,
   UseGuards,
   Request,
+  Query,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { TrackedChannelsService } from './tracked-channels.service';
 import { CreateTrackedChannelDto, UpdateTrackedChannelDto } from './dto/tracked-channel.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 
 @ApiTags('Tracked Channels')
 @ApiBearerAuth()
@@ -63,5 +67,47 @@ export class TrackedChannelsController {
   @ApiOperation({ summary: 'Remove a tracked channel' })
   remove(@Param('id') id: string, @Request() req) {
     return this.trackedChannelsService.remove(id, req.user.id);
+  }
+
+  @Get('manager/dashboard')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Get manager dashboard with all platform statistics' })
+  getManagerDashboard(@Request() req) {
+    return this.trackedChannelsService.getManagerDashboard(req.user.id);
+  }
+
+  @Get('manager/channels/:platform')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Get all channels for a specific platform (manager only)' })
+  getChannelsByPlatform(@Param('platform') platform: string) {
+    return this.trackedChannelsService.getChannelsByPlatform(platform);
+  }
+
+  @Get('manager/all-channels')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Get all channels across all platforms (manager only)' })
+  getAllChannels() {
+    return this.trackedChannelsService.getAllChannels();
+  }
+
+
+
+  @Get('manager/channel-hashtag-stats/:channelId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Get hashtag statistics for a specific channel (manager only)' })
+  getChannelHashtagStatsGet(@Param('channelId') channelId: string) {
+    return this.trackedChannelsService.getChannelHashtagStats(channelId, false);
+  }
+
+  @Post('manager/channel-hashtag-stats/:channelId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Force refresh hashtag statistics for a specific channel (manager only)' })
+  getChannelHashtagStatsPost(@Param('channelId') channelId: string) {
+    return this.trackedChannelsService.getChannelHashtagStats(channelId, true);
   }
 }
