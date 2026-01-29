@@ -31,10 +31,17 @@ export class TrackedChannelsController {
     return this.trackedChannelsService.create(req.user.id, createDto);
   }
 
+
   @Get()
   @ApiOperation({ summary: 'Get all tracked channels for current user' })
-  findAll(@Request() req) {
-    return this.trackedChannelsService.findAllByUser(req.user.id);
+  findAll(@Request() req, @Query('platform') platform?: string) {
+    return this.trackedChannelsService.findAllByUser(req.user.id, platform);
+  }
+
+  @Get('my-channels')
+  @ApiOperation({ summary: 'Get my tracked channels, optionally filtered by platform' })
+  getMyChannels(@Request() req, @Query('platform') platform?: string) {
+    return this.trackedChannelsService.getMyChannels(req.user.id, platform);
   }
 
   @Get('by-username/:platform/:username')
@@ -45,28 +52,6 @@ export class TrackedChannelsController {
     @Request() req
   ) {
     return this.trackedChannelsService.findByUsername(platform, username, req.user.id);
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: 'Get a tracked channel by ID' })
-  findOne(@Param('id') id: string, @Request() req) {
-    return this.trackedChannelsService.findOne(id, req.user.id);
-  }
-
-  @Patch(':id')
-  @ApiOperation({ summary: 'Update a tracked channel' })
-  update(
-    @Param('id') id: string,
-    @Request() req,
-    @Body() updateDto: UpdateTrackedChannelDto,
-  ) {
-    return this.trackedChannelsService.update(id, req.user.id, updateDto);
-  }
-
-  @Delete(':id')
-  @ApiOperation({ summary: 'Remove a tracked channel' })
-  remove(@Param('id') id: string, @Request() req) {
-    return this.trackedChannelsService.remove(id, req.user.id);
   }
 
   @Get('manager/dashboard')
@@ -93,8 +78,6 @@ export class TrackedChannelsController {
     return this.trackedChannelsService.getAllChannels();
   }
 
-
-
   @Get('manager/channel-hashtag-stats/:channelId')
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
@@ -109,5 +92,27 @@ export class TrackedChannelsController {
   @ApiOperation({ summary: 'Force refresh hashtag statistics for a specific channel (manager only)' })
   getChannelHashtagStatsPost(@Param('channelId') channelId: string) {
     return this.trackedChannelsService.getChannelHashtagStats(channelId, true);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get a tracked channel by ID' })
+  findOne(@Param('id') id: string, @Request() req) {
+    return this.trackedChannelsService.findOne(id, req.user.id);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update a tracked channel' })
+  update(
+    @Param('id') id: string,
+    @Request() req,
+    @Body() updateDto: UpdateTrackedChannelDto,
+  ) {
+    return this.trackedChannelsService.update(id, req.user.id, updateDto);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Remove a tracked channel' })
+  remove(@Param('id') id: string, @Request() req) {
+    return this.trackedChannelsService.remove(id, req.user.id);
   }
 }

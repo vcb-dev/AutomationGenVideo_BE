@@ -9,6 +9,7 @@ import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
 import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
+import { VideosModule } from "./modules/videos/videos.module";
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channe
     AiIntegrationModule,
     CollectionModule,
     TrackedChannelsModule,
+    VideosModule,
   ],
   controllers: [AppController],
   providers: [AppService],

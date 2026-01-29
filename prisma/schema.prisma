@@ -44,6 +44,10 @@ model User {
   rate_limits          UserRateLimit[]
   tracked_channels     TrackedChannel[]
   videos               Video[]
+  
+  // Duplicate detection relations (for managers)
+  reviewed_duplicates  VideoDuplicate[]     @relation("ReviewedDuplicates")
+  duplicate_reviews    DuplicateReview[]    @relation("DuplicateReviews")
 
   @@index([email])
   @@index([role])
@@ -166,6 +170,12 @@ model Video {
 
   user              User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   posts             VideoPost[] // Content deduplication: one video can be posted many times
+  
+  // Duplicate detection relations
+  fingerprint       VideoFingerprint?
+  duplicate         VideoDuplicate?
+  new_video_reviews DuplicateReview[] @relation("NewVideoReviews")
+  suspected_reviews DuplicateReview[] @relation("SuspectedVideoReviews")
 
   @@index([user_id])
   @@index([content_hash])
@@ -209,5 +219,119 @@ model VideoPost {
   @@index([platform])
   @@index([posted_at])
   @@map("video_posts")
+}
+
+// VideoFingerprint: Deep learning fingerprint for duplicate detection
+model VideoFingerprint {
+  id                String    @id @default(uuid())
+  video_id          String    @unique
+  
+  // Deep learning features (512-dim vector from R(2+1)D model)
+  feature_vector    Float[]   // Array of 512 floats
+  
+  // Perceptual hashes (backup method)
+  perceptual_hash   String?   // Combined hash
+  keyframe_hashes   String[]  @default([]) // Individual frame hashes
+  
+  // Metadata
+  duration_seconds  Int
+  frame_count       Int?
+  resolution        String?   // e.g., "1920x1080"
+  
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  
+  video             Video     @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  
+  @@index([video_id])
+  @@map("video_fingerprints")
+}
+
+// VideoGroup: Groups duplicate videos together
+model VideoGroup {
+  id                String    @id @default(uuid())
+  master_video_id   String    // The original/first video
+  production_date   DateTime  // When the original video was created
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  
+  duplicates        VideoDuplicate[]
+  
+  @@index([master_video_id])
+  @@map("video_groups")
+}
+
+enum DuplicateStatus {
+  UNIQUE            // Confirmed unique video
+  DUPLICATE         // Confirmed duplicate
+  PENDING_REVIEW    // Needs manager review
+  SUSPICIOUS        // Flagged for review
+}
+
+// VideoDuplicate: Tracks duplicate relationships
+model VideoDuplicate {
+  id                String          @id @default(uuid())
+  group_id          String
+  video_id          String
+  
+  status            DuplicateStatus @default(PENDING_REVIEW)
+  is_master         Boolean         @default(false) // Is this the original video?
+  
+  // Detection metadata
+  similarity_score  Float?          // 0-1 similarity score
+  detection_method  String?         // "deep_learning", "perceptual_hash", "metadata"
+  confidence_level  String?         // "high", "medium", "low"
+  
+  // Review info
+  reviewed_by       String?         // Manager user_id
+  reviewed_at       DateTime?
+  review_note       String?         @db.Text
+  
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  
+  group             VideoGroup      @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  video             Video           @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  reviewer          User?           @relation("ReviewedDuplicates", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  
+  @@unique([video_id]) // Each video can only be in one group
+  @@index([group_id])
+  @@index([video_id])
+  @@index([status])
+  @@index([reviewed_by])
+  @@map("video_duplicates")
+}
+
+// DuplicateReview: Queue for manager to review suspicious duplicates
+model DuplicateReview {
+  id                    String          @id @default(uuid())
+  new_video_id          String          // Video that was just uploaded
+  suspected_duplicate_of String         // Video it might be duplicate of
+  
+  similarity_score      Float           // 0-1 similarity
+  detection_method      String          // How it was detected
+  confidence_level      String          // "high", "medium", "low"
+  
+  status                DuplicateStatus @default(PENDING_REVIEW)
+  
+  // Manager decision
+  reviewed_by           String?
+  reviewed_at           DateTime?
+  decision              String?         // "duplicate", "unique", "skip"
+  review_note           String?         @db.Text
+  
+  created_at            DateTime        @default(now())
+  updated_at            DateTime        @updatedAt
+  
+  new_video             Video           @relation("NewVideoReviews", fields: [new_video_id], references: [id], onDelete: Cascade)
+  suspected_video       Video           @relation("SuspectedVideoReviews", fields: [suspected_duplicate_of], references: [id], onDelete: Cascade)
+  reviewer              User?           @relation("DuplicateReviews", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  
+  @@index([new_video_id])
+  @@index([suspected_duplicate_of])
+  @@index([status])
+  @@index([reviewed_by])
+  @@index([created_at])
+  @@map("duplicate_reviews")
 }
 
