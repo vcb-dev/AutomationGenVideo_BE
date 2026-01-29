@@ -50,11 +50,12 @@ export class TrackedChannelsService {
     };
   }
 
-  async findAllByUser(userId: string) {
+  async findAllByUser(userId: string, platform?: string) {
     const channels = await this.prisma.trackedChannel.findMany({
       where: {
         user_id: userId,
         is_active: true,
+        ...(platform && { platform: platform.toUpperCase() as any }),
       },
       orderBy: {
         created_at: 'desc',
@@ -67,6 +68,16 @@ export class TrackedChannelsService {
       total_likes: Number(channel.total_likes),
       total_views: Number(channel.total_views),
     }));
+  }
+
+  async getMyChannels(userId: string, platform?: string) {
+    const channels = await this.findAllByUser(userId, platform);
+    
+    return {
+      success: true,
+      channels,
+      count: channels.length,
+    };
   }
 
   async findOne(id: string, userId: string) {
