@@ -23,25 +23,12 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+  ) { }
 
   async register(registerDto: RegisterDto): Promise<TokenResponseDto> {
     // For EDITOR and CONTENT roles, auto-assign the default manager
-    if (registerDto.role === "EDITOR" || registerDto.role === "CONTENT") {
-      // Find the default manager
-      const defaultManager = await this.usersService.findByEmail(
-        "manager@vietchibao.com",
-      );
-
-      if (!defaultManager) {
-        throw new UnauthorizedException(
-          "Default manager not found. Please run database seed.",
-        );
-      }
-
-      // Auto-assign manager
-      registerDto.manager_id = defaultManager.id;
-    }
+    // Manager assignment will be handled after login via UI selection
+    // if (registerDto.role === "EDITOR" || registerDto.role === "CONTENT") { ... } removed
 
     const user = await this.usersService.create(registerDto);
     return this.generateToken(user);
@@ -126,19 +113,8 @@ export class AuthService {
     };
 
     // Auto-assign default manager for EDITOR and CONTENT roles
-    if (role === "EDITOR" || role === "CONTENT") {
-      const defaultManager = await this.usersService.findByEmail(
-        "manager@vietchibao.com",
-      );
-
-      if (!defaultManager) {
-        throw new UnauthorizedException(
-          "Default manager not found. Please run database seed.",
-        );
-      }
-
-      userData.manager_id = defaultManager.id;
-    }
+    // Manager assignment will be handled after login via UI selection
+    // if (role === "EDITOR" || role === "CONTENT") { ... } removed
 
     // Create user
     const newUser = await this.usersService.create(userData);
