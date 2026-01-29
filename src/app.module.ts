@@ -15,7 +15,7 @@ import { VideosModule } from "./modules/videos/videos.module";
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ".env",
+      envFilePath: [".env.local", ".env"],
     }),
     ThrottlerModule.forRoot([
       {
@@ -34,4 +34,4 @@ import { VideosModule } from "./modules/videos/videos.module";
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }
