@@ -140,13 +140,19 @@ export class AiIntegrationService {
 
     username: string,
 
-    maxResults = 9999 // Unlimited by default
+    maxResults = 9999, // Unlimited by default
+
+    untilDate?: string,
+
+    startDate?: string,
+
+    endDate?: string
 
   ): Promise<any> {
 
     const url = `${this.aiServiceUrl}/api/search/user-videos/`;
 
-    this.logger.log(`Calling AI Service: ${url} for user=${username}, max_results=${maxResults}`);
+    this.logger.log(`Calling AI Service: ${url} for user=${username}, max_results=${maxResults}, start=${startDate}, end=${endDate}`);
 
 
 
@@ -161,6 +167,12 @@ export class AiIntegrationService {
           username,
 
           max_results: maxResults,
+
+          until_date: untilDate,
+
+          start_date: startDate,
+
+          end_date: endDate,
 
         }, {
 
@@ -580,6 +592,60 @@ export class AiIntegrationService {
 
     return data;
 
+  }
+
+  /**
+   * Proxy avatar image to bypass CORS and URL expiry issues
+   * Instagram CDN URLs have signature tokens that expire
+   */
+  async proxyAvatar(imageUrl: string, res: any): Promise<void> {
+    try {
+      if (!imageUrl) {
+        res.status(400).send('Missing url parameter');
+        return;
+      }
+
+      // Validate URL is from allowed domains
+      const allowedDomains = [
+        'cdninstagram.com',
+        'instagram.com',
+        'fbcdn.net',
+        'scontent.cdninstagram.com',
+        'scontent-',
+      ];
+      
+      const isAllowed = allowedDomains.some(domain => imageUrl.includes(domain));
+      if (!isAllowed) {
+        this.logger.warn(`Blocked proxy request for non-allowed domain: ${imageUrl}`);
+        res.status(403).send('Domain not allowed');
+        return;
+      }
+
+      // Fetch the image
+      const response = await firstValueFrom(
+        this.httpService.get(imageUrl, {
+          responseType: 'arraybuffer',
+          timeout: 10000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+          },
+        })
+      );
+
+      // Set appropriate headers
+      const contentType = response.headers['content-type'] || 'image/jpeg';
+      res.set({
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      res.send(Buffer.from(response.data));
+    } catch (error) {
+      this.logger.error(`Failed to proxy avatar: ${error.message}`);
+      res.status(500).send('Failed to fetch image');
+    }
   }
 
 }

@@ -50,6 +50,11 @@ export class CreateTrackedChannelDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsInt()
+  total_posts?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsNumber()
   engagement_rate?: number;
 }
@@ -84,6 +89,11 @@ export class UpdateTrackedChannelDto {
   @IsOptional()
   @IsInt()
   total_videos?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  total_posts?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

@@ -25,10 +25,11 @@ export class TrackedChannelsService {
         total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : undefined,
         total_views: createDto.total_views ? BigInt(createDto.total_views) : undefined,
         total_videos: createDto.total_videos,
+        total_posts: createDto.total_posts,
         engagement_rate: createDto.engagement_rate,
         last_synced_at: new Date(),
         is_active: true, // Reactivate if it was deleted/inactive
-      },
+      } as any,
       create: {
         user_id: userId,
         platform: createDto.platform,
@@ -39,8 +40,9 @@ export class TrackedChannelsService {
         total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : BigInt(0),
         total_views: createDto.total_views ? BigInt(createDto.total_views) : BigInt(0),
         total_videos: createDto.total_videos || 0,
+        total_posts: createDto.total_posts || 0,
         engagement_rate: createDto.engagement_rate || 0,
-      },
+      } as any,
     });
 
     return {
@@ -120,6 +122,43 @@ export class TrackedChannelsService {
     };
   }
 
+  async checkChannel(id: string, userId: string) {
+    const channel = await this.findOne(id, userId); // Check ownership & get details
+
+    try {
+      // Call AI service to check channel using username (since IDs might differ)
+      const url = `${process.env.AI_SERVICE_URL}/api/channels/check-by-username/`;
+      
+      console.log(`[TrackedChannels] Calling AI Service (Check): POST ${url}`);
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+             username: channel.username,
+             platform: channel.platform
+        })
+      });
+
+      console.log(`[TrackedChannels] AI Service Response: ${response.status} ${response.statusText}`);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[TrackedChannels] Error Details: ${errorText}`);
+        throw new Error(`AI service returned ${response.status}: ${errorText}`);
+      }
+
+      const data = await response.json();
+      return data;
+      
+    } catch (error) {
+      console.error('Error checking channel:', error);
+      throw new Error(`Failed to check channel: ${error.message}`);
+    }
+  }
+
   async update(id: string, userId: string, updateDto: UpdateTrackedChannelDto) {
     await this.findOne(id, userId); // Check ownership
 
@@ -129,8 +168,9 @@ export class TrackedChannelsService {
         ...updateDto,
         total_likes: updateDto.total_likes ? BigInt(updateDto.total_likes) : undefined,
         total_views: updateDto.total_views ? BigInt(updateDto.total_views) : undefined,
+        total_posts: updateDto.total_posts,
         last_synced_at: new Date(),
-      },
+      } as any,
     });
 
     return {
