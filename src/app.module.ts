@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule } from "@nestjs/throttler";
+import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./common/prisma/prisma.module";
@@ -15,7 +16,8 @@ import { VideosModule } from "./modules/videos/videos.module";
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ".env",
+      envFilePath: [join(process.cwd(), ".env"), ".env"],
+      ignoreEnvFile: false,
     }),
     ThrottlerModule.forRoot([
       {
