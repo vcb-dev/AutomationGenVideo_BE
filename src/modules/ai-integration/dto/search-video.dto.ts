@@ -29,10 +29,10 @@ export class SearchVideoDto {
   @IsOptional()
   min_views?: number;
 
-  @ApiPropertyOptional({ description: 'Maximum number of results (1-100)', default: 20, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ description: 'Maximum number of results (1-10000)', default: 20, minimum: 1, maximum: 10000 })
   @IsNumber()
   @Min(1)
-  @Max(100)
+  @Max(10000)
   @IsOptional()
   max_results?: number;
 
