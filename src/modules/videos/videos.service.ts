@@ -51,7 +51,7 @@ export class VideosService {
 
       // 3. Check for duplicates
       this.logger.log('Checking for duplicates...');
-      const duplicateCheck = await this.checkDuplicate(filePath, dto.channelId, userId);
+      const duplicateCheck = await this.checkDuplicate(filePath, dto.channelId, userId, videoTitle);
 
       if (duplicateCheck.isDuplicate) {
         // Delete uploaded file
@@ -141,7 +141,7 @@ export class VideosService {
    * Check if video is duplicate
    * Compares uploaded video against all user's videos with fingerprints
    */
-  private async checkDuplicate(videoPath: string, channelId: string, userId: string): Promise<CheckDuplicateResponseDto> {
+  private async checkDuplicate(videoPath: string, channelId: string, userId: string, videoTitle: string = ''): Promise<CheckDuplicateResponseDto> {
     this.logger.log(`🔍 Checking for duplicates...`);
     this.logger.log(`  Channel ID: ${channelId}`);
     
@@ -181,6 +181,7 @@ export class VideosService {
         fingerprint: {
           select: {
             feature_vector: true,
+            duration_seconds: true,
           },
         },
       },
@@ -197,22 +198,71 @@ export class VideosService {
       // We have fingerprints - use them directly for comparison
       this.logger.log(`  ✅ Using ${userVideos.length} existing fingerprints for comparison`);
       
-      const existingVideosData = userVideos.map(video => ({
-        id: video.id,
-        title: video.title,
-        feature_vector: video.fingerprint.feature_vector,
-        platforms: [channel.platform],
-        createdAt: video.created_at,
+      // Process videos to fix missing duration (Self-Healing)
+      const existingVideosData = await Promise.all(userVideos.map(async (video) => {
+          let duration = video.fingerprint.duration_seconds;
+          
+          // Self-Healing: If duration is missing/zero, try to recover from file
+          if (!duration || duration <= 0) {
+              try {
+                  // Only if file exists locally
+                  if (require('fs').existsSync(video.file_url)) {
+                       // Lazy load ffprobe path to avoid global scope issues
+                       const ffprobePath = require('@ffprobe-installer/ffprobe').path;
+                       process.env.FFPROBE_PATH = ffprobePath;
+                       const { getVideoDurationInSeconds } = require('get-video-duration');
+                       
+                       duration = await getVideoDurationInSeconds(video.file_url);
+                       
+                       if (duration && duration > 0) {
+                           this.logger.log(`  🔧 Self-Healing: Recovered duration for video ${video.id}: ${duration}s`);
+                           
+                           // Update DB asynchronously (Fire and forget, or await if strict)
+                           // Use Promise.all to update both tables
+                           await Promise.all([
+                               this.prisma.videoFingerprint.update({
+                                   where: { video_id: video.id },
+                                   data: { duration_seconds: duration } 
+                               }),
+                               this.prisma.video.update({
+                                   where: { id: video.id },
+                                   data: { duration: duration }
+                               })
+                           ]);
+                       }
+                  }
+              } catch (err) {
+                  this.logger.warn(`  ⚠️ Failed to self-heal duration for video ${video.id}: ${err.message}`);
+              }
+          }
+          
+          return {
+            id: video.id,
+            title: video.title,
+            feature_vector: video.fingerprint.feature_vector,
+            duration: duration || 0, // Ensure numeric
+            platforms: [channel.platform],
+            createdAt: video.created_at,
+          };
       }));
 
       try {
         const { data } = await firstValueFrom(
           this.httpService.post(`${this.aiServiceUrl}/api/duplicate-detection/check-duplicate/`, {
             video_path: videoPath,
-            existing_videos: existingVideosData,
+            video_title: videoTitle, // Pass title for fuzzy matching fallback
+            // USER REQ: Only compare with Channel/Scraped videos, NOT internal DB videos.
+            // Sending empty array forces AI to use only 'channel_scan' data.
+            existing_videos: [], 
+            check_source: 'channel_scan', 
+            channel_info: {
+                username: channel.username,
+                platform: channel.platform
+            }
           }),
         );
 
+        this.logger.log(`  🔍 Channel Scan Complete. Scanned against ${data.scanned_count || 'several'} external videos.`);
         this.logger.log(`  Comparison result: ${data.is_duplicate ? '🔴 DUPLICATE' : '🟢 UNIQUE'}`);
         this.logger.log(`  Similarity: ${(data.similarity * 100).toFixed(2)}%`);
 

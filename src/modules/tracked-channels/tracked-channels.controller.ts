@@ -110,6 +110,12 @@ export class TrackedChannelsController {
     return this.trackedChannelsService.update(id, req.user.id, updateDto);
   }
 
+  @Post(':id/check')
+  @ApiOperation({ summary: 'Trigger a manual check/sync for a tracked channel' })
+  checkChannel(@Param('id') id: string, @Request() req) {
+    return this.trackedChannelsService.checkChannel(id, req.user.id);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Remove a tracked channel' })
   remove(@Param('id') id: string, @Request() req) {

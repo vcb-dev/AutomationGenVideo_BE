@@ -7,13 +7,20 @@ import { AuthService, GoogleUser } from "../auth.service";
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   constructor(
-    private configService: ConfigService,
+    configService: ConfigService,
     private authService: AuthService,
   ) {
+    const clientID =
+      configService.get<string>("GOOGLE_CLIENT_ID") || "placeholder";
+    const clientSecret =
+      configService.get<string>("GOOGLE_CLIENT_SECRET") || "placeholder";
+    const callbackURL =
+      configService.get<string>("GOOGLE_CALLBACK_URL") ||
+      "http://localhost:3000/auth/google/callback";
     super({
-      clientID: configService.get<string>("GOOGLE_CLIENT_ID"),
-      clientSecret: configService.get<string>("GOOGLE_CLIENT_SECRET"),
-      callbackURL: configService.get<string>("GOOGLE_CALLBACK_URL"),
+      clientID,
+      clientSecret,
+      callbackURL,
       scope: ["email", "profile"],
     });
   }

@@ -138,6 +138,7 @@ model TrackedChannel {
   total_likes       BigInt    @default(0)
   total_views       BigInt    @default(0)
   total_videos      Int       @default(0)
+  total_posts       Int       @default(0) // Total posts including photos/text
   initial_video_count Int     @default(0) // Videos count when channel was first tracked/assigned
   engagement_rate   Float     @default(0)
   is_active         Boolean   @default(true)

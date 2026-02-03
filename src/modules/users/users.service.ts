@@ -12,7 +12,7 @@ import * as bcrypt from "bcrypt";
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async create(createUserDto: CreateUserDto) {
     // Check if email already exists
@@ -24,12 +24,8 @@ export class UsersService {
       throw new ConflictException("Email already exists");
     }
 
-    // Validate manager_id for editors
-    if (createUserDto.role === UserRole.EDITOR) {
-      if (!createUserDto.manager_id) {
-        throw new BadRequestException("manager_id is required for editors");
-      }
-
+    // Validate manager_id for editors if provided
+    if (createUserDto.role === UserRole.EDITOR && createUserDto.manager_id) {
       const manager = await this.prisma.user.findUnique({
         where: { id: createUserDto.manager_id },
       });
@@ -44,17 +40,15 @@ export class UsersService {
     // Hash password
     const password_hash = await bcrypt.hash(createUserDto.password, 10);
 
-    // Create user - ensure manager_id is null for non-EDITOR roles
+    // Create user
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password: _password, ...userData } = createUserDto;
     const user = await this.prisma.user.create({
       data: {
         ...userData,
         password_hash,
-        manager_id:
-          createUserDto.role === UserRole.EDITOR
-            ? createUserDto.manager_id
-            : null,
+        // manager_id will be set if provided, otherwise null
+        manager_id: createUserDto.manager_id || null,
       },
     });
 
@@ -170,7 +164,7 @@ export class UsersService {
 
   async getMyEditors(managerId: string, platform?: string) {
     console.log('🔍 getMyEditors called with:', { managerId, platform });
-    
+
     // Verify the user is a manager
     const manager = await this.prisma.user.findUnique({
       where: { id: managerId },
@@ -243,24 +237,24 @@ export class UsersService {
 
         // Calculate total stats
         const totalChannels = channels.length;
-        
+
         // NEW LOGIC: Calculate accurate video counts
         // Videos Produced = unique videos created by this editor
         // Cast to any because Prisma Client might not be regenerated yet
         const videosProduced = await (this.prisma as any).video.count({
           where: { user_id: editor.id },
         });
-        
+
         // 2. Count Total Videos Posted (Delta logic: Current Total - Initial Count)
         // This ensures we only count videos added SINCE the editor was assigned/tracking started
         const videosPosted = channels.reduce((sum, channel) => {
-            const current = channel.total_videos || 0;
-            // Cast to any to access new column
-            const initial = (channel as any).initial_video_count || 0;
-            const delta = Math.max(0, current - initial);
-            return sum + delta;
+          const current = channel.total_videos || 0;
+          // Cast to any to access new column
+          const initial = (channel as any).initial_video_count || 0;
+          const delta = Math.max(0, current - initial);
+          return sum + delta;
         }, 0);
-        
+
         const totalFollowers = channels.reduce((sum, ch) => sum + (ch.total_followers || 0), 0);
         const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
         const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
@@ -332,8 +326,8 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    if (user.role !== UserRole.EDITOR) {
-      throw new BadRequestException('Only editors can select a manager');
+    if (user.role !== UserRole.EDITOR && user.role !== UserRole.CONTENT) {
+      throw new BadRequestException('Only editors and content creators can select a manager');
     }
 
     // Verify manager exists and is a MANAGER
