@@ -11,6 +11,7 @@ import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.mod
 import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
 import { VideosModule } from "./modules/videos/videos.module";
+import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
 
 @Module({
   imports: [
@@ -32,8 +33,9 @@ import { VideosModule } from "./modules/videos/videos.module";
     CollectionModule,
     TrackedChannelsModule,
     VideosModule,
+    HeygenVideoModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }

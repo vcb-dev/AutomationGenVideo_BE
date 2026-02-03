@@ -1,4 +1,5 @@
-import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
@@ -35,6 +36,9 @@ export class AiIntegrationController {
       userVideosDto.platform,
       userVideosDto.username,
       userVideosDto.max_results,
+      userVideosDto.until_date,
+      userVideosDto.start_date,
+      userVideosDto.end_date,
     );
   }
 
@@ -140,5 +144,13 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Remove video from collection' })
   async removeVideoFromCollection(@Param('id') id: string, @Param('videoId') videoId: string) {
     return this.aiService.removeVideoFromCollection(id, videoId);
+  }
+
+  @Get('proxy/avatar')
+  @ApiOperation({ summary: 'Proxy avatar image to bypass CORS and expiry issues' })
+  @ApiQuery({ name: 'url', required: true, description: 'Original avatar URL to proxy' })
+  @ApiResponse({ status: 200, description: 'Returns proxied image' })
+  async proxyAvatar(@Query('url') url: string, @Res() res: Response) {
+    return this.aiService.proxyAvatar(url, res);
   }
 }

@@ -66,4 +66,24 @@ export class UserVideosDto {
   @Min(1)
   @IsOptional()
   max_results?: number;
+
+  @ApiPropertyOptional({ description: 'Fetch videos until this date (YYYY-MM-DD) - deprecated, use start_date', example: '2024-01-01' })
+  @IsString()
+  @IsOptional()
+  until_date?: string;
+
+  @ApiPropertyOptional({ description: 'Start date for filtering (YYYY-MM-DD)', example: '2024-01-01' })
+  @IsString()
+  @IsOptional()
+  start_date?: string;
+
+  @ApiPropertyOptional({ description: 'End date for filtering (YYYY-MM-DD)', example: '2024-01-31' })
+  @IsString()
+  @IsOptional()
+  end_date?: string;
+
+  @ApiPropertyOptional({ description: 'Force refresh data from the platform, bypassing cache', default: false })
+  @IsBoolean()
+  @IsOptional()
+  force_refresh?: boolean;
 }
