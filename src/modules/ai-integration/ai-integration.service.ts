@@ -92,7 +92,7 @@ export class AiIntegrationService {
 
         }, {
 
-          timeout: 300000 // 5 minutes timeout for scraping
+          timeout: 3600000 // 60 minutes timeout for scraping
 
         }).pipe(
 
@@ -146,13 +146,15 @@ export class AiIntegrationService {
 
     startDate?: string,
 
-    endDate?: string
+    endDate?: string,
+
+    forceRefresh: boolean = false // NEW: Add force_refresh parameter
 
   ): Promise<any> {
 
     const url = `${this.aiServiceUrl}/api/search/user-videos/`;
 
-    this.logger.log(`Calling AI Service: ${url} for user=${username}, max_results=${maxResults}, start=${startDate}, end=${endDate}`);
+    this.logger.log(`Calling AI Service: ${url} for user=${username}, max_results=${maxResults}, start=${startDate}, end=${endDate}, force_refresh=${forceRefresh}`);
 
 
 
@@ -174,9 +176,11 @@ export class AiIntegrationService {
 
           end_date: endDate,
 
+          force_refresh: forceRefresh, // NEW: Send force_refresh to Django
+
         }, {
 
-          timeout: 1800000 // 30 minutes timeout for large channels
+          timeout: 3600000 // 60 minutes timeout for large channels
 
         }).pipe(
 
@@ -224,7 +228,7 @@ export class AiIntegrationService {
 
     this.logger.log(`Checking task status: ${taskId}`);
 
-    
+
 
     try {
 
@@ -300,15 +304,15 @@ export class AiIntegrationService {
 
     });
 
-    
+
 
     if (period) {
 
-        params.append('period', period);
+      params.append('period', period);
 
     }
 
-    
+
 
     const fullUrl = `${url}?${params.toString()}`;
 
@@ -364,13 +368,13 @@ export class AiIntegrationService {
 
     const params = new URLSearchParams();
 
-    
+
 
     if (platform) params.append('platform', platform);
 
     params.append('limit', limit.toString());
 
-    
+
 
     const fullUrl = `${url}?${params.toString()}`;
 
@@ -474,7 +478,7 @@ export class AiIntegrationService {
 
     const url = `${this.aiServiceUrl}/api/health/`;
 
-    
+
 
     try {
 
@@ -613,7 +617,7 @@ export class AiIntegrationService {
         'scontent.cdninstagram.com',
         'scontent-',
       ];
-      
+
       const isAllowed = allowedDomains.some(domain => imageUrl.includes(domain));
       if (!isAllowed) {
         this.logger.warn(`Blocked proxy request for non-allowed domain: ${imageUrl}`);
