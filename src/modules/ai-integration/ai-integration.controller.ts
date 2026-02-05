@@ -7,7 +7,7 @@ import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 @ApiTags('AI Integration')
 @Controller('ai')
 export class AiIntegrationController {
-  constructor(private readonly aiService: AiIntegrationService) {}
+  constructor(private readonly aiService: AiIntegrationService) { }
 
   @Post('search')
   @HttpCode(HttpStatus.OK)
@@ -39,6 +39,7 @@ export class AiIntegrationController {
       userVideosDto.until_date,
       userVideosDto.start_date,
       userVideosDto.end_date,
+      userVideosDto.force_refresh || false, // NEW: Pass force_refresh
     );
   }
 
