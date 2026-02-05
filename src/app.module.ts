@@ -12,6 +12,8 @@ import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
 import { VideosModule } from "./modules/videos/videos.module";
 import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
+import { DouyinModule } from './douyin/douyin.module';
+import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 
 @Module({
   imports: [
@@ -34,6 +36,8 @@ import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
     TrackedChannelsModule,
     VideosModule,
     HeygenVideoModule,
+    DouyinModule,
+    XiaohongshuModule,
   ],
   controllers: [AppController],
   providers: [AppService],
