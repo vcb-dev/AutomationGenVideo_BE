@@ -4,6 +4,8 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs/promises';
+import * as fsLegacy from 'fs';
+import * as FormData from 'form-data';
 import * as path from 'path';
 import { UploadVideoDto, CheckDuplicateResponseDto } from './dto/upload-video.dto';
 
@@ -19,13 +21,13 @@ export class VideosService {
     private configService: ConfigService,
   ) {
     this.aiServiceUrl = this.configService.get('AI_SERVICE_URL') || 'http://localhost:8001';
-    
+
     // Convert relative path to absolute path
     const configPath = this.configService.get('VIDEO_STORAGE_PATH') || './storage/videos';
-    this.storageBasePath = path.isAbsolute(configPath) 
-      ? configPath 
+    this.storageBasePath = path.isAbsolute(configPath)
+      ? configPath
       : path.resolve(process.cwd(), configPath);
-    
+
     this.logger.log(`📁 Video storage path: ${this.storageBasePath}`);
     this.logger.log(`🤖 AI Service URL: ${this.aiServiceUrl}`);
   }
@@ -80,7 +82,7 @@ export class VideosService {
       };
     } catch (error) {
       // Cleanup on error
-      await fs.unlink(filePath).catch(() => {});
+      await fs.unlink(filePath).catch(() => { });
       throw error;
     }
   }
@@ -93,7 +95,7 @@ export class VideosService {
     this.logger.log(`  Storage base path: ${this.storageBasePath}`);
     this.logger.log(`  User ID: ${userId}`);
     this.logger.log(`  Original filename: ${file.originalname}`);
-    
+
     const uploadDir = path.join(this.storageBasePath, userId);
     await fs.mkdir(uploadDir, { recursive: true });
 
@@ -102,7 +104,7 @@ export class VideosService {
 
     this.logger.log(`  Upload directory: ${uploadDir}`);
     this.logger.log(`  Final filepath: ${filepath}`);
-    
+
     await fs.writeFile(filepath, file.buffer);
 
     this.logger.log(`✅ File saved successfully`);
@@ -115,15 +117,20 @@ export class VideosService {
   private async generateFingerprint(videoPath: string): Promise<any> {
     try {
       const url = `${this.aiServiceUrl}/api/duplicate-detection/generate-fingerprint/`;
-      
+
       this.logger.log(`🔍 Generating fingerprint...`);
       this.logger.log(`  Video path: ${videoPath}`);
       this.logger.log(`  AI Service URL: ${this.aiServiceUrl}`);
       this.logger.log(`  Full endpoint: ${url}`);
-      
+
+      const formData = new FormData();
+      formData.append('video_file', fsLegacy.createReadStream(videoPath));
+
       const { data } = await firstValueFrom(
-        this.httpService.post(url, {
-          video_path: videoPath,
+        this.httpService.post(url, formData, {
+          headers: {
+            ...formData.getHeaders(),
+          },
         }),
       );
 
@@ -131,9 +138,12 @@ export class VideosService {
       return data;
     } catch (error) {
       this.logger.error(`❌ Failed to generate fingerprint: ${error.message}`);
-      this.logger.error(`   Response data: ${JSON.stringify(error.response?.data)}`);
-      this.logger.error(`   Status code: ${error.response?.status}`);
-      throw new BadRequestException('Failed to generate video fingerprint');
+      const errorData = error.response?.data;
+      this.logger.error(`   Response data: ${JSON.stringify(errorData)}`);
+
+      // Extract specific error message from AI service if available
+      const aiErrorMsg = errorData?.error || errorData?.message || error.message;
+      throw new BadRequestException(`Failed to generate video fingerprint: ${aiErrorMsg}`);
     }
   }
 
@@ -144,7 +154,7 @@ export class VideosService {
   private async checkDuplicate(videoPath: string, channelId: string, userId: string, videoTitle: string = ''): Promise<CheckDuplicateResponseDto> {
     this.logger.log(`🔍 Checking for duplicates...`);
     this.logger.log(`  Channel ID: ${channelId}`);
-    
+
     // 1. Get channel information
     const channel = await this.prisma.trackedChannel.findUnique({
       where: { id: channelId },
@@ -197,68 +207,71 @@ export class VideosService {
     if (userVideos.length > 0) {
       // We have fingerprints - use them directly for comparison
       this.logger.log(`  ✅ Using ${userVideos.length} existing fingerprints for comparison`);
-      
+
       // Process videos to fix missing duration (Self-Healing)
       const existingVideosData = await Promise.all(userVideos.map(async (video) => {
-          let duration = video.fingerprint.duration_seconds;
-          
-          // Self-Healing: If duration is missing/zero, try to recover from file
-          if (!duration || duration <= 0) {
-              try {
-                  // Only if file exists locally
-                  if (require('fs').existsSync(video.file_url)) {
-                       // Lazy load ffprobe path to avoid global scope issues
-                       const ffprobePath = require('@ffprobe-installer/ffprobe').path;
-                       process.env.FFPROBE_PATH = ffprobePath;
-                       const { getVideoDurationInSeconds } = require('get-video-duration');
-                       
-                       duration = await getVideoDurationInSeconds(video.file_url);
-                       
-                       if (duration && duration > 0) {
-                           this.logger.log(`  🔧 Self-Healing: Recovered duration for video ${video.id}: ${duration}s`);
-                           
-                           // Update DB asynchronously (Fire and forget, or await if strict)
-                           // Use Promise.all to update both tables
-                           await Promise.all([
-                               this.prisma.videoFingerprint.update({
-                                   where: { video_id: video.id },
-                                   data: { duration_seconds: duration } 
-                               }),
-                               this.prisma.video.update({
-                                   where: { id: video.id },
-                                   data: { duration: duration }
-                               })
-                           ]);
-                       }
-                  }
-              } catch (err) {
-                  this.logger.warn(`  ⚠️ Failed to self-heal duration for video ${video.id}: ${err.message}`);
+        let duration = video.fingerprint.duration_seconds;
+
+        // Self-Healing: If duration is missing/zero, try to recover from file
+        if (!duration || duration <= 0) {
+          try {
+            // Only if file exists locally
+            if (require('fs').existsSync(video.file_url)) {
+              // Lazy load ffprobe path to avoid global scope issues
+              const ffprobePath = require('@ffprobe-installer/ffprobe').path;
+              process.env.FFPROBE_PATH = ffprobePath;
+              const { getVideoDurationInSeconds } = require('get-video-duration');
+
+              duration = await getVideoDurationInSeconds(video.file_url);
+
+              if (duration && duration > 0) {
+                this.logger.log(`  🔧 Self-Healing: Recovered duration for video ${video.id}: ${duration}s`);
+
+                // Update DB asynchronously (Fire and forget, or await if strict)
+                // Use Promise.all to update both tables
+                await Promise.all([
+                  this.prisma.videoFingerprint.update({
+                    where: { video_id: video.id },
+                    data: { duration_seconds: duration }
+                  }),
+                  this.prisma.video.update({
+                    where: { id: video.id },
+                    data: { duration: duration }
+                  })
+                ]);
               }
+            }
+          } catch (err) {
+            this.logger.warn(`  ⚠️ Failed to self-heal duration for video ${video.id}: ${err.message}`);
           }
-          
-          return {
-            id: video.id,
-            title: video.title,
-            feature_vector: video.fingerprint.feature_vector,
-            duration: duration || 0, // Ensure numeric
-            platforms: [channel.platform],
-            createdAt: video.created_at,
-          };
+        }
+
+        return {
+          id: video.id,
+          title: video.title,
+          feature_vector: video.fingerprint.feature_vector,
+          duration: duration || 0, // Ensure numeric
+          platforms: [channel.platform],
+          createdAt: video.created_at,
+        };
       }));
 
       try {
+        const formData = new FormData();
+        formData.append('video_file', fsLegacy.createReadStream(videoPath));
+        formData.append('video_title', videoTitle);
+        formData.append('check_source', 'channel_scan');
+        formData.append('existing_videos', JSON.stringify([]));
+        formData.append('channel_info', JSON.stringify({
+          username: channel.username,
+          platform: channel.platform
+        }));
+
         const { data } = await firstValueFrom(
-          this.httpService.post(`${this.aiServiceUrl}/api/duplicate-detection/check-duplicate/`, {
-            video_path: videoPath,
-            video_title: videoTitle, // Pass title for fuzzy matching fallback
-            // USER REQ: Only compare with Channel/Scraped videos, NOT internal DB videos.
-            // Sending empty array forces AI to use only 'channel_scan' data.
-            existing_videos: [], 
-            check_source: 'channel_scan', 
-            channel_info: {
-                username: channel.username,
-                platform: channel.platform
-            }
+          this.httpService.post(`${this.aiServiceUrl}/api/duplicate-detection/check-duplicate/`, formData, {
+            headers: {
+              ...formData.getHeaders(),
+            },
           }),
         );
 
@@ -270,11 +283,11 @@ export class VideosService {
           isDuplicate: data.is_duplicate,
           matchedVideo: data.matched_video
             ? {
-                id: data.matched_video.id,
-                title: data.matched_video.title,
-                createdAt: data.matched_video.createdAt,
-                platforms: data.matched_video.platforms,
-              }
+              id: data.matched_video.id,
+              title: data.matched_video.title,
+              createdAt: data.matched_video.createdAt,
+              platforms: data.matched_video.platforms,
+            }
             : undefined,
           similarity: data.similarity,
           confidence: data.confidence,
