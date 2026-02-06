@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule } from "@nestjs/throttler";
+import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./common/prisma/prisma.module";
@@ -13,12 +14,14 @@ import { VideosModule } from "./modules/videos/videos.module";
 import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
 import { DouyinModule } from './douyin/douyin.module';
 import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
+import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: [".env.local", ".env"],
+      envFilePath: [join(process.cwd(), ".env"), ".env"],
+      ignoreEnvFile: false,
     }),
     ThrottlerModule.forRoot([
       {
@@ -36,6 +39,7 @@ import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
     HeygenVideoModule,
     DouyinModule,
     XiaohongshuModule,
+    SearchRecommendationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
