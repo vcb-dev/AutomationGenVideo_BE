@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,44 +7,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum UserRole {
-  ADMIN
-  MANAGER
-  EDITOR
-  CONTENT
-}
-
 model User {
-  id                   String    @id @default(uuid())
-  email                String    @unique
-  password_hash        String?   // Make nullable for Google users
-  full_name            String
-  avatar               String?   // Add avatar
-  google_id            String?   @unique // Add google_id
-  role                 UserRole
-  manager_id           String?
-  is_active            Boolean   @default(true)
-  last_login_at        DateTime?
-  last_activity_at     DateTime?
-  total_login_count    Int       @default(0)
-  total_action_count   Int       @default(0)
-  created_at           DateTime  @default(now())
-  updated_at           DateTime  @updatedAt
-
-  // Self-relation: Manager manages Editors
-  manager              User?                @relation("ManagerEditors", fields: [manager_id], references: [id], onDelete: SetNull)
-  editors              User[]               @relation("ManagerEditors")
-
-  // Relations
-  activity_logs        UserActivityLog[]
-  usage_stats          UserUsageStat[]
-  rate_limits          UserRateLimit[]
-  tracked_channels     TrackedChannel[]
-  videos               Video[]
-  
-  // Duplicate detection relations (for managers)
-  reviewed_duplicates  VideoDuplicate[]     @relation("ReviewedDuplicates")
-  duplicate_reviews    DuplicateReview[]    @relation("DuplicateReviews")
+  id                  String            @id @default(uuid())
+  email               String            @unique
+  password_hash       String?
+  full_name           String
+  avatar              String?
+  google_id           String?           @unique
+  role                UserRole
+  manager_id          String?
+  is_active           Boolean           @default(true)
+  last_login_at       DateTime?
+  last_activity_at    DateTime?
+  total_login_count   Int               @default(0)
+  total_action_count  Int               @default(0)
+  created_at          DateTime          @default(now())
+  updated_at          DateTime          @updatedAt
+  duplicate_reviews   DuplicateReview[] @relation("DuplicateReviews")
+  tracked_channels    TrackedChannel[]
+  activity_logs       UserActivityLog[]
+  rate_limits         UserRateLimit[]
+  usage_stats         UserUsageStat[]
+  manager             User?             @relation("ManagerEditors", fields: [manager_id], references: [id])
+  editors             User[]            @relation("ManagerEditors")
+  reviewed_duplicates VideoDuplicate[]  @relation("ReviewedDuplicates")
+  videos              Video[]
+  search_histories    SearchHistory[]
 
   @@index([email])
   @@index([role])
@@ -57,19 +42,18 @@ model User {
 }
 
 model UserActivityLog {
-  id           String    @id @default(uuid())
-  user_id      String
-  role         UserRole
-  action       String    // login, logout, create_video, delete_video, etc.
-  target_type  String?   // video, project, user
-  target_id    String?
-  description  String?   @db.Text
-  ip_address   String?
-  user_agent   String?
-  metadata     Json?
-  created_at   DateTime  @default(now())
-
-  user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  user_id     String
+  role        UserRole
+  action      String
+  target_type String?
+  target_id   String?
+  description String?
+  ip_address  String?
+  user_agent  String?
+  metadata    Json?
+  created_at  DateTime @default(now())
+  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([action])
@@ -89,7 +73,6 @@ model UserUsageStat {
   last_action_at    DateTime?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
-
   user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([user_id, date])
@@ -99,18 +82,17 @@ model UserUsageStat {
 }
 
 model UserRateLimit {
-  id              String    @id @default(uuid())
-  user_id         String
-  action_type     String    // login, generate_video, api
-  max_per_minute  Int       @default(60)
-  max_per_day     Int       @default(1000)
-  current_count   Int       @default(0)
-  window_start    DateTime  @default(now())
-  blocked_until   DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
-
-  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id             String    @id @default(uuid())
+  user_id        String
+  action_type    String
+  max_per_minute Int       @default(60)
+  max_per_day    Int       @default(1000)
+  current_count  Int       @default(0)
+  window_start   DateTime  @default(now())
+  blocked_until  DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+  user           User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([user_id, action_type])
   @@index([user_id])
@@ -119,35 +101,25 @@ model UserRateLimit {
   @@map("user_rate_limits")
 }
 
-enum Platform {
-  TIKTOK
-  INSTAGRAM
-  FACEBOOK
-  DOUYIN
-  XIAOHONGSHU
-}
-
 model TrackedChannel {
-  id                String    @id @default(uuid())
-  user_id           String
-  platform          Platform
-  username          String
-  display_name      String?
-  avatar_url        String?
-  total_followers   Int?
-  total_likes       BigInt    @default(0)
-  total_views       BigInt    @default(0)
-  total_videos      Int       @default(0)
-  total_posts       Int       @default(0) // Total posts including photos/text
-  initial_video_count Int     @default(0) // Videos count when channel was first tracked/assigned
-  engagement_rate   Float     @default(0)
-  is_active         Boolean   @default(true)
-  last_synced_at    DateTime?
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
-
-  user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  video_posts       VideoPost[]
+  id                  String      @id @default(uuid())
+  user_id             String
+  platform            Platform
+  username            String
+  display_name        String?
+  avatar_url          String?
+  total_followers     Int?
+  total_likes         BigInt      @default(0)
+  total_views         BigInt      @default(0)
+  total_videos        Int         @default(0)
+  engagement_rate     Float       @default(0)
+  is_active           Boolean     @default(true)
+  last_synced_at      DateTime?
+  created_at          DateTime    @default(now())
+  updated_at          DateTime    @updatedAt
+  initial_video_count Int         @default(0)
+  user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  video_posts         VideoPost[]
 
   @@unique([user_id, platform, username])
   @@index([user_id])
@@ -180,63 +152,50 @@ model Voice {
 
 // Video: Represents a unique video content created by an editor
 model Video {
-  id                String      @id @default(uuid())
-  user_id           String      // Editor who created this video
+  id                String            @id @default(uuid())
+  user_id           String
   title             String?
-  description       String?     @db.Text
+  description       String?
   thumbnail_url     String?
-  duration          Int?        // Duration in seconds
-  file_url          String?     // URL to the original video file
-  content_hash      String?     // MD5/SHA256 hash for deduplication
-  created_at        DateTime    @default(now())
-  updated_at        DateTime    @updatedAt
-
-  user              User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  posts             VideoPost[] // Content deduplication: one video can be posted many times
-  
-  // Duplicate detection relations
-  fingerprint       VideoFingerprint?
-  duplicate         VideoDuplicate?
+  duration          Int?
+  content_hash      String?
+  created_at        DateTime          @default(now())
+  updated_at        DateTime          @updatedAt
+  file_url          String?
   new_video_reviews DuplicateReview[] @relation("NewVideoReviews")
   suspected_reviews DuplicateReview[] @relation("SuspectedVideoReviews")
+  duplicate         VideoDuplicate?
+  fingerprint       VideoFingerprint?
+  posts             VideoPost[]
+  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([content_hash])
   @@map("videos")
 }
 
-
-// VideoPost: Represents a single post of a video to a specific platform/channel
 model VideoPost {
   id                String         @id @default(uuid())
-  video_id          String         // Link to the unique video
-  channel_id        String         // Which channel it was posted to
-  platform          Platform       // Platform where it was posted
-  
-  // Platform-specific data
-  platform_video_id String?        // Video ID on the platform (e.g., TikTok video ID)
-  platform_url      String?        // Direct URL to the video on platform
-  
-  // Post metadata
+  video_id          String
+  channel_id        String
+  platform          Platform
+  platform_video_id String?
+  platform_url      String?
   title             String?
-  description       String?        @db.Text
+  description       String?
   hashtags          String[]       @default([])
-  
-  // Stats (synced from platform)
   views             BigInt         @default(0)
   likes             BigInt         @default(0)
   comments          Int            @default(0)
   shares            Int            @default(0)
-  
   posted_at         DateTime       @default(now())
-  last_synced_at    DateTime?      // Last time stats were synced
+  last_synced_at    DateTime?
   created_at        DateTime       @default(now())
   updated_at        DateTime       @updatedAt
-  
-  video             Video          @relation(fields: [video_id], references: [id], onDelete: Cascade)
   channel           TrackedChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
-  
-  @@unique([video_id, channel_id]) // Same video can't be posted twice to same channel
+  video             Video          @relation(fields: [video_id], references: [id], onDelete: Cascade)
+
+  @@unique([video_id, channel_id])
   @@index([video_id])
   @@index([channel_id])
   @@index([platform])
@@ -244,80 +203,53 @@ model VideoPost {
   @@map("video_posts")
 }
 
-// VideoFingerprint: Deep learning fingerprint for duplicate detection
 model VideoFingerprint {
-  id                String    @id @default(uuid())
-  video_id          String    @unique
-  
-  // Deep learning features (512-dim vector from R(2+1)D model)
-  feature_vector    Float[]   // Array of 512 floats
-  
-  // Perceptual hashes (backup method)
-  perceptual_hash   String?   // Combined hash
-  keyframe_hashes   String[]  @default([]) // Individual frame hashes
-  
-  // Metadata
-  duration_seconds  Int
-  frame_count       Int?
-  resolution        String?   // e.g., "1920x1080"
-  
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
-  
-  video             Video     @relation(fields: [video_id], references: [id], onDelete: Cascade)
-  
+  id               String   @id @default(uuid())
+  video_id         String   @unique
+  feature_vector   Float[]
+  perceptual_hash  String?
+  keyframe_hashes  String[] @default([])
+  duration_seconds Int
+  frame_count      Int?
+  resolution       String?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+  video            Video    @relation(fields: [video_id], references: [id], onDelete: Cascade)
+
   @@index([video_id])
   @@map("video_fingerprints")
 }
 
-// VideoGroup: Groups duplicate videos together
 model VideoGroup {
-  id                String    @id @default(uuid())
-  master_video_id   String    // The original/first video
-  production_date   DateTime  // When the original video was created
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
-  
-  duplicates        VideoDuplicate[]
-  
+  id              String           @id @default(uuid())
+  master_video_id String
+  production_date DateTime
+  created_at      DateTime         @default(now())
+  updated_at      DateTime         @updatedAt
+  duplicates      VideoDuplicate[]
+
   @@index([master_video_id])
   @@map("video_groups")
 }
 
-enum DuplicateStatus {
-  UNIQUE            // Confirmed unique video
-  DUPLICATE         // Confirmed duplicate
-  PENDING_REVIEW    // Needs manager review
-  SUSPICIOUS        // Flagged for review
-}
-
-// VideoDuplicate: Tracks duplicate relationships
 model VideoDuplicate {
-  id                String          @id @default(uuid())
-  group_id          String
-  video_id          String
-  
-  status            DuplicateStatus @default(PENDING_REVIEW)
-  is_master         Boolean         @default(false) // Is this the original video?
-  
-  // Detection metadata
-  similarity_score  Float?          // 0-1 similarity score
-  detection_method  String?         // "deep_learning", "perceptual_hash", "metadata"
-  confidence_level  String?         // "high", "medium", "low"
-  
-  // Review info
-  reviewed_by       String?         // Manager user_id
-  reviewed_at       DateTime?
-  review_note       String?         @db.Text
-  
-  created_at        DateTime        @default(now())
-  updated_at        DateTime        @updatedAt
-  
-  group             VideoGroup      @relation(fields: [group_id], references: [id], onDelete: Cascade)
-  video             Video           @relation(fields: [video_id], references: [id], onDelete: Cascade)
-  reviewer          User?           @relation("ReviewedDuplicates", fields: [reviewed_by], references: [id], onDelete: SetNull)
-  
-  @@unique([video_id]) // Each video can only be in one group
+  id               String          @id @default(uuid())
+  group_id         String
+  video_id         String          @unique
+  status           DuplicateStatus @default(PENDING_REVIEW)
+  is_master        Boolean         @default(false)
+  similarity_score Float?
+  detection_method String?
+  confidence_level String?
+  reviewed_by      String?
+  reviewed_at      DateTime?
+  review_note      String?
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+  group            VideoGroup      @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  reviewer         User?           @relation("ReviewedDuplicates", fields: [reviewed_by], references: [id])
+  video            Video           @relation(fields: [video_id], references: [id], onDelete: Cascade)
+
   @@index([group_id])
   @@index([video_id])
   @@index([status])
@@ -325,31 +257,24 @@ model VideoDuplicate {
   @@map("video_duplicates")
 }
 
-// DuplicateReview: Queue for manager to review suspicious duplicates
 model DuplicateReview {
-  id                    String          @id @default(uuid())
-  new_video_id          String          // Video that was just uploaded
-  suspected_duplicate_of String         // Video it might be duplicate of
-  
-  similarity_score      Float           // 0-1 similarity
-  detection_method      String          // How it was detected
-  confidence_level      String          // "high", "medium", "low"
-  
-  status                DuplicateStatus @default(PENDING_REVIEW)
-  
-  // Manager decision
-  reviewed_by           String?
-  reviewed_at           DateTime?
-  decision              String?         // "duplicate", "unique", "skip"
-  review_note           String?         @db.Text
-  
-  created_at            DateTime        @default(now())
-  updated_at            DateTime        @updatedAt
-  
-  new_video             Video           @relation("NewVideoReviews", fields: [new_video_id], references: [id], onDelete: Cascade)
-  suspected_video       Video           @relation("SuspectedVideoReviews", fields: [suspected_duplicate_of], references: [id], onDelete: Cascade)
-  reviewer              User?           @relation("DuplicateReviews", fields: [reviewed_by], references: [id], onDelete: SetNull)
-  
+  id                     String          @id @default(uuid())
+  new_video_id           String
+  suspected_duplicate_of String
+  similarity_score       Float
+  detection_method       String
+  confidence_level       String
+  status                 DuplicateStatus @default(PENDING_REVIEW)
+  reviewed_by            String?
+  reviewed_at            DateTime?
+  decision               String?
+  review_note            String?
+  created_at             DateTime        @default(now())
+  updated_at             DateTime        @updatedAt
+  new_video              Video           @relation("NewVideoReviews", fields: [new_video_id], references: [id], onDelete: Cascade)
+  reviewer               User?           @relation("DuplicateReviews", fields: [reviewed_by], references: [id])
+  suspected_video        Video           @relation("SuspectedVideoReviews", fields: [suspected_duplicate_of], references: [id], onDelete: Cascade)
+
   @@index([new_video_id])
   @@index([suspected_duplicate_of])
   @@index([status])
@@ -358,3 +283,297 @@ model DuplicateReview {
   @@map("duplicate_reviews")
 }
 
+model auth_group {
+  id                     Int                      @id @default(autoincrement())
+  name                   String                   @unique @db.VarChar(150)
+  auth_group_permissions auth_group_permissions[]
+  auth_user_groups       auth_user_groups[]
+
+  @@index([name], map: "auth_group_name_a6ea08ec_like")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model auth_group_permissions {
+  id              BigInt          @id @default(autoincrement())
+  group_id        Int
+  permission_id   Int
+  auth_permission auth_permission @relation(fields: [permission_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_group_permissio_permission_id_84c5c92e_fk_auth_perm")
+  auth_group      auth_group      @relation(fields: [group_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_group_permissions_group_id_b120cbf9_fk_auth_group_id")
+
+  @@unique([group_id, permission_id], map: "auth_group_permissions_group_id_permission_id_0cd325b0_uniq")
+  @@index([group_id], map: "auth_group_permissions_group_id_b120cbf9")
+  @@index([permission_id], map: "auth_group_permissions_permission_id_84c5c92e")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model auth_permission {
+  id                         Int                          @id @default(autoincrement())
+  name                       String                       @db.VarChar(255)
+  content_type_id            Int
+  codename                   String                       @db.VarChar(100)
+  auth_group_permissions     auth_group_permissions[]
+  django_content_type        django_content_type          @relation(fields: [content_type_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_permission_content_type_id_2f476e4b_fk_django_co")
+  auth_user_user_permissions auth_user_user_permissions[]
+
+  @@unique([content_type_id, codename], map: "auth_permission_content_type_id_codename_01ab375a_uniq")
+  @@index([content_type_id], map: "auth_permission_content_type_id_2f476e4b")
+}
+
+model auth_user {
+  id                         Int                          @id @default(autoincrement())
+  password                   String                       @db.VarChar(128)
+  last_login                 DateTime?                    @db.Timestamptz(6)
+  is_superuser               Boolean
+  username                   String                       @unique @db.VarChar(150)
+  first_name                 String                       @db.VarChar(150)
+  last_name                  String                       @db.VarChar(150)
+  email                      String                       @db.VarChar(254)
+  is_staff                   Boolean
+  is_active                  Boolean
+  date_joined                DateTime                     @db.Timestamptz(6)
+  auth_user_groups           auth_user_groups[]
+  auth_user_user_permissions auth_user_user_permissions[]
+  django_admin_log           django_admin_log[]
+
+  @@index([username], map: "auth_user_username_6821ab7c_like")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model auth_user_groups {
+  id         BigInt     @id @default(autoincrement())
+  user_id    Int
+  group_id   Int
+  auth_group auth_group @relation(fields: [group_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_user_groups_group_id_97559544_fk_auth_group_id")
+  auth_user  auth_user  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_user_groups_user_id_6a12ed8b_fk_auth_user_id")
+
+  @@unique([user_id, group_id], map: "auth_user_groups_user_id_group_id_94350c0c_uniq")
+  @@index([group_id], map: "auth_user_groups_group_id_97559544")
+  @@index([user_id], map: "auth_user_groups_user_id_6a12ed8b")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model auth_user_user_permissions {
+  id              BigInt          @id @default(autoincrement())
+  user_id         Int
+  permission_id   Int
+  auth_permission auth_permission @relation(fields: [permission_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_user_user_permi_permission_id_1fbb5f2c_fk_auth_perm")
+  auth_user       auth_user       @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "auth_user_user_permissions_user_id_a95ead1b_fk_auth_user_id")
+
+  @@unique([user_id, permission_id], map: "auth_user_user_permissions_user_id_permission_id_14a6b632_uniq")
+  @@index([permission_id], map: "auth_user_user_permissions_permission_id_1fbb5f2c")
+  @@index([user_id], map: "auth_user_user_permissions_user_id_a95ead1b")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model django_admin_log {
+  id                  Int                  @id @default(autoincrement())
+  action_time         DateTime             @db.Timestamptz(6)
+  object_id           String?
+  object_repr         String               @db.VarChar(200)
+  action_flag         Int                  @db.SmallInt
+  change_message      String
+  content_type_id     Int?
+  user_id             Int
+  django_content_type django_content_type? @relation(fields: [content_type_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "django_admin_log_content_type_id_c4bce8eb_fk_django_co")
+  auth_user           auth_user            @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "django_admin_log_user_id_c564eba6_fk_auth_user_id")
+
+  @@index([content_type_id], map: "django_admin_log_content_type_id_c4bce8eb")
+  @@index([user_id], map: "django_admin_log_user_id_c564eba6")
+}
+
+model django_content_type {
+  id               Int                @id @default(autoincrement())
+  app_label        String             @db.VarChar(100)
+  model            String             @db.VarChar(100)
+  auth_permission  auth_permission[]
+  django_admin_log django_admin_log[]
+
+  @@unique([app_label, model], map: "django_content_type_app_label_model_76bd3d3b_uniq")
+}
+
+model django_migrations {
+  id      BigInt   @id @default(autoincrement())
+  app     String   @db.VarChar(255)
+  name    String   @db.VarChar(255)
+  applied DateTime @db.Timestamptz(6)
+}
+
+model django_session {
+  session_key  String   @id @db.VarChar(40)
+  session_data String
+  expire_date  DateTime @db.Timestamptz(6)
+
+  @@index([expire_date], map: "django_session_expire_date_a5c62663")
+  @@index([session_key], map: "django_session_session_key_c0390e0f_like")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model video_management_collectionvideo {
+  id                               BigInt                           @id @default(autoincrement())
+  created_at                       DateTime                         @db.Timestamptz(6)
+  updated_at                       DateTime                         @db.Timestamptz(6)
+  notes                            String
+  order                            Int
+  video_id                         BigInt
+  collection_id                    BigInt
+  video_management_videocollection video_management_videocollection @relation(fields: [collection_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "video_management_col_collection_id_fc800f8b_fk_video_man")
+  video_management_scrapedvideo    video_management_scrapedvideo    @relation(fields: [video_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "video_management_col_video_id_38c886e2_fk_video_man")
+
+  @@unique([collection_id, video_id], map: "video_management_collect_collection_id_video_id_e6a6a43b_uniq")
+  @@index([collection_id, order], map: "video_manag_collect_c2bc46_idx")
+  @@index([collection_id], map: "video_management_collectionvideo_collection_id_fc800f8b")
+  @@index([created_at], map: "video_management_collectionvideo_created_at_e9cfa690")
+  @@index([video_id], map: "video_management_collectionvideo_video_id_38c886e2")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model video_management_scrapedvideo {
+  id                               BigInt                             @id @default(autoincrement())
+  created_at                       DateTime                           @db.Timestamptz(6)
+  updated_at                       DateTime                           @db.Timestamptz(6)
+  platform                         String                             @db.VarChar(20)
+  video_id                         String                             @unique @db.VarChar(255)
+  title                            String
+  description                      String
+  author_username                  String                             @db.VarChar(255)
+  author_name                      String                             @db.VarChar(255)
+  likes_count                      BigInt
+  views_count                      BigInt
+  comments_count                   BigInt
+  shares_count                     BigInt
+  video_url                        String                             @db.VarChar(1000)
+  download_url                     String                             @db.VarChar(1000)
+  thumbnail_url                    String                             @db.VarChar(1000)
+  published_at                     DateTime?                          @db.Timestamptz(6)
+  hashtags                         Json
+  music_info                       Json
+  raw_data                         Json
+  search_history_id                BigInt?
+  duration                         Float
+  feature_vector                   Bytes?
+  video_management_collectionvideo video_management_collectionvideo[]
+  video_management_searchhistory   video_management_searchhistory?    @relation(fields: [search_history_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "video_management_scr_search_history_id_99cbd2b6_fk_video_man")
+
+  @@index([author_username, created_at(sort: Desc)], map: "video_manag_author__e7db45_idx")
+  @@index([platform, likes_count(sort: Desc)], map: "video_manag_platfor_4f25a9_idx")
+  @@index([platform, views_count(sort: Desc)], map: "video_manag_platfor_d00e35_idx")
+  @@index([author_username], map: "video_management_scrapedvideo_author_username_0abb69cc")
+  @@index([author_username], map: "video_management_scrapedvideo_author_username_0abb69cc_like")
+  @@index([created_at], map: "video_management_scrapedvideo_created_at_ff4531cf")
+  @@index([likes_count], map: "video_management_scrapedvideo_likes_count_3b349153")
+  @@index([platform], map: "video_management_scrapedvideo_platform_50b13b79")
+  @@index([platform], map: "video_management_scrapedvideo_platform_50b13b79_like")
+  @@index([published_at], map: "video_management_scrapedvideo_published_at_085ce534")
+  @@index([search_history_id], map: "video_management_scrapedvideo_search_history_id_99cbd2b6")
+  @@index([video_id], map: "video_management_scrapedvideo_video_id_daf67164_like")
+  @@index([views_count], map: "video_management_scrapedvideo_views_count_deb87e4a")
+}
+
+model video_management_searchhistory {
+  id                            BigInt                          @id @default(autoincrement())
+  created_at                    DateTime                        @db.Timestamptz(6)
+  updated_at                    DateTime                        @db.Timestamptz(6)
+  platform                      String                          @db.VarChar(20)
+  keyword                       String                          @db.VarChar(500)
+  status                        String                          @db.VarChar(20)
+  min_likes                     Int
+  min_views                     Int
+  max_results                   Int
+  results_count                 Int
+  raw_results                   Json
+  task_id                       String?                         @db.VarChar(255)
+  error_message                 String?
+  execution_time                Float
+  expires_at                    DateTime                        @db.Timestamptz(6)
+  video_management_scrapedvideo video_management_scrapedvideo[]
+
+  @@index([platform, keyword, created_at(sort: Desc)], map: "video_manag_platfor_cf643f_idx")
+  @@index([status, created_at(sort: Desc)], map: "video_manag_status_b42a65_idx")
+  @@index([created_at], map: "video_management_searchhistory_created_at_442e2a9a")
+  @@index([expires_at], map: "video_management_searchhistory_expires_at_1e28339e")
+  @@index([keyword], map: "video_management_searchhistory_keyword_58f4c4f0")
+  @@index([keyword], map: "video_management_searchhistory_keyword_58f4c4f0_like")
+  @@index([platform], map: "video_management_searchhistory_platform_6a299e04")
+  @@index([platform], map: "video_management_searchhistory_platform_6a299e04_like")
+  @@index([status], map: "video_management_searchhistory_status_2477ce49")
+  @@index([status], map: "video_management_searchhistory_status_2477ce49_like")
+  @@index([task_id], map: "video_management_searchhistory_task_id_00dd06c2")
+  @@index([task_id], map: "video_management_searchhistory_task_id_00dd06c2_like")
+}
+
+model video_management_trackedchannel {
+  id                     BigInt    @id @default(autoincrement())
+  created_at             DateTime  @db.Timestamptz(6)
+  updated_at             DateTime  @db.Timestamptz(6)
+  platform               String    @db.VarChar(20)
+  channel_id             String    @db.VarChar(255)
+  username               String    @db.VarChar(255)
+  display_name           String    @db.VarChar(255)
+  is_active              Boolean
+  check_interval_minutes Int
+  min_likes_threshold    Int
+  last_checked_at        DateTime? @db.Timestamptz(6)
+  follower_count         BigInt
+
+  @@unique([platform, channel_id], map: "video_management_tracked_platform_channel_id_7adddef1_uniq")
+  @@index([is_active, last_checked_at], map: "video_manag_is_acti_28ee72_idx")
+  @@index([platform, is_active], map: "video_manag_platfor_25d894_idx")
+  @@index([created_at], map: "video_management_trackedchannel_created_at_c9729328")
+  @@index([is_active], map: "video_management_trackedchannel_is_active_f81e2fe8")
+  @@index([platform], map: "video_management_trackedchannel_platform_4d998742")
+  @@index([platform], map: "video_management_trackedchannel_platform_4d998742_like")
+  @@index([username], map: "video_management_trackedchannel_username_eb875a82")
+  @@index([username], map: "video_management_trackedchannel_username_eb875a82_like")
+}
+
+model video_management_videocollection {
+  id                               BigInt                             @id @default(autoincrement())
+  created_at                       DateTime                           @db.Timestamptz(6)
+  updated_at                       DateTime                           @db.Timestamptz(6)
+  name                             String                             @db.VarChar(255)
+  description                      String
+  color                            String                             @db.VarChar(7)
+  video_management_collectionvideo video_management_collectionvideo[]
+
+  @@index([name, created_at(sort: Desc)], map: "video_manag_name_1e4f76_idx")
+  @@index([created_at], map: "video_management_videocollection_created_at_6dd29d12")
+  @@index([name], map: "video_management_videocollection_name_fff3286f")
+  @@index([name], map: "video_management_videocollection_name_fff3286f_like")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  EDITOR
+  CONTENT
+}
+
+enum Platform {
+  TIKTOK
+  INSTAGRAM
+  FACEBOOK
+  DOUYIN
+  XIAOHONGSHU
+}
+
+enum DuplicateStatus {
+  UNIQUE
+  DUPLICATE
+  PENDING_REVIEW
+  SUSPICIOUS
+}
+
+model SearchHistory {
+  id        String   @id @default(uuid())
+  user_id   String
+  term      String
+  platform  String?
+  timestamp DateTime @default(now())
+
+  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([timestamp])
+  @@map("search_histories")
+}
