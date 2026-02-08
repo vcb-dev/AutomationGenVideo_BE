@@ -554,3 +554,19 @@ model SearchHistory {
   @@index([timestamp])
   @@map("search_histories")
 }
+
+model LarkReport {
+  id                 String   @id
+  name               String
+  team               String?
+  avatar             String?
+  status             String?
+  checklist          Json?
+  video_source_count Int      @default(0)
+  questions          Json?
+  submitted_at       DateTime?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@map("lark_reports")
+}
