@@ -1,7 +1,7 @@
 import { User } from "@prisma/client";
 import { ApiProperty } from "@nestjs/swagger";
 import { Exclude } from "class-transformer";
-import { UserRole, TeamRole } from "@prisma/client";
+import { UserRole } from "@prisma/client";
 
 export class UserEntity implements User {
   id: string;
@@ -24,8 +24,7 @@ export class UserEntity implements User {
   @ApiProperty({ enum: UserRole })
   role: UserRole;
 
-  @ApiProperty({ enum: TeamRole, nullable: true, required: false })
-  team_role: TeamRole | null;
+
 
   manager_id: string | null;
   is_active: boolean;

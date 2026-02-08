@@ -15,6 +15,7 @@ import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
 import { DouyinModule } from './douyin/douyin.module';
 import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
+import { LarkModule } from './modules/lark/lark.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { SearchRecommendationModule } from './modules/search-recommendations/sea
     DouyinModule,
     XiaohongshuModule,
     SearchRecommendationModule,
+    LarkModule,
   ],
   controllers: [AppController],
   providers: [AppService],
