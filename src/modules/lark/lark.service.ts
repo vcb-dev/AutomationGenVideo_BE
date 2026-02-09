@@ -821,27 +821,51 @@ export class LarkService {
                 };
             }
 
-            if (filters?.team) {
-                whereClause.team = filters.team;
+            if (filters?.team && filters.team !== 'All') {
+                whereClause.team = {
+                    equals: filters.team,
+                    mode: 'insensitive'
+                };
             }
 
             // Fetch reports
             const reports = await this.prisma.larkReport.findMany({
                 where: whereClause,
-                orderBy: { date: 'desc' },
+                orderBy: { created_at: 'desc' },
             });
 
-            // Fetch all KPI data to match avatars
-            const kpiData = await this.prisma.larkKPI.findMany();
+            // Derive month string for kpiData filtering (e.g., "T2" for Feb, "T12" for Dec)
+            let kpiWhereClause: any = {};
+            if (filters?.date) {
+                const targetDate = new Date(filters.date);
+                const monthNum = targetDate.getMonth() + 1;
+                kpiWhereClause.month = `T${monthNum}`;
+            }
+
+            if (filters?.team && filters.team !== 'All') {
+                kpiWhereClause.team = {
+                    equals: filters.team,
+                    mode: 'insensitive'
+                };
+            }
+
+            // Fetch KPI data for the matching month
+            const kpiData = await this.prisma.larkKPI.findMany({
+                where: kpiWhereClause
+            });
 
             // Create maps for quick KPI lookup
             const kpiByNameTeam = new Map();
             const kpiByName = new Map();
 
+            // Store unique KPI per person for aggregation (to avoid double-counting if daily records exist)
+            const kpisForAggregation = new Map();
+
             kpiData.forEach(kpi => {
                 if (kpi.name) {
                     const nameKey = kpi.name.toLowerCase().trim().replace(/\s+/g, ' ');
                     const teamKey = kpi.team?.toLowerCase().trim() || '';
+                    const personKey = kpi.employee_id || nameKey;
 
                     if (teamKey) {
                         kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
@@ -851,21 +875,30 @@ export class LarkService {
                     if (!kpiByName.has(nameKey) || kpi.link_image || kpi.image_url) {
                         kpiByName.set(nameKey, kpi);
                     }
+
+                    // For summary calculation, we take the one with highest progress or latest
+                    if (!kpisForAggregation.has(personKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personKey).completed_month || 0)) {
+                        kpisForAggregation.set(personKey, kpi);
+                    }
                 }
             });
 
-            // Combine data
-            const combinedReports = reports.map(report => {
-                const nameKey = report.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                const teamKey = report.team?.toLowerCase().trim() || '';
+            // Fetch reports for the specific day to determine status
+            const dailyReports = await this.prisma.larkReport.findMany({
+                where: whereClause,
+                orderBy: { created_at: 'desc' },
+            });
 
-                // Try exact name+team match first
-                let matchingKPI = kpiByNameTeam.get(`${nameKey}_${teamKey}`);
+            // Map reports by name for fast lookup
+            const reportsMap = new Map();
+            dailyReports.forEach(r => {
+                if (r.name) reportsMap.set(r.name.toLowerCase().trim().replace(/\s+/g, ' '), r);
+            });
 
-                // Fallback to name match only
-                if (!matchingKPI) {
-                    matchingKPI = kpiByName.get(nameKey);
-                }
+            // Combine data: Start with ALL unique employees for this month/team
+            const combinedResults = Array.from(kpisForAggregation.values()).map(kpi => {
+                const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const report = reportsMap.get(nameKey);
 
                 // Parse checklist from answers JSON
                 let checklist = {
@@ -877,19 +910,14 @@ export class LarkService {
                     lark: false,
                 };
 
-                // Parse answers if it's a JSON string
-                let answersData = report.answers;
+                let answersData = report?.answers;
                 if (typeof answersData === 'string') {
                     try {
                         answersData = JSON.parse(answersData);
-                    } catch (e) {
-                        this.logger.warn(`Failed to parse answers for report ${report.id}`);
-                    }
+                    } catch (e) { }
                 }
 
-                // Extract checklist items from answers
                 if (answersData && typeof answersData === 'object') {
-                    // Mapping based on actual Vietnamese question strings seen in Lark data
                     checklist.fb = answersData['Bạn đã đăng video lên FB chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên FB chưa?'] === true || false;
                     checklist.ig = answersData['Bạn đã đăng video lên IG chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên IG chưa?'] === true || false;
                     checklist.tiktok = answersData['Bạn đã đăng video lên Tiktok chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên Tiktok chưa?'] === true || false;
@@ -899,28 +927,94 @@ export class LarkService {
                 }
 
                 return {
-                    id: report.id,
-                    name: report.name,
-                    email: report.email,
-                    team: report.team,
-                    role: report.role,
-                    date: report.date,
-                    avatar: matchingKPI?.link_image || matchingKPI?.image_url || null,
-                    tag: matchingKPI?.tag || report.name || null, // Fallback to name if tag not found
-                    status: 'ĐÚNG HẠN', // Consistent with UI in screenshot
+                    id: kpi.id,
+                    name: kpi.name,
+                    email: report?.email || null,
+                    team: kpi.team,
+                    avatar: kpi.link_image || kpi.image_url || null,
+                    tag: kpi.tag || kpi.name || null,
+                    status: report ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
+                    date: report?.date || null,
                     checklist,
                     answers: answersData,
-                    employee_data: report.employee,
-                    kpi_day: matchingKPI?.kpi_day || null,
-                    kpi_month: matchingKPI?.kpi_month || null,
-                    completed_day: matchingKPI?.completed_day || null,
+                    videoCount: Number(answersData?.['Số video edit sử dụng >50% source từ quay?'] || 0),
+                    kpi_day: kpi.kpi_day || 0,
+                    kpi_month: kpi.kpi_month || 0,
+                    completed_day: kpi.completed_day || 0,
+                    completed_month: kpi.completed_month || 0,
+                    traffic_month: kpi.traffic_month ? Number(kpi.traffic_month) : 0,
+                    revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
+                    monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100)
                 };
             });
 
-            return combinedReports;
+            // Calculate aggregates
+            const aggregates = {
+                totalVideoTarget: 0,
+                totalVideoCompleted: 0,
+                totalTrafficTarget: 0,
+                totalTrafficCompleted: 0,
+                totalRevenueTarget: 0,
+                totalRevenueCompleted: 0,
+            };
+
+            // We aggregate from unique KPI per person per month (to avoid double-counting if daily records exist)
+            kpisForAggregation.forEach(kpi => {
+                aggregates.totalVideoTarget += kpi.kpi_month || 0;
+                aggregates.totalVideoCompleted += kpi.completed_month || 0;
+
+                aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
+                aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
+
+                aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
+                aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
+            });
+
+            // Calculate rankings
+            const rankingList = Array.from(kpisForAggregation.values());
+
+            const trafficRanking = rankingList
+                .sort((a, b) => Number(b.traffic_month || 0) - Number(a.traffic_month || 0))
+                .slice(0, 10)
+                .map((kpi, index) => ({
+                    rank: index + 1,
+                    name: kpi.name,
+                    avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                    value: Number(kpi.traffic_month || 0).toLocaleString('vi-VN')
+                }));
+
+            const revenueRanking = rankingList
+                .sort((a, b) => Number(b.revenue_month || 0) - Number(a.revenue_month || 0))
+                .slice(0, 10)
+                .map((kpi, index) => ({
+                    rank: index + 1,
+                    name: kpi.name,
+                    avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                    value: Number(kpi.revenue_month || 0).toLocaleString('vi-VN')
+                }));
+
+            return {
+                reports: combinedResults,
+                summary: aggregates,
+                rankings: {
+                    traffic: trafficRanking,
+                    revenue: revenueRanking
+                }
+            };
         } catch (error) {
             this.logger.error('Failed to get user activity reports', error);
             throw error;
         }
+    }
+
+    private convertDriveUrl(url: string | null | undefined): string | null {
+        if (!url) return null;
+        if (url.includes('drive.google.com')) {
+            const match = url.match(/\/d\/([^/]+)/);
+            if (match && match[1]) {
+                return `https://drive.google.com/uc?export=view&id=${match[1]}`;
+            }
+        }
+        return url;
     }
 }

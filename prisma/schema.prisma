@@ -24,6 +24,7 @@ model User {
   created_at          DateTime          @default(now())
   updated_at          DateTime          @updatedAt
   duplicate_reviews   DuplicateReview[] @relation("DuplicateReviews")
+  search_histories    SearchHistory[]
   tracked_channels    TrackedChannel[]
   activity_logs       UserActivityLog[]
   rate_limits         UserRateLimit[]
@@ -32,7 +33,6 @@ model User {
   editors             User[]            @relation("ManagerEditors")
   reviewed_duplicates VideoDuplicate[]  @relation("ReviewedDuplicates")
   videos              Video[]
-  search_histories    SearchHistory[]
 
   @@index([email])
   @@index([role])
@@ -519,6 +519,87 @@ model video_management_videocollection {
   @@index([name], map: "video_management_videocollection_name_fff3286f_like")
 }
 
+model SearchHistory {
+  id        String   @id @default(uuid())
+  user_id   String
+  term      String
+  platform  String?
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([timestamp])
+  @@map("search_histories")
+}
+
+model LarkReport {
+  id         String    @id
+  name       String
+  team       String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  answers    Json?
+  date       DateTime?
+  email      String?
+  employee   Json?
+  role       String?
+
+  @@map("lark_reports")
+}
+
+model LarkEmployee {
+  id            String    @id
+  employee_id   String?   @unique
+  name          String
+  image_url     String?
+  employee_data Json?
+  tag_code      String?
+  position      String?
+  team          String?
+  status        String?
+  date          DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@map("lark_employees")
+}
+
+model LarkKPI {
+  id                   String    @id
+  employee_id          String?
+  name                 String?
+  tag                  String?
+  team                 String?
+  image_url            String?
+  kpi_day              Int?
+  kpi_month            Int?
+  kpii_status          String?
+  kpi_day_percent      String?
+  completed_day        Int?
+  completed_month      Int?
+  task_new             Int?
+  task_new_month       Int?
+  task_auto            Int?
+  task_auto_month      Int?
+  task_creative        Int?
+  content_win_new      Int?
+  revenue_month        BigInt?
+  traffic_month        BigInt?
+  target_revenue_month String?
+  target_traffic_month String?
+  kpi_progress_month   Float?
+  employee_status      String?
+  state                String?
+  employee_data        Json?
+  report_date          DateTime?
+  month                String?
+  link_image           String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@map("lark_kpi")
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -539,87 +620,4 @@ enum DuplicateStatus {
   DUPLICATE
   PENDING_REVIEW
   SUSPICIOUS
-}
-
-model SearchHistory {
-  id        String   @id @default(uuid())
-  user_id   String
-  term      String
-  platform  String?
-  timestamp DateTime @default(now())
-
-  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@index([user_id])
-  @@index([timestamp])
-  @@map("search_histories")
-}
-
-model LarkReport {
-  id         String    @id
-  email      String?
-  name       String
-  employee   Json?     // Nhân viên object from Lark
-  role       String?
-  team       String?
-  date       DateTime?
-  answers    Json?     // Raw Answers JSON string
-  created_at DateTime  @default(now())
-  updated_at DateTime  @updatedAt
-
-  @@map("lark_reports")
-}
-
-
-model LarkEmployee {
-  id             String    @id           // ID nhân viên (e.g., K1_01)
-  employee_id    String?   @unique       // ID nhân viên  
-  name           String                  // Tên
-  image_url      String?                 // Hình ảnh URL
-  employee_data  Json?                   // Nhân viên object (raw)
-  tag_code       String?                 // Mã TAG
-  position       String?                 // Chức vụ
-  team           String?                 // Team
-  status         String?                 // Tình trạng
-  date           DateTime?               // NGÀY
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
-
-  @@map("lark_employees")
-}
-
-model LarkKPI {
-  id                        String    @id              // record_id
-  employee_id               String?                    // ID nhân viên
-  name                      String?                    // Tên (array text)
-  tag                       String?                    // TAG
-  team                      String?                    // Team
-  image_url                 String?                    // Hình ảnh URL
-  kpi_day                   Int?                       // KPI Ngày
-  kpi_month                 Int?                       // KPI THÁNG
-  kpii_status               String?                    // KPII (trạng thái KPI)
-  kpi_day_percent           String?                    // % KPI NGÀY (text)
-  completed_day             Int?                       // Hoàn thành
-  completed_month           Int?                       // Hoàn thành Tháng
-  task_new                  Int?                       // Task mới
-  task_new_month            Int?                       // Task mới tháng
-  task_auto                 Int?                       // Task Auto
-  task_auto_month           Int?                       // Task Auto Tháng
-  task_creative             Int?                       // Task sáng tạo
-  content_win_new           Int?                       // Content win mới
-  revenue_month             BigInt?                    // Doanh thu tháng
-  traffic_month             BigInt?                    // Traffic Tháng
-  target_revenue_month      String?                    // Mục tiêu doanh thu tháng
-  target_traffic_month      String?                    // Mục tiêu Traffic tháng
-  kpi_progress_month        Float?                     // Tiến độ KPI tháng
-  employee_status           String?                    // Tình trạng
-  state                     String?                    // Trạng thái (on/off)
-  employee_data             Json?                      // Nhân viên object
-  report_date               DateTime?                  // Ngày báo cáo
-  month                     String?                    // Tháng
-  link_image                String?                    // Link ảnh
-  created_at                DateTime  @default(now())
-  updated_at                DateTime  @updatedAt
-
-  @@map("lark_kpi")
 }
