@@ -25,7 +25,7 @@ export class TrackedChannelsService {
         total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : undefined,
         total_views: createDto.total_views ? BigInt(createDto.total_views) : undefined,
         total_videos: createDto.total_videos,
-        total_posts: createDto.total_posts,
+        posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate,
         last_synced_at: new Date(),
         is_active: true, // Reactivate if it was deleted/inactive
@@ -40,7 +40,7 @@ export class TrackedChannelsService {
         total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : BigInt(0),
         total_views: createDto.total_views ? BigInt(createDto.total_views) : BigInt(0),
         total_videos: createDto.total_videos || 0,
-        total_posts: createDto.total_posts || 0,
+        posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate || 0,
       } as any,
     });
@@ -168,7 +168,6 @@ export class TrackedChannelsService {
         ...updateDto,
         total_likes: updateDto.total_likes ? BigInt(updateDto.total_likes) : undefined,
         total_views: updateDto.total_views ? BigInt(updateDto.total_views) : undefined,
-        total_posts: updateDto.total_posts,
         last_synced_at: new Date(),
       } as any,
     });
@@ -338,10 +337,21 @@ export class TrackedChannelsService {
       ],
     });
 
+    // Debug: Log first channel to check if posts_count exists
+    if (channels.length > 0) {
+      console.log('[getAllChannels] Sample channel data:', {
+        username: channels[0].username,
+        platform: channels[0].platform,
+        posts_count: channels[0].posts_count,
+        total_videos: channels[0].total_videos,
+      });
+    }
+
     return channels.map((channel) => ({
       ...channel,
       total_likes: Number(channel.total_likes),
       total_views: Number(channel.total_views),
+      posts_count: channel.posts_count ?? null, // Ensure posts_count is included
     }));
   }
 
