@@ -4,7 +4,7 @@ import { GenerateVideoDto } from './dto/generate-video.dto';
 
 @Controller('heygen-video')
 export class HeygenVideoController {
-  constructor(private readonly heygenVideoService: HeygenVideoService) {}
+  constructor(private readonly heygenVideoService: HeygenVideoService) { }
 
   @Post('generate')
   async generateVideo(@Body() generateVideoDto: GenerateVideoDto) {
@@ -60,6 +60,18 @@ export class HeygenVideoController {
     } catch (error) {
       throw new HttpException(
         error.message || 'Failed to generate script',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('clone-voice')
+  async cloneVoice(@Body() body: { video_url: string; voice_name: string }) {
+    try {
+      return await this.heygenVideoService.cloneVoice(body.video_url, body.voice_name);
+    } catch (error) {
+      throw new HttpException(
+        error.message || 'Failed to clone voice',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

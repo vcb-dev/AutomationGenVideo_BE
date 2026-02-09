@@ -51,7 +51,7 @@ export class CreateTrackedChannelDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
-  total_posts?: number;
+  posts_count?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -93,7 +93,7 @@ export class UpdateTrackedChannelDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
-  total_posts?: number;
+  posts_count?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

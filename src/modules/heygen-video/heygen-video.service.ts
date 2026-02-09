@@ -117,4 +117,24 @@ export class HeygenVideoService {
       );
     }
   }
+
+  async cloneVoice(videoUrl: string, voiceName: string) {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/api/heygen/clone-voice`,
+          { video_url: videoUrl, voice_name: voiceName },
+        ),
+      );
+      return {
+        success: true,
+        data: response.data.data,
+      };
+    } catch (error) {
+      throw new HttpException(
+        error.response?.data?.error || 'Failed to clone voice',
+        error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 }

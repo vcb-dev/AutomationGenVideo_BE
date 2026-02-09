@@ -27,22 +27,37 @@ export class SearchRecommendationService implements OnModuleInit {
         private prisma: PrismaService
     ) {
         // Initialize Meilisearch
-        const meiliHost = this.configService.get<string>('MEILISEARCH_HOST') || 'http://localhost:7700';
-        const meiliKey = this.configService.get<string>('MEILISEARCH_API_KEY') || 'masterKey';
+        try {
+            const meiliHost = this.configService.get<string>('MEILISEARCH_HOST') || 'http://localhost:7700';
+            const meiliKey = this.configService.get<string>('MEILISEARCH_API_KEY') || 'masterKey';
 
-        this.meilisearchClient = new MeiliSearch({
-            host: meiliHost,
-            apiKey: meiliKey,
-        });
+            this.meilisearchClient = new MeiliSearch({
+                host: meiliHost,
+                apiKey: meiliKey,
+            });
+        } catch (error) {
+            this.logger.warn('MeiliSearch initialization failed - search recommendations will be disabled', error);
+        }
 
         // Initialize Redis
-        const redisHost = this.configService.get<string>('REDIS_HOST') || 'localhost';
-        const redisPort = this.configService.get<number>('REDIS_PORT') || 6379;
+        try {
+            const redisHost = this.configService.get<string>('REDIS_HOST') || 'localhost';
+            const redisPort = this.configService.get<number>('REDIS_PORT') || 6379;
 
-        this.redisClient = new Redis({
-            host: redisHost,
-            port: redisPort,
-        });
+            this.redisClient = new Redis({
+                host: redisHost,
+                port: redisPort,
+                retryStrategy: () => null, // Don't retry on connection failure
+                lazyConnect: true, // Don't connect immediately
+            });
+
+            // Suppress error events
+            this.redisClient.on('error', (err) => {
+                this.logger.warn('Redis connection error - caching will be disabled');
+            });
+        } catch (error) {
+            this.logger.warn('Redis initialization failed - caching will be disabled', error);
+        }
     }
 
     async onModuleInit() {
@@ -89,19 +104,20 @@ export class SearchRecommendationService implements OnModuleInit {
         if (this.STOP_WORDS.includes(normalizedTerm)) return;
 
         // --- STEP A: AUDIT LOG (Log to DB) ---
-        if (userId) {
-            try {
-                await this.prisma.searchHistory.create({
-                    data: {
-                        user_id: userId,
-                        term: normalizedTerm,
-                        timestamp: new Date()
-                    }
-                });
-            } catch (dbError) {
-                this.logger.error(`Failed to log search history for user ${userId}`, dbError);
-            }
-        }
+        // DISABLED: SearchHistory model not available
+        // if (userId) {
+        //     try {
+        //         await this.prisma.searchHistory.create({
+        //             data: {
+        //                 user_id: userId,
+        //                 term: normalizedTerm,
+        //                 timestamp: new Date()
+        //             }
+        //         });
+        //     } catch (dbError) {
+        //         this.logger.error(`Failed to log search history for user ${userId}`, dbError);
+        //     }
+        // }
 
         try {
             const index = this.meilisearchClient.index(this.INDEX_NAME);
@@ -137,20 +153,22 @@ export class SearchRecommendationService implements OnModuleInit {
     }
 
     async getSearchHistory(limit: number = 50) {
-        return this.prisma.searchHistory.findMany({
-            take: limit,
-            orderBy: { timestamp: 'desc' },
-            include: {
-                user: {
-                    select: {
-                        id: true,
-                        email: true,
-                        full_name: true,
-                        role: true
-                    }
-                }
-            }
-        });
+        // DISABLED: SearchHistory model not available
+        return [];
+        // return this.prisma.searchHistory.findMany({
+        //     take: limit,
+        //     orderBy: { timestamp: 'desc' },
+        //     include: {
+        //         user: {
+        //             select: {
+        //                 id: true,
+        //                 email: true,
+        //                 full_name: true,
+        //                 role: true
+        //             }
+        //         }
+        //     }
+        // });
     }
 
     /**
