@@ -12,18 +12,34 @@ export class LarkService {
     private accessToken: string;
     private tokenExpiresAt: number;
 
-    private readonly BASE_ID = 'Q5Fmby8DVaKOyusfR8glgRB6gbf';
-    private readonly TABLE_ID = 'tblte3XJWcPvHhxW';
+    // Lark API credentials
     private readonly APP_ID: string;
     private readonly APP_SECRET: string;
+
+    // Lark Bitable IDs - Report Table
+    private readonly REPORT_BASE_ID: string;
+    private readonly REPORT_TABLE_ID: string;
+
+    // Lark Bitable IDs - KPI & Employee Tables
+    private readonly KPI_BASE_ID: string;
+    private readonly KPI_TABLE_ID: string;
+    private readonly EMPLOYEE_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
     ) {
+        // Load credentials from environment
         this.APP_ID = this.configService.get<string>('LARK_APP_ID');
         this.APP_SECRET = this.configService.get<string>('LARK_APP_SECRET');
+
+        // Load Bitable IDs from environment
+        this.REPORT_BASE_ID = this.configService.get<string>('LARK_REPORT_BASE_ID');
+        this.REPORT_TABLE_ID = this.configService.get<string>('LARK_REPORT_TABLE_ID');
+        this.KPI_BASE_ID = this.configService.get<string>('LARK_KPI_BASE_ID');
+        this.KPI_TABLE_ID = this.configService.get<string>('LARK_KPI_TABLE_ID');
+        this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
     }
 
     async getAccessToken(): Promise<string> {
@@ -123,7 +139,7 @@ export class LarkService {
 
     async fetchLarkRecords() {
         const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.BASE_ID}/tables/${this.TABLE_ID}/records`;
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.REPORT_BASE_ID}/tables/${this.REPORT_TABLE_ID}/records`;
 
         let allRecords = [];
         let pageToken = '';
@@ -180,9 +196,8 @@ export class LarkService {
     }
 
     async listTables() {
-        const KPI_BASE_ID = 'XJQWbUmkWaJcW8sShyIlLXaTgvb';
         const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${KPI_BASE_ID}/tables`;
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables`;
 
         try {
             const response = await firstValueFrom(
@@ -279,11 +294,8 @@ export class LarkService {
     // Inspect employee table (different BASE/TABLE)
     async inspectEmployeeTable() {
         try {
-            const EMPLOYEE_BASE_ID = 'XJQWbUmkWaJcW8sShyIlLXaTgvb';
-            const EMPLOYEE_TABLE_ID = 'tblOHji4TJMlY11b';
-
             const token = await this.getAccessToken();
-            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${EMPLOYEE_BASE_ID}/tables/${EMPLOYEE_TABLE_ID}/records`;
+            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.EMPLOYEE_TABLE_ID}/records`;
 
             const response = await firstValueFrom(
                 this.httpService.get(url, {
@@ -338,11 +350,8 @@ export class LarkService {
     // Inspect KPI table
     async inspectKPITable() {
         try {
-            const KPI_BASE_ID = 'XJQWbUmkWaJcW8sShyIlLXaTgvb';
-            const KPI_TABLE_ID = 'tblmjwNLtw8hAWns';
-
             const token = await this.getAccessToken();
-            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${KPI_BASE_ID}/tables/${KPI_TABLE_ID}/records`;
+            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.KPI_TABLE_ID}/records`;
 
             const response = await firstValueFrom(
                 this.httpService.get(url, {
@@ -396,11 +405,8 @@ export class LarkService {
 
     // Fetch employee records from Lark
     async fetchEmployeeRecords() {
-        const EMPLOYEE_BASE_ID = 'XJQWbUmkWaJcW8sShyIlLXaTgvb';
-        const EMPLOYEE_TABLE_ID = 'tblOHji4TJMlY11b';
-
         const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${EMPLOYEE_BASE_ID}/tables/${EMPLOYEE_TABLE_ID}/records`;
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.EMPLOYEE_TABLE_ID}/records`;
 
         let allRecords = [];
         let pageToken = '';
@@ -546,11 +552,8 @@ export class LarkService {
 
     // Fetch KPI records from Lark
     async fetchKPIRecords() {
-        const KPI_BASE_ID = 'XJQWbUmkWaJcW8sShyIlLXaTgvb';
-        const KPI_TABLE_ID = 'tblmjwNLtw8hAWns';
-
         const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${KPI_BASE_ID}/tables/${KPI_TABLE_ID}/records`;
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.KPI_TABLE_ID}/records`;
 
         let allRecords = [];
         let pageToken = '';
