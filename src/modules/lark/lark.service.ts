@@ -857,6 +857,21 @@ export class LarkService {
                 where: kpiWhereClause
             });
 
+            // Fetch all employees to get positions
+            const employees = await this.prisma.larkEmployee.findMany();
+            const employeeMap = new Map();
+            employees.forEach(emp => {
+                if (emp.employee_id) {
+                    employeeMap.set(emp.employee_id.trim(), emp);
+                }
+                if (emp.name) {
+                    const nameKey = emp.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    if (!employeeMap.has(nameKey)) {
+                        employeeMap.set(nameKey, emp);
+                    }
+                }
+            });
+
             // Create maps for quick KPI lookup
             const kpiByNameTeam = new Map();
             const kpiByName = new Map();
@@ -868,7 +883,8 @@ export class LarkService {
                 if (kpi.name) {
                     const nameKey = kpi.name.toLowerCase().trim().replace(/\s+/g, ' ');
                     const teamKey = kpi.team?.toLowerCase().trim() || '';
-                    const personKey = kpi.employee_id || nameKey;
+                    const trimmedEmpId = kpi.employee_id?.trim();
+                    const personKey = trimmedEmpId || nameKey;
 
                     if (teamKey) {
                         kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
@@ -929,9 +945,14 @@ export class LarkService {
                     checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true || false;
                 }
 
+                const trimmedEmpId = kpi.employee_id?.trim();
+                const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+                const position = employee?.position || null;
+
                 return {
                     id: kpi.id,
                     name: kpi.name,
+                    position: position,
                     email: report?.email || null,
                     team: kpi.team,
                     avatar: kpi.link_image || kpi.image_url || null,
@@ -949,6 +970,22 @@ export class LarkService {
                     revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
                     monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100)
                 };
+            });
+
+            // Sort: Leaders first, then by name
+            combinedResults.sort((a, b) => {
+                const leaderKeywords = ['leader', 'lead', 'quản lý', 'tp ', 'trưởng'];
+                const posA = (a.position || '').toLowerCase();
+                const posB = (b.position || '').toLowerCase();
+
+                const isALeader = leaderKeywords.some(key => posA.includes(key));
+                const isBLeader = leaderKeywords.some(key => posB.includes(key));
+
+                if (isALeader && !isBLeader) return -1;
+                if (!isALeader && isBLeader) return 1;
+
+                // If both are leaders or both are not, sort by name
+                return (a.name || '').localeCompare(b.name || '');
             });
 
             // Calculate aggregates
@@ -979,26 +1016,84 @@ export class LarkService {
             const trafficRanking = rankingList
                 .sort((a, b) => Number(b.traffic_month || 0) - Number(a.traffic_month || 0))
                 .slice(0, 10)
-                .map((kpi, index) => ({
-                    rank: index + 1,
-                    name: kpi.name,
-                    avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
-                    value: Number(kpi.traffic_month || 0).toLocaleString('vi-VN')
-                }));
+                .map((kpi, index) => {
+                    const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const trimmedEmpId = kpi.employee_id?.trim();
+                    const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+
+                    return {
+                        rank: index + 1,
+                        name: kpi.name,
+                        position: employee?.position || null,
+                        avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                        value: Number(kpi.traffic_month || 0).toLocaleString('vi-VN')
+                    };
+                });
 
             const revenueRanking = rankingList
                 .sort((a, b) => Number(b.revenue_month || 0) - Number(a.revenue_month || 0))
                 .slice(0, 10)
-                .map((kpi, index) => ({
-                    rank: index + 1,
-                    name: kpi.name,
-                    avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
-                    value: Number(kpi.revenue_month || 0).toLocaleString('vi-VN')
-                }));
+                .map((kpi, index) => {
+                    const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const trimmedEmpId = kpi.employee_id?.trim();
+                    const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+
+                    return {
+                        rank: index + 1,
+                        name: kpi.name,
+                        position: employee?.position || null,
+                        avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                        value: Number(kpi.revenue_month || 0).toLocaleString('vi-VN')
+                    };
+                });
+
+            // Calculate team-level contribution breakdown (Global Month Context)
+            const monthStr = filters?.date ? `T${new Date(filters.date).getMonth() + 1}` : '';
+            const allKpiForMonth = await this.prisma.larkKPI.findMany({
+                where: monthStr ? { month: monthStr } : {}
+            });
+
+            // Map to unique people globally for correct aggregation
+            const globalKpis = new Map();
+            allKpiForMonth.forEach(k => {
+                const key = k.employee_id?.trim() || k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                if (!globalKpis.has(key) || (k.completed_month || 0) > (globalKpis.get(key).completed_month || 0)) {
+                    globalKpis.set(key, k);
+                }
+            });
+
+            const globalTotals = { videos: 0, traffic: 0, revenue: 0 };
+            const teamBreakdown = {};
+
+            globalKpis.forEach(kpi => {
+                const team = kpi.team || 'Khác';
+                if (!teamBreakdown[team]) {
+                    teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0 };
+                }
+                const v = kpi.completed_month || 0;
+                const t = Number(kpi.traffic_month || 0);
+                const r = Number(kpi.revenue_month || 0);
+
+                globalTotals.videos += v;
+                globalTotals.traffic += t;
+                globalTotals.revenue += r;
+
+                teamBreakdown[team].videos += v;
+                teamBreakdown[team].traffic += t;
+                teamBreakdown[team].revenue += r;
+            });
+
+            const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
+                team,
+                videoPct: globalTotals.videos ? Math.round((stats.videos / globalTotals.videos) * 100) : 0,
+                trafficPct: globalTotals.traffic ? Math.round((stats.traffic / globalTotals.traffic) * 100) : 0,
+                revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0
+            })).sort((a, b) => b.videoPct - a.videoPct);
 
             return {
                 reports: combinedResults,
                 summary: aggregates,
+                teamContributions,
                 rankings: {
                     traffic: trafficRanking,
                     revenue: revenueRanking
