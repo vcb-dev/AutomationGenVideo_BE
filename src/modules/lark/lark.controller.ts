@@ -1,6 +1,7 @@
 
 
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res } from '@nestjs/common';
+import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
@@ -125,5 +126,19 @@ export class LarkController {
         if (team) filters['team'] = team;
 
         return this.larkService.getUserActivityReports(filters);
+    }
+
+    @Get('media/:mediaId')
+    @ApiOperation({ summary: 'Proxy Lark media download' })
+    async getMedia(@Param('mediaId') mediaId: string, @Query('extra') extra: string, @Res() res: Response) {
+        try {
+            const { data, contentType } = await this.larkService.getMedia(mediaId, extra);
+            res.setHeader('Content-Type', contentType);
+            // Cache for 1 day
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return res.send(Buffer.from(data));
+        } catch (error) {
+            return res.status(404).send('Media not found');
+        }
     }
 }

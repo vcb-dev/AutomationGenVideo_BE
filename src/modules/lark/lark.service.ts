@@ -878,6 +878,7 @@ export class LarkService {
 
             // Store unique KPI per person for aggregation (to avoid double-counting if daily records exist)
             const kpisForAggregation = new Map();
+            const nameToPersonKey = new Map();
 
             kpiData.forEach(kpi => {
                 if (kpi.name) {
@@ -885,6 +886,8 @@ export class LarkService {
                     const teamKey = kpi.team?.toLowerCase().trim() || '';
                     const trimmedEmpId = kpi.employee_id?.trim();
                     const personKey = trimmedEmpId || nameKey;
+
+                    nameToPersonKey.set(nameKey, personKey);
 
                     if (teamKey) {
                         kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
@@ -911,10 +914,33 @@ export class LarkService {
             // Map reports by name for fast lookup
             const reportsMap = new Map();
             dailyReports.forEach(r => {
-                if (r.name) reportsMap.set(r.name.toLowerCase().trim().replace(/\s+/g, ' '), r);
+                if (r.name) {
+                    const nameKey = r.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    reportsMap.set(nameKey, r);
+
+                    // If this person has a report but NO KPI record, add a placeholder for them
+                    // so they appear in the combined results
+                    // Use nameToPersonKey map to find if they already exist via ID or Name
+                    const personKey = nameToPersonKey.get(nameKey) || nameKey;
+
+                    if (!kpisForAggregation.has(personKey)) {
+                        kpisForAggregation.set(personKey, {
+                            id: `report_${r.id}`,
+                            name: r.name,
+                            team: r.team || 'Khác',
+                            kpi_day: 0,
+                            kpi_month: 0,
+                            completed_day: 0,
+                            completed_month: 0,
+                            traffic_month: 0,
+                            revenue_month: 0,
+                            kpi_progress_month: 0
+                        });
+                    }
+                }
             });
 
-            // Combine data: Start with ALL unique employees for this month/team
+            // Combine data: Start with ALL unique employees for this month/team (including those from reports)
             const combinedResults = Array.from(kpisForAggregation.values()).map(kpi => {
                 const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                 const report = reportsMap.get(nameKey);
@@ -955,7 +981,7 @@ export class LarkService {
                     position: position,
                     email: report?.email || null,
                     team: kpi.team,
-                    avatar: kpi.link_image || kpi.image_url || null,
+                    avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                     tag: kpi.tag || kpi.name || null,
                     status: report ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
                     date: report?.date || null,
@@ -1025,7 +1051,7 @@ export class LarkService {
                         rank: index + 1,
                         name: kpi.name,
                         position: employee?.position || null,
-                        avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                        avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                         value: Number(kpi.traffic_month || 0).toLocaleString('vi-VN')
                     };
                 });
@@ -1042,7 +1068,7 @@ export class LarkService {
                         rank: index + 1,
                         name: kpi.name,
                         position: employee?.position || null,
-                        avatar: this.convertDriveUrl(kpi.link_image) || kpi.image_url || null,
+                        avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                         value: Number(kpi.revenue_month || 0).toLocaleString('vi-VN')
                     };
                 });
@@ -1110,9 +1136,53 @@ export class LarkService {
         if (url.includes('drive.google.com')) {
             const match = url.match(/\/d\/([^/]+)/);
             if (match && match[1]) {
+                // Return proxy-compatible URL for frontend or direct uc link
                 return `https://drive.google.com/uc?export=view&id=${match[1]}`;
             }
         }
+
+        // Handle Lark media URLs to use our proxy
+        if (url.includes('open.larksuite.com/open-apis/drive/v1/medias/')) {
+            const tokenMatch = url.match(/medias\/([^/?]+)/);
+            const extraMatch = url.match(/extra=([^&]+)/);
+            if (tokenMatch && tokenMatch[1]) {
+                const port = this.configService.get<string>('PORT') || '3000';
+                const apiBase = this.configService.get<string>('API_BASE_URL') || `http://localhost:${port}/api`;
+                let proxyUrl = `${apiBase}/lark/media/${tokenMatch[1]}`;
+                if (extraMatch && extraMatch[1]) {
+                    proxyUrl += `?extra=${extraMatch[1]}`;
+                }
+                return proxyUrl;
+            }
+        }
+
         return url;
+    }
+
+    async getMedia(mediaId: string, extra?: string): Promise<{ data: any; contentType: string }> {
+        const token = await this.getAccessToken();
+        let url = `https://open.larksuite.com/open-apis/drive/v1/medias/${mediaId}/download`;
+        if (extra) {
+            url += `?extra=${encodeURIComponent(extra)}`;
+        }
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                    responseType: 'arraybuffer',
+                }),
+            );
+
+            return {
+                data: response.data,
+                contentType: response.headers['content-type'] || 'image/png',
+            };
+        } catch (error) {
+            this.logger.error(`Failed to fetch media ${mediaId} from Lark`, error);
+            throw error;
+        }
     }
 }
