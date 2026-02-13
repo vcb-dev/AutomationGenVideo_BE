@@ -972,7 +972,7 @@ export class LarkService {
                 }
 
                 const trimmedEmpId = kpi.employee_id?.trim();
-                const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
                 const position = employee?.position || null;
 
                 return {
@@ -1045,7 +1045,7 @@ export class LarkService {
                 .map((kpi, index) => {
                     const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                     const trimmedEmpId = kpi.employee_id?.trim();
-                    const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+                    const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
                     return {
                         rank: index + 1,
@@ -1062,7 +1062,7 @@ export class LarkService {
                 .map((kpi, index) => {
                     const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                     const trimmedEmpId = kpi.employee_id?.trim();
-                    const employee = trimmedEmpId ? employeeMap.get(trimmedEmpId) : employeeMap.get(nameKey);
+                    const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
                     return {
                         rank: index + 1,
