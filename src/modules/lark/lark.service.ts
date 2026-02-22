@@ -24,6 +24,7 @@ export class LarkService {
     private readonly KPI_BASE_ID: string;
     private readonly KPI_TABLE_ID: string;
     private readonly EMPLOYEE_TABLE_ID: string;
+    private readonly PERMISSION_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -40,6 +41,7 @@ export class LarkService {
         this.KPI_BASE_ID = this.configService.get<string>('LARK_KPI_BASE_ID');
         this.KPI_TABLE_ID = this.configService.get<string>('LARK_KPI_TABLE_ID');
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
+        this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
     }
 
     async getAccessToken(): Promise<string> {
@@ -85,6 +87,7 @@ export class LarkService {
                 this.syncReportData(),
                 this.syncKPIData(),
                 this.syncEmployeeData(),
+                this.syncPermissionData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -184,6 +187,19 @@ export class LarkService {
     async getReportData() {
         return this.prisma.larkReport.findMany({
             orderBy: { created_at: 'desc' }
+        });
+    }
+
+    async getPermissionData() {
+        return this.prisma.larkPermission.findMany({
+            orderBy: { created_at: 'desc' }
+        });
+    }
+
+    async getPermissionByEmail(email: string) {
+        if (!email) return null;
+        return this.prisma.larkPermission.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' } }
         });
     }
 
@@ -1171,6 +1187,89 @@ export class LarkService {
             };
         } catch (error) {
             this.logger.error(`Failed to fetch media ${mediaId} from Lark`, error);
+            throw error;
+        }
+    }
+
+    // --- SYNC PERMISSION DATA ---
+    async syncPermissionData() {
+        if (!this.PERMISSION_TABLE_ID) {
+            this.logger.warn('LARK_PERMISSION_TABLE_ID not configured, skipping sync.');
+            return;
+        }
+
+        try {
+            const records = await this.fetchAllRecords(this.REPORT_BASE_ID, this.PERMISSION_TABLE_ID);
+            this.logger.log(`Fetched ${records.length} records from Permission Table. Syncing to database...`);
+
+            for (const record of records) {
+                const fields = record.fields;
+                await this.prisma.larkPermission.upsert({
+                    where: { id: record.record_id },
+                    update: {
+                        email: fields['Email'] || null,
+                        name: fields['HoTen'] || null,
+                        pin_code: fields['MaPin'] || null,
+                        employee: fields['Nhân viên'] || null,
+                        role: fields['Role'] || null,
+                        team: fields['Team'] || null,
+                        status: fields['Trang Thai'] || null,
+                        permissions: fields['Permissions'] || null,
+                        updated_at: new Date(),
+                    },
+                    create: {
+                        id: record.record_id,
+                        email: fields['Email'] || null,
+                        name: fields['HoTen'] || null,
+                        pin_code: fields['MaPin'] || null,
+                        employee: fields['Nhân viên'] || null,
+                        role: fields['Role'] || null,
+                        team: fields['Team'] || null,
+                        status: fields['Trang Thai'] || null,
+                        permissions: fields['Permissions'] || null,
+                    },
+                });
+            }
+            this.logger.log('Lark Permission data sync completed.');
+        } catch (error) {
+            this.logger.error('Failed to sync Lark Permission data', error);
+        }
+    }
+
+    private async fetchAllRecords(baseId: string, tableId: string) {
+        const token = await this.getAccessToken();
+        let allRecords = [];
+        let hasMore = true;
+        let pageToken = '';
+
+        try {
+            while (hasMore) {
+                const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
+                const response = await firstValueFrom(
+                    this.httpService.get(url, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        params: {
+                            text_field_as_key: true,
+                            page_size: 100,
+                            page_token: pageToken || undefined
+                        },
+                    }),
+                );
+
+                if (response.data.code !== 0) {
+                    throw new Error(`Lark API Error: ${response.data.msg}`);
+                }
+
+                const data = response.data.data;
+                if (data.items) {
+                    allRecords = allRecords.concat(data.items);
+                }
+                hasMore = data.has_more;
+                pageToken = data.page_token;
+            }
+            return allRecords;
+        } catch (error) {
+            this.logger.error(`Failed to fetch records from table ${tableId}`, error);
             throw error;
         }
     }
