@@ -1,215 +1,93 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MeiliSearch } from 'meilisearch';
-import Redis from 'ioredis';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import axios from 'axios';
 
-export interface SearchRecord {
-    term: string;
-    count: number;
-    lastSearchedAt: number;
+export interface SuggestionResult {
+    suggestions: string[];
+    source: string;
 }
 
 @Injectable()
-export class SearchRecommendationService implements OnModuleInit {
+export class SearchRecommendationService {
     private readonly logger = new Logger(SearchRecommendationService.name);
-    private meilisearchClient: MeiliSearch;
-    private redisClient: Redis;
-    private readonly INDEX_NAME = 'search_recommendations';
-    private readonly STOP_WORDS = [
-        'the', 'a', 'an', 'in', 'on', 'at', 'for', 'to', 'of', 'and', 'or', 'but', // English
-        'là', 'và', 'của', 'những', 'cái', 'việc', 'trong', 'khi', 'bị', 'được', // Vietnamese (basic)
-        'http', 'https', 'www', '.com' // URL parts
-    ];
+    private readonly aiServiceUrl: string;
 
-    constructor(
-        private configService: ConfigService,
-        private prisma: PrismaService
-    ) {
-        // Initialize Meilisearch
-        try {
-            const meiliHost = this.configService.get<string>('MEILISEARCH_HOST') || 'http://localhost:7700';
-            const meiliKey = this.configService.get<string>('MEILISEARCH_API_KEY') || 'masterKey';
+    // Simple in-memory cache (5 min TTL)
+    private cache = new Map<string, { data: SuggestionResult; ts: number }>();
+    private readonly CACHE_TTL = 5 * 60 * 1000;
 
-            this.meilisearchClient = new MeiliSearch({
-                host: meiliHost,
-                apiKey: meiliKey,
-            });
-        } catch (error) {
-            this.logger.warn('MeiliSearch initialization failed - search recommendations will be disabled', error);
-        }
-
-        // Initialize Redis
-        try {
-            const redisHost = this.configService.get<string>('REDIS_HOST') || 'localhost';
-            const redisPort = this.configService.get<number>('REDIS_PORT') || 6379;
-
-            this.redisClient = new Redis({
-                host: redisHost,
-                port: redisPort,
-                retryStrategy: () => null, // Don't retry on connection failure
-                lazyConnect: true, // Don't connect immediately
-            });
-
-            // Suppress error events
-            this.redisClient.on('error', (err) => {
-                this.logger.warn('Redis connection error - caching will be disabled');
-            });
-        } catch (error) {
-            this.logger.warn('Redis initialization failed - caching will be disabled', error);
-        }
+    constructor(private configService: ConfigService) {
+        this.aiServiceUrl =
+            this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8001';
+        this.logger.log(`SearchRecommendationService init | AI URL: ${this.aiServiceUrl}`);
     }
 
-    async onModuleInit() {
-        await this.ensureIndex();
-    }
+    /**
+     * Get search suggestions via AI service (Gemini AI-powered)
+     * All fallback logic is handled inside the AI service (Django).
+     */
+    async getSuggestions(query: string, count = 10): Promise<SuggestionResult> {
+        if (!query?.trim()) return { suggestions: [], source: 'none' };
 
-    private async ensureIndex() {
+        const key = `suggest:${query.trim().toLowerCase()}`;
+
+        // Return cached result if fresh
+        const cached = this.cache.get(key);
+        if (cached && Date.now() - cached.ts < this.CACHE_TTL) {
+            this.logger.debug(`Cache HIT: "${query}" | ${cached.data.source}`);
+            return cached.data;
+        }
+
         try {
-            const index = this.meilisearchClient.index(this.INDEX_NAME);
-
-            // Check if index exists, create if not (Meilisearch creates on first document add, but we configure settings)
-            // We'll update settings regardless
-            await index.updateSettings({
-                searchableAttributes: ['term'],
-                filterableAttributes: ['count'],
-                sortableAttributes: ['count', 'lastSearchedAt'],
-                rankingRules: [
-                    'words',
-                    'typo',
-                    'proximity',
-                    'attribute',
-                    'sort',
-                    'exactness',
-                    'count:desc' // Custom rule: prioritize high frequency
-                ],
-                stopWords: this.STOP_WORDS,
+            this.logger.log(`Fetching suggestions for: "${query}"`);
+            const response = await axios.get(`${this.aiServiceUrl}/api/tiktok/suggest/`, {
+                params: { q: query.trim(), count },
+                timeout: 9000, // 9s — AI service uses Gemini (up to 6s)
             });
 
-            this.logger.log('Meilisearch index configured successfully');
-        } catch (error) {
-            this.logger.error('Failed to configure Meilisearch index', error);
+            const result: SuggestionResult = {
+                suggestions: response.data?.suggestions || [],
+                source: response.data?.source || 'ai',
+            };
+
+            this.logger.log(
+                `Suggestions OK | Source: ${result.source} | Count: ${result.suggestions.length}`,
+            );
+
+            // Store in cache
+            this.cache.set(key, { data: result, ts: Date.now() });
+
+            // Trim cache if too large
+            if (this.cache.size > 500) {
+                const toDelete = [...this.cache.entries()]
+                    .sort((a, b) => a[1].ts - b[1].ts)
+                    .slice(0, 250)
+                    .map(([k]) => k);
+                toDelete.forEach((k) => this.cache.delete(k));
+            }
+
+            return result;
+
+        } catch (error: any) {
+            this.logger.warn(`AI service suggest failed: ${error?.message}`);
+            return { suggestions: [], source: 'error' };
         }
     }
 
     /**
-     * Record a successful search term
+     * Record a user search term for analytics / DB history
      */
-    async recordSearch(term: string, userId: string = null): Promise<void> {
-        if (!term || term.trim().length < 2) return;
-
-        const normalizedTerm = term.trim().toLowerCase();
-
-        // Simple filter for sensitive words could go here
-        if (this.STOP_WORDS.includes(normalizedTerm)) return;
-
-        // --- STEP A: AUDIT LOG (Log to DB) ---
-        // DISABLED: SearchHistory model not available
-        // if (userId) {
-        //     try {
-        //         await this.prisma.searchHistory.create({
-        //             data: {
-        //                 user_id: userId,
-        //                 term: normalizedTerm,
-        //                 timestamp: new Date()
-        //             }
-        //         });
-        //     } catch (dbError) {
-        //         this.logger.error(`Failed to log search history for user ${userId}`, dbError);
-        //     }
-        // }
+    async recordSearch(query: string, platform = 'TIKTOK'): Promise<void> {
+        if (!query?.trim() || query.trim().length < 2) return;
 
         try {
-            const index = this.meilisearchClient.index(this.INDEX_NAME);
-
-            // Check existing document
-            // Note: Meilisearch uses 'id' as primary key. We'll generate a consistent ID from the term.
-            // Base64 encoding the term to make it safe for URL/ID
-            const id = Buffer.from(normalizedTerm).toString('base64').replace(/=/g, '');
-
-            let count = 1;
-            try {
-                const existing = await index.getDocument(id);
-                if (existing) {
-                    count = (existing.count as number) + 1;
-                }
-            } catch (e) {
-                // Document doesn't exist yet, count remains 1
-            }
-
-            await index.addDocuments([{
-                id: id,
-                term: normalizedTerm,
-                count: count,
-                lastSearchedAt: Date.now()
-            }]);
-
-            // Invalidate cache ONLY if it's a new high-frequency term (optimization: naive invalidation for now)
-            // Real-world: debounce or only invalidate specific prefixes.
-            // For simplicity/requirement: we won't invalidate EVERYTHING, but we rely on Redis TTL.
-        } catch (error) {
-            this.logger.error(`Failed to record search term: ${term}`, error);
-        }
-    }
-
-    async getSearchHistory(limit: number = 50) {
-        // DISABLED: SearchHistory model not available
-        return [];
-        // return this.prisma.searchHistory.findMany({
-        //     take: limit,
-        //     orderBy: { timestamp: 'desc' },
-        //     include: {
-        //         user: {
-        //             select: {
-        //                 id: true,
-        //                 email: true,
-        //                 full_name: true,
-        //                 role: true
-        //             }
-        //         }
-        //     }
-        // });
-    }
-
-    /**
-     * Get suggestions for a prefix
-     */
-    async getSuggestions(query: string): Promise<string[]> {
-        if (!query || query.trim().length === 0) return [];
-
-        const normalizedQuery = query.trim().toLowerCase();
-        const cacheKey = `search_suggestions:${normalizedQuery}`;
-
-        // 1. Check Redis Cache
-        try {
-            const cached = await this.redisClient.get(cacheKey);
-            if (cached) {
-                return JSON.parse(cached);
-            }
-        } catch (error) {
-            this.logger.warn('Redis cache error', error);
-        }
-
-        // 2. Query Meilisearch
-        try {
-            const index = this.meilisearchClient.index(this.INDEX_NAME);
-            const searchResponse = await index.search(normalizedQuery, {
-                limit: 10,
-                attributesToRetrieve: ['term'],
-                showMatchesPosition: false
-            });
-
-            const suggestions = searchResponse.hits.map((hit: any) => hit.term);
-
-            // 3. Save to Redis Cache (TTL: 5 minutes)
-            if (suggestions.length > 0) {
-                await this.redisClient.setex(cacheKey, 300, JSON.stringify(suggestions));
-            }
-
-            return suggestions;
-        } catch (error) {
-            this.logger.error('Meilisearch query failed', error);
-            return [];
+            await axios.post(
+                `${this.aiServiceUrl}/api/search/track/`,
+                { query: query.trim(), platform },
+                { timeout: 3000 },
+            );
+        } catch (error: any) {
+            this.logger.warn(`Failed to record search: ${error?.message}`);
         }
     }
 }
