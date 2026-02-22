@@ -824,10 +824,50 @@ export class LarkService {
     }
 
     // Get combined user activity reports (LarkReport + LarkKPI)
-    async getUserActivityReports(filters?: { date?: string; team?: string }) {
+    async getUserActivityReports(filters?: { date?: string; team?: string; requesterEmail?: string }) {
         try {
+            // Fetch requester's role and team from LarkPermission
+            let requesterRole = 'Member';
+            let requesterTeam = null;
+
+            if (filters?.requesterEmail) {
+                const permission = await this.prisma.larkPermission.findFirst({
+                    where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } }
+                });
+                if (permission) {
+                    requesterRole = (permission.role || 'Member').toLowerCase();
+                    requesterTeam = permission.team;
+                }
+            }
+
+            // RBAC logic for Member
+            if (requesterRole === 'member') {
+                // Member does not see reports at all - return empty lists/summary for reports
+                return {
+                    reports: [],
+                    summary: {
+                        totalVideoTarget: 0,
+                        totalVideoCompleted: 0,
+                        totalTrafficTarget: 0,
+                        totalTrafficCompleted: 0,
+                        totalRevenueTarget: 0,
+                        totalRevenueCompleted: 0,
+                    },
+                    teamContributions: [],
+                    rankings: { traffic: [], revenue: [] },
+                    userRole: 'Member'
+                };
+            }
+
             // Fetch reports with optional filters
             const whereClause: any = {};
+
+            // RBAC logic for Leader
+            if (requesterRole === 'leader' && requesterTeam) {
+                // Leader can only see their team. 
+                // Override team filter if provided or set it if not.
+                filters.team = requesterTeam;
+            }
 
             if (filters?.date) {
                 const targetDate = new Date(filters.date);
@@ -1128,7 +1168,9 @@ export class LarkService {
                 rankings: {
                     traffic: trafficRanking,
                     revenue: revenueRanking
-                }
+                },
+                userRole: requesterRole,
+                userTeam: requesterTeam
             };
         } catch (error) {
             this.logger.error('Failed to get user activity reports', error);

@@ -122,10 +122,15 @@ export class LarkController {
     @Get('user-activity')
     @ApiOperation({ summary: 'Get combined user activity reports (LarkReport + LarkKPI)' })
     @ApiResponse({ status: 200, description: 'Returns combined user activity data with avatars from KPI.' })
-    async getUserActivityReports(@Query('date') date?: string, @Query('team') team?: string) {
+    async getUserActivityReports(
+        @Query('date') date?: string,
+        @Query('team') team?: string,
+        @Query('requesterEmail') requesterEmail?: string
+    ) {
         const filters = {};
         if (date) filters['date'] = date;
         if (team) filters['team'] = team;
+        if (requesterEmail) filters['requesterEmail'] = requesterEmail;
 
         return this.larkService.getUserActivityReports(filters);
     }
