@@ -824,14 +824,7 @@ export class LarkService {
                 };
             }
 
-            if (filters?.team && filters.team !== 'All') {
-                whereClause.team = {
-                    equals: filters.team,
-                    mode: 'insensitive'
-                };
-            }
-
-            // Fetch reports
+            // Fetch reports (unfiltered by team initially to allow cross-team detection)
             const reports = await this.prisma.larkReport.findMany({
                 where: whereClause,
                 orderBy: { created_at: 'desc' },
@@ -845,14 +838,7 @@ export class LarkService {
                 kpiWhereClause.month = `T${monthNum}`;
             }
 
-            if (filters?.team && filters.team !== 'All') {
-                kpiWhereClause.team = {
-                    equals: filters.team,
-                    mode: 'insensitive'
-                };
-            }
-
-            // Fetch KPI data for the matching month
+            // Fetch KPI data for the matching month (unfiltered by team to allow roster detection)
             const kpiData = await this.prisma.larkKPI.findMany({
                 where: kpiWhereClause
             });
@@ -876,7 +862,7 @@ export class LarkService {
             const kpiByNameTeam = new Map();
             const kpiByName = new Map();
 
-            // Store unique KPI per person for aggregation (to avoid double-counting if daily records exist)
+            // Store unique KPI per person for aggregation
             const kpisForAggregation = new Map();
             const nameToPersonKey = new Map();
 
@@ -905,7 +891,7 @@ export class LarkService {
                 }
             });
 
-            // Fetch reports for the specific day to determine status
+            // Fetch reports for the specific day
             const dailyReports = await this.prisma.larkReport.findMany({
                 where: whereClause,
                 orderBy: { created_at: 'desc' },
@@ -918,9 +904,6 @@ export class LarkService {
                     const nameKey = r.name.toLowerCase().trim().replace(/\s+/g, ' ');
                     reportsMap.set(nameKey, r);
 
-                    // If this person has a report but NO KPI record, add a placeholder for them
-                    // so they appear in the combined results
-                    // Use nameToPersonKey map to find if they already exist via ID or Name
                     const personKey = nameToPersonKey.get(nameKey) || nameKey;
 
                     if (!kpisForAggregation.has(personKey)) {
@@ -940,26 +923,29 @@ export class LarkService {
                 }
             });
 
-            // Combine data: Start with ALL unique employees for this month/team (including those from reports)
-            const combinedResults = Array.from(kpisForAggregation.values()).map(kpi => {
+            // Process all users and filter by effective team (prioritizing report)
+            const teamFilterNormalized = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
+
+            const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
                 const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                 const report = reportsMap.get(nameKey);
 
+                // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
+                const effectiveTeam = report?.team || kpi.team || 'Khác';
+
+                // Skip if doesn't match team filter
+                if (teamFilterNormalized && effectiveTeam.toLowerCase().trim() !== teamFilterNormalized) {
+                    return null;
+                }
+
                 // Parse checklist from answers JSON
                 let checklist = {
-                    fb: false,
-                    ig: false,
-                    caption: false,
-                    tiktok: false,
-                    youtube: false,
-                    lark: false,
+                    fb: false, ig: false, caption: false, tiktok: false, youtube: false, lark: false,
                 };
 
                 let answersData = report?.answers;
                 if (typeof answersData === 'string') {
-                    try {
-                        answersData = JSON.parse(answersData);
-                    } catch (e) { }
+                    try { answersData = JSON.parse(answersData); } catch (e) { }
                 }
 
                 if (answersData && typeof answersData === 'object') {
@@ -980,7 +966,7 @@ export class LarkService {
                     name: kpi.name,
                     position: position,
                     email: report?.email || null,
-                    team: kpi.team,
+                    team: effectiveTeam,
                     avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                     tag: kpi.tag || kpi.name || null,
                     status: report ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
@@ -997,6 +983,9 @@ export class LarkService {
                     monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100)
                 };
             });
+
+            // Filter out nulls (people who didn't match team filter)
+            const combinedResults = allResults.filter(r => r !== null) as any[];
 
             // Sort: Leaders first, then by name
             combinedResults.sort((a, b) => {
