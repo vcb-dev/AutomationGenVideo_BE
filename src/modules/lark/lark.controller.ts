@@ -135,6 +135,12 @@ export class LarkController {
         return this.larkService.getUserActivityReports(filters);
     }
 
+    @Get('personal-history')
+    @ApiOperation({ summary: 'Get historical KPI data for a specific user' })
+    async getPersonalHistory(@Query('email') email: string) {
+        return this.larkService.getPersonalHistory(email);
+    }
+
     @Get('media/:mediaId')
     @ApiOperation({ summary: 'Proxy Lark media download' })
     async getMedia(@Param('mediaId') mediaId: string, @Query('extra') extra: string, @Res() res: Response) {

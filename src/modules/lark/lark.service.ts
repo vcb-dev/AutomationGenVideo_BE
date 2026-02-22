@@ -840,34 +840,8 @@ export class LarkService {
                 }
             }
 
-            // RBAC logic for Member
-            if (requesterRole === 'member') {
-                // Member does not see reports at all - return empty lists/summary for reports
-                return {
-                    reports: [],
-                    summary: {
-                        totalVideoTarget: 0,
-                        totalVideoCompleted: 0,
-                        totalTrafficTarget: 0,
-                        totalTrafficCompleted: 0,
-                        totalRevenueTarget: 0,
-                        totalRevenueCompleted: 0,
-                    },
-                    teamContributions: [],
-                    rankings: { traffic: [], revenue: [] },
-                    userRole: 'Member'
-                };
-            }
-
             // Fetch reports with optional filters
             const whereClause: any = {};
-
-            // RBAC logic for Leader
-            if (requesterRole === 'leader' && requesterTeam) {
-                // Leader can only see their team. 
-                // Override team filter if provided or set it if not.
-                filters.team = requesterTeam;
-            }
 
             if (filters?.date) {
                 const targetDate = new Date(filters.date);
@@ -911,6 +885,19 @@ export class LarkService {
                     if (!employeeMap.has(nameKey)) {
                         employeeMap.set(nameKey, emp);
                     }
+                }
+            });
+
+            // Fetch all permissions for identifying requester in results
+            const permissions = await this.prisma.larkPermission.findMany();
+            const permMap = new Map();
+            permissions.forEach(p => {
+                if (p.name) {
+                    const nameKey = p.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    permMap.set(nameKey, p);
+                }
+                if (p.email) {
+                    permMap.set(p.email.toLowerCase().trim(), p);
                 }
             });
 
@@ -979,7 +966,6 @@ export class LarkService {
                 }
             });
 
-            // Process all users and filter by effective team (prioritizing report)
             const teamFilterNormalized = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
 
             const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
@@ -987,10 +973,28 @@ export class LarkService {
                 const report = reportsMap.get(nameKey);
 
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
-                const effectiveTeam = report?.team || kpi.team || 'Khác';
+                const trimmedEmpId = kpi.employee_id?.trim();
+                const personKey = trimmedEmpId || nameKey;
+                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
+                const position = employee?.position || null;
 
-                // Skip if doesn't match team filter
-                if (teamFilterNormalized && effectiveTeam.toLowerCase().trim() !== teamFilterNormalized) {
+                const effectiveTeam = report?.team || kpi.team || 'Khác';
+                const effectiveTeamNormalized = effectiveTeam.toLowerCase().trim();
+
+                // 1. Logic cho BXH (Rankings): Mọi người xem được BXH của nhau nếu khớp bộ lọc team
+                const isMatchForRanking = !teamFilterNormalized || effectiveTeamNormalized === teamFilterNormalized;
+
+                // 2. Logic cho Báo cáo (Reports) & Summary:
+                // - Mọi người xem được các báo cáo nếu khớp bộ lọc team (đảm bảo tính minh bạch cho Hiệu suất)
+                // - Luôn bao gồm bản thân để phục vụ tab "Cá nhân"
+                const personPerm = permMap.get(nameKey);
+                const isSelf = filters?.requesterEmail && personPerm?.email &&
+                    personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
+
+                let isAuthorizedForReport = isMatchForRanking || isSelf;
+
+                // Nếu không khớp cả 2 thì bỏ qua record này
+                if (!isMatchForRanking && !isAuthorizedForReport) {
                     return null;
                 }
 
@@ -1013,12 +1017,10 @@ export class LarkService {
                     checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true || false;
                 }
 
-                const trimmedEmpId = kpi.employee_id?.trim();
-                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
-                const position = employee?.position || null;
-
                 return {
                     id: kpi.id,
+                    employee_id: trimmedEmpId,
+                    personKey: personKey,
                     name: kpi.name,
                     position: position,
                     email: report?.email || null,
@@ -1036,12 +1038,18 @@ export class LarkService {
                     completed_month: kpi.completed_month || 0,
                     traffic_month: kpi.traffic_month ? Number(kpi.traffic_month) : 0,
                     revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
-                    monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100)
+                    monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100),
+                    isAuthorizedForReport,
+                    isMatchForRanking
                 };
             });
 
-            // Filter out nulls (people who didn't match team filter)
-            const combinedResults = allResults.filter(r => r !== null) as any[];
+            // Filter out nulls
+            const allValidResults = allResults.filter(r => r !== null) as any[];
+
+            // Phân tách dữ liệu Báo cáo và BXH
+            const combinedResults = allValidResults.filter(r => r.isAuthorizedForReport);
+            const rankingList = allValidResults.filter(r => r.isMatchForRanking);
 
             // Sort: Leaders first, then by name
             combinedResults.sort((a, b) => {
@@ -1069,20 +1077,20 @@ export class LarkService {
                 totalRevenueCompleted: 0,
             };
 
-            // We aggregate from unique KPI per person per month (to avoid double-counting if daily records exist)
-            kpisForAggregation.forEach(kpi => {
-                aggregates.totalVideoTarget += kpi.kpi_month || 0;
-                aggregates.totalVideoCompleted += kpi.completed_month || 0;
-
-                aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
-                aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
-
-                aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
-                aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
+            // Calculate aggregates from authorized reports
+            combinedResults.forEach(r => {
+                const kpi = kpisForAggregation.get(r.personKey);
+                if (kpi) {
+                    aggregates.totalVideoTarget += kpi.kpi_month || 0;
+                    aggregates.totalVideoCompleted += kpi.completed_month || 0;
+                    aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
+                    aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
+                    aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
+                    aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
+                }
             });
 
-            // Calculate rankings
-            const rankingList = Array.from(kpisForAggregation.values());
+            // Calculate rankings using rankingList (which honors team filter for everyone)
 
             const trafficRanking = rankingList
                 .sort((a, b) => Number(b.traffic_month || 0) - Number(a.traffic_month || 0))
@@ -1275,6 +1283,104 @@ export class LarkService {
             this.logger.log('Lark Permission data sync completed.');
         } catch (error) {
             this.logger.error('Failed to sync Lark Permission data', error);
+        }
+    }
+
+    async getPersonalHistory(email: string) {
+        if (!email) return { history: [], teamStats: null };
+
+        try {
+            // Find user in LarkPermission to get their full name and team
+            const permission = await this.prisma.larkPermission.findFirst({
+                where: { email: { equals: email, mode: 'insensitive' } }
+            });
+
+            if (!permission) {
+                this.logger.warn(`No permission found for email: ${email}`);
+                return { history: [], teamStats: null };
+            }
+
+            const userName = permission.name;
+            const userTeam = permission.team;
+            if (!userName) return { history: [], teamStats: null };
+
+            // Fetch all KPI history for this user
+            const kpis = await this.prisma.larkKPI.findMany({
+                where: {
+                    name: { equals: userName.trim(), mode: 'insensitive' }
+                },
+                orderBy: {
+                    created_at: 'asc'
+                }
+            });
+
+            const monthlyData = new Map<string, any>();
+            kpis.forEach(kpi => {
+                const monthStr = kpi.month || kpi.created_at.toISOString().substring(0, 7);
+                monthlyData.set(monthStr, {
+                    month: monthStr,
+                    video: kpi.completed_month || 0,
+                    videoTarget: kpi.kpi_month || 0,
+                    traffic: Number(kpi.traffic_month || 0),
+                    trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
+                    revenue: Number(kpi.revenue_month || 0),
+                    revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
+                    date: kpi.created_at
+                });
+            });
+
+            const history = Array.from(monthlyData.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+
+            // Calculate Team Stats for the current month
+            let teamStats = null;
+            if (userTeam) {
+                const currentMonth = `T${new Date().getMonth() + 1}`;
+                const teamKpis = await this.prisma.larkKPI.findMany({
+                    where: {
+                        team: userTeam,
+                        month: currentMonth
+                    }
+                });
+
+                // Deduplicate team members (take latest for each person)
+                const teamLatestMap = new Map();
+                teamKpis.forEach(k => {
+                    const key = k.employee_id?.trim() || k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    if (!teamLatestMap.has(key) || (k.completed_month || 0) > (teamLatestMap.get(key).completed_month || 0)) {
+                        teamLatestMap.set(key, k);
+                    }
+                });
+
+                const teamTotals = { video: 0, traffic: 0, revenue: 0 };
+                let userRecord = null;
+
+                teamLatestMap.forEach(k => {
+                    teamTotals.video += k.completed_month || 0;
+                    teamTotals.traffic += Number(k.traffic_month || 0);
+                    teamTotals.revenue += Number(k.revenue_month || 0);
+
+                    if (k.name?.toLowerCase().trim().replace(/\s+/g, ' ') === userName.toLowerCase().trim().replace(/\s+/g, ' ')) {
+                        userRecord = k;
+                    }
+                });
+
+                if (userRecord) {
+                    teamStats = {
+                        teamName: userTeam,
+                        userVideo: userRecord.completed_month || 0,
+                        teamVideo: teamTotals.video,
+                        userTraffic: Number(userRecord.traffic_month || 0),
+                        teamTraffic: teamTotals.traffic,
+                        userRevenue: Number(userRecord.revenue_month || 0),
+                        teamRevenue: teamTotals.revenue
+                    };
+                }
+            }
+
+            return { history, teamStats };
+        } catch (error) {
+            this.logger.error('Failed to get personal history', error);
+            throw error;
         }
     }
 
