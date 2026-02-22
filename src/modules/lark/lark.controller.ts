@@ -22,6 +22,7 @@ export class LarkController {
     async syncData() {
         try {
             await this.larkService.syncReportData();
+            await this.larkService.syncPermissionData();
             return { message: 'Sync completed successfully' };
         } catch (error) {
             return { message: 'Sync failed', error: error.message };
@@ -51,6 +52,7 @@ export class LarkController {
         try {
             await this.larkService.clearAllReports();
             await this.larkService.syncReportData();
+            await this.larkService.syncPermissionData();
             return { message: 'Reset and sync completed successfully' };
         } catch (error) {
             return { message: 'Reset and sync failed', error: error.message };
@@ -140,5 +142,28 @@ export class LarkController {
         } catch (error) {
             return res.status(404).send('Media not found');
         }
+    }
+
+    @Post('sync-permission')
+    @ApiOperation({ summary: 'Manually trigger permission sync from Lark to DB' })
+    async syncPermissionData() {
+        try {
+            await this.larkService.syncPermissionData();
+            return { message: 'Permission sync completed successfully' };
+        } catch (error) {
+            return { message: 'Permission sync failed', error: error.message };
+        }
+    }
+
+    @Get('permissions')
+    @ApiOperation({ summary: 'Get all permissions from Database' })
+    async getPermissions() {
+        return this.larkService.getPermissionData();
+    }
+
+    @Get('user-permission')
+    @ApiOperation({ summary: 'Get permission for a specific user by email' })
+    async getUserPermission(@Query('email') email: string) {
+        return this.larkService.getPermissionByEmail(email);
     }
 }

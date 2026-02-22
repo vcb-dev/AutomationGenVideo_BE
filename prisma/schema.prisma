@@ -645,3 +645,18 @@ enum DuplicateStatus {
   PENDING_REVIEW
   SUSPICIOUS
 }
+model LarkPermission {
+  id          String   @id
+  email       String?
+  name        String?
+  pin_code    String?
+  employee    Json?
+  role        String?
+  team        String?
+  status      String?
+  permissions String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("lark_permissions")
+}
