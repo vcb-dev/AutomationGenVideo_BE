@@ -1,6 +1,6 @@
 
 
-import { Controller, Get, Post, Query, Param, Res } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body } from '@nestjs/common';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -137,8 +137,11 @@ export class LarkController {
 
     @Get('personal-history')
     @ApiOperation({ summary: 'Get historical KPI data for a specific user' })
-    async getPersonalHistory(@Query('email') email: string) {
-        return this.larkService.getPersonalHistory(email);
+    async getPersonalHistory(
+        @Query('email') email: string,
+        @Query('name') name?: string
+    ) {
+        return this.larkService.getPersonalHistory(email, name);
     }
 
     @Get('media/:mediaId')
@@ -176,5 +179,14 @@ export class LarkController {
     @ApiOperation({ summary: 'Get permission for a specific user by email' })
     async getUserPermission(@Query('email') email: string) {
         return this.larkService.getPermissionByEmail(email);
+    }
+
+    @Post('update-outstanding-status')
+    @ApiOperation({ summary: 'Update status of a ReportOutstanding record' })
+    async updateOutstandingStatus(
+        @Body('id') id: string,
+        @Body('status') status: string
+    ) {
+        return this.larkService.updateOutstandingStatus(id, status);
     }
 }
