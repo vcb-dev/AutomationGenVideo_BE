@@ -660,3 +660,18 @@ model LarkPermission {
 
   @@map("lark_permissions")
 }
+
+model ReportOutstanding {
+  id           String   @id @default(uuid())
+  name         String
+  date         DateTime @default(now())
+  team         String?
+  content      String?  @db.Text
+  idea_content String?  @db.Text
+  status       String?  // duyệt/ ho tro
+  email        String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@map("report_outstanding")
+}

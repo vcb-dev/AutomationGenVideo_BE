@@ -562,6 +562,11 @@ export class LarkService {
     // Get all employees from DB
     async getEmployeeData() {
         return this.prisma.larkEmployee.findMany({
+            where: {
+                status: {
+                    not: 'đã nghỉ'
+                }
+            },
             orderBy: { created_at: 'desc' }
         });
     }
@@ -976,6 +981,13 @@ export class LarkService {
                 const trimmedEmpId = kpi.employee_id?.trim();
                 const personKey = trimmedEmpId || nameKey;
                 const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
+
+                // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
+                const empStatus = (employee?.status || '').toLowerCase().trim();
+                if (empStatus === 'đã nghỉ' || empStatus === 'da nghi' || empStatus.includes('nghỉ')) {
+                    return null;
+                }
+
                 const position = employee?.position || null;
 
                 const effectiveTeam = report?.team || kpi.team || 'Khác';
@@ -1169,10 +1181,19 @@ export class LarkService {
                 revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0
             })).sort((a, b) => b.videoPct - a.videoPct);
 
+            // Fetch daily outstanding reports for the day (Ideas, Difficulties, Wins)
+            // Using raw query as workaround because prisma generate is blocked by running process
+            const reportOutstandings = await this.prisma.$queryRawUnsafe(`
+                SELECT * FROM "report_outstanding" 
+                WHERE "date" >= $1 AND "date" <= $2
+                ORDER BY "created_at" DESC
+            `, whereClause.date.gte, whereClause.date.lte);
+
             return {
                 reports: combinedResults,
                 summary: aggregates,
                 teamContributions,
+                reportOutstandings,
                 rankings: {
                     traffic: trafficRanking,
                     revenue: revenueRanking
@@ -1286,22 +1307,69 @@ export class LarkService {
         }
     }
 
-    async getPersonalHistory(email: string) {
-        if (!email) return { history: [], teamStats: null };
+    async getPersonalHistory(requesterEmail: string, targetName?: string) {
+        if (!requesterEmail) return { history: [], teamStats: null };
 
         try {
-            // Find user in LarkPermission to get their full name and team
-            const permission = await this.prisma.larkPermission.findFirst({
-                where: { email: { equals: email, mode: 'insensitive' } }
+            // Find requester info
+            const requesterPermission = await this.prisma.larkPermission.findFirst({
+                where: { email: { equals: requesterEmail, mode: 'insensitive' } }
             });
 
-            if (!permission) {
-                this.logger.warn(`No permission found for email: ${email}`);
+            if (!requesterPermission) {
+                this.logger.warn(`No permission found for requester email: ${requesterEmail}`);
                 return { history: [], teamStats: null };
             }
 
-            const userName = permission.name;
-            const userTeam = permission.team;
+            const requesterRole = requesterPermission.role?.toLowerCase();
+            const requesterTeam = requesterPermission.team;
+
+            let userName = requesterPermission.name;
+            let userTeam = requesterPermission.team;
+
+            // If a specific name is requested, check authorization
+            if (targetName && targetName.trim()) {
+                // Find the target person
+                const targetPermission = await this.prisma.larkPermission.findFirst({
+                    where: { name: { contains: targetName.trim(), mode: 'insensitive' } }
+                });
+
+                if (targetPermission) {
+                    // Check if employee is resigned
+                    const targetEmployee = await this.prisma.larkEmployee.findFirst({
+                        where: { name: { equals: targetPermission.name, mode: 'insensitive' } }
+                    });
+
+                    if (targetEmployee) {
+                        const empStatus = (targetEmployee.status || '').toLowerCase().trim();
+                        if (empStatus === 'đã nghỉ' || empStatus === 'da nghi' || empStatus.includes('nghỉ')) {
+                            this.logger.warn(`Access denied: ${targetName} has resigned.`);
+                            return { history: [], teamStats: null };
+                        }
+                    }
+
+                    const isSameTeam = targetPermission.team === requesterTeam;
+                    const isAdmin = requesterRole === 'admin';
+                    const isLeader = requesterRole === 'leader';
+
+                    // Authorization check
+                    if (isAdmin || (isLeader && isSameTeam)) {
+                        userName = targetPermission.name;
+                        userTeam = targetPermission.team;
+                    } else {
+                        this.logger.warn(`Unauthorized: ${requesterEmail} (${requesterRole}) tried to access ${targetName}`);
+                        // Fallback to own info or return empty
+                    }
+                } else {
+                    // If target not found in permissions, might still be in KPI table, but we need team for authorization
+                    // For now, if not in permissions, we only allow Admin to see it
+                    if (requesterRole === 'admin') {
+                        userName = targetName;
+                        // userTeam remains unknown or we try to find it from KPI later
+                    }
+                }
+            }
+
             if (!userName) return { history: [], teamStats: null };
 
             // Fetch all KPI history for this user
@@ -1418,6 +1486,18 @@ export class LarkService {
             return allRecords;
         } catch (error) {
             this.logger.error(`Failed to fetch records from table ${tableId}`, error);
+            throw error;
+        }
+    }
+    async updateOutstandingStatus(id: string, status: string) {
+        try {
+            await this.prisma.$executeRawUnsafe(
+                `UPDATE "report_outstanding" SET "status" = $1 WHERE "id" = $2`,
+                status, id
+            );
+            return { success: true, message: 'Status updated successfully' };
+        } catch (error) {
+            this.logger.error(`Failed to update outstanding status for id ${id}`, error);
             throw error;
         }
     }
