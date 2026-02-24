@@ -675,3 +675,18 @@ model ReportOutstanding {
 
   @@map("report_outstanding")
 }
+
+model HuykChannel {
+  id           String   @id
+  name         String
+  video_count  String?
+  traffic      BigInt?
+  revenue      BigInt?
+  channels     String?
+  checklist    String?
+  contribution String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@map("huyk_channels")
+}

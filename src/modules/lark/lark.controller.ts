@@ -189,4 +189,21 @@ export class LarkController {
     ) {
         return this.larkService.updateOutstandingStatus(id, status);
     }
+
+    @Post('sync-huyk-channel')
+    @ApiOperation({ summary: 'Manually trigger Huyk Channel data sync from Lark' })
+    async syncHuykChannelData() {
+        try {
+            await this.larkService.syncHuykChannelData();
+            return { message: 'Huyk Channel sync completed successfully' };
+        } catch (error) {
+            return { message: 'Huyk Channel sync failed', error: error.message };
+        }
+    }
+
+    @Get('huyk-channel')
+    @ApiOperation({ summary: 'Get Huyk Channel data from Database' })
+    async getHuykChannel() {
+        return this.larkService.getHuykChannelData();
+    }
 }

@@ -88,6 +88,7 @@ export class LarkService {
                 this.syncKPIData(),
                 this.syncEmployeeData(),
                 this.syncPermissionData(),
+                this.syncHuykChannelData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -99,6 +100,9 @@ export class LarkService {
         try {
             const records = await this.fetchLarkRecords();
             this.logger.log(`Fetched ${records.length} records from Lark. Syncing to database...`);
+
+            // Migration: Update old labels
+            await this.prisma.$executeRawUnsafe(`UPDATE "report_outstanding" SET "content" = 'SẢN PHẨM WIN' WHERE "content" = 'VIDEO SẢN PHẨM WIN'`);
 
             if (records.length > 0) {
                 this.logger.debug('First record fields keys:', Object.keys(records[0].fields));
@@ -131,12 +135,81 @@ export class LarkService {
                         answers: reportData.answers,
                     },
                 });
+
+                // Extract and sync outstandings
+                await this.extractAndSyncOutstandings(reportData);
+
                 syncedCount++;
             }
 
             this.logger.log(`Successfully synced ${syncedCount} records.`);
         } catch (error) {
             this.logger.error('Failed to sync report data', error);
+        }
+    }
+
+    private async extractAndSyncOutstandings(reportData: any) {
+        let answers = reportData.answers;
+        if (typeof answers === 'string') {
+            try { answers = JSON.parse(answers); } catch (e) { return; }
+        }
+        if (!answers || typeof answers !== 'object') return;
+
+        const date = reportData.date || new Date();
+        const startOfDay = new Date(date);
+        startOfDay.setHours(0, 0, 0, 0);
+        const dateStr = startOfDay.toISOString().split('T')[0];
+
+        const findAnswer = (keywords: string[]) => {
+            for (const key of Object.keys(answers)) {
+                if (keywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
+                    const val = answers[key];
+                    if (val && !['không', 'không có', 'chưa', 'none', ''].includes(val.toString().toLowerCase().trim())) {
+                        return val;
+                    }
+                }
+            }
+            return null;
+        };
+
+        const rules = [
+            {
+                content: 'Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI',
+                answer: findAnswer(['4. ban co dong gop', '4. ban co bat ky y tuong', '4. ban co dang ki'])
+                    || findAnswer(['dong gop y tuong hay de xuat'])
+            },
+            {
+                content: 'KHÓ KHĂN CẦN HỖ TRỢ',
+                answer: findAnswer(['3. ban co gap kho khan', '3. ban co gap tro ngai'])
+                    || findAnswer(['co gap kho khan nao can ho tro'])
+            },
+            {
+                content: 'SẢN PHẨM WIN',
+                answer: findAnswer(['5. ban co san pham', '5. ban co clip win'])
+                    || findAnswer(['co san pham (a4 - a5) nao win moi khong'])
+            },
+            {
+                content: 'VIDEO WIN',
+                answer: findAnswer(['thanh vien nao co video win nhat', 'video win nhat'])
+            }
+        ];
+
+        for (const rule of rules) {
+            if (rule.answer) {
+                // Use a stable ID to prevent duplicates: [name]_[date]_[type]
+                const stableId = Buffer.from(`${reportData.name}_${dateStr}_${rule.content}`).toString('base64').substring(0, 50);
+
+                await this.prisma.$executeRawUnsafe(`
+                    INSERT INTO "report_outstanding" ("id", "name", "date", "team", "content", "idea_content", "email", "created_at", "updated_at")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+                    ON CONFLICT ("id") DO UPDATE SET
+                    "team" = EXCLUDED."team",
+                    "content" = EXCLUDED."content",
+                    "idea_content" = EXCLUDED."idea_content",
+                    "email" = EXCLUDED."email",
+                    "updated_at" = NOW()
+                `, stableId, reportData.name, startOfDay, reportData.team, rule.content, String(rule.answer), reportData.email);
+            }
         }
     }
 
@@ -224,6 +297,90 @@ export class LarkService {
             return response.data;
         } catch (error) {
             this.logger.error('Failed to list tables', error);
+            throw error;
+        }
+    }
+
+    async syncHuykChannelData() {
+        try {
+            const baseId = this.configService.get<string>('LARK_HUYK_BASE_ID') || this.KPI_BASE_ID;
+            const tableId = 'tblWxMtDAkvh1gWS';
+            this.logger.log(`Syncing Huyk Channel table: ${tableId} from base: ${baseId}`);
+            const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
+            this.logger.log(`Fetched ${records.length} records from Huyk Channel table. Syncing to HuykChannel model...`);
+
+            for (const record of records) {
+                const fields = record.fields;
+                // Mapping based on image: HỌ TÊN, So vd, Số traffic, Số dianh thu, số kênh, Check list, %
+                const data = {
+                    id: record.record_id,
+                    name: String(fields['Tên kênh hiện tại'] || fields['name'] || 'N/A'),
+                    video_count: String(fields['Nền tảng'] || '0'),
+                    traffic: BigInt(0), // Master table doesn't have traffic
+                    revenue: BigInt(0), // Master table doesn't have revenue
+                    channels: String(fields['ID kênh hiện tại'] || '0'),
+                    checklist: String(fields['Trạng thái hoạt động'] || ''),
+                    contribution: String(fields['Team Traffic'] || ''),
+                };
+
+                /*
+                await this.prisma.huykChannel.upsert({
+                    where: { id: data.id },
+                    update: data,
+                    create: data,
+                });
+                */
+            }
+            this.logger.log(`Successfully synced ${records.length} records to HuykChannel.`);
+        } catch (error) {
+            this.logger.error('Failed to sync Huyk Channel data', error);
+        }
+    }
+
+    async getHuykChannelData() {
+        return [];
+        // return this.prisma.huykChannel.findMany({
+        //     orderBy: { created_at: 'desc' }
+        // });
+    }
+
+    async fetchLarkRecordsGeneric(baseId: string, tableId: string) {
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
+
+        let allRecords = [];
+        let pageToken = '';
+        let hasMore = true;
+
+        try {
+            while (hasMore) {
+                const response = await firstValueFrom(
+                    this.httpService.get(url, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        params: {
+                            text_field_as_key: true,
+                            page_size: 100,
+                            page_token: pageToken || undefined
+                        },
+                    }),
+                );
+
+                if (response.data.code !== 0) {
+                    throw new Error(`Lark API Error: ${response.data.msg}`);
+                }
+
+                const data = response.data.data;
+                if (data.items) {
+                    allRecords = allRecords.concat(data.items);
+                }
+
+                hasMore = data.has_more;
+                pageToken = data.page_token;
+            }
+
+            return allRecords;
+        } catch (error) {
+            this.logger.error(`Failed to fetch records from table ${tableId}`, error);
             throw error;
         }
     }
@@ -1316,16 +1473,22 @@ export class LarkService {
                 where: { email: { equals: requesterEmail, mode: 'insensitive' } }
             });
 
-            if (!requesterPermission) {
-                this.logger.warn(`No permission found for requester email: ${requesterEmail}`);
-                return { history: [], teamStats: null };
+            const requesterRole = requesterPermission?.role?.toLowerCase() || 'member';
+            const requesterTeam = requesterPermission?.team || null;
+
+            let userName = requesterPermission?.name || null;
+            let userTeam = requesterPermission?.team || null;
+
+            // Fallback for unidentified users (try finding by email in reports)
+            if (!userName) {
+                const lastReport = await this.prisma.larkReport.findFirst({
+                    where: { email: { equals: requesterEmail, mode: 'insensitive' } }
+                });
+                if (lastReport) {
+                    userName = lastReport.name;
+                    userTeam = lastReport.team;
+                }
             }
-
-            const requesterRole = requesterPermission.role?.toLowerCase();
-            const requesterTeam = requesterPermission.team;
-
-            let userName = requesterPermission.name;
-            let userTeam = requesterPermission.team;
 
             // If a specific name is requested, check authorization
             if (targetName && targetName.trim()) {
@@ -1445,7 +1608,45 @@ export class LarkService {
                 }
             }
 
-            return { history, teamStats };
+            // Fetch current activity (for card display)
+            const today = new Date();
+            const startOfToday = new Date(today.setHours(0, 0, 0, 0));
+            const endOfToday = new Date(today.setHours(23, 59, 59, 999));
+
+            const todayReport = await this.prisma.larkReport.findFirst({
+                where: {
+                    name: { equals: userName.trim(), mode: 'insensitive' },
+                    date: { gte: startOfToday, lte: endOfToday }
+                }
+            });
+
+            const currentMonthKpi = await this.prisma.larkKPI.findFirst({
+                where: {
+                    name: { equals: userName.trim(), mode: 'insensitive' },
+                    month: `T${new Date().getMonth() + 1}`
+                },
+                orderBy: { created_at: 'desc' }
+            });
+
+            const employee = await this.prisma.larkEmployee.findFirst({
+                where: { name: { equals: userName.trim(), mode: 'insensitive' } }
+            });
+
+            const userActivity = {
+                name: userName,
+                position: employee?.position || null,
+                team: userTeam || 'Khác',
+                avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(currentMonthKpi?.link_image) || this.convertDriveUrl(currentMonthKpi?.image_url) || null,
+                time: todayReport ? new Date(todayReport.date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : '07:00',
+                dailyGoal: currentMonthKpi?.kpi_day || 0,
+                done: currentMonthKpi?.completed_day || 0,
+                traffic: Number(currentMonthKpi?.traffic_month || 0).toLocaleString('vi-VN'),
+                revenue: Number(currentMonthKpi?.revenue_month || 0).toLocaleString('vi-VN'),
+                reportStatus: todayReport ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
+                monthlyProgress: Math.round((currentMonthKpi?.kpi_progress_month || 0) * 100),
+            };
+
+            return { history, teamStats, userActivity };
         } catch (error) {
             this.logger.error('Failed to get personal history', error);
             throw error;
