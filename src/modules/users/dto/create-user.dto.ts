@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsBoolean,
   MinLength,
+  IsArray,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { UserRole } from "@prisma/client";
@@ -17,21 +18,33 @@ export class CreateUserDto {
   @ApiProperty({ example: "Password123!" })
   @IsString()
   @MinLength(8)
-  @IsOptional() // Make password optional for Google users
+  @IsOptional()
   password?: string;
 
   @ApiProperty({ example: "John Doe" })
   @IsString()
   full_name: string;
 
-  @ApiProperty({ enum: UserRole, example: UserRole.EDITOR })
+  @ApiPropertyOptional({ enum: UserRole, example: UserRole.EDITOR, description: "Single role (backward compatible)" })
   @IsEnum(UserRole)
-  role: UserRole;
+  @IsOptional()
+  role?: UserRole;
+
+  @ApiPropertyOptional({ enum: UserRole, isArray: true, example: [UserRole.EDITOR, UserRole.CONTENT], description: "Multiple roles" })
+  @IsArray()
+  @IsEnum(UserRole, { each: true })
+  @IsOptional()
+  roles?: UserRole[];
 
   @ApiPropertyOptional({ example: "uuid-of-manager" })
   @IsOptional()
   @IsString()
   manager_id?: string;
+
+  @ApiPropertyOptional({ example: "uuid-of-team-leader", description: "Team Leader ID managing this user" })
+  @IsOptional()
+  @IsString()
+  team_leader_id?: string;
 
   @ApiPropertyOptional({ example: true })
   @IsOptional()
