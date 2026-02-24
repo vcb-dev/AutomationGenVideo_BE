@@ -84,14 +84,11 @@ export class EditorWithStatsDto {
   @ApiProperty()
   avatar: string | null;
 
-  @ApiProperty({ enum: ['ADMIN', 'MANAGER', 'EDITOR', 'CONTENT'] })
-  role: string;
+  @ApiProperty({ enum: ['ADMIN', 'MANAGER', 'LEADER_VIDEO', 'LEADER_CONTENT', 'EDITOR', 'CONTENT'], isArray: true })
+  roles: string[];
 
   @ApiProperty()
   is_active: boolean;
-
-  @ApiProperty()
-  last_login_at: Date | null;
 
   @ApiProperty()
   created_at: Date;

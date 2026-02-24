@@ -109,7 +109,7 @@ export class AuthService {
       email: googleUser.email,
       full_name: `${googleUser.firstName} ${googleUser.lastName}`.trim(),
       password: "", // Will be set to null by UsersService
-      role: role,
+      roles: [role],
     };
 
     // Auto-assign default manager for EDITOR and CONTENT roles
@@ -134,7 +134,7 @@ export class AuthService {
     const payload = {
       sub: user.id,
       email: user.email,
-      role: user.role,
+      roles: user.roles,
     };
 
     const access_token = this.jwtService.sign(payload);

@@ -32,7 +32,7 @@ import { UserRole } from "@prisma/client";
 @Controller("users")
 @UseInterceptors(ClassSerializerInterceptor)
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) { }
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -67,7 +67,7 @@ export class UsersController {
 
   @Get("my-editors")
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.LEADER_VIDEO, UserRole.LEADER_CONTENT)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get all editors managed by current manager with their channel statistics" })
   @ApiResponse({

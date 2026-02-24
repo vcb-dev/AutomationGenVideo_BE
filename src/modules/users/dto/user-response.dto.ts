@@ -15,26 +15,17 @@ export class UserResponseDto {
   @ApiProperty()
   full_name: string;
 
-  @ApiProperty({ enum: UserRole })
-  role: UserRole;
+  @ApiProperty({ enum: UserRole, isArray: true })
+  roles: UserRole[];
 
   @ApiProperty({ required: false })
   manager_id?: string;
 
+  @ApiProperty({ required: false, description: "Team Leader ID managing this user" })
+  team_leader_id?: string;
+
   @ApiProperty()
   is_active: boolean;
-
-  @ApiProperty({ required: false })
-  last_login_at?: Date;
-
-  @ApiProperty({ required: false })
-  last_activity_at?: Date;
-
-  @ApiProperty()
-  total_login_count: number;
-
-  @ApiProperty()
-  total_action_count: number;
 
   @ApiProperty()
   created_at: Date;

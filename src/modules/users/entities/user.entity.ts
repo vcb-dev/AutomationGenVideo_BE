@@ -21,15 +21,21 @@ export class UserEntity implements User {
   @Exclude()
   google_id: string | null;
 
-  @ApiProperty({ enum: UserRole })
-  role: UserRole;
+  @ApiProperty({ enum: UserRole, isArray: true })
+  roles: UserRole[];
+
+  @ApiProperty({ required: false, nullable: true })
+  ma_pin: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  team: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  lark_permissions: any | null;
 
   manager_id: string | null;
+  team_leader_id: string | null;
   is_active: boolean;
-  last_login_at: Date | null;
-  last_activity_at: Date | null;
-  total_login_count: number;
-  total_action_count: number;
   created_at: Date;
   updated_at: Date;
 }

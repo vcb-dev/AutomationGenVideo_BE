@@ -8,97 +8,34 @@ datasource db {
 }
 
 model User {
-  id                  String            @id @default(uuid())
-  email               String            @unique
+  id                  String           @id @default(uuid())
+  email               String           @unique
   password_hash       String?
   full_name           String
   avatar              String?
-  google_id           String?           @unique
-  role                UserRole
+  google_id           String?          @unique
+  roles               UserRole[]       @default([])
+  ma_pin              String?
+  team                String?
+  lark_permissions    Json?
   manager_id          String?
-  is_active           Boolean           @default(true)
-  last_login_at       DateTime?
-  last_activity_at    DateTime?
-  total_login_count   Int               @default(0)
-  total_action_count  Int               @default(0)
-  created_at          DateTime          @default(now())
-  updated_at          DateTime          @updatedAt
-  duplicate_reviews   DuplicateReview[] @relation("DuplicateReviews")
+  team_leader_id      String?
+  is_active           Boolean          @default(true)
+  created_at          DateTime         @default(now())
+  updated_at          DateTime         @updatedAt
   tracked_channels    TrackedChannel[]
-  activity_logs       UserActivityLog[]
-  rate_limits         UserRateLimit[]
-  usage_stats         UserUsageStat[]
-  manager             User?             @relation("ManagerEditors", fields: [manager_id], references: [id])
-  editors             User[]            @relation("ManagerEditors")
-  reviewed_duplicates VideoDuplicate[]  @relation("ReviewedDuplicates")
+  manager             User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
+  editors             User[]           @relation("ManagerEditors")
+  team_leader         User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
+  team_members        User[]           @relation("TeamLeaderMembers")
+  reviewed_duplicates VideoDuplicate[] @relation("ReviewedDuplicates")
   videos              Video[]
-  search_histories    SearchHistory[]
 
   @@index([email])
-  @@index([role])
+  @@index([roles])
   @@index([manager_id])
-  @@index([last_login_at])
+  @@index([team_leader_id])
   @@map("users")
-}
-
-model UserActivityLog {
-  id          String   @id @default(uuid())
-  user_id     String
-  role        UserRole
-  action      String
-  target_type String?
-  target_id   String?
-  description String?
-  ip_address  String?
-  user_agent  String?
-  metadata    Json?
-  created_at  DateTime @default(now())
-  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@index([user_id])
-  @@index([action])
-  @@index([created_at])
-  @@index([target_type, target_id])
-  @@map("user_activity_logs")
-}
-
-model UserUsageStat {
-  id                String    @id @default(uuid())
-  user_id           String
-  date              DateTime  @db.Date
-  login_count       Int       @default(0)
-  action_count      Int       @default(0)
-  video_generated   Int       @default(0)
-  api_request_count Int       @default(0)
-  last_action_at    DateTime?
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
-  user              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@unique([user_id, date])
-  @@index([user_id])
-  @@index([date])
-  @@map("user_usage_stats")
-}
-
-model UserRateLimit {
-  id             String    @id @default(uuid())
-  user_id        String
-  action_type    String
-  max_per_minute Int       @default(60)
-  max_per_day    Int       @default(1000)
-  current_count  Int       @default(0)
-  window_start   DateTime  @default(now())
-  blocked_until  DateTime?
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
-  user           User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@unique([user_id, action_type])
-  @@index([user_id])
-  @@index([action_type])
-  @@index([blocked_until])
-  @@map("user_rate_limits")
 }
 
 model TrackedChannel {
@@ -131,18 +68,18 @@ model TrackedChannel {
 
 // Voice: AI voice models for text-to-speech (managed by Django AI Service)
 model Voice {
-  id                BigInt    @id @default(autoincrement()) // Django uses BigAutoField
-  name              String    @db.VarChar(255)
-  voice_id          String    @unique @db.VarChar(255)
-  provider          String    @default("heygen") @db.VarChar(50)
-  is_cloned         Boolean   @default(false)
-  is_system         Boolean   @default(false)
-  language          String    @default("vi") @db.VarChar(10)
-  gender            String?   @db.VarChar(20)
-  sample_audio_url  String?
-  source_video_id   BigInt?   // Foreign key to video_management_scrapedvideo
-  created_at        DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+  id               BigInt   @id @default(autoincrement()) // Django uses BigAutoField
+  name             String   @db.VarChar(255)
+  voice_id         String   @unique @db.VarChar(255)
+  provider         String   @default("heygen") @db.VarChar(50)
+  is_cloned        Boolean  @default(false)
+  is_system        Boolean  @default(false)
+  language         String   @default("vi") @db.VarChar(10)
+  gender           String?  @db.VarChar(20)
+  sample_audio_url String?
+  source_video_id  BigInt? // Foreign key to video_management_scrapedvideo
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([provider])
   @@index([is_cloned])
@@ -153,22 +90,20 @@ model Voice {
 
 // Video: Represents a unique video content created by an editor
 model Video {
-  id                String            @id @default(uuid())
-  user_id           String
-  title             String?
-  description       String?
-  thumbnail_url     String?
-  duration          Int?
-  content_hash      String?
-  created_at        DateTime          @default(now())
-  updated_at        DateTime          @updatedAt
-  file_url          String?
-  new_video_reviews DuplicateReview[] @relation("NewVideoReviews")
-  suspected_reviews DuplicateReview[] @relation("SuspectedVideoReviews")
-  duplicate         VideoDuplicate?
-  fingerprint       VideoFingerprint?
-  posts             VideoPost[]
-  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id            String            @id @default(uuid())
+  user_id       String
+  title         String?
+  description   String?
+  thumbnail_url String?
+  duration      Int?
+  content_hash  String?
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+  file_url      String?
+  duplicate     VideoDuplicate?
+  fingerprint   VideoFingerprint?
+  posts         VideoPost[]
+  user          User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([content_hash])
@@ -256,32 +191,6 @@ model VideoDuplicate {
   @@index([status])
   @@index([reviewed_by])
   @@map("video_duplicates")
-}
-
-model DuplicateReview {
-  id                     String          @id @default(uuid())
-  new_video_id           String
-  suspected_duplicate_of String
-  similarity_score       Float
-  detection_method       String
-  confidence_level       String
-  status                 DuplicateStatus @default(PENDING_REVIEW)
-  reviewed_by            String?
-  reviewed_at            DateTime?
-  decision               String?
-  review_note            String?
-  created_at             DateTime        @default(now())
-  updated_at             DateTime        @updatedAt
-  new_video              Video           @relation("NewVideoReviews", fields: [new_video_id], references: [id], onDelete: Cascade)
-  reviewer               User?           @relation("DuplicateReviews", fields: [reviewed_by], references: [id])
-  suspected_video        Video           @relation("SuspectedVideoReviews", fields: [suspected_duplicate_of], references: [id], onDelete: Cascade)
-
-  @@index([new_video_id])
-  @@index([suspected_duplicate_of])
-  @@index([status])
-  @@index([reviewed_by])
-  @@index([created_at])
-  @@map("duplicate_reviews")
 }
 
 model auth_group {
@@ -546,6 +455,8 @@ model video_management_videocollection {
 enum UserRole {
   ADMIN
   MANAGER
+  LEADER_VIDEO
+  LEADER_CONTENT
   EDITOR
   CONTENT
 }
@@ -563,18 +474,4 @@ enum DuplicateStatus {
   DUPLICATE
   PENDING_REVIEW
   SUSPICIOUS
-}
-
-model SearchHistory {
-  id        String   @id @default(uuid())
-  user_id   String
-  term      String
-  platform  String?
-  timestamp DateTime @default(now())
-
-  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@index([user_id])
-  @@index([timestamp])
-  @@map("search_histories")
 }

@@ -23,6 +23,16 @@ async function bootstrap() {
   // Set global prefix
   app.setGlobalPrefix('api');
 
+  // Rewrite /auth/google/callback to /api/auth/google/callback
+  // This avoids redirect_uri_mismatch errors in Google Cloud Console
+  // if the whitelisted URL doesn't have the /api/ prefix.
+  app.use((req, res, next) => {
+    if (req.url.startsWith('/auth/google/callback')) {
+      req.url = req.url.replace('/auth/google/callback', '/api/auth/google/callback');
+    }
+    next();
+  });
+
   // CORS configuration
   app.enableCors({
     origin: process.env.CORS_ORIGIN || "*",
