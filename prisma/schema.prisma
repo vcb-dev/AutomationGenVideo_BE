@@ -478,6 +478,9 @@ model LarkReport {
   employee   Json?
   role       String?
 
+  @@index([date])
+  @@index([email])
+  @@index([name])
   @@map("lark_reports")
 }
 
@@ -495,6 +498,7 @@ model LarkEmployee {
   created_at    DateTime  @default(now())
   updated_at    DateTime  @updatedAt
 
+  @@index([name])
   @@map("lark_employees")
 }
 
@@ -531,6 +535,10 @@ model LarkKPI {
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
 
+  @@index([month])
+  @@index([team])
+  @@index([name])
+  @@index([employee_id])
   @@map("lark_kpi")
 }
 
@@ -557,21 +565,6 @@ enum DuplicateStatus {
   PENDING_REVIEW
   SUSPICIOUS
 }
-model LarkPermission {
-  id          String   @id
-  email       String?
-  name        String?
-  pin_code    String?
-  employee    Json?
-  role        String?
-  team        String?
-  status      String?
-  permissions String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
-
-  @@map("lark_permissions")
-}
 
 model ReportOutstanding {
   id           String   @id @default(uuid())
@@ -591,14 +584,34 @@ model ReportOutstanding {
 model HuykChannel {
   id           String   @id
   name         String
-  video_count  String?
-  traffic      BigInt?
-  revenue      BigInt?
-  channels     String?
-  checklist    String?
-  contribution String?
+  platform     String?  // Nền tảng
+  channel_id   String?  // ID kênh hiện tại
+  link_channel String?  // Link kênh
+  status       String?  // Trạng thái hoạt động
+  team_traffic String?  // Team Traffic
+  owner        String?  // Họ và tên
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
+  @@index([owner])
+  @@index([team_traffic])
   @@map("huyk_channels")
+}
+
+model LarkPermission {
+  id          String   @id
+  email       String?
+  name        String?
+  pin_code    String?
+  employee    Json?
+  role        String?
+  team        String?
+  status      String?
+  permissions Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([email])
+  @@index([name])
+  @@map("lark_permissions")
 }

@@ -264,16 +264,16 @@ export class LarkService {
     }
 
     async getPermissionData() {
-        return this.prisma.larkPermission.findMany({
-            orderBy: { created_at: 'desc' }
-        });
+        return this.prisma.$queryRawUnsafe('SELECT * FROM "lark_permissions" ORDER BY "created_at" DESC');
     }
 
     async getPermissionByEmail(email: string) {
         if (!email) return null;
-        return this.prisma.larkPermission.findFirst({
-            where: { email: { equals: email, mode: 'insensitive' } }
-        });
+        const results = await this.prisma.$queryRawUnsafe<any[]>(
+            'SELECT * FROM "lark_permissions" WHERE "email" ILIKE $1 LIMIT 1',
+            email
+        );
+        return results.length > 0 ? results[0] : null;
     }
 
     // Clear all larkReport data
@@ -311,25 +311,23 @@ export class LarkService {
 
             for (const record of records) {
                 const fields = record.fields;
-                // Mapping based on image: HỌ TÊN, So vd, Số traffic, Số dianh thu, số kênh, Check list, %
+                // Mapping based on model and Lark fields
                 const data = {
                     id: record.record_id,
                     name: String(fields['Tên kênh hiện tại'] || fields['name'] || 'N/A'),
-                    video_count: String(fields['Nền tảng'] || '0'),
-                    traffic: BigInt(0), // Master table doesn't have traffic
-                    revenue: BigInt(0), // Master table doesn't have revenue
-                    channels: String(fields['ID kênh hiện tại'] || '0'),
-                    checklist: String(fields['Trạng thái hoạt động'] || ''),
-                    contribution: String(fields['Team Traffic'] || ''),
+                    platform: String(fields['Nền tảng'] || ''),
+                    channel_id: String(fields['ID kênh hiện tại'] || ''),
+                    link_channel: String(fields['Link kênh'] || ''),
+                    status: String(fields['Trạng thái hoạt động'] || ''),
+                    team_traffic: String(fields['Team Traffic'] || ''),
+                    owner: String(fields['Họ và tên'] || fields['owner'] || ''),
                 };
 
-                /*
                 await this.prisma.huykChannel.upsert({
                     where: { id: data.id },
                     update: data,
                     create: data,
                 });
-                */
             }
             this.logger.log(`Successfully synced ${records.length} records to HuykChannel.`);
         } catch (error) {
@@ -338,10 +336,9 @@ export class LarkService {
     }
 
     async getHuykChannelData() {
-        return [];
-        // return this.prisma.huykChannel.findMany({
-        //     orderBy: { created_at: 'desc' }
-        // });
+        return this.prisma.huykChannel.findMany({
+            orderBy: { created_at: 'desc' }
+        });
     }
 
     async fetchLarkRecordsGeneric(baseId: string, tableId: string) {
@@ -993,9 +990,11 @@ export class LarkService {
             let requesterTeam = null;
 
             if (filters?.requesterEmail) {
-                const permission = await this.prisma.larkPermission.findFirst({
-                    where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } }
-                });
+                const results = await this.prisma.$queryRawUnsafe<any[]>(
+                    'SELECT * FROM "lark_permissions" WHERE "email" ILIKE $1 LIMIT 1',
+                    filters.requesterEmail
+                );
+                const permission = results.length > 0 ? results[0] : null;
                 if (permission) {
                     requesterRole = (permission.role || 'Member').toLowerCase();
                     requesterTeam = permission.team;
@@ -1022,18 +1021,45 @@ export class LarkService {
                 orderBy: { created_at: 'desc' },
             });
 
-            // Derive month string for kpiData filtering (e.g., "T2" for Feb, "T12" for Dec)
-            let kpiWhereClause: any = {};
+            // Fetch all KPIs for the matching year/month if possible
+            // We use a more flexible matching in-memory instead of just one format
+            const allKpiInDb = await this.prisma.larkKPI.findMany();
+
+            let targetMonthNum = 0;
+            let targetYear = 0;
             if (filters?.date) {
-                const targetDate = new Date(filters.date);
-                const monthNum = targetDate.getMonth() + 1;
-                kpiWhereClause.month = `T${monthNum}`;
+                const d = new Date(filters.date);
+                targetMonthNum = d.getMonth() + 1;
+                targetYear = d.getFullYear();
+            } else {
+                const d = new Date();
+                targetMonthNum = d.getMonth() + 1;
+                targetYear = d.getFullYear();
             }
 
-            // Fetch KPI data for the matching month (unfiltered by team to allow roster detection)
-            const kpiData = await this.prisma.larkKPI.findMany({
-                where: kpiWhereClause
+            const monthFormats = [
+                `T${targetMonthNum}`,
+                `Tháng ${targetMonthNum}`,
+                `tháng ${targetMonthNum}`,
+                `${targetMonthNum}`,
+                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`
+            ];
+
+            const kpiData = allKpiInDb.filter(k => {
+                if (!k.month) return false;
+                if (k.state?.toLowerCase() === 'off') return false;
+
+                const m = k.month.trim();
+                if (monthFormats.includes(m)) return true;
+
+                // Flexible isolation check for numeric month (e.g., "T2", "T02", "2")
+                // Use parseInt to handle leading zeros correctly
+                const monthNum = parseInt(targetMonthNum.toString());
+                const mDigits = m.match(/\d+/g);
+                return mDigits ? mDigits.some(d => parseInt(d) === monthNum) : false;
             });
+
+            this.logger.log(`Filtered ${kpiData.length} KPIs for month formats: ${monthFormats.join(', ')}`);
 
             // Fetch all employees to get positions
             const employees = await this.prisma.larkEmployee.findMany();
@@ -1051,7 +1077,8 @@ export class LarkService {
             });
 
             // Fetch all permissions for identifying requester in results
-            const permissions = await this.prisma.larkPermission.findMany();
+            const permissions = await this.prisma.$queryRawUnsafe<any[]>('SELECT * FROM "lark_permissions"');
+
             const permMap = new Map();
             permissions.forEach(p => {
                 if (p.name) {
@@ -1060,6 +1087,16 @@ export class LarkService {
                 }
                 if (p.email) {
                     permMap.set(p.email.toLowerCase().trim(), p);
+                }
+            });
+
+            // Fetch all Huyk Channels to count per user
+            const allHuykChannels = await this.prisma.huykChannel.findMany();
+            const huykChannelMap = new Map();
+            allHuykChannels.forEach(h => {
+                if (h.owner) {
+                    const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
+                    huykChannelMap.set(ownerKey, (huykChannelMap.get(ownerKey) || 0) + 1);
                 }
             });
 
@@ -1150,8 +1187,11 @@ export class LarkService {
                 const effectiveTeam = report?.team || kpi.team || 'Khác';
                 const effectiveTeamNormalized = effectiveTeam.toLowerCase().trim();
 
-                // 1. Logic cho BXH (Rankings): Mọi người xem được BXH của nhau nếu khớp bộ lọc team
-                const isMatchForRanking = !teamFilterNormalized || effectiveTeamNormalized === teamFilterNormalized;
+                // Relaxed team matching
+                const isMatchForRanking = !teamFilterNormalized ||
+                    effectiveTeamNormalized === teamFilterNormalized ||
+                    effectiveTeamNormalized.includes(teamFilterNormalized) ||
+                    teamFilterNormalized.includes(effectiveTeamNormalized);
 
                 // 2. Logic cho Báo cáo (Reports) & Summary:
                 // - Mọi người xem được các báo cáo nếu khớp bộ lọc team (đảm bảo tính minh bạch cho Hiệu suất)
@@ -1183,7 +1223,7 @@ export class LarkService {
                     checklist.tiktok = answersData['Bạn đã đăng video lên Tiktok chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên Tiktok chưa?'] === true || false;
                     checklist.youtube = answersData['Bạn đã đăng video lên Youtube chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên Youtube chưa?'] === true || false;
                     checklist.lark = answersData['Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || answersData['Báo cáo Lark - Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || false;
-                    checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true || false;
+                    checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true;
                 }
 
                 return {
@@ -1207,7 +1247,8 @@ export class LarkService {
                     completed_month: kpi.completed_month || 0,
                     traffic_month: kpi.traffic_month ? Number(kpi.traffic_month) : 0,
                     revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
-                    monthlyProgress: Math.round((kpi.kpi_progress_month || 0) * 100),
+                    monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
+                    channelCount: huykChannelMap.get(nameKey) || 0,
                     isAuthorizedForReport,
                     isMatchForRanking
                 };
@@ -1244,19 +1285,27 @@ export class LarkService {
                 totalTrafficCompleted: 0,
                 totalRevenueTarget: 0,
                 totalRevenueCompleted: 0,
+                totalChannels: 0,
+                totalReports: 0,
+                reportedCount: 0
             };
 
-            // Calculate aggregates from authorized reports
+            // Calculate summary aggregates from global kpiData (NOT just today's reporters)
+            // Deduplicate per person first (using kpisForAggregation created earlier)
+            kpisForAggregation.forEach(kpi => {
+                aggregates.totalVideoTarget += Number(kpi.kpi_month || 0);
+                aggregates.totalVideoCompleted += Number(kpi.completed_month || 0);
+                aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
+                aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
+                aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
+                aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
+            });
+
+            // Count reports and channels for today separately, based on combinedResults
             combinedResults.forEach(r => {
-                const kpi = kpisForAggregation.get(r.personKey);
-                if (kpi) {
-                    aggregates.totalVideoTarget += kpi.kpi_month || 0;
-                    aggregates.totalVideoCompleted += kpi.completed_month || 0;
-                    aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
-                    aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
-                    aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
-                    aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
-                }
+                aggregates.totalReports++;
+                if (r.date) aggregates.reportedCount++;
+                aggregates.totalChannels += (r.channelCount || 0);
             });
 
             // Calculate rankings using rankingList (which honors team filter for everyone)
@@ -1296,10 +1345,8 @@ export class LarkService {
                 });
 
             // Calculate team-level contribution breakdown (Global Month Context)
-            const monthStr = filters?.date ? `T${new Date(filters.date).getMonth() + 1}` : '';
-            const allKpiForMonth = await this.prisma.larkKPI.findMany({
-                where: monthStr ? { month: monthStr } : {}
-            });
+            // Use kpiData which is already filtered by current selected month and year
+            const allKpiForMonth = kpiData;
 
             // Map to unique people globally for correct aggregation
             const globalKpis = new Map();
@@ -1432,32 +1479,26 @@ export class LarkService {
 
             for (const record of records) {
                 const fields = record.fields;
-                await this.prisma.larkPermission.upsert({
-                    where: { id: record.record_id },
-                    update: {
-                        email: fields['Email'] || null,
-                        name: fields['HoTen'] || null,
-                        pin_code: fields['MaPin'] || null,
-                        employee: fields['Nhân viên'] || null,
-                        role: fields['Role'] || null,
-                        team: fields['Team'] || null,
-                        status: fields['Trang Thai'] || null,
-                        permissions: fields['Permissions'] || null,
-                        updated_at: new Date(),
-                    },
-                    create: {
-                        id: record.record_id,
-                        email: fields['Email'] || null,
-                        name: fields['HoTen'] || null,
-                        pin_code: fields['MaPin'] || null,
-                        employee: fields['Nhân viên'] || null,
-                        role: fields['Role'] || null,
-                        team: fields['Team'] || null,
-                        status: fields['Trang Thai'] || null,
-                        permissions: fields['Permissions'] || null,
-                    },
-                });
+                const dateNow = new Date();
+                await this.prisma.$executeRawUnsafe(`
+                    INSERT INTO "lark_permissions" ("id", "email", "name", "pin_code", "employee", "role", "team", "status", "permissions", "created_at", "updated_at")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+                    ON CONFLICT ("id") DO UPDATE SET
+                    "email" = EXCLUDED."email",
+                    "name" = EXCLUDED."name",
+                    "pin_code" = EXCLUDED."pin_code",
+                    "employee" = EXCLUDED."employee",
+                    "role" = EXCLUDED."role",
+                    "team" = EXCLUDED."team",
+                    "status" = EXCLUDED."status",
+                    "permissions" = EXCLUDED."permissions",
+                    "updated_at" = $10
+                `, record.record_id, fields['Email'] || null, fields['HoTen'] || null, fields['MaPin'] || null,
+                    fields['Nhân viên'] ? JSON.stringify(fields['Nhân viên']) : null,
+                    fields['Role'] || null, fields['Team'] || null, fields['Trang Thai'] || null,
+                    fields['Permissions'] ? JSON.stringify(fields['Permissions']) : null, dateNow);
             }
+
             this.logger.log('Lark Permission data sync completed.');
         } catch (error) {
             this.logger.error('Failed to sync Lark Permission data', error);
@@ -1469,15 +1510,34 @@ export class LarkService {
 
         try {
             // Find requester info
-            const requesterPermission = await this.prisma.larkPermission.findFirst({
-                where: { email: { equals: requesterEmail, mode: 'insensitive' } }
-            });
+            const results = await this.prisma.$queryRawUnsafe<any[]>(
+                'SELECT * FROM "lark_permissions" WHERE "email" ILIKE $1 LIMIT 1',
+                requesterEmail
+            );
+            const requesterPermission = results.length > 0 ? results[0] : null;
 
-            const requesterRole = requesterPermission?.role?.toLowerCase() || 'member';
-            const requesterTeam = requesterPermission?.team || null;
+            // Check User table if not in lark_permissions
+            let sysUser = null;
+            if (!requesterPermission) {
+                sysUser = await this.prisma.user.findFirst({
+                    where: { email: { equals: requesterEmail, mode: 'insensitive' } }
+                });
+            }
 
-            let userName = requesterPermission?.name || null;
-            let userTeam = requesterPermission?.team || null;
+            const requesterRole = requesterPermission?.role?.toLowerCase() || sysUser?.role?.toLowerCase() || 'member';
+            const requesterTeam = requesterPermission?.team || sysUser?.team || null;
+
+            let userName = requesterPermission?.name || sysUser?.full_name || null;
+            let userTeam = requesterPermission?.team || sysUser?.team || null;
+
+            // If Admin/Manager has no team, pick first one from KPI to avoid 0s
+            if (!userTeam && (requesterRole === 'admin' || requesterRole === 'manager')) {
+                const firstKpi = await this.prisma.larkKPI.findFirst({
+                    where: { team: { not: null } }
+                });
+                if (firstKpi) userTeam = firstKpi.team;
+                if (!userName) userName = requesterEmail.split('@')[0];
+            }
 
             // Fallback for unidentified users (try finding by email in reports)
             if (!userName) {
@@ -1493,14 +1553,14 @@ export class LarkService {
             // If a specific name is requested, check authorization
             if (targetName && targetName.trim()) {
                 // Find the target person
-                const targetPermission = await this.prisma.larkPermission.findFirst({
-                    where: { name: { contains: targetName.trim(), mode: 'insensitive' } }
+                const targetUser = await this.prisma.user.findFirst({
+                    where: { full_name: { contains: targetName.trim(), mode: 'insensitive' } }
                 });
 
-                if (targetPermission) {
+                if (targetUser) {
                     // Check if employee is resigned
                     const targetEmployee = await this.prisma.larkEmployee.findFirst({
-                        where: { name: { equals: targetPermission.name, mode: 'insensitive' } }
+                        where: { name: { equals: targetUser.full_name, mode: 'insensitive' } }
                     });
 
                     if (targetEmployee) {
@@ -1511,15 +1571,15 @@ export class LarkService {
                         }
                     }
 
-                    const isSameTeam = targetPermission.team === requesterTeam;
+                    const isSameTeam = targetUser.team === requesterTeam;
                     const isAdmin = requesterRole === 'admin';
                     const isManager = requesterRole === 'manager';
                     const isLeader = requesterRole === 'leader';
 
                     // Authorization check: Admin and Manager can see everyone, Leader can see their team
                     if (isAdmin || isManager || (isLeader && isSameTeam)) {
-                        userName = targetPermission.name;
-                        userTeam = targetPermission.team;
+                        userName = targetUser.full_name;
+                        userTeam = targetUser.team;
                     } else {
                         this.logger.warn(`Unauthorized: ${requesterEmail} (${requesterRole}) tried to access ${targetName}`);
                         // Fallback to own info or return empty
@@ -1563,16 +1623,93 @@ export class LarkService {
 
             const history = Array.from(monthlyData.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
+            // Fetch current activity (for card display)
+            const today = new Date();
+            const startOfToday = new Date(today.setHours(0, 0, 0, 0));
+            const endOfToday = new Date(today.setHours(23, 59, 59, 999));
+
+            const targetMonthNum = new Date().getMonth() + 1;
+            const targetYear = new Date().getFullYear();
+            const monthFormats = [
+                `T${targetMonthNum}`,
+                `Tháng ${targetMonthNum}`,
+                `tháng ${targetMonthNum}`,
+                `${targetMonthNum}`,
+                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`
+            ];
+
+            const allKpiInDb = await this.prisma.larkKPI.findMany();
+            const allTeamKpis = allKpiInDb.filter(k => {
+                if (!k.month) return false;
+                if (k.state?.toLowerCase() === 'off') return false;
+
+                const m = k.month.trim();
+                if (monthFormats.includes(m)) return true;
+
+                // Flexible isolation check for numeric month (e.g., "T2", "T02", "2")
+                const monthNum = parseInt(targetMonthNum.toString());
+                const mDigits = m.match(/\d+/g);
+                return mDigits ? mDigits.some(d => parseInt(d) === monthNum) : false;
+            });
+
+            const [todayReport, employee, userChannelCount] = await Promise.all([
+                this.prisma.larkReport.findFirst({
+                    where: {
+                        name: { equals: userName.trim(), mode: 'insensitive' },
+                        date: { gte: startOfToday, lte: endOfToday }
+                    }
+                }),
+                this.prisma.larkEmployee.findFirst({
+                    where: { name: { equals: userName.trim(), mode: 'insensitive' } }
+                }),
+                this.prisma.huykChannel.count({
+                    where: { owner: { equals: userName.trim(), mode: 'insensitive' } }
+                })
+            ]);
+
+            const currentMonthKpi = allTeamKpis
+                .filter(k => k.name?.toLowerCase().trim().replace(/\s+/g, ' ') === userName.toLowerCase().trim().replace(/\s+/g, ' '))
+                .sort((a, b) => (b.completed_month || 0) - (a.completed_month || 0))[0] || null;
+
+            // Calculate Company Stats (ALL Teams) for the current month
+            let companyStats = null;
+            try {
+                const companyLatestMap = new Map();
+                allTeamKpis.forEach(k => {
+                    if (!k.name) return; // Skip records without names to match getUserActivityReports
+                    const key = k.employee_id?.trim() || k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    if (!companyLatestMap.has(key) || (k.completed_month || 0) > (companyLatestMap.get(key).completed_month || 0)) {
+                        companyLatestMap.set(key, k);
+                    }
+                });
+
+                const compTotals = { video: 0, traffic: 0, revenue: 0 };
+                companyLatestMap.forEach(k => {
+                    compTotals.video += k.completed_month || 0;
+                    compTotals.traffic += Number(k.traffic_month || 0);
+                    compTotals.revenue += Number(k.revenue_month || 0);
+                });
+
+                const [companyChannelsCount] = await Promise.all([
+                    this.prisma.huykChannel.count()
+                ]);
+
+                companyStats = {
+                    totalVideo: compTotals.video,
+                    totalTraffic: compTotals.traffic,
+                    totalRevenue: compTotals.revenue,
+                    totalChannels: companyChannelsCount
+                };
+            } catch (e) {
+                this.logger.error('Failed to calculate company stats', e);
+            }
+
             // Calculate Team Stats for the current month
             let teamStats = null;
             if (userTeam) {
-                const currentMonth = `T${new Date().getMonth() + 1}`;
-                const teamKpis = await this.prisma.larkKPI.findMany({
-                    where: {
-                        team: userTeam,
-                        month: currentMonth
-                    }
-                });
+                const teamKpis = allTeamKpis.filter(k =>
+                    k.team?.toLowerCase().trim() === userTeam.toLowerCase().trim()
+                );
 
                 // Deduplicate team members (take latest for each person)
                 const teamLatestMap = new Map();
@@ -1583,7 +1720,7 @@ export class LarkService {
                     }
                 });
 
-                const teamTotals = { video: 0, traffic: 0, revenue: 0 };
+                const teamTotals = { video: 0, traffic: 0, revenue: 0, channels: 0 };
                 let userRecord = null;
 
                 teamLatestMap.forEach(k => {
@@ -1591,10 +1728,20 @@ export class LarkService {
                     teamTotals.traffic += Number(k.traffic_month || 0);
                     teamTotals.revenue += Number(k.revenue_month || 0);
 
-                    if (k.name?.toLowerCase().trim().replace(/\s+/g, ' ') === userName.toLowerCase().trim().replace(/\s+/g, ' ')) {
+                    const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ');
+                    if (nameKey === userName.toLowerCase().trim().replace(/\s+/g, ' ')) {
                         userRecord = k;
                     }
                 });
+
+                // Calculate team channels
+                try {
+                    const teamMembers = Array.from(teamLatestMap.values()).map(k => k.name?.trim()).filter(Boolean);
+                    const teamChannelsCount = await this.prisma.huykChannel.count({
+                        where: { owner: { in: teamMembers, mode: 'insensitive' } }
+                    });
+                    teamTotals.channels = teamChannelsCount;
+                } catch (e) { }
 
                 if (userRecord) {
                     teamStats = {
@@ -1604,47 +1751,58 @@ export class LarkService {
                         userTraffic: Number(userRecord.traffic_month || 0),
                         teamTraffic: teamTotals.traffic,
                         userRevenue: Number(userRecord.revenue_month || 0),
-                        teamRevenue: teamTotals.revenue
+                        teamRevenue: teamTotals.revenue,
+                        teamChannels: teamTotals.channels
+                    };
+                } else {
+                    // Fallback to individual stats if not found in team KPI (roster mismatch)
+                    const individualKpi = currentMonthKpi || (kpis.length > 0 ? kpis[kpis.length - 1] : null);
+                    teamStats = {
+                        teamName: userTeam || 'Cá nhân',
+                        userVideo: individualKpi?.completed_month || 0,
+                        teamVideo: teamTotals.video || individualKpi?.completed_month || 0,
+                        userTraffic: Number(individualKpi?.traffic_month || 0),
+                        teamTraffic: teamTotals.traffic || Number(individualKpi?.traffic_month || 0),
+                        userRevenue: Number(individualKpi?.revenue_month || 0),
+                        teamRevenue: teamTotals.revenue || Number(individualKpi?.revenue_month || 0),
+                        teamChannels: teamTotals.channels || userChannelCount
                     };
                 }
             }
 
-            // Fetch current activity (for card display)
-            const today = new Date();
-            const startOfToday = new Date(today.setHours(0, 0, 0, 0));
-            const endOfToday = new Date(today.setHours(23, 59, 59, 999));
-
-            const todayReport = await this.prisma.larkReport.findFirst({
-                where: {
-                    name: { equals: userName.trim(), mode: 'insensitive' },
-                    date: { gte: startOfToday, lte: endOfToday }
+            // Calculate checklist from latest report
+            let checklistStr = '0/6';
+            if (todayReport?.answers) {
+                let ans = todayReport.answers;
+                if (typeof ans === 'string') try { ans = JSON.parse(ans); } catch (e) { }
+                if (ans && typeof ans === 'object') {
+                    const checks = [
+                        ans['Bạn đã đăng video lên FB chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên FB chưa?'] === true,
+                        ans['Bạn đã đăng video lên IG chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên IG chưa?'] === true,
+                        ans['Bạn đã đăng video lên Tiktok chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên Tiktok chưa?'] === true,
+                        ans['Bạn đã đăng video lên Youtube chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên Youtube chưa?'] === true,
+                        ans['Báo cáo Lark - Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || ans['Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true,
+                        ans['Bạn đã check lại caption và hagtag video chưa?'] === true || ans['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true
+                    ];
+                    const count = checks.filter(Boolean).length;
+                    checklistStr = `${count}/6`;
                 }
-            });
-
-            const currentMonthKpi = await this.prisma.larkKPI.findFirst({
-                where: {
-                    name: { equals: userName.trim(), mode: 'insensitive' },
-                    month: `T${new Date().getMonth() + 1}`
-                },
-                orderBy: { created_at: 'desc' }
-            });
-
-            const employee = await this.prisma.larkEmployee.findFirst({
-                where: { name: { equals: userName.trim(), mode: 'insensitive' } }
-            });
+            }
 
             const userActivity = {
                 name: userName,
                 position: employee?.position || null,
                 team: userTeam || 'Khác',
                 avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(currentMonthKpi?.link_image) || this.convertDriveUrl(currentMonthKpi?.image_url) || null,
-                time: todayReport ? new Date(todayReport.date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : '07:00',
+                time: todayReport ? new Date(todayReport.date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'Chưa báo cáo',
                 dailyGoal: currentMonthKpi?.kpi_day || 0,
                 done: currentMonthKpi?.completed_day || 0,
                 traffic: Number(currentMonthKpi?.traffic_month || 0).toLocaleString('vi-VN'),
                 revenue: Number(currentMonthKpi?.revenue_month || 0).toLocaleString('vi-VN'),
                 reportStatus: todayReport ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
-                monthlyProgress: Math.round((currentMonthKpi?.kpi_progress_month || 0) * 100),
+                monthlyProgress: currentMonthKpi?.kpi_progress_month !== null ? Math.round(Number(currentMonthKpi.kpi_progress_month) * 100) : ((currentMonthKpi?.kpi_month || 0) > 0 ? Math.round((currentMonthKpi?.completed_month || 0) / currentMonthKpi.kpi_month * 100) : 0),
+                channels: userChannelCount,
+                checklist: checklistStr
             };
 
             // Fetch members for the performance table based on role
@@ -1678,8 +1836,13 @@ export class LarkService {
                     })
                 ]);
 
-                const huykMap = new Map();
-                huykChannels.forEach(h => huykMap.set(h.name?.toLowerCase().trim().replace(/\s+/g, ' '), h));
+                const huykCounts = new Map();
+                huykChannels.forEach(h => {
+                    if (h.owner) {
+                        const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
+                        huykCounts.set(ownerKey, (huykCounts.get(ownerKey) || 0) + 1);
+                    }
+                });
 
                 const reportMap = new Map();
                 recentReports.forEach(r => {
@@ -1699,8 +1862,7 @@ export class LarkService {
                         const contribution = totalVideo > 0 ? Math.round(((k.completed_month || 0) / totalVideo) * 100) : 0;
 
                         // Get Huyk channels count
-                        const huyk = huykMap.get(nameKey);
-                        const channelCount = huyk?.channels || huyk?.video_count || '0';
+                        const channelCount = huykCounts.get(nameKey) || 0;
 
                         // Calculate checklist from latest report
                         const report = reportMap.get(nameKey);
@@ -1738,7 +1900,7 @@ export class LarkService {
                 this.logger.error('Failed to fetch members list', e);
             }
 
-            return { history, teamStats, userActivity, members: membersList };
+            return { history, teamStats, companyStats, userActivity, members: membersList };
         } catch (error) {
             this.logger.error('Failed to get personal history', error);
             throw error;
@@ -1791,6 +1953,35 @@ export class LarkService {
             return { success: true, message: 'Status updated successfully' };
         } catch (error) {
             this.logger.error(`Failed to update outstanding status for id ${id}`, error);
+            throw error;
+        }
+    }
+
+    async syncHRData() {
+        return this.syncPermissionData();
+    }
+
+    async getHRDataStatus() {
+        return { message: 'HR Data sync status not implemented' };
+    }
+
+    async inspectTableGeneric(baseId: string, tableId: string) {
+        try {
+            const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
+            if (records.length > 0) {
+                const allFieldNames = new Set<string>();
+                records.forEach(record => {
+                    Object.keys(record.fields).forEach(key => allFieldNames.add(key));
+                });
+                return {
+                    totalRecords: records.length,
+                    allUniqueFields: Array.from(allFieldNames),
+                    sampleRecords: records.slice(0, 3).map(r => r.fields)
+                };
+            }
+            return { message: 'No records found' };
+        } catch (error) {
+            this.logger.error(`Failed to inspect table ${tableId}`, error);
             throw error;
         }
     }
