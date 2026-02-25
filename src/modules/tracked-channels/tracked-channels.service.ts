@@ -6,7 +6,7 @@ import { Platform } from '@prisma/client';
 
 @Injectable()
 export class TrackedChannelsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async create(userId: string, createDto: CreateTrackedChannelDto) {
     // Use upsert to handle both creation and update of stats
@@ -74,7 +74,7 @@ export class TrackedChannelsService {
 
   async getMyChannels(userId: string, platform?: string) {
     const channels = await this.findAllByUser(userId, platform);
-    
+
     return {
       success: true,
       channels,
@@ -128,17 +128,17 @@ export class TrackedChannelsService {
     try {
       // Call AI service to check channel using username (since IDs might differ)
       const url = `${process.env.AI_SERVICE_URL}/api/channels/check-by-username/`;
-      
+
       console.log(`[TrackedChannels] Calling AI Service (Check): POST ${url}`);
-      
+
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-             username: channel.username,
-             platform: channel.platform
+          username: channel.username,
+          platform: channel.platform
         })
       });
 
@@ -152,7 +152,7 @@ export class TrackedChannelsService {
 
       const data = await response.json();
       return data;
-      
+
     } catch (error) {
       console.error('Error checking channel:', error);
       throw new Error(`Failed to check channel: ${error.message}`);
@@ -234,18 +234,18 @@ export class TrackedChannelsService {
         // Generate 30 days of mock trend data
         const trends: TrendDataDto[] = [];
         const now = new Date();
-        
+
         for (let i = 29; i >= 0; i--) {
           const date = new Date(now);
           date.setDate(date.getDate() - i);
-          
+
           // Mock data with some growth pattern
           const dayFactor = (30 - i) / 30; // Growth factor
           const randomFactor = 0.8 + Math.random() * 0.4; // Random variation
-          
+
           const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
           const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
-          
+
           trends.push({
             date: date.toISOString().split('T')[0],
             likes: Math.floor(totalLikes * dayFactor * randomFactor),
@@ -257,15 +257,15 @@ export class TrackedChannelsService {
         // Calculate growth percentages (last 7 days vs previous 7 days)
         const last7Days = trends.slice(-7);
         const previous7Days = trends.slice(-14, -7);
-        
+
         const last7Likes = last7Days.reduce((sum, t) => sum + t.likes, 0);
         const prev7Likes = previous7Days.reduce((sum, t) => sum + t.likes, 0);
         const likesGrowth = prev7Likes > 0 ? ((last7Likes - prev7Likes) / prev7Likes) * 100 : 0;
-        
+
         const last7Views = last7Days.reduce((sum, t) => sum + t.views, 0);
         const prev7Views = previous7Days.reduce((sum, t) => sum + t.views, 0);
         const viewsGrowth = prev7Views > 0 ? ((last7Views - prev7Views) / prev7Views) * 100 : 0;
-        
+
         const last7Comments = last7Days.reduce((sum, t) => sum + t.comments, 0);
         const prev7Comments = previous7Days.reduce((sum, t) => sum + t.comments, 0);
         const commentsGrowth = prev7Comments > 0 ? ((last7Comments - prev7Comments) / prev7Comments) * 100 : 0;
@@ -300,7 +300,7 @@ export class TrackedChannelsService {
             id: true,
             email: true,
             full_name: true,
-            role: true,
+            roles: true,
           },
         },
       },
@@ -327,7 +327,7 @@ export class TrackedChannelsService {
             id: true,
             email: true,
             full_name: true,
-            role: true,
+            roles: true,
           },
         },
       },
@@ -373,9 +373,9 @@ export class TrackedChannelsService {
       const method = forceRefresh ? 'POST' : 'GET';
       // URL no longer includes ID
       const url = `${process.env.AI_SERVICE_URL}/api/videos/channel-hashtag-stats/`;
-      
+
       console.log(`[TrackedChannels] Calling AI Service: ${method} ${url} for ${channel.username}`);
-      
+
       const payload = {
         username: channel.username,
         platform: channel.platform,
@@ -386,10 +386,10 @@ export class TrackedChannelsService {
       let body = undefined;
 
       if (method === 'GET') {
-          const params = new URLSearchParams(payload as any);
-          fetchUrl = `${url}?${params.toString()}`;
+        const params = new URLSearchParams(payload as any);
+        fetchUrl = `${url}?${params.toString()}`;
       } else {
-          body = JSON.stringify(payload);
+        body = JSON.stringify(payload);
       }
 
       const response = await fetch(
@@ -412,7 +412,7 @@ export class TrackedChannelsService {
       }
 
       const data = await response.json();
-      
+
       return {
         channel_id: channelId,
         total_videos: data.total_videos || 0,
@@ -425,7 +425,7 @@ export class TrackedChannelsService {
       };
     } catch (error) {
       console.error('Error fetching channel hashtag stats:', error);
-      
+
       // Return empty stats on error
       return {
         channel_id: channelId,
