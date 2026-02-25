@@ -11,7 +11,7 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
     imports: [
         HttpModule,
         ConfigModule,
-        ScheduleModule.forRoot(),
+        ScheduleModule,
         PrismaModule
     ],
     controllers: [LarkController],

@@ -189,6 +189,14 @@ export class LarkController {
     ) {
         return this.larkService.updateOutstandingStatus(id, status);
     }
+    @Get('inspect-generic')
+    @ApiOperation({ summary: 'Inspect any Lark table structure' })
+    async inspectGeneric(
+        @Query('baseId') baseId: string,
+        @Query('tableId') tableId: string
+    ) {
+        return this.larkService.inspectTableGeneric(baseId, tableId);
+    }
 
     @Post('sync-huyk-channel')
     @ApiOperation({ summary: 'Manually trigger Huyk Channel data sync from Lark' })
@@ -205,5 +213,22 @@ export class LarkController {
     @ApiOperation({ summary: 'Get Huyk Channel data from Database' })
     async getHuykChannel() {
         return this.larkService.getHuykChannelData();
+    }
+
+    @Post('sync-hr')
+    @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts)' })
+    async syncHRData() {
+        try {
+            const result = await this.larkService.syncHRData();
+            return { message: 'HR sync completed successfully', data: result };
+        } catch (error) {
+            return { message: 'HR sync failed', error: error.message };
+        }
+    }
+
+    @Get('hr-status')
+    @ApiOperation({ summary: 'Get HR sync status - compare Lark vs local DB' })
+    async getHRStatus() {
+        return this.larkService.getHRDataStatus();
     }
 }
