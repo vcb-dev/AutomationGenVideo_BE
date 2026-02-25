@@ -101,7 +101,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
                     result.created++;
                     result.details.push({ email: parsed.email, action: 'created', roles: userRoles, team: parsed.team });
                     this.logger.log(`✅ Created: ${parsed.email} → [${userRoles.join(', ')}]`);
-                }
+                }23
             } catch (error) {
                 const msg = `Error processing record ${record.record_id}: ${error.message}`;
                 result.errors.push(msg);
