@@ -1,16 +1,45 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
+import { Cron } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
-export class LarkSyncService {
+export class LarkSyncService implements OnApplicationBootstrap {
     private readonly logger = new Logger(LarkSyncService.name);
 
     constructor(
         private readonly prisma: PrismaService,
         private readonly larkService: LarkService,
     ) { }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Chạy 1 lần ngay khi ứng dụng khởi động
+    // ──────────────────────────────────────────────────────────────────────────
+    async onApplicationBootstrap() {
+        this.logger.log('🚀 Application started — running initial Lark sync...');
+        try {
+            await this.syncFromLark();
+        } catch (err) {
+            this.logger.error(`❌ Initial Lark sync failed: ${err.message}`);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Tự động chạy mỗi 12 tiếng: 6:00 sáng và 18:00 tối (giờ Việt Nam)
+    // ──────────────────────────────────────────────────────────────────────────
+    @Cron('0 6,18 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    async scheduledSync() {
+        this.logger.log('⏰ Scheduled Lark sync triggered (every 12 hours)');
+        try {
+            const result = await this.syncFromLark();
+            this.logger.log(
+                `✅ Scheduled sync done: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`,
+            );
+        } catch (err) {
+            this.logger.error(`❌ Scheduled Lark sync failed: ${err.message}`);
+        }
+    }
 
     async syncFromLark(): Promise<{
         total: number;
@@ -40,7 +69,6 @@ export class LarkSyncService {
                     continue;
                 }
 
-                // Map Lark role to our UserRole array
                 const userRoles = this.larkService.mapToUserRoles(parsed.role, parsed.team);
 
                 const existingUser = await this.prisma.user.findUnique({
@@ -82,7 +110,9 @@ export class LarkSyncService {
         }
 
         await this.assignTeamRelationships();
-        this.logger.log(`🏁 Sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors`);
+        this.logger.log(
+            `🏁 Sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors`,
+        );
         return result;
     }
 
@@ -129,7 +159,7 @@ export class LarkSyncService {
         const larkEmails = records
             .map((r) => this.larkService.parseRecord(r))
             .filter((r) => r !== null)
-            .map((r) => r.email);
+            .map((r) => r!.email);
 
         const dbUsers = await this.prisma.user.findMany({ select: { email: true } });
         const dbEmails = dbUsers.map((u) => u.email);
