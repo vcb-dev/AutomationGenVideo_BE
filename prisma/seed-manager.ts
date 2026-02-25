@@ -33,7 +33,7 @@ async function main() {
       email: MANAGER_EMAIL,
       password_hash: hashedPassword,
       full_name: 'Viễn Chí Bảo Manager',
-      role: UserRole.MANAGER,
+      roles: [UserRole.MANAGER],
       is_active: true,
     },
   });
@@ -43,7 +43,7 @@ async function main() {
   console.log('📧 EMAIL    :', manager.email);
   console.log('🔑 PASSWORD :', MANAGER_PASSWORD);
   console.log('👤 NAME     :', manager.full_name);
-  console.log('🎭 ROLE     :', manager.role);
+  console.log('🎭 ROLES    :', manager.roles);
   console.log('🆔 ID       :', manager.id);
   console.log('═══════════════════════════════════════');
   console.log('\n💡 Sử dụng thông tin trên để đăng nhập vào hệ thống');

@@ -1513,10 +1513,11 @@ export class LarkService {
 
                     const isSameTeam = targetPermission.team === requesterTeam;
                     const isAdmin = requesterRole === 'admin';
+                    const isManager = requesterRole === 'manager';
                     const isLeader = requesterRole === 'leader';
 
-                    // Authorization check
-                    if (isAdmin || (isLeader && isSameTeam)) {
+                    // Authorization check: Admin and Manager can see everyone, Leader can see their team
+                    if (isAdmin || isManager || (isLeader && isSameTeam)) {
                         userName = targetPermission.name;
                         userTeam = targetPermission.team;
                     } else {
@@ -1526,7 +1527,7 @@ export class LarkService {
                 } else {
                     // If target not found in permissions, might still be in KPI table, but we need team for authorization
                     // For now, if not in permissions, we only allow Admin to see it
-                    if (requesterRole === 'admin') {
+                    if (requesterRole === 'admin' || requesterRole === 'manager') {
                         userName = targetName;
                         // userTeam remains unknown or we try to find it from KPI later
                     }
@@ -1646,7 +1647,98 @@ export class LarkService {
                 monthlyProgress: Math.round((currentMonthKpi?.kpi_progress_month || 0) * 100),
             };
 
-            return { history, teamStats, userActivity };
+            // Fetch members for the performance table based on role
+            let membersList = [];
+            try {
+                const currentMonth = `T${new Date().getMonth() + 1}`;
+                let membersWhere: any = { month: currentMonth };
+
+                if (requesterRole === 'admin' || requesterRole === 'manager') {
+                    // See everyone
+                } else if (requesterRole === 'leader' && requesterTeam) {
+                    membersWhere.team = requesterTeam;
+                } else {
+                    membersWhere.name = userName;
+                }
+
+                const allKpis = await this.prisma.larkKPI.findMany({
+                    where: membersWhere,
+                    orderBy: { revenue_month: 'desc' }
+                });
+
+                // Fetch Huyk data and Reports for context
+                // Use queryRaw for HuykChannel in case client is not yet updated with new model
+                const [huykChannels, recentReports] = await Promise.all([
+                    this.prisma.$queryRawUnsafe<any[]>('SELECT * FROM "huyk_channels"').catch(() => []),
+                    this.prisma.larkReport.findMany({
+                        where: {
+                            name: { in: allKpis.map(k => k.name).filter(Boolean) as string[] }
+                        },
+                        orderBy: { date: 'desc' }
+                    })
+                ]);
+
+                const huykMap = new Map();
+                huykChannels.forEach(h => huykMap.set(h.name?.toLowerCase().trim().replace(/\s+/g, ' '), h));
+
+                const reportMap = new Map();
+                recentReports.forEach(r => {
+                    const nameKey = r.name?.toLowerCase().trim().replace(/\s+/g, ' ');
+                    if (!reportMap.has(nameKey)) reportMap.set(nameKey, r);
+                });
+
+                // Get team totals for contribution calculation
+                const totalVideo = allKpis.reduce((sum, k) => sum + (k.completed_month || 0), 0);
+
+                // Deduplicate and format
+                const latestMembers = new Map();
+                allKpis.forEach(k => {
+                    const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const key = k.name?.trim() || k.id;
+                    if (!latestMembers.has(key)) {
+                        const contribution = totalVideo > 0 ? Math.round(((k.completed_month || 0) / totalVideo) * 100) : 0;
+
+                        // Get Huyk channels count
+                        const huyk = huykMap.get(nameKey);
+                        const channelCount = huyk?.channels || huyk?.video_count || '0';
+
+                        // Calculate checklist from latest report
+                        const report = reportMap.get(nameKey);
+                        let checklistStr = '0/6';
+                        if (report?.answers) {
+                            let ans = report.answers;
+                            if (typeof ans === 'string') try { ans = JSON.parse(ans); } catch (e) { }
+                            if (ans && typeof ans === 'object') {
+                                const checks = [
+                                    ans['Bạn đã đăng video lên FB chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên FB chưa?'] === true,
+                                    ans['Bạn đã đăng video lên IG chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên IG chưa?'] === true,
+                                    ans['Bạn đã đăng video lên Tiktok chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên Tiktok chưa?'] === true,
+                                    ans['Bạn đã đăng video lên Youtube chưa?'] === true || ans['Báo cáo Lark - Bạn đã đăng video lên Youtube chưa?'] === true,
+                                    ans['Báo cáo Lark - Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || ans['Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true,
+                                    ans['Bạn đã check lại caption và hagtag video chưa?'] === true || ans['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true
+                                ];
+                                const count = checks.filter(Boolean).length;
+                                checklistStr = `${count}/6`;
+                            }
+                        }
+
+                        latestMembers.set(key, {
+                            name: k.name,
+                            video: `${k.completed_month || 0} (${contribution}% đóng góp)`,
+                            traffic: Number(k.traffic_month || 0).toLocaleString('vi-VN'),
+                            revenue: Number(k.revenue_month || 0).toLocaleString('vi-VN'),
+                            channels: channelCount,
+                            checklist: checklistStr,
+                            isLeader: k.tag?.toLowerCase().includes('leader') || false
+                        });
+                    }
+                });
+                membersList = Array.from(latestMembers.values());
+            } catch (e) {
+                this.logger.error('Failed to fetch members list', e);
+            }
+
+            return { history, teamStats, userActivity, members: membersList };
         } catch (error) {
             this.logger.error('Failed to get personal history', error);
             throw error;
