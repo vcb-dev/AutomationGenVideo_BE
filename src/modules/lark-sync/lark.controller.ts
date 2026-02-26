@@ -3,12 +3,16 @@
 import { Controller, Get, Post, Query, Param, Res, Body } from '@nestjs/common';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
+import { LarkSyncService } from './lark-sync.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Lark Report')
 @Controller('lark')
 export class LarkController {
-    constructor(private readonly larkService: LarkService) { }
+    constructor(
+        private readonly larkService: LarkService,
+        private readonly larkSyncService: LarkSyncService,
+    ) { }
 
     @Get('report')
     @ApiOperation({ summary: 'Get daily report from Database' })
@@ -219,7 +223,7 @@ export class LarkController {
     @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts)' })
     async syncHRData() {
         try {
-            const result = await this.larkService.syncHRData();
+            const result = await this.larkSyncService.syncFromLark();
             return { message: 'HR sync completed successfully', data: result };
         } catch (error) {
             return { message: 'HR sync failed', error: error.message };
@@ -229,6 +233,6 @@ export class LarkController {
     @Get('hr-status')
     @ApiOperation({ summary: 'Get HR sync status - compare Lark vs local DB' })
     async getHRStatus() {
-        return this.larkService.getHRDataStatus();
+        return this.larkSyncService.getSyncStatus();
     }
 }
