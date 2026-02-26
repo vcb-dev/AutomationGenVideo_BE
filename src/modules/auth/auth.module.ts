@@ -7,6 +7,7 @@ import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./strategies/jwt.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
 import { UsersModule } from "../users/users.module";
+import { getRuntimeJwtSecret } from "./jwt-secret.util";
 
 @Module({
   imports: [
@@ -15,11 +16,10 @@ import { UsersModule } from "../users/users.module";
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
-        secret:
-          configService.get<string>("JWT_SECRET") ||
-          "default-dev-secret-change-in-production",
+        secret: getRuntimeJwtSecret(configService),
         signOptions: {
-          expiresIn: configService.get<string>("JWT_EXPIRES_IN") || "7d",
+          // Default session lifetime: 5 hours
+          expiresIn: configService.get<string>("JWT_EXPIRES_IN") || "5h",
         },
       }),
       inject: [ConfigService],
