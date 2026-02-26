@@ -5,6 +5,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { LarkController } from './lark.controller';
 import { LarkService } from './lark.service';
+import { LarkSyncService } from './lark-sync.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 
 @Module({
@@ -15,7 +16,7 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
         PrismaModule
     ],
     controllers: [LarkController],
-    providers: [LarkService],
-    exports: [LarkService],
+    providers: [LarkService, LarkSyncService],
+    exports: [LarkService, LarkSyncService],
 })
 export class LarkModule { }

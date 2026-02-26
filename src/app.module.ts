@@ -16,7 +16,7 @@ import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
 import { DouyinModule } from './douyin/douyin.module';
 import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
-import { LarkModule } from './modules/lark/lark.module';
+import { LarkModule } from './modules/lark-sync/lark.module';
 
 @Module({
   imports: [

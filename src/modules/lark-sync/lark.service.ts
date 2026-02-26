@@ -1965,6 +1965,52 @@ export class LarkService {
         return { message: 'HR Data sync status not implemented' };
     }
 
+    // --- HELPER METHODS FOR LarkSyncService ---
+    async fetchHRRecords() {
+        return this.fetchAllRecords(this.REPORT_BASE_ID, this.PERMISSION_TABLE_ID);
+    }
+
+    parseRecord(record: any) {
+        const fields = record.fields;
+        if (!fields['Email']) return null;
+
+        const trangThai = String(fields['Trang Thai'] || '').toLowerCase();
+        const isActive = trangThai !== 'da nghi' && trangThai !== 'đã nghỉ' && trangThai !== 'nghi viec';
+
+        return {
+            email: fields['Email'],
+            full_name: fields['HoTen'] || 'Unknown',
+            role: fields['Role'] || 'MEMBER',
+            team: fields['Team'] || 'None',
+            is_active: isActive,
+        };
+    }
+
+    mapToUserRoles(role: string, team: string): string[] {
+        const roles: string[] = [];
+        const r = (role || '').toUpperCase();
+        const t = (team || '').toUpperCase();
+
+        if (r.includes('ADMIN')) roles.push('ADMIN');
+        if (r.includes('MANAGER')) roles.push('MANAGER');
+
+        if (r.includes('LEAD') || r.includes('TRƯỞNG')) {
+            if (t.includes('VIDEO')) roles.push('LEADER_VIDEO');
+            else if (t.includes('CONTENT')) roles.push('LEADER_CONTENT');
+            else roles.push('MANAGER'); // Fallback for general leaders
+        } else {
+            // Check team for basic roles
+            if (t.includes('VIDEO')) roles.push('EDITOR');
+            else if (t.includes('CONTENT')) roles.push('CONTENT');
+            else roles.push('EDITOR'); // Default
+        }
+
+        // Deduplicate and ensure at least one role
+        const result = Array.from(new Set(roles));
+        if (result.length === 0) result.push('EDITOR');
+        return result;
+    }
+
     async inspectTableGeneric(baseId: string, tableId: string) {
         try {
             const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
