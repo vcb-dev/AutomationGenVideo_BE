@@ -50,6 +50,23 @@ export class SearchVideoDto {
   @IsString()
   @IsOptional()
   search_type?: string;
+
+  @ApiPropertyOptional({ description: 'Page number for pagination (1-based). Page 2 = next 30 results.', default: 1 })
+  @IsNumber()
+  @Min(1)
+  @IsOptional()
+  page?: number;
+
+  @ApiPropertyOptional({ description: 'Minimum comments filter (OR with min_likes, min_views for Instagram)', default: 0 })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  min_comments?: number;
+
+  @ApiPropertyOptional({ description: 'For Instagram/Facebook: hashtag (by #tag) or keyword (by caption)', default: 'hashtag' })
+  @IsString()
+  @IsOptional()
+  search_mode?: string;
 }
 
 export class UserVideosDto {
