@@ -3,6 +3,7 @@ import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { getRuntimeJwtSecret } from "../jwt-secret.util";
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -10,9 +11,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private configService: ConfigService,
     private prisma: PrismaService,
   ) {
-    const secret =
-      configService.get<string>("JWT_SECRET") ||
-      "default-dev-secret-change-in-production";
+    const secret = getRuntimeJwtSecret(configService);
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,

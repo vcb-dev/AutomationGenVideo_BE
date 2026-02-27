@@ -138,7 +138,8 @@ export class AuthService {
     };
 
     const access_token = this.jwtService.sign(payload);
-    const expiresIn = this.configService.get<string>("JWT_EXPIRES_IN") || "7d";
+    // Default session lifetime: 5 hours
+    const expiresIn = this.configService.get<string>("JWT_EXPIRES_IN") || "5h";
 
     // Remove password_hash from response
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
