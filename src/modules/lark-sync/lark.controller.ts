@@ -117,6 +117,17 @@ export class LarkController {
         }
     }
 
+    @Post('cleanup-kpi')
+    @ApiOperation({ summary: 'Manually trigger cleanup of invalid KPI records' })
+    async cleanupKPI() {
+        try {
+            await this.larkService.handleCleanup();
+            return { message: 'KPI cleanup triggered successfully' };
+        } catch (error) {
+            return { message: 'KPI cleanup failed', error: error.message };
+        }
+    }
+
     @Get('tables')
     @ApiOperation({ summary: 'List all tables in the Lark Base' })
     async listTables() {
@@ -210,6 +221,18 @@ export class LarkController {
             return { message: 'Huyk Channel sync completed successfully' };
         } catch (error) {
             return { message: 'Huyk Channel sync failed', error: error.message };
+        }
+    }
+
+    @Post('reset-huyk-channel')
+    @ApiOperation({ summary: 'Clear and re-sync Huyk Channel data' })
+    async resetHuykChannelData() {
+        try {
+            await this.larkService.clearHuykChannels();
+            await this.larkService.syncHuykChannelData();
+            return { message: 'Huyk Channel reset and sync completed successfully' };
+        } catch (error) {
+            return { message: 'Huyk Channel reset failed', error: error.message };
         }
     }
 

@@ -78,7 +78,6 @@ export class LarkService {
         }
     }
 
-    // Cron job runs every 30 minutes
     @Cron(CronExpression.EVERY_30_MINUTES)
     async handleCron() {
         this.logger.log('Starting scheduled Lark data sync (Reports, KPI, Employees)...');
@@ -93,6 +92,54 @@ export class LarkService {
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
             this.logger.error('Scheduled Lark data sync failed', error);
+        }
+    }
+
+    // Cron job runs at 12:00 AM every night to clean up invalid data
+    @Cron('0 0 * * *', { name: 'lark-data-cleanup', timeZone: 'Asia/Ho_Chi_Minh' })
+    async handleCleanup() {
+        this.logger.log('Starting midnight data cleanup for Lark tables...');
+        try {
+            // Cleanup Logic for LarkKPI
+            const kpiResult = await this.prisma.larkKPI.deleteMany({
+                where: {
+                    OR: [
+                        { name: null },
+                        { name: '' },
+                        { name: { equals: 'Unknown' } },
+                        { name: { equals: ' ' } },
+                        { name: { equals: '  ' } }
+                    ]
+                }
+            });
+
+            // Cleanup Logic for LarkReport
+            const reportResult = await this.prisma.larkReport.deleteMany({
+                where: {
+                    OR: [
+                        { name: { equals: 'Unknown' } },
+                        { name: { equals: '' } }
+                    ]
+                }
+            });
+
+            // Cleanup Logic for LarkEmployee
+            const employeeResult = await this.prisma.larkEmployee.deleteMany({
+                where: {
+                    OR: [
+                        { name: { equals: 'Unknown' } },
+                        { name: { equals: '' } },
+                        { name: { equals: ' ' } }
+                    ]
+                }
+            });
+
+            this.logger.log(`Cleanup completed: 
+                - Removed ${kpiResult.count} invalid KPI records.
+                - Removed ${reportResult.count} invalid Report records.
+                - Removed ${employeeResult.count} invalid Employee records.`);
+        } catch (error) {
+            this.logger.error('Failed to run data cleanup', error);
         }
     }
 
@@ -112,6 +159,12 @@ export class LarkService {
             let syncedCount = 0;
             for (const record of records) {
                 const reportData = this.mapRecordToReport(record);
+
+                // Skip garbage
+                if (!reportData.name || reportData.name === 'Unknown') {
+                    this.logger.debug(`Skipping garbage report record: ${record.record_id}`);
+                    continue;
+                }
 
                 await this.prisma.larkReport.upsert({
                     where: { id: reportData.id },
@@ -303,24 +356,38 @@ export class LarkService {
 
     async syncHuykChannelData() {
         try {
-            const baseId = this.configService.get<string>('LARK_HUYK_BASE_ID') || this.KPI_BASE_ID;
-            const tableId = 'tblWxMtDAkvh1gWS';
+            // This table tbljWdSiFVVWVqfp belongs to the REPORT_BASE_ID
+            const baseId = this.configService.get<string>('LARK_REPORT_BASE_ID') || 'Q5Fmby8DVaKOyusfR8glgRB6gbf';
+            const tableId = 'tbljWdSiFVVWVqfp';
+
             this.logger.log(`Syncing Huyk Channel table: ${tableId} from base: ${baseId}`);
             const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
             this.logger.log(`Fetched ${records.length} records from Huyk Channel table. Syncing to HuykChannel model...`);
 
+            const extractString = (val: any): string | null => {
+                if (!val) return null;
+                if (typeof val === 'string') return val;
+                if (Array.isArray(val) && val.length > 0) {
+                    const first = val[0];
+                    return first.name || first.text || (typeof first === 'string' ? first : null);
+                }
+                if (typeof val === 'object') return val.link || val.text || val.name || null;
+                return String(val);
+            };
+
             for (const record of records) {
                 const fields = record.fields;
-                // Mapping based on model and Lark fields
+
+                // Mapping based on new table structure
                 const data = {
                     id: record.record_id,
-                    name: String(fields['Tên kênh hiện tại'] || fields['name'] || 'N/A'),
-                    platform: String(fields['Nền tảng'] || ''),
-                    channel_id: String(fields['ID kênh hiện tại'] || ''),
-                    link_channel: String(fields['Link kênh'] || ''),
-                    status: String(fields['Trạng thái hoạt động'] || ''),
-                    team_traffic: String(fields['Team Traffic'] || ''),
-                    owner: String(fields['Họ và tên'] || fields['owner'] || ''),
+                    name: extractString(fields['Tên kênh hiện tại']) || 'N/A',
+                    platform: extractString(fields['Nền tảng']) || '',
+                    channel_id: extractString(fields['ID kênh hiện tại']) || '',
+                    link_channel: extractString(fields['Link kênh']) || '',
+                    status: extractString(fields['Trạng thái hoạt động']) || '',
+                    team_traffic: extractString(fields['Team Traffic']) || '',
+                    owner: extractString(fields['NV traffic xây kênh']) || '',
                 };
 
                 await this.prisma.huykChannel.upsert({
@@ -339,6 +406,10 @@ export class LarkService {
         return this.prisma.huykChannel.findMany({
             orderBy: { created_at: 'desc' }
         });
+    }
+
+    async clearHuykChannels() {
+        return this.prisma.huykChannel.deleteMany({});
     }
 
     async fetchLarkRecordsGeneric(baseId: string, tableId: string) {
@@ -437,6 +508,19 @@ export class LarkService {
     private mapRecordToReport(record: any) {
         const fields = record.fields;
 
+        const extractString = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) {
+                const first = val[0];
+                return first.name || first.text || (typeof first === 'string' ? first : null);
+            }
+            if (typeof val === 'object') return val.name || val.text || null;
+            return String(val);
+        };
+
+        let name = extractString(fields['HoTen'] || fields['Họ tên'] || fields['Nhân viên']);
+
         let dateValue = null;
         if (fields['Date']) {
             const rawDate = fields['Date'];
@@ -452,7 +536,7 @@ export class LarkService {
         return {
             id: record.record_id,
             email: fields['Email'] || null,
-            name: fields['HoTen'] || 'Unknown',
+            name: name || 'Unknown',
             employee: fields['Nhân viên'] || null,
             role: fields['Role'] || null,
             team: fields['Team'] || null,
@@ -636,6 +720,12 @@ export class LarkService {
             for (const record of records) {
                 const employeeData = this.mapRecordToEmployee(record);
 
+                // Skip garbage
+                if (!employeeData.name || employeeData.name === 'Unknown') {
+                    this.logger.debug(`Skipping garbage employee record: ${record.record_id}`);
+                    continue;
+                }
+
                 await this.prisma.larkEmployee.upsert({
                     where: { id: employeeData.id },
                     update: {
@@ -677,6 +767,19 @@ export class LarkService {
     private mapRecordToEmployee(record: any) {
         const fields = record.fields;
 
+        const extractString = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) {
+                const first = val[0];
+                return first.name || first.text || (typeof first === 'string' ? first : null);
+            }
+            if (typeof val === 'object') return val.name || val.text || null;
+            return String(val);
+        };
+
+        let name = extractString(fields['Tên'] || fields['Ten'] || fields['Họ tên'] || fields['Nhân viên']);
+
         // Extract image URL from Hình ảnh field
         let imageUrl = null;
         if (fields['Hình ảnh'] && Array.isArray(fields['Hình ảnh']) && fields['Hình ảnh'].length > 0) {
@@ -702,7 +805,7 @@ export class LarkService {
         return {
             id: record.record_id,
             employee_id: fields['ID nhân viên'] || null,
-            name: fields['Tên'] || 'Unknown',
+            name: name || 'Unknown',
             image_url: imageUrl,
             employee_data: fields['Nhân viên'] || null,
             tag_code: tagCode,
@@ -742,7 +845,7 @@ export class LarkService {
                             Authorization: `Bearer ${token}`,
                         },
                         params: {
-                            text_field_as_key: false,
+                            text_field_as_key: true,
                             page_size: 100,
                             page_token: pageToken || undefined
                         },
@@ -784,6 +887,19 @@ export class LarkService {
                 if (rawSamples.length < 3) rawSamples.push(record);
 
                 const kpiData = this.mapRecordToKPI(record);
+
+                // Skip garbage: No name or just whitespace/Unknown
+                const cleanName = (kpiData.name || '').trim();
+                if (!cleanName || cleanName.toLowerCase() === 'unknown') {
+                    this.logger.debug(`Skipping invalid KPI record during sync: ${record.record_id}`);
+                    continue;
+                }
+
+                // Skip records that are useless (no name AND no team)
+                if (!kpiData.name && !kpiData.team) {
+                    this.logger.debug(`Skipping empty KPI record: ${record.record_id}`);
+                    continue;
+                }
 
                 await this.prisma.larkKPI.upsert({
                     where: { id: kpiData.id },
@@ -902,12 +1018,32 @@ export class LarkService {
         }
 
         // Extract name
-        let name = null;
-        const ten = findValue(['Tên', 'Ten']);
-        if (Array.isArray(ten) && ten.length > 0) {
-            name = ten[0].text || null;
-        } else if (typeof ten === 'string') {
-            name = ten;
+        // Helper to extract string from Lark's complex field types
+        const extractString = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) {
+                const first = val[0];
+                return first.name || first.text || (typeof first === 'string' ? first : null);
+            }
+            if (typeof val === 'object') return val.name || val.text || null;
+            return String(val);
+        };
+
+        let name = extractString(findValue(['Tên', 'Ten', 'Họ tên', 'Ho ten', 'Full Name']));
+
+        // If name still null, try 'Nhân viên' or 'Nhan vien' (User field)
+        if (!name) {
+            name = extractString(findValue(['Nhân viên', 'Nhan vien', 'Employee']));
+        }
+
+        // Final fallback: ID nhân viên or TAG if it looks like a name/code
+        if (!name) {
+            name = extractString(findValue(['ID nhân viên', 'Mã Nhân Viên VCB', 'TAG']));
+        }
+
+        if (!name) {
+            this.logger.warn(`KPI Record ${record.record_id} has no name. Fields: ${Object.keys(record.fields).join(', ')}`);
         }
 
         // Extract KPI day percent
@@ -1003,17 +1139,19 @@ export class LarkService {
 
             // Fetch reports with optional filters
             const whereClause: any = {};
+            const d = filters?.date ? new Date(filters.date) : new Date();
+            const startOfDay = new Date(d);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(d);
+            endOfDay.setHours(23, 59, 59, 999);
 
-            if (filters?.date) {
-                const targetDate = new Date(filters.date);
-                const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-                const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+            whereClause.date = {
+                gte: startOfDay,
+                lte: endOfDay,
+            };
 
-                whereClause.date = {
-                    gte: startOfDay,
-                    lte: endOfDay,
-                };
-            }
+            const targetMonthNum = d.getMonth() + 1;
+            const targetYear = d.getFullYear();
 
             // Fetch reports (unfiltered by team initially to allow cross-team detection)
             const reports = await this.prisma.larkReport.findMany({
@@ -1022,20 +1160,7 @@ export class LarkService {
             });
 
             // Fetch all KPIs for the matching year/month if possible
-            // We use a more flexible matching in-memory instead of just one format
             const allKpiInDb = await this.prisma.larkKPI.findMany();
-
-            let targetMonthNum = 0;
-            let targetYear = 0;
-            if (filters?.date) {
-                const d = new Date(filters.date);
-                targetMonthNum = d.getMonth() + 1;
-                targetYear = d.getFullYear();
-            } else {
-                const d = new Date();
-                targetMonthNum = d.getMonth() + 1;
-                targetYear = d.getFullYear();
-            }
 
             const monthFormats = [
                 `T${targetMonthNum}`,
@@ -1109,27 +1234,27 @@ export class LarkService {
             const nameToPersonKey = new Map();
 
             kpiData.forEach(kpi => {
-                if (kpi.name) {
-                    const nameKey = kpi.name.toLowerCase().trim().replace(/\s+/g, ' ');
-                    const teamKey = kpi.team?.toLowerCase().trim() || '';
-                    const trimmedEmpId = kpi.employee_id?.trim();
-                    const personKey = trimmedEmpId || nameKey;
+                const nameKey = kpi.name ? kpi.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+                const teamKey = kpi.team?.toLowerCase().trim() || '';
+                const trimmedEmpId = kpi.employee_id?.trim();
 
+                // Use record ID as ultimate fallback for key to ensure data is counted
+                const personKey = trimmedEmpId || nameKey || kpi.id;
+
+                if (nameKey) {
                     nameToPersonKey.set(nameKey, personKey);
-
                     if (teamKey) {
                         kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
                     }
-
                     // Also store by name as secondary (prefer records with image)
                     if (!kpiByName.has(nameKey) || kpi.link_image || kpi.image_url) {
                         kpiByName.set(nameKey, kpi);
                     }
+                }
 
-                    // For summary calculation, we take the one with highest progress or latest
-                    if (!kpisForAggregation.has(personKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personKey).completed_month || 0)) {
-                        kpisForAggregation.set(personKey, kpi);
-                    }
+                // For summary calculation, we take the one with highest progress or latest
+                if (!kpisForAggregation.has(personKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personKey).completed_month || 0)) {
+                    kpisForAggregation.set(personKey, kpi);
                 }
             });
 
@@ -1169,6 +1294,12 @@ export class LarkService {
 
             const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
                 const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+
+                // Final guard: Skip records with no effective name in dashboard
+                if (!nameKey || nameKey === 'unknown') {
+                    return null;
+                }
+
                 const report = reportsMap.get(nameKey);
 
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
@@ -1178,7 +1309,16 @@ export class LarkService {
 
                 // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
                 const empStatus = (employee?.status || '').toLowerCase().trim();
-                if (empStatus === 'đã nghỉ' || empStatus === 'da nghi' || empStatus.includes('nghỉ')) {
+                const kpiEmpStatus = (kpi.employee_status || '').toLowerCase().trim();
+                const kpiState = (kpi.state || '').toLowerCase().trim();
+
+                const isResigned = empStatus.includes('nghỉ') ||
+                    empStatus === 'da nghi' ||
+                    kpiEmpStatus.includes('nghỉ') ||
+                    kpiEmpStatus === 'da nghi' ||
+                    kpiState === 'off';
+
+                if (isResigned) {
                     return null;
                 }
 
@@ -1293,6 +1433,26 @@ export class LarkService {
             // Calculate summary aggregates from global kpiData (NOT just today's reporters)
             // Deduplicate per person first (using kpisForAggregation created earlier)
             kpisForAggregation.forEach(kpi => {
+                // Check if resigned
+                const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const trimmedEmpId = kpi.employee_id?.trim();
+                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
+
+                const empStatus = (employee?.status || '').toLowerCase().trim();
+                const kpiEmpStatus = (kpi.employee_status || '').toLowerCase().trim();
+                const kpiState = (kpi.state || '').toLowerCase().trim();
+
+                const isResigned = empStatus.includes('nghỉ') ||
+                    empStatus === 'da nghi' ||
+                    kpiEmpStatus.includes('nghỉ') ||
+                    kpiEmpStatus === 'da nghi' ||
+                    kpiState === 'off';
+
+                if (isResigned) return; // Skip resigned employees in totals
+
+                // Also skip records with no name
+                if (!nameKey || nameKey === 'unknown') return;
+
                 aggregates.totalVideoTarget += Number(kpi.kpi_month || 0);
                 aggregates.totalVideoCompleted += Number(kpi.completed_month || 0);
                 aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
@@ -1524,10 +1684,28 @@ export class LarkService {
                 });
             }
 
-            const requesterRole = requesterPermission?.role?.toLowerCase() || sysUser?.role?.toLowerCase() || 'member';
+            const requesterRole = requesterPermission?.role?.toLowerCase() ||
+                (sysUser?.roles && (sysUser.roles as any).length > 0 ? (sysUser.roles as any)[0].toLowerCase() : null) ||
+                'member';
             const requesterTeam = requesterPermission?.team || sysUser?.team || null;
 
             let userName = requesterPermission?.name || sysUser?.full_name || null;
+
+            // Try to extract name from employee field if name is null
+            if (!userName && requesterPermission?.employee) {
+                try {
+                    const emp = typeof requesterPermission.employee === 'string'
+                        ? JSON.parse(requesterPermission.employee)
+                        : requesterPermission.employee;
+                    if (Array.isArray(emp) && emp.length > 0) {
+                        userName = emp[0].name || null;
+                    }
+                } catch (e) {
+                    this.logger.error('Failed to parse employee field for name', e);
+                }
+            }
+
+            if (userName === 'Unknown') userName = null;
             let userTeam = requesterPermission?.team || sysUser?.team || null;
 
             // If Admin/Manager has no team, pick first one from KPI to avoid 0s
@@ -1594,7 +1772,13 @@ export class LarkService {
                 }
             }
 
-            if (!userName) return { history: [], teamStats: null };
+            const isAdmin = requesterRole === 'admin' || requesterRole === 'manager';
+            if (!userName && !isAdmin) return { history: [], teamStats: null };
+
+            // For admins with no name, pick a placeholder or remains null
+            if (!userName && isAdmin) {
+                userName = 'Admin';
+            }
 
             // Fetch all KPI history for this user
             const kpis = await this.prisma.larkKPI.findMany({
@@ -1623,34 +1807,43 @@ export class LarkService {
 
             const history = Array.from(monthlyData.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-            // Fetch current activity (for card display)
             const today = new Date();
             const startOfToday = new Date(today.setHours(0, 0, 0, 0));
             const endOfToday = new Date(today.setHours(23, 59, 59, 999));
 
-            const targetMonthNum = new Date().getMonth() + 1;
-            const targetYear = new Date().getFullYear();
-            const monthFormats = [
-                `T${targetMonthNum}`,
-                `Tháng ${targetMonthNum}`,
-                `tháng ${targetMonthNum}`,
-                `${targetMonthNum}`,
-                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`
-            ];
-
+            let targetMonthNum = new Date().getMonth() + 1;
             const allKpiInDb = await this.prisma.larkKPI.findMany();
-            const allTeamKpis = allKpiInDb.filter(k => {
-                if (!k.month) return false;
-                if (k.state?.toLowerCase() === 'off') return false;
 
-                const m = k.month.trim();
-                if (monthFormats.includes(m)) return true;
+            const getKpisForMonth = (mNum: number) => {
+                const formats = [`T${mNum}`, `Tháng ${mNum}`, `tháng ${mNum}`, `${mNum}`, mNum < 10 ? `0${mNum}` : `${mNum}`];
+                return allKpiInDb.filter(k => {
+                    if (!k.month) return false;
+                    if (k.state?.toLowerCase() === 'off') return false;
+                    const m = k.month.trim();
+                    if (formats.includes(m)) return true;
+                    const mDigits = m.match(/\d+/g);
+                    return mDigits ? mDigits.some(d => parseInt(d) === mNum) : false;
+                });
+            };
 
-                // Flexible isolation check for numeric month (e.g., "T2", "T02", "2")
-                const monthNum = parseInt(targetMonthNum.toString());
-                const mDigits = m.match(/\d+/g);
-                return mDigits ? mDigits.some(d => parseInt(d) === monthNum) : false;
-            });
+            let allTeamKpis = getKpisForMonth(targetMonthNum);
+
+            // Fallback: If no KPIs for current month, find most recent month with data
+            if (allTeamKpis.length === 0 && allKpiInDb.length > 0) {
+                // Find latest month present in DB
+                const sortedByDate = [...allKpiInDb].sort((a, b) => (b.created_at?.getTime() || 0) - (a.created_at?.getTime() || 0));
+                const latestKpi = sortedByDate[0];
+                const mDigits = latestKpi.month?.match(/\d+/);
+                if (mDigits) {
+                    targetMonthNum = parseInt(mDigits[0]);
+                    allTeamKpis = getKpisForMonth(targetMonthNum);
+                    this.logger.log(`No data for T${new Date().getMonth() + 1}, falling back to month ${targetMonthNum}`);
+                }
+            }
+
+            const targetMonth = `T${targetMonthNum}`;
+            const monthFormats = [`T${targetMonthNum}`, `Tháng ${targetMonthNum}`, `${targetMonthNum}`];
+
 
             const [todayReport, employee, userChannelCount] = await Promise.all([
                 this.prisma.larkReport.findFirst({
@@ -1674,10 +1867,14 @@ export class LarkService {
             // Calculate Company Stats (ALL Teams) for the current month
             let companyStats = null;
             try {
+                // Deduplicate by person (if possible) or by record ID
                 const companyLatestMap = new Map();
                 allTeamKpis.forEach(k => {
-                    if (!k.name) return; // Skip records without names to match getUserActivityReports
-                    const key = k.employee_id?.trim() || k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    // Use a unique key: employee_id > name > record_id
+                    const key = k.employee_id?.trim() ||
+                        (k.name ? k.name.toLowerCase().trim().replace(/\s+/g, ' ') : null) ||
+                        k.id;
+
                     if (!companyLatestMap.has(key) || (k.completed_month || 0) > (companyLatestMap.get(key).completed_month || 0)) {
                         companyLatestMap.set(key, k);
                     }
@@ -1690,9 +1887,7 @@ export class LarkService {
                     compTotals.revenue += Number(k.revenue_month || 0);
                 });
 
-                const [companyChannelsCount] = await Promise.all([
-                    this.prisma.huykChannel.count()
-                ]);
+                const companyChannelsCount = await this.prisma.huykChannel.count().catch(() => 0);
 
                 companyStats = {
                     totalVideo: compTotals.video,
@@ -1700,6 +1895,8 @@ export class LarkService {
                     totalRevenue: compTotals.revenue,
                     totalChannels: companyChannelsCount
                 };
+
+                this.logger.log(`Calculated Company Stats: ${JSON.stringify(companyStats)} from ${companyLatestMap.size} unique records`);
             } catch (e) {
                 this.logger.error('Failed to calculate company stats', e);
             }
@@ -1800,7 +1997,7 @@ export class LarkService {
                 traffic: Number(currentMonthKpi?.traffic_month || 0).toLocaleString('vi-VN'),
                 revenue: Number(currentMonthKpi?.revenue_month || 0).toLocaleString('vi-VN'),
                 reportStatus: todayReport ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
-                monthlyProgress: currentMonthKpi?.kpi_progress_month !== null ? Math.round(Number(currentMonthKpi.kpi_progress_month) * 100) : ((currentMonthKpi?.kpi_month || 0) > 0 ? Math.round((currentMonthKpi?.completed_month || 0) / currentMonthKpi.kpi_month * 100) : 0),
+                monthlyProgress: (currentMonthKpi && currentMonthKpi.kpi_progress_month !== null) ? Math.round(Number(currentMonthKpi.kpi_progress_month) * 100) : ((currentMonthKpi?.kpi_month || 0) > 0 ? Math.round((currentMonthKpi?.completed_month || 0) / currentMonthKpi.kpi_month * 100) : 0),
                 channels: userChannelCount,
                 checklist: checklistStr
             };
@@ -1808,8 +2005,7 @@ export class LarkService {
             // Fetch members for the performance table based on role
             let membersList = [];
             try {
-                const currentMonth = `T${new Date().getMonth() + 1}`;
-                let membersWhere: any = { month: currentMonth };
+                let membersWhere: any = { month: targetMonth };
 
                 if (requesterRole === 'admin' || requesterRole === 'manager') {
                     // See everyone
@@ -1819,8 +2015,16 @@ export class LarkService {
                     membersWhere.name = userName;
                 }
 
+                // If user is admin but has no name, we filter by team to show something or everyone
+                if (isAdmin && userName === 'Admin') {
+                    delete membersWhere.name;
+                }
+
                 const allKpis = await this.prisma.larkKPI.findMany({
-                    where: membersWhere,
+                    where: {
+                        ...membersWhere,
+                        month: { in: monthFormats }
+                    },
                     orderBy: { revenue_month: 'desc' }
                 });
 
@@ -1902,7 +2106,9 @@ export class LarkService {
 
             return { history, teamStats, companyStats, userActivity, members: membersList };
         } catch (error) {
-            this.logger.error('Failed to get personal history', error);
+            const fs = require('fs');
+            fs.appendFileSync('lark-error.log', `[${new Date().toISOString()}] Error in getPersonalHistory for ${requesterEmail}: ${error.message}\n${error.stack}\n\n`);
+            this.logger.error(`Error in getPersonalHistory for ${requesterEmail}: ${error.message}`, error.stack);
             throw error;
         }
     }
