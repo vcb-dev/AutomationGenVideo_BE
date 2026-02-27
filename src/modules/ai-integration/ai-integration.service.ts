@@ -52,7 +52,7 @@ export class AiIntegrationService {
 
     minViews = 0,
 
-    maxResults = 20,
+    maxResults = 30,
 
     useCache = true,
 
@@ -60,11 +60,17 @@ export class AiIntegrationService {
 
     searchType = 'posts',
 
+    page = 1,
+
+    minComments = 0,
+
+    searchMode = 'hashtag',
+
   ): Promise<any> {
 
     const url = `${this.aiServiceUrl}/api/search/`;
 
-    this.logger.log(`Calling AI Service: ${url} with platform=${platform}, type=${searchType}, keyword=${keyword}`);
+    this.logger.log(`Calling AI Service: ${url} with platform=${platform}, type=${searchType}, mode=${searchMode}, keyword=${keyword}, page=${page}`);
 
 
 
@@ -82,6 +88,8 @@ export class AiIntegrationService {
 
           min_views: minViews,
 
+          min_comments: minComments,
+
           max_results: maxResults,
 
           use_cache: useCache,
@@ -89,6 +97,10 @@ export class AiIntegrationService {
           async_mode: asyncMode,
 
           search_type: searchType,
+
+          page,
+
+          search_mode: searchMode,
 
         }, {
 
@@ -631,30 +643,42 @@ export class AiIntegrationService {
         return;
       }
 
-      // Fetch the image
+      // Fetch the image - headers giống browser để tránh Instagram CDN block
       const response = await firstValueFrom(
         this.httpService.get(imageUrl, {
           responseType: 'arraybuffer',
-          timeout: 10000,
+          timeout: 15000,
+          maxRedirects: 5,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.instagram.com/',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
           },
         })
       );
 
-      // Set appropriate headers
+      if (!response.data || response.data.byteLength === 0) {
+        this.logger.warn('Proxy avatar: empty response from CDN');
+        res.status(404).send('Image not found');
+        return;
+      }
+
       const contentType = response.headers['content-type'] || 'image/jpeg';
       res.set({
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+        'Cache-Control': 'public, max-age=86400',
         'Access-Control-Allow-Origin': '*',
       });
 
       res.send(Buffer.from(response.data));
-    } catch (error) {
-      this.logger.error(`Failed to proxy avatar: ${error.message}`);
-      res.status(500).send('Failed to fetch image');
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const msg = error?.response?.data ? '(CDN returned error)' : error.message;
+      this.logger.warn(`Proxy avatar failed [${status || 'err'}]: ${msg}`);
+      res.status(status === 403 || status === 404 ? status : 500).send('Failed to fetch image');
     }
   }
 

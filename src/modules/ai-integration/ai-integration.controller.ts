@@ -22,10 +22,13 @@ export class AiIntegrationController {
       searchDto.keyword,
       searchDto.min_likes || 0,
       searchDto.min_views || 0,
-      searchDto.max_results || 20,
+      searchDto.max_results || 30,
       searchDto.use_cache !== false,
       searchDto.async_mode || false,
       searchDto.search_type || 'posts',
+      searchDto.page || 1,
+      searchDto.min_comments || 0,
+      searchDto.search_mode ?? 'hashtag',
     );
   }
 
