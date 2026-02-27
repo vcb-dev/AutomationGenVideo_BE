@@ -1545,13 +1545,14 @@ export class LarkService {
                 revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0
             })).sort((a, b) => b.videoPct - a.videoPct);
 
-            // Fetch daily outstanding reports for the day (Ideas, Difficulties, Wins)
-            // Using raw query as workaround because prisma generate is blocked by running process
+            // Fetch outstanding reports (Ideas, Difficulties, Wins)
+            // Instead of filtering by exact date (which was causing timezone issues and empty results),
+            // return the most recent 200 records and let the frontend filter by team/name/type.
             const reportOutstandings = await this.prisma.$queryRawUnsafe(`
-                SELECT * FROM "report_outstanding" 
-                WHERE "date" >= $1 AND "date" <= $2
-                ORDER BY "created_at" DESC
-            `, whereClause.date.gte, whereClause.date.lte);
+                SELECT * FROM "report_outstanding"
+                ORDER BY "date" DESC, "created_at" DESC
+                LIMIT 200
+            `);
 
             return {
                 reports: combinedResults,
