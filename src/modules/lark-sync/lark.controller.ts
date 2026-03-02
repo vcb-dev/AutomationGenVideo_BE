@@ -117,6 +117,20 @@ export class LarkController {
         }
     }
 
+    @Post('sync-report-kpi')
+    @ApiOperation({ summary: 'Manually trigger Report KPI sync from Lark (Task Progress)' })
+    async syncReportKPIData() {
+        try {
+            const result = await this.larkService.syncReportKPIData();
+            return {
+                message: 'Report KPI sync completed successfully',
+                ...result
+            };
+        } catch (error) {
+            return { message: 'Report KPI sync failed', error: error.message };
+        }
+    }
+
     @Post('cleanup-kpi')
     @ApiOperation({ summary: 'Manually trigger cleanup of invalid KPI records' })
     async cleanupKPI() {
@@ -139,11 +153,15 @@ export class LarkController {
     @ApiResponse({ status: 200, description: 'Returns combined user activity data with avatars from KPI.' })
     async getUserActivityReports(
         @Query('date') date?: string,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
         @Query('team') team?: string,
         @Query('requesterEmail') requesterEmail?: string
     ) {
         const filters = {};
         if (date) filters['date'] = date;
+        if (startDate) filters['startDate'] = startDate;
+        if (endDate) filters['endDate'] = endDate;
         if (team) filters['team'] = team;
         if (requesterEmail) filters['requesterEmail'] = requesterEmail;
 

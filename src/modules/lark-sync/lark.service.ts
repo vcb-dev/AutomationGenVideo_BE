@@ -25,6 +25,7 @@ export class LarkService {
     private readonly KPI_TABLE_ID: string;
     private readonly EMPLOYEE_TABLE_ID: string;
     private readonly PERMISSION_TABLE_ID: string;
+    private readonly REPORT_KPI_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -42,6 +43,7 @@ export class LarkService {
         this.KPI_TABLE_ID = this.configService.get<string>('LARK_KPI_TABLE_ID');
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
         this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
+        this.REPORT_KPI_TABLE_ID = this.configService.get<string>('LARK_REPORT_KPI_TABLE_ID');
     }
 
     async getAccessToken(): Promise<string> {
@@ -88,6 +90,7 @@ export class LarkService {
                 this.syncEmployeeData(),
                 this.syncPermissionData(),
                 this.syncHuykChannelData(),
+                this.syncReportKPIData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -981,6 +984,101 @@ export class LarkService {
         }
     }
 
+    // Sync Report KPI data from Lark (tblh9DeeqDBItrg7) to database
+    async syncReportKPIData() {
+        try {
+            if (!this.KPI_BASE_ID || !this.REPORT_KPI_TABLE_ID) {
+                this.logger.warn('LARK_KPI_BASE_ID or LARK_REPORT_KPI_TABLE_ID not configured');
+                return { synced: 0, total: 0 };
+            }
+
+            const records = await this.fetchLarkRecordsGeneric(this.KPI_BASE_ID, this.REPORT_KPI_TABLE_ID);
+            this.logger.log(`Fetched ${records.length} Report KPI records from Lark. Syncing to database...`);
+
+            let syncedCount = 0;
+            for (const record of records) {
+                const mappedData = this.mapRecordToReportKPI(record);
+
+                if (!mappedData.email && !mappedData.name) continue;
+
+                await (this.prisma as any).$executeRawUnsafe(`
+                    INSERT INTO "lark_report_kpi" (
+                        "id", "employee_id", "name", "email", "team", "month", "report_date",
+                        "kpi_day", "kpi_month", "completed_day", "completed_month", "kpi_status",
+                        "task_auto", "task_auto_month", "task_new", "task_new_month", "traffic_month",
+                        "status", "image_url", "updated_at"
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+                    ON CONFLICT ("id") DO UPDATE SET
+                        "employee_id" = EXCLUDED."employee_id",
+                        "name" = EXCLUDED."name",
+                        "email" = EXCLUDED."email",
+                        "team" = EXCLUDED."team",
+                        "month" = EXCLUDED."month",
+                        "report_date" = EXCLUDED."report_date",
+                        "kpi_day" = EXCLUDED."kpi_day",
+                        "kpi_month" = EXCLUDED."kpi_month",
+                        "completed_day" = EXCLUDED."completed_day",
+                        "completed_month" = EXCLUDED."completed_month",
+                        "kpi_status" = EXCLUDED."kpi_status",
+                        "task_auto" = EXCLUDED."task_auto",
+                        "task_auto_month" = EXCLUDED."task_auto_month",
+                        "task_new" = EXCLUDED."task_new",
+                        "task_new_month" = EXCLUDED."task_new_month",
+                        "traffic_month" = EXCLUDED."traffic_month",
+                        "status" = EXCLUDED."status",
+                        "image_url" = EXCLUDED."image_url",
+                        "updated_at" = NOW();
+                `,
+                    mappedData.id, mappedData.employee_id, mappedData.name, mappedData.email, mappedData.team, mappedData.month, mappedData.report_date,
+                    mappedData.kpi_day, mappedData.kpi_month, mappedData.completed_day, mappedData.completed_month, mappedData.kpi_status,
+                    mappedData.task_auto, mappedData.task_auto_month, mappedData.task_new, mappedData.task_new_month, mappedData.traffic_month,
+                    mappedData.status, mappedData.image_url);
+
+                syncedCount++;
+            }
+
+            this.logger.log(`Successfully synced ${syncedCount} Report KPI records.`);
+            return { synced: syncedCount, total: records.length };
+        } catch (error) {
+            this.logger.error('Failed to sync Report KPI data', error);
+            throw error;
+        }
+    }
+
+    private mapRecordToReportKPI(record: any) {
+        const fields = record.fields;
+        const person = Array.isArray(fields['Nhân viên']) ? fields['Nhân viên'][0] : (fields['Nhân viên'] || {});
+
+        // Handle timestamp conversion
+        let reportDate = null;
+        if (fields['Ngày báo cáo']) {
+            const val = Number(fields['Ngày báo cáo']);
+            if (!isNaN(val)) reportDate = new Date(val);
+        }
+
+        return {
+            id: record.record_id,
+            employee_id: fields['ID nhân viên'] || null,
+            name: person.name || null,
+            email: person.email || null,
+            team: fields['Team'] || null,
+            month: fields['Tháng'] || null,
+            report_date: reportDate,
+            kpi_day: Number(fields['KPI Ngày']) || 0,
+            kpi_month: Number(fields['KPI THÁNG']) || 0,
+            completed_day: Number(fields['Hoàn thành']) || 0,
+            completed_month: Number(fields['Hoàn thành Tháng']) || 0,
+            kpi_status: fields['KPII'] || null,
+            task_auto: Number(fields['Task Auto']) || 0,
+            task_auto_month: Number(fields['Task Auto Tháng']) || 0,
+            task_new: Number(fields['Task mới']) || 0,
+            task_new_month: Number(fields['Task mới tháng']) || 0,
+            traffic_month: fields['Traffic Tháng'] ? BigInt(fields['Traffic Tháng']) : BigInt(0),
+            status: fields['Trạng thái'] || null,
+            image_url: fields['Link ảnh'] || (Array.isArray(fields['Link ảnh']) ? fields['Link ảnh'][0]?.url : null),
+        };
+    }
+
     // Map Lark KPI record to database format
     private mapRecordToKPI(record: any) {
         const fields = record.fields;
@@ -1119,7 +1217,7 @@ export class LarkService {
     }
 
     // Get combined user activity reports (LarkReport + LarkKPI)
-    async getUserActivityReports(filters?: { date?: string; team?: string; requesterEmail?: string }) {
+    async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string }) {
         try {
             // Fetch requester's role and team from LarkPermission
             let requesterRole = 'Member';
@@ -1139,24 +1237,40 @@ export class LarkService {
 
             // Fetch reports with optional filters
             const whereClause: any = {};
-            const d = filters?.date ? new Date(filters.date) : new Date();
-            const startOfDay = new Date(d);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(d);
-            endOfDay.setHours(23, 59, 59, 999);
+            let startOfDay: Date;
+            let endOfDay: Date;
+
+            if (filters?.startDate && filters?.endDate) {
+                startOfDay = new Date(filters.startDate);
+                startOfDay.setHours(0, 0, 0, 0);
+                endOfDay = new Date(filters.endDate);
+                endOfDay.setHours(23, 59, 59, 999);
+            } else if (filters?.date) {
+                const d = new Date(filters.date);
+                startOfDay = new Date(d);
+                startOfDay.setHours(0, 0, 0, 0);
+                endOfDay = new Date(d);
+                endOfDay.setHours(23, 59, 59, 999);
+            } else {
+                const d = new Date();
+                startOfDay = new Date(d);
+                startOfDay.setHours(0, 0, 0, 0);
+                endOfDay = new Date(d);
+                endOfDay.setHours(23, 59, 59, 999);
+            }
 
             whereClause.date = {
                 gte: startOfDay,
                 lte: endOfDay,
             };
 
-            const targetMonthNum = d.getMonth() + 1;
-            const targetYear = d.getFullYear();
+            const targetMonthNum = startOfDay.getMonth() + 1;
+            const targetYear = startOfDay.getFullYear();
 
             // Fetch reports (unfiltered by team initially to allow cross-team detection)
             const reports = await this.prisma.larkReport.findMany({
                 where: whereClause,
-                orderBy: { created_at: 'desc' },
+                orderBy: { date: 'desc' },
             });
 
             // Fetch all KPIs for the matching year/month if possible
@@ -1279,6 +1393,41 @@ export class LarkService {
                 }
             });
 
+            // Fetch high-fidelity task progress reports (LarkReportKPI)
+            const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
+                where: {
+                    report_date: {
+                        gte: startOfDay,
+                        lte: endOfDay,
+                    }
+                }
+            });
+
+            const reportKpiMapByEmail = new Map();
+            const reportKpiMapByName = new Map();
+
+            dailyReportKpis.forEach(rk => {
+                const emailKey = rk.email?.toLowerCase().trim();
+                const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+
+                const existing = emailKey ? reportKpiMapByEmail.get(emailKey) : (nameKey ? reportKpiMapByName.get(nameKey) : null);
+
+                if (existing) {
+                    // Update: sum metrics but keep latest metadata
+                    existing.kpi_day = (existing.kpi_day || 0) + (rk.kpi_day || 0);
+                    existing.completed_day = (existing.completed_day || 0) + (rk.completed_day || 0);
+                    existing.task_auto = (existing.task_auto || 0) + (rk.task_auto || 0);
+                    existing.task_new = (existing.task_new || 0) + (rk.task_new || 0);
+                    // Image/Avatar: take non-null if existing is null
+                    if (!existing.image_url && rk.image_url) existing.image_url = rk.image_url;
+                } else {
+                    // Start new aggregated record (clone to avoid mutating the original fetched objects)
+                    const clone = { ...rk };
+                    if (emailKey) reportKpiMapByEmail.set(emailKey, clone);
+                    if (nameKey) reportKpiMapByName.set(nameKey, clone);
+                }
+            });
+
             // Create maps for quick KPI lookup
             const kpiByNameTeam = new Map();
             const kpiByName = new Map();
@@ -1315,7 +1464,7 @@ export class LarkService {
             // Fetch reports for the specific day
             const dailyReports = await this.prisma.larkReport.findMany({
                 where: whereClause,
-                orderBy: { created_at: 'desc' },
+                orderBy: { date: 'desc' },
             });
 
             // Map reports by name for fast lookup
@@ -1323,7 +1472,25 @@ export class LarkService {
             dailyReports.forEach(r => {
                 if (r.name) {
                     const nameKey = r.name.toLowerCase().trim().replace(/\s+/g, ' ');
-                    reportsMap.set(nameKey, r);
+                    const existing = reportsMap.get(nameKey);
+
+                    if (existing) {
+                        // Aggregate numeric answers
+                        if (existing.answers && r.answers) {
+                            const eAns = existing.answers as any;
+                            const rAns = r.answers as any;
+                            const videoKey = 'Số video edit sử dụng >50% source từ quay?';
+                            if (rAns[videoKey]) {
+                                // Sum up numeric values
+                                const currentTotal = Number(eAns[videoKey]) || 0;
+                                const newVal = Number(rAns[videoKey]) || 0;
+                                eAns[videoKey] = currentTotal + newVal;
+                            }
+                        }
+                    } else {
+                        // Clone to avoid mutation of findMany result
+                        reportsMap.set(nameKey, { ...r });
+                    }
 
                     const personKey = nameToPersonKey.get(nameKey) || nameKey;
 
@@ -1420,25 +1587,34 @@ export class LarkService {
                     checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true;
                 }
 
+                // Get high-fidelity KPI report data for this specific person today
+                const reportKpi = (report?.email ? reportKpiMapByEmail.get(report.email.toLowerCase().trim()) : null) ||
+                    reportKpiMapByName.get(nameKey);
+
                 return {
                     id: kpi.id,
                     employee_id: trimmedEmpId,
                     personKey: personKey,
                     name: kpi.name,
                     position: position,
-                    email: report?.email || null,
+                    email: report?.email || reportKpi?.email || null,
                     team: effectiveTeam,
-                    avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                    avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                     tag: kpi.tag || kpi.name || null,
-                    status: report ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO',
-                    date: report?.date || null,
+                    status: report ? 'ĐÚNG HẠN' : (reportKpi ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO'),
+                    date: report?.date || reportKpi?.report_date || null,
                     checklist,
                     answers: answersData,
                     videoCount: Number(answersData?.['Số video edit sử dụng >50% source từ quay?'] || 0),
-                    kpi_day: kpi.kpi_day || 0,
-                    kpi_month: kpi.kpi_month || 0,
-                    completed_day: kpi.completed_day || 0,
-                    completed_month: kpi.completed_month || 0,
+                    kpi_day: kpi.kpi_day || reportKpi?.kpi_day || 0,
+                    kpi_month: kpi.kpi_month || reportKpi?.kpi_month || 0,
+                    completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                    completed_month: reportKpi ? Number(reportKpi.completed_month) : (kpi.completed_month || 0),
+                    task_progress: reportKpi ? {
+                        task_auto: reportKpi.task_auto || 0,
+                        task_new: reportKpi.task_new || 0,
+                        kpi_status: reportKpi.kpi_status || 'N/A'
+                    } : null,
                     traffic_month: kpi.traffic_month ? Number(kpi.traffic_month) : 0,
                     revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
@@ -2325,6 +2501,16 @@ export class LarkService {
         const result = Array.from(new Set(roles));
         if (result.length === 0) result.push('EDITOR');
         return result;
+    }
+
+    private rkReportAvatar(rk: any): string | null {
+        if (!rk || !rk.image_url) return null;
+        if (typeof rk.image_url === 'string') return rk.image_url;
+        if (Array.isArray(rk.image_url) && rk.image_url.length > 0) {
+            // Lark attachments often have a 'url' or 'attachment_id' or 'file_token'
+            return rk.image_url[0].url || rk.image_url[0].file_token || null;
+        }
+        return null;
     }
 
     async inspectTableGeneric(baseId: string, tableId: string) {
