@@ -1074,6 +1074,8 @@ export class LarkService {
             task_new: Number(fields['Task mới']) || 0,
             task_new_month: Number(fields['Task mới tháng']) || 0,
             traffic_month: fields['Traffic Tháng'] ? BigInt(fields['Traffic Tháng']) : BigInt(0),
+            revenue_month: fields['Doanh thu Tháng'] ? BigInt(fields['Doanh thu Tháng']) : BigInt(0),
+            revenue_day: fields['Doanh thu'] ? BigInt(fields['Doanh thu']) : BigInt(0),
             status: fields['Trạng thái'] || null,
             image_url: fields['Link ảnh'] || (Array.isArray(fields['Link ảnh']) ? fields['Link ảnh'][0]?.url : null),
         };
@@ -1393,7 +1395,6 @@ export class LarkService {
                 }
             });
 
-            // Fetch high-fidelity task progress reports (LarkReportKPI)
             const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
                 where: {
                     report_date: {
@@ -1418,6 +1419,7 @@ export class LarkService {
                     existing.completed_day = (existing.completed_day || 0) + (rk.completed_day || 0);
                     existing.task_auto = (existing.task_auto || 0) + (rk.task_auto || 0);
                     existing.task_new = (existing.task_new || 0) + (rk.task_new || 0);
+                    existing.traffic_month = (Number(existing.traffic_month) || 0) + (Number(rk.traffic_month) || 0);
                     // Image/Avatar: take non-null if existing is null
                     if (!existing.image_url && rk.image_url) existing.image_url = rk.image_url;
                 } else {
@@ -1606,10 +1608,16 @@ export class LarkService {
                     checklist,
                     answers: answersData,
                     videoCount: Number(answersData?.['Số video edit sử dụng >50% source từ quay?'] || 0),
-                    kpi_day: kpi.kpi_day || reportKpi?.kpi_day || 0,
+                    dailyGoal: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
+                    done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                    kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     kpi_month: kpi.kpi_month || reportKpi?.kpi_month || 0,
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     completed_month: reportKpi ? Number(reportKpi.completed_month) : (kpi.completed_month || 0),
+                    // Traffic & Revenue for the selected range:
+                    // Unified calculation: Latest MTD for Traffic & Revenue
+                    traffic_range: (reportKpi ? Number(reportKpi.traffic_month || 0) : 0) + (answersData ? Number(answersData['Bạn đã đạt bao nhiêu traffic cho video mới?']) || 0 : 0),
+                    revenue_range: (reportKpi ? Number(reportKpi.revenue_month || 0) : 0) + (answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0),
                     task_progress: reportKpi ? {
                         task_auto: reportKpi.task_auto || 0,
                         task_new: reportKpi.task_new || 0,
@@ -1660,35 +1668,25 @@ export class LarkService {
                 reportedCount: 0
             };
 
-            // Calculate summary aggregates from global kpiData (NOT just today's reporters)
-            // Deduplicate per person first (using kpisForAggregation created earlier)
-            kpisForAggregation.forEach(kpi => {
-                // Check if resigned
-                const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                const trimmedEmpId = kpi.employee_id?.trim();
-                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
-
+            // Calculate summary aggregates from mapped results (which already handle summing for ranges)
+            allValidResults.forEach(r => {
+                // Skip resigned employees in totals (matching the previous logic)
+                const employee = employeeMap.get(r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '') || (r.employee_id ? employeeMap.get(r.employee_id.trim()) : null);
                 const empStatus = (employee?.status || '').toLowerCase().trim();
-                const kpiEmpStatus = (kpi.employee_status || '').toLowerCase().trim();
-                const kpiState = (kpi.state || '').toLowerCase().trim();
+                const isResigned = empStatus.includes('nghỉ') || empStatus === 'da nghi';
 
-                const isResigned = empStatus.includes('nghỉ') ||
-                    empStatus === 'da nghi' ||
-                    kpiEmpStatus.includes('nghỉ') ||
-                    kpiEmpStatus === 'da nghi' ||
-                    kpiState === 'off';
+                if (isResigned) return;
+                if (!r.name || r.name.toLowerCase() === 'unknown') return;
 
-                if (isResigned) return; // Skip resigned employees in totals
+                aggregates.totalVideoTarget += Number(r.dailyGoal || 0);
+                aggregates.totalVideoCompleted += Number(r.done || 0);
+                aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
+                aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
 
-                // Also skip records with no name
-                if (!nameKey || nameKey === 'unknown') return;
-
-                aggregates.totalVideoTarget += Number(kpi.kpi_month || 0);
-                aggregates.totalVideoCompleted += Number(kpi.completed_month || 0);
-                aggregates.totalTrafficTarget += parseInt(kpi.target_traffic_month || '0') || 0;
-                aggregates.totalTrafficCompleted += Number(kpi.traffic_month || 0);
-                aggregates.totalRevenueTarget += parseInt(kpi.target_revenue_month || '0') || 0;
-                aggregates.totalRevenueCompleted += Number(kpi.revenue_month || 0);
+                const nameKey = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const kpi = kpiByName.get(nameKey);
+                aggregates.totalTrafficTarget += parseInt(kpi?.target_traffic_month || '0') || 0;
+                aggregates.totalRevenueTarget += parseInt(kpi?.target_revenue_month || '0') || 0;
             });
 
             // Count reports and channels for today separately, based on combinedResults
@@ -1747,25 +1745,26 @@ export class LarkService {
                 }
             });
 
-            const globalTotals = { videos: 0, traffic: 0, revenue: 0 };
+            const globalTotals = { videos: 0, traffic: 0, revenue: 0, videoTarget: 0, trafficTarget: 0, revenueTarget: 0 };
             const teamBreakdown = {};
 
-            globalKpis.forEach(kpi => {
-                const team = kpi.team || 'Khác';
+            // Calculate breakdowns based on the same range-filtered results used in the summary
+            allValidResults.forEach(r => {
+                const team = r.team || 'Khác';
                 if (!teamBreakdown[team]) {
                     teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0 };
                 }
-                const v = kpi.completed_month || 0;
-                const t = Number(kpi.traffic_month || 0);
-                const r = Number(kpi.revenue_month || 0);
+                const v = r.done || 0;
+                const t = Number(r.traffic_range || 0);
+                const re = Number(r.revenue_range || 0);
 
                 globalTotals.videos += v;
                 globalTotals.traffic += t;
-                globalTotals.revenue += r;
+                globalTotals.revenue += re;
 
                 teamBreakdown[team].videos += v;
                 teamBreakdown[team].traffic += t;
-                teamBreakdown[team].revenue += r;
+                teamBreakdown[team].revenue += re;
             });
 
             const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
@@ -1820,9 +1819,10 @@ export class LarkService {
                 }
             };
 
+            // Syncing is already handled by summing allValidResults directly into aggregates above.
+            // Keeping globalTotals synced for groupContributions calculation below.
+
             // Fetch outstanding reports (Ideas, Difficulties, Wins)
-            // Instead of filtering by exact date (which was causing timezone issues and empty results),
-            // return the most recent 200 records and let the frontend filter by team/name/type.
             const reportOutstandings = await this.prisma.$queryRawUnsafe(`
                 SELECT * FROM "report_outstanding"
                 ORDER BY "date" DESC, "created_at" DESC

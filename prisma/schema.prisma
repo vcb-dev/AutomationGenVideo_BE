@@ -633,6 +633,8 @@ model LarkReportKPI {
   task_new        Int?
   task_new_month  Int?
   traffic_month   BigInt?
+  revenue_month   BigInt?
+  revenue_day     BigInt?
   status          String?
   image_url       String?
   created_at      DateTime  @default(now())
