@@ -23,6 +23,7 @@ model User {
   is_active           Boolean          @default(true)
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
+  search_histories    SearchHistory[]
   tracked_channels    TrackedChannel[]
   manager             User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors             User[]           @relation("ManagerEditors")
@@ -452,6 +453,95 @@ model video_management_videocollection {
   @@index([name], map: "video_management_videocollection_name_fff3286f_like")
 }
 
+model SearchHistory {
+  id        String   @id @default(uuid())
+  user_id   String
+  term      String
+  platform  String?
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([timestamp])
+  @@map("search_histories")
+}
+
+model LarkReport {
+  id         String    @id
+  name       String
+  team       String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  answers    Json?
+  date       DateTime?
+  email      String?
+  employee   Json?
+  role       String?
+
+  @@index([date])
+  @@index([email])
+  @@index([name])
+  @@map("lark_reports")
+}
+
+model LarkEmployee {
+  id            String    @id
+  employee_id   String?   @unique
+  name          String
+  image_url     String?
+  employee_data Json?
+  tag_code      String?
+  position      String?
+  team          String?
+  status        String?
+  date          DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@index([name])
+  @@map("lark_employees")
+}
+
+model LarkKPI {
+  id                   String    @id
+  employee_id          String?
+  name                 String?
+  tag                  String?
+  team                 String?
+  image_url            String?
+  kpi_day              Int?
+  kpi_month            Int?
+  kpii_status          String?
+  kpi_day_percent      String?
+  completed_day        Int?
+  completed_month      Int?
+  task_new             Int?
+  task_new_month       Int?
+  task_auto            Int?
+  task_auto_month      Int?
+  task_creative        Int?
+  content_win_new      Int?
+  revenue_month        BigInt?
+  traffic_month        BigInt?
+  target_revenue_month String?
+  target_traffic_month String?
+  kpi_progress_month   Float?
+  employee_status      String?
+  state                String?
+  employee_data        Json?
+  report_date          DateTime?
+  month                String?
+  link_image           String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@index([month])
+  @@index([team])
+  @@index([name])
+  @@index([employee_id])
+  @@map("lark_kpi")
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -474,4 +564,54 @@ enum DuplicateStatus {
   DUPLICATE
   PENDING_REVIEW
   SUSPICIOUS
+}
+
+model ReportOutstanding {
+  id           String   @id @default(uuid())
+  name         String
+  date         DateTime @default(now())
+  team         String?
+  content      String?  @db.Text
+  idea_content String?  @db.Text
+  status       String?  // duyệt/ ho tro
+  email        String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@map("report_outstanding")
+}
+
+model HuykChannel {
+  id           String   @id
+  name         String
+  platform     String?  // Nền tảng
+  channel_id   String?  // ID kênh hiện tại
+  link_channel String?  // Link kênh
+  status       String?  // Trạng thái hoạt động
+  team_traffic String?  // Team Traffic
+  owner        String?  // Họ và tên
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@index([owner])
+  @@index([team_traffic])
+  @@map("huyk_channels")
+}
+
+model LarkPermission {
+  id          String   @id
+  email       String?
+  name        String?
+  pin_code    String?
+  employee    Json?
+  role        String?
+  team        String?
+  status      String?
+  permissions Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([email])
+  @@index([name])
+  @@map("lark_permissions")
 }

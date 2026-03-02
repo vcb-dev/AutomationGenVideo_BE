@@ -5,7 +5,7 @@ import { DouyinService, DouyinSearchDto, DouyinSearchResponse } from './douyin.s
 export class DouyinController {
   private readonly logger = new Logger(DouyinController.name);
 
-  constructor(private readonly douyinService: DouyinService) {}
+  constructor(private readonly douyinService: DouyinService) { }
 
   @Post('search')
   async searchVideos(@Body() searchDto: DouyinSearchDto): Promise<DouyinSearchResponse> {
@@ -51,6 +51,32 @@ export class DouyinController {
       this.logger.error(`Douyin search failed: ${error.message}`);
       throw new HttpException(
         error.message || 'Search failed',
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Fetch full Douyin channel profile.
+   * Called when user clicks "Update" on a channel card.
+   * Returns followers, total_likes, avatar_url, engagement_rate.
+   */
+  @Post('update-profile')
+  async updateChannelProfile(@Body() body: { username: string }) {
+    if (!body.username || !body.username.trim()) {
+      throw new HttpException('username is required', HttpStatus.BAD_REQUEST);
+    }
+
+    const username = body.username.trim().replace('@', '');
+    this.logger.log(`Update profile request for @${username}`);
+
+    try {
+      const result = await this.douyinService.fetchChannelProfile(username);
+      return result;
+    } catch (error) {
+      this.logger.error(`Update profile failed for @${username}: ${error.message}`);
+      throw new HttpException(
+        error.message || 'Failed to fetch channel profile',
         error.status || HttpStatus.INTERNAL_SERVER_ERROR
       );
     }

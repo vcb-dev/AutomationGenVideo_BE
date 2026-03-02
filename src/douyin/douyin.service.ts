@@ -1,7 +1,7 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { catchError, firstValueFrom } from 'rxjs';
+import { catchError, firstValueFrom, of } from 'rxjs';
 import { AxiosError } from 'axios';
 
 export interface DouyinSearchDto {
@@ -48,6 +48,23 @@ export interface DouyinSearchResponse {
   error?: string;
 }
 
+export interface DouyinChannelProfile {
+  username: string;
+  display_name: string;
+  avatar_url: string;
+  follower_count: number;
+  total_likes: number;
+  total_videos: number;
+  total_views: number;
+  engagement_rate: number;
+}
+
+export interface DouyinProfileResponse {
+  success: boolean;
+  profile?: DouyinChannelProfile;
+  error?: string;
+}
+
 @Injectable()
 export class DouyinService {
   private readonly logger = new Logger(DouyinService.name);
@@ -62,11 +79,12 @@ export class DouyinService {
   }
 
   /**
-   * Search Douyin videos by keyword or hashtag
+   * Search Douyin videos by keyword or hashtag.
+   * Does NOT fetch user profile (to save Apify credits).
    */
   async searchVideos(searchDto: DouyinSearchDto): Promise<DouyinSearchResponse> {
     const url = `${this.aiServiceUrl}/api/douyin/search/`;
-    
+
     this.logger.log(
       `Searching Douyin - Type: ${searchDto.searchType}, ` +
       `Term: ${searchDto.searchTerm}, Max: ${searchDto.maxPosts || 50}`
@@ -95,6 +113,49 @@ export class DouyinService {
 
     } catch (error) {
       this.logger.error(`Douyin search failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch full Douyin channel profile (followers, avatar, engagement_rate).
+   * Called ONLY when user clicks "Update" on a channel card.
+   * Uses scrapeAdditionalUserInfo=True in Apify — costs ~5-6 events (cheap).
+   */
+  async fetchChannelProfile(username: string): Promise<DouyinProfileResponse> {
+    const url = `${this.aiServiceUrl}/api/douyin/profile/`;
+
+    this.logger.log(`Fetching Douyin profile for @${username}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post<DouyinProfileResponse>(url, { username }, {
+          timeout: 300000, // 5 min — Apify can be slow
+        }).pipe(
+          catchError((error: AxiosError) => {
+            // 404 from AI service means "no profile found"; convert to a
+            // benign response so callers can handle success=false instead of
+            // catching an exception. returning an observable using `of` keeps
+            // the stream type intact.
+            if (error.response?.status === HttpStatus.NOT_FOUND) {
+              this.logger.warn(`Douyin Profile not found for @${username}`);
+              return of({ data: { success: false, error: 'No data found for this username' } } as { data: DouyinProfileResponse });
+            }
+
+            this.logger.error(`Douyin Profile Error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to fetch Douyin profile',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+
+      this.logger.log(`Profile fetched for @${username}: followers=${data.profile?.follower_count}`);
+      return data;
+
+    } catch (error) {
+      this.logger.error(`Douyin profile fetch failed: ${error.message}`);
       throw error;
     }
   }
