@@ -615,3 +615,31 @@ model LarkPermission {
   @@index([name])
   @@map("lark_permissions")
 }
+model LarkReportKPI {
+  id              String    @id
+  employee_id     String?
+  name            String?
+  email           String?
+  team            String?
+  month           String?
+  report_date     DateTime?
+  kpi_day         Int?
+  kpi_month       Int?
+  completed_day   Int?
+  completed_month Int?
+  kpi_status      String?
+  task_auto       Int?
+  task_auto_month Int?
+  task_new        Int?
+  task_new_month  Int?
+  traffic_month   BigInt?
+  status          String?
+  image_url       String?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  @@index([report_date])
+  @@index([email])
+  @@index([name])
+  @@map("lark_report_kpi")
+}
