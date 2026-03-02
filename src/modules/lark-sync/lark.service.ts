@@ -901,10 +901,6 @@ export class LarkService {
                     continue;
                 }
 
-                // Debug: Log KPI day mapping for troubleshooting
-                const rawKpiDay = record.fields['KPI Ngày'] ?? record.fields['KPI Ngay'];
-                this.logger.log(`[KPI-SYNC] ${kpiData.name} | raw KPI Ngày=${JSON.stringify(rawKpiDay)} → parsed kpi_day=${kpiData.kpi_day} | month=${kpiData.month}`);
-
                 await this.prisma.larkKPI.upsert({
                     where: { id: kpiData.id },
                     update: {
@@ -1204,13 +1200,41 @@ export class LarkService {
                 return false;
             });
 
-            // Fallback: nếu không có bản ghi KPI nào khớp tháng nhưng DB có dữ liệu → dùng toàn bộ KPI trong DB để ít nhất có số liệu hiển thị
+            // Fallback: nếu không có bản ghi KPI nào khớp tháng → thử tháng trước, rồi tháng trước nữa
             let kpiMonthFallback = false;
             if (kpiData.length === 0 && allKpiInDb.length > 0) {
-                kpiData = allKpiInDb.filter(k => k.state?.toLowerCase() !== 'off');
-                kpiMonthFallback = kpiData.length > 0;
-                if (kpiMonthFallback) {
-                    this.logger.warn(`No KPI for month ${targetMonthNum}/${targetYear}; using all ${kpiData.length} KPI records in DB as fallback. Sync Lark KPI or set "Tháng" in Lark to match.`);
+                // Try previous months (up to 3 months back)
+                for (let i = 1; i <= 3 && kpiData.length === 0; i++) {
+                    let prevMonth = targetMonthNum - i;
+                    if (prevMonth <= 0) prevMonth += 12;
+                    const prevFormats = [
+                        `T${prevMonth}`,
+                        `T${prevMonth < 10 ? '0' + prevMonth : prevMonth}`,
+                        `Tháng ${prevMonth}`,
+                        `tháng ${prevMonth}`,
+                        `${prevMonth}`,
+                        prevMonth < 10 ? `0${prevMonth}` : `${prevMonth}`,
+                    ].filter(Boolean);
+                    kpiData = allKpiInDb.filter(k => {
+                        if (k.state?.toLowerCase() === 'off') return false;
+                        const m = (k.month || '').trim();
+                        if (!m) return false;
+                        if (prevFormats.includes(m)) return true;
+                        const mDigits = m.match(/\d+/g);
+                        return mDigits ? mDigits.some(d => parseInt(d, 10) === prevMonth) : false;
+                    });
+                    if (kpiData.length > 0) {
+                        kpiMonthFallback = true;
+                        this.logger.warn(`No KPI for month ${targetMonthNum}/${targetYear}; using ${kpiData.length} records from month ${prevMonth} as fallback.`);
+                    }
+                }
+                // Ultimate fallback: use all records if still empty
+                if (kpiData.length === 0) {
+                    kpiData = allKpiInDb.filter(k => k.state?.toLowerCase() !== 'off');
+                    kpiMonthFallback = kpiData.length > 0;
+                    if (kpiMonthFallback) {
+                        this.logger.warn(`No KPI for recent months; using all ${kpiData.length} KPI records in DB as fallback.`);
+                    }
                 }
             }
 
