@@ -1599,6 +1599,51 @@ export class LarkService {
                 revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0
             })).sort((a, b) => b.videoPct - a.videoPct);
 
+            // Calculate Group-level contributions (Global vs Việt Nam)
+            const groupTotals = {
+                global: { videos: 0, traffic: 0, revenue: 0 },
+                vn: { videos: 0, traffic: 0, revenue: 0 }
+            };
+
+            const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
+            const vnTeamNames = ['Team K0', 'Team K1', 'Team K2', 'AFF 01', 'Team ADS', 'MEDIA CHUNG'];
+
+            Object.entries(teamBreakdown).forEach(([team, stats]: [string, any]) => {
+                const teamLower = team.toLowerCase();
+                const isGlobal = teamLower.includes('global') ||
+                    teamLower.includes('jp') ||
+                    globalTeamNames.some(gt => gt.toLowerCase() === teamLower);
+
+                if (isGlobal) {
+                    groupTotals.global.videos += stats.videos;
+                    groupTotals.global.traffic += stats.traffic;
+                    groupTotals.global.revenue += stats.revenue;
+                } else {
+                    groupTotals.vn.videos += stats.videos;
+                    groupTotals.vn.traffic += stats.traffic;
+                    groupTotals.vn.revenue += stats.revenue;
+                }
+            });
+
+            const groupContributions = {
+                global: {
+                    videos: groupTotals.global.videos,
+                    traffic: groupTotals.global.traffic,
+                    revenue: groupTotals.global.revenue,
+                    videoPct: globalTotals.videos ? Math.round((groupTotals.global.videos / globalTotals.videos) * 100) : 0,
+                    trafficPct: globalTotals.traffic ? Math.round((groupTotals.global.traffic / globalTotals.traffic) * 100) : 0,
+                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.global.revenue / globalTotals.revenue) * 100) : 0
+                },
+                vn: {
+                    videos: groupTotals.vn.videos,
+                    traffic: groupTotals.vn.traffic,
+                    revenue: groupTotals.vn.revenue,
+                    videoPct: globalTotals.videos ? Math.round((groupTotals.vn.videos / globalTotals.videos) * 100) : 0,
+                    trafficPct: globalTotals.traffic ? Math.round((groupTotals.vn.traffic / globalTotals.traffic) * 100) : 0,
+                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.vn.revenue / globalTotals.revenue) * 100) : 0
+                }
+            };
+
             // Fetch outstanding reports (Ideas, Difficulties, Wins)
             // Instead of filtering by exact date (which was causing timezone issues and empty results),
             // return the most recent 200 records and let the frontend filter by team/name/type.
@@ -1612,6 +1657,7 @@ export class LarkService {
                 reports: combinedResults,
                 summary: aggregates,
                 teamContributions,
+                groupContributions, // New field Added
                 reportOutstandings,
                 rankings: {
                     traffic: trafficRanking,
