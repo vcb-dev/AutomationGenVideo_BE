@@ -901,6 +901,10 @@ export class LarkService {
                     continue;
                 }
 
+                // Debug: Log KPI day mapping for troubleshooting
+                const rawKpiDay = record.fields['KPI Ngày'] ?? record.fields['KPI Ngay'];
+                this.logger.log(`[KPI-SYNC] ${kpiData.name} | raw KPI Ngày=${JSON.stringify(rawKpiDay)} → parsed kpi_day=${kpiData.kpi_day} | month=${kpiData.month}`);
+
                 await this.prisma.larkKPI.upsert({
                     where: { id: kpiData.id },
                     update: {
@@ -1085,23 +1089,23 @@ export class LarkService {
             tag: findValue(['TAG']) || null,
             team: findValue(['Team']) || null,
             image_url: imageUrl,
-            kpi_day: findValue(['KPI Ngày', 'KPI Ngay']) || null,
-            kpi_month: findValue(['KPI THÁNG', 'KPI THANG']) || null,
+            kpi_day: findValue(['KPI Ngày', 'KPI Ngay']) ?? null,
+            kpi_month: findValue(['KPI THÁNG', 'KPI THANG']) ?? null,
             kpii_status: findValue(['KPII']) || null,
             kpi_day_percent: kpiDayPercent,
-            completed_day: findValue(['Hoàn thành', 'Hoan thanh']) || null,
-            completed_month: findValue(['Hoàn thành Tháng', 'Hoan thanh Thang']) || null,
-            task_new: findValue(['Task mới', 'Task moi']) || null,
-            task_new_month: findValue(['Task mới tháng', 'Task moi thang']) || null,
+            completed_day: findValue(['Hoàn thành', 'Hoan thanh']) ?? null,
+            completed_month: findValue(['Hoàn thành Tháng', 'Hoan thanh Thang']) ?? null,
+            task_new: findValue(['Task mới', 'Task moi']) ?? null,
+            task_new_month: findValue(['Task mới tháng', 'Task moi thang']) ?? null,
             task_auto: taskAutoVal,
-            task_auto_month: findValue(['Task Auto Tháng', 'Task Auto Thang']) || null,
+            task_auto_month: findValue(['Task Auto Tháng', 'Task Auto Thang']) ?? null,
             task_creative: taskCreative,
-            content_win_new: findValue(['Content win mới', 'Content win moi']) || null,
-            revenue_month: findValue(['Doanh thu tháng', 'Doanh thu thang']) ? BigInt(findValue(['Doanh thu tháng', 'Doanh thu thang'])) : null,
-            traffic_month: findValue(['Traffic Tháng', 'Traffic Thang']) ? BigInt(findValue(['Traffic Tháng', 'Traffic Thang'])) : null,
+            content_win_new: findValue(['Content win mới', 'Content win moi']) ?? null,
+            revenue_month: findValue(['Doanh thu tháng', 'Doanh thu thang']) != null ? BigInt(findValue(['Doanh thu tháng', 'Doanh thu thang'])) : null,
+            traffic_month: findValue(['Traffic Tháng', 'Traffic Thang']) != null ? BigInt(findValue(['Traffic Tháng', 'Traffic Thang'])) : null,
             target_revenue_month: findValue(['Mục tiêu doanh thu tháng', 'Muc tieu doanh thu thang']) || null,
             target_traffic_month: findValue(['Mục tiêu Traffic tháng', 'Muc tieu Traffic thang']) || null,
-            kpi_progress_month: findValue(['Tiến độ KPI tháng', 'Tien do KPI thang']) || null,
+            kpi_progress_month: findValue(['Tiến độ KPI tháng', 'Tien do KPI thang']) ?? null,
             employee_status: findValue(['Tình trạng', 'Tinh trang']) || null,
             state: findValue(['Trạng thái', 'Trang thai']) || null,
             employee_data: findValue(['Nhân viên', 'Nhan vien']) || null,
@@ -2086,12 +2090,15 @@ export class LarkService {
                     if (!reportMap.has(nameKey)) reportMap.set(nameKey, r);
                 });
 
+                // Filter out state='off' records (resigned/inactive employees)
+                const activeKpis = allKpis.filter(k => k.state?.toLowerCase().trim() !== 'off');
+
                 // Get team totals for contribution calculation
-                const totalVideo = allKpis.reduce((sum, k) => sum + (k.completed_month || 0), 0);
+                const totalVideo = activeKpis.reduce((sum, k) => sum + (k.completed_month || 0), 0);
 
                 // Deduplicate and format
                 const latestMembers = new Map();
-                allKpis.forEach(k => {
+                activeKpis.forEach(k => {
                     const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                     const key = k.name?.trim() || k.id;
                     if (!latestMembers.has(key)) {
@@ -2122,6 +2129,7 @@ export class LarkService {
 
                         latestMembers.set(key, {
                             name: k.name,
+                            team: k.team || null,
                             video: `${k.completed_month || 0} (${contribution}% đóng góp)`,
                             traffic: Number(k.traffic_month || 0).toLocaleString('vi-VN'),
                             revenue: Number(k.revenue_month || 0).toLocaleString('vi-VN'),
