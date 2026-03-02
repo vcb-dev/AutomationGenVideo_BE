@@ -33,6 +33,8 @@ export class UserEntity implements User {
   @ApiProperty({ required: false, nullable: true })
   lark_permissions: any | null;
 
+
+
   manager_id: string | null;
   team_leader_id: string | null;
   is_active: boolean;
