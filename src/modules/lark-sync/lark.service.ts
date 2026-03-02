@@ -1164,27 +1164,53 @@ export class LarkService {
 
             const monthFormats = [
                 `T${targetMonthNum}`,
+                `T${targetMonthNum < 10 ? '0' + targetMonthNum : targetMonthNum}`,
                 `Tháng ${targetMonthNum}`,
                 `tháng ${targetMonthNum}`,
+                `Thang ${targetMonthNum}`,
+                `thang ${targetMonthNum}`,
                 `${targetMonthNum}`,
-                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`
-            ];
+                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`,
+                ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][targetMonthNum],
+                ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][targetMonthNum]
+            ].filter(Boolean);
 
-            const kpiData = allKpiInDb.filter(k => {
-                if (!k.month) return false;
+            let kpiData = allKpiInDb.filter(k => {
                 if (k.state?.toLowerCase() === 'off') return false;
-
-                const m = k.month.trim();
+                const m = (k.month || '').trim();
+                if (!m) {
+                    // No month set: include if report_date is in target month
+                    const rd = k.report_date;
+                    if (rd) {
+                        const d = new Date(rd);
+                        return d.getMonth() + 1 === targetMonthNum && d.getFullYear() === targetYear;
+                    }
+                    return false;
+                }
                 if (monthFormats.includes(m)) return true;
-
-                // Flexible isolation check for numeric month (e.g., "T2", "T02", "2")
-                // Use parseInt to handle leading zeros correctly
-                const monthNum = parseInt(targetMonthNum.toString());
+                // Flexible: any string containing target month number (e.g. "2026-02", "KPI T2")
+                const monthNum = parseInt(targetMonthNum.toString(), 10);
                 const mDigits = m.match(/\d+/g);
-                return mDigits ? mDigits.some(d => parseInt(d) === monthNum) : false;
+                if (mDigits && mDigits.some(d => parseInt(d, 10) === monthNum)) return true;
+                // ISO-style "YYYY-MM"
+                if (/^\d{4}-\d{1,2}$/.test(m)) {
+                    const [, mo] = m.split('-').map(Number);
+                    return mo === monthNum;
+                }
+                return false;
             });
 
-            this.logger.log(`Filtered ${kpiData.length} KPIs for month formats: ${monthFormats.join(', ')}`);
+            // Fallback: nếu không có bản ghi KPI nào khớp tháng nhưng DB có dữ liệu → dùng toàn bộ KPI trong DB để ít nhất có số liệu hiển thị
+            let kpiMonthFallback = false;
+            if (kpiData.length === 0 && allKpiInDb.length > 0) {
+                kpiData = allKpiInDb.filter(k => k.state?.toLowerCase() !== 'off');
+                kpiMonthFallback = kpiData.length > 0;
+                if (kpiMonthFallback) {
+                    this.logger.warn(`No KPI for month ${targetMonthNum}/${targetYear}; using all ${kpiData.length} KPI records in DB as fallback. Sync Lark KPI or set "Tháng" in Lark to match.`);
+                }
+            }
+
+            this.logger.log(`Filtered ${kpiData.length} KPIs for month ${targetMonthNum}/${targetYear} (formats: ${monthFormats.slice(0, 6).join(', ')}...). Total in DB: ${allKpiInDb.length}`);
 
             // Fetch all employees to get positions
             const employees = await this.prisma.larkEmployee.findMany();
@@ -1564,7 +1590,12 @@ export class LarkService {
                     revenue: revenueRanking
                 },
                 userRole: requesterRole,
-                userTeam: requesterTeam
+                userTeam: requesterTeam,
+                meta: {
+                    kpiTotalInDb: allKpiInDb.length,
+                    kpiFilteredForMonth: kpiData.length,
+                    kpiMonthFallback: kpiMonthFallback
+                }
             };
         } catch (error) {
             this.logger.error('Failed to get user activity reports', error);
