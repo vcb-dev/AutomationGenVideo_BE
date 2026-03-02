@@ -24,21 +24,14 @@ export class DouyinController {
       );
     }
 
-    // Set defaults
+    // Set defaults — giới hạn 10 videos (Apify cost)
     const dto: DouyinSearchDto = {
       searchTerm: searchDto.searchTerm.trim(),
       searchType: searchDto.searchType,
-      maxPosts: searchDto.maxPosts || 50,
-      sortBy: searchDto.sortBy || 'general',
+      maxPosts: Math.min(searchDto.maxPosts ?? 10, 10),
+      sortBy: searchDto.sortBy || 'most_liked',
       publishTime: searchDto.publishTime || 'all',
     };
-
-    // Validate maxPosts range
-    if (dto.maxPosts > 100) {
-      dto.maxPosts = 100;
-    } else if (dto.maxPosts < 1) {
-      dto.maxPosts = 50;
-    }
 
     this.logger.log(
       `Douyin search request - Term: ${dto.searchTerm}, ` +
