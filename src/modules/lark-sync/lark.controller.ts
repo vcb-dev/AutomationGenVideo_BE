@@ -278,4 +278,31 @@ export class LarkController {
     async getHRStatus() {
         return this.larkSyncService.getSyncStatus();
     }
+
+    @Get('list-task')
+    @ApiOperation({ summary: 'Get List Task data from Database' })
+    async getListTask() {
+        return this.larkService.getListTaskData();
+    }
+
+    @Get('dashboard-analytics')
+    @ApiOperation({ summary: 'Get aggregated dashboard analytics for video production' })
+    async getDashboardAnalytics(
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
+        @Query('team') team?: string,
+    ) {
+        return this.larkService.getDashboardAnalytics({ startDate, endDate, team });
+    }
+
+    @Post('sync-list-task')
+    @ApiOperation({ summary: 'Manually trigger List Task data sync from Lark' })
+    async syncListTaskData() {
+        try {
+            const result = await this.larkService.syncListTaskData();
+            return { message: 'List Task sync completed successfully', ...result };
+        } catch (error) {
+            return { message: 'List Task sync failed', error: error.message };
+        }
+    }
 }

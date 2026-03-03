@@ -26,6 +26,7 @@ export class LarkService {
     private readonly EMPLOYEE_TABLE_ID: string;
     private readonly PERMISSION_TABLE_ID: string;
     private readonly REPORT_KPI_TABLE_ID: string;
+    private readonly LIST_TASK_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -44,6 +45,7 @@ export class LarkService {
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
         this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
         this.REPORT_KPI_TABLE_ID = this.configService.get<string>('LARK_REPORT_KPI_TABLE_ID');
+        this.LIST_TASK_TABLE_ID = this.configService.get<string>('LARK_LIST_TASK_TABLE_ID') || 'tblUubDhUoJ9TV7m';
     }
 
     async getAccessToken(): Promise<string> {
@@ -91,6 +93,7 @@ export class LarkService {
                 this.syncPermissionData(),
                 this.syncHuykChannelData(),
                 this.syncReportKPIData(),
+                this.syncListTaskData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -425,11 +428,11 @@ export class LarkService {
 
         try {
             while (hasMore) {
+                this.logger.debug(`Fetching: ${url} (Token: ${token.substring(0, 10)}...)`);
                 const response = await firstValueFrom(
                     this.httpService.get(url, {
                         headers: { Authorization: `Bearer ${token}` },
                         params: {
-                            text_field_as_key: true,
                             page_size: 100,
                             page_token: pageToken || undefined
                         },
@@ -1389,32 +1392,54 @@ export class LarkService {
                 }
             });
 
+            // --- FIX: Fetch records for the ENTIRE month range to ensure Summary cards stay monthly ---
+            const monthRangeStart = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1, 0, 0, 0, 0);
+            const monthRangeEnd = new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999);
+
+            const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
+                where: {
+                    report_date: {
+                        gte: monthRangeStart,
+                        lte: monthRangeEnd,
+                    }
+                }
+            });
+
             const reportKpiMapByEmail = new Map();
             const reportKpiMapByName = new Map();
+            const monthlyKpiMapByEmail = new Map();
+            const monthlyKpiMapByName = new Map();
 
+            // Daily map (for report status on specific day)
             dailyReportKpis.forEach(rk => {
                 const date = new Date(rk.report_date || (rk as any).date);
-                const month = date.getMonth() + 1;
-                const year = date.getFullYear();
-                const timeKey = `${month}_${year}`;
-
+                const timeKey = `${date.getMonth() + 1}_${date.getFullYear()}`;
                 const emailKey = rk.email?.toLowerCase().trim();
                 const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
 
-                const userMonthKeyE = emailKey ? `${emailKey}_${timeKey}` : null;
-                const userMonthKeyN = nameKey ? `${nameKey}_${timeKey}` : null;
+                if (emailKey) reportKpiMapByEmail.set(`${emailKey}_${timeKey}`, rk);
+                if (nameKey) reportKpiMapByName.set(`${nameKey}_${timeKey}`, rk);
+            });
 
-                // Take latest record for each user/month pair in the range
-                if (userMonthKeyE) {
-                    const existing = reportKpiMapByEmail.get(userMonthKeyE);
+            // Monthly map (latest in month for Summary)
+            monthlyReportKpis.forEach(rk => {
+                const date = new Date(rk.report_date || (rk as any).date);
+                const timeKey = `${date.getMonth() + 1}_${date.getFullYear()}`;
+                const emailKey = rk.email?.toLowerCase().trim();
+                const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+
+                if (emailKey) {
+                    const key = `${emailKey}_${timeKey}`;
+                    const existing = monthlyKpiMapByEmail.get(key);
                     if (!existing || new Date(rk.report_date) > new Date(existing.report_date)) {
-                        reportKpiMapByEmail.set(userMonthKeyE, rk);
+                        monthlyKpiMapByEmail.set(key, rk);
                     }
                 }
-                if (userMonthKeyN) {
-                    const existing = reportKpiMapByName.get(userMonthKeyN);
+                if (nameKey) {
+                    const key = `${nameKey}_${timeKey}`;
+                    const existing = monthlyKpiMapByName.get(key);
                     if (!existing || new Date(rk.report_date) > new Date(existing.report_date)) {
-                        reportKpiMapByName.set(userMonthKeyN, rk);
+                        monthlyKpiMapByName.set(key, rk);
                     }
                 }
             });
@@ -1612,6 +1637,10 @@ export class LarkService {
                 const reportKpi = (rKpiEmailKey ? reportKpiMapByEmail.get(rKpiEmailKey) : null) ||
                     reportKpiMapByName.get(rKpiNameKey);
 
+                // --- FIX: Lookup monthly stable KPI for Summary Cards ---
+                const monthlyReportKpi = (rKpiEmailKey ? monthlyKpiMapByEmail.get(rKpiEmailKey) : null) ||
+                    monthlyKpiMapByName.get(rKpiNameKey);
+
                 const isCurrentMonth = matchedMonth.monthNum === (new Date().getMonth() + 1) && matchedMonth.year === new Date().getFullYear();
                 const incrementalTraffic = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt bao nhiêu traffic cho video mới?']) || 0 : 0;
                 const incrementalRevenue = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0;
@@ -1634,19 +1663,19 @@ export class LarkService {
                     dailyGoal: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
-                    kpi_month: kpi.kpi_month || reportKpi?.kpi_month || 0,
+                    kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                    completed_month: reportKpi ? Number(reportKpi.completed_month) : (kpi.completed_month || 0),
-                    // Traffic & Revenue for the selected range:
-                    traffic_range: (reportKpi ? Number(reportKpi.traffic_month || 0) : 0) + incrementalTraffic,
-                    revenue_range: (reportKpi ? Number(reportKpi.revenue_month || 0) : 0) + incrementalRevenue,
+                    completed_month: monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0),
+                    // Stable monthly traffic/revenue for the Summary Cards:
+                    traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : 0) + incrementalTraffic,
+                    revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : 0) + incrementalRevenue,
                     task_progress: reportKpi ? {
                         task_auto: reportKpi.task_auto || 0,
                         task_new: reportKpi.task_new || 0,
                         kpi_status: reportKpi.kpi_status || 'N/A'
                     } : null,
-                    traffic_month: Math.max(Number(reportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
-                    revenue_month: Math.max(Number(reportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
+                    traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
+                    revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
                     trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
                     revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
@@ -1726,7 +1755,6 @@ export class LarkService {
 
             // Calculate summary aggregates from mapped results (which already handle summing for ranges)
             allValidResults.forEach(r => {
-                // Skip resigned employees in totals (matching the previous logic)
                 const employee = employeeMap.get(r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '') || (r.employee_id ? employeeMap.get(r.employee_id.trim()) : null);
                 const empStatus = (employee?.status || '').toLowerCase().trim();
                 const isResigned = empStatus.includes('nghỉ') || empStatus === 'da nghi';
@@ -1741,13 +1769,17 @@ export class LarkService {
                 aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
+
+                // --- FIX: Sum channels from all people in the team range, not just those who reported today ---
+                if (r.isAuthorizedForReport) {
+                    aggregates.totalChannels += (r.channelCount || 0);
+                }
             });
 
-            // Count reports and channels for today separately, based on combinedResults
+            // Count reports for today separately
             combinedResults.forEach(r => {
                 aggregates.totalReports++;
                 if (r.date) aggregates.reportedCount++;
-                aggregates.totalChannels += (r.channelCount || 0);
             });
 
             // Calculate rankings using rankingList (which honors team filter for everyone)
@@ -2597,5 +2629,205 @@ export class LarkService {
             this.logger.error(`Failed to inspect table ${tableId}`, error);
             throw error;
         }
+    }
+
+    // --- ListTask Sync Methods ---
+
+    async fetchListTaskRecords() {
+        return this.fetchLarkRecordsGeneric(this.KPI_BASE_ID, this.LIST_TASK_TABLE_ID);
+    }
+
+    private mapRecordToListTask(record: any) {
+        const fields = record.fields;
+
+        const extractString = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) {
+                const first = val[0];
+                return first.name || first.text || (typeof first === 'string' ? first : null);
+            }
+            if (typeof val === 'object') return val.name || val.text || null;
+            return String(val);
+        };
+
+        const extractLink = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) return extractLink(val[0]);
+            return val.link || val.text || null;
+        };
+
+        const extractDate = (val: any) => {
+            if (!val) return null;
+            return new Date(val);
+        };
+
+        // Extraction of specific fields
+        const deadlineVal = fields['Deadline'];
+        const deadlineText = extractString(deadlineVal);
+
+        const fileContentVal = fields['File content'];
+        let fileContentUrl = null;
+        let fileContentName = null;
+        if (Array.isArray(fileContentVal) && fileContentVal.length > 0) {
+            fileContentUrl = fileContentVal[0].link || null;
+            fileContentName = fileContentVal[0].text || null;
+        }
+
+        const fileVoiceVal = fields['File voice'];
+        const fileVoiceToken = Array.isArray(fileVoiceVal) && fileVoiceVal.length > 0 ? fileVoiceVal[0].attachmentToken : null;
+
+        const nhanVien = fields['Nhân Viên'];
+        let empEmail = null;
+        let empName = null;
+        if (nhanVien && nhanVien.users && nhanVien.users.length > 0) {
+            empEmail = nhanVien.users[0].email;
+            empName = nhanVien.users[0].name;
+        }
+
+        return {
+            id: record.record_id,
+            caption: fields['Caption'] || null,
+            deadline: deadlineText,
+            file_content_url: fileContentUrl,
+            file_content_name: fileContentName,
+            file_voice_token: fileVoiceToken,
+            employee_id: extractString(fields['ID Nhân viên'] || fields['ID Nhân Viên']),
+            employee_name: empName,
+            employee_email: empEmail,
+            content: extractString(fields['Nội Dung']),
+            sku: extractString(fields['SKU']),
+            source_huyk: extractLink(fields['Source HuyK']),
+            source_outro: extractLink(fields['Source Outro']),
+            source_collection: extractLink(fields['Source Sản phẩm sưu tầm']),
+            team: Array.isArray(fields['Team']) ? fields['Team'][0] : (fields['Team'] || null),
+            tiktok_post: extractString(fields['Tiktok Post']),
+            status: fields['Trạng Thái'] || null,
+            content_type: fields['Tuyến Nội Dung'] || null,
+            product_name: extractString(fields['Tên Sản Phẩm']),
+            link_tiktok: fields['Link Tiktok'] || null,
+            date: extractDate(fields['Ngày']),
+            created_at_lark: extractDate(fields['Ngày tạo']),
+        };
+    }
+
+    async syncListTaskData() {
+        try {
+            const records = await this.fetchListTaskRecords();
+            this.logger.log(`Fetched ${records.length} ListTask records from Lark. Syncing...`);
+
+            let syncedCount = 0;
+            for (const record of records) {
+                const data = this.mapRecordToListTask(record);
+                await this.prisma.larkListTask.upsert({
+                    where: { id: data.id },
+                    update: data,
+                    create: data,
+                });
+                syncedCount++;
+            }
+
+            this.logger.log(`Successfully synced ${syncedCount} ListTask records.`);
+            return { synced: syncedCount, total: records.length };
+        } catch (error) {
+            this.logger.error('Failed to sync ListTask data', error);
+            throw error;
+        }
+    }
+
+    async getListTaskData() {
+        return this.prisma.larkListTask.findMany({
+            orderBy: { date: 'desc' }
+        });
+    }
+
+    async getDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
+        const start = filters?.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        const end = filters?.endDate ? new Date(filters.endDate) : new Date();
+        const teamFilter = filters?.team === 'All' ? null : filters?.team;
+
+        // Fetch Tasks in range
+        const tasks = await this.prisma.larkListTask.findMany({
+            where: {
+                date: { gte: start, lte: end },
+                ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
+            },
+            select: { id: true, content_type: true, employee_id: true, employee_name: true }
+        });
+
+        // Group tasks by employee and content_type
+        const empTaskStats = new Map<string, { [line: string]: number, total: number }>();
+        tasks.forEach(task => {
+            const empId = task.employee_id || 'unknown';
+            const line = task.content_type || 'Khác';
+            if (!empTaskStats.has(empId)) {
+                empTaskStats.set(empId, { total: 0 });
+            }
+            const stats = empTaskStats.get(empId);
+            stats[line] = (stats[line] || 0) + 1;
+            stats.total++;
+        });
+
+        // Fetch KPIs for the same employees involved to get their traffic
+        const kpis = await this.prisma.larkKPI.findMany({
+            where: {
+                employee_id: { in: Array.from(empTaskStats.keys()) },
+                ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
+            }
+        });
+
+        // Map employee_id -> traffic (summed if multiple records in range, though usually it's monthly)
+        const empTraffic = new Map<string, number>();
+        kpis.forEach(kpi => {
+            const empId = kpi.employee_id || 'unknown';
+            const traffic = Number(kpi.traffic_month || 0);
+            empTraffic.set(empId, Math.max(empTraffic.get(empId) || 0, traffic));
+        });
+
+        // Aggregate by Line
+        const lineStatsMap: { [line: string]: { videoCount: number, traffic: number } } = {};
+        empTaskStats.forEach((stats, empId) => {
+            const totalTraffic = empTraffic.get(empId) || 0;
+            Object.entries(stats).forEach(([line, count]) => {
+                if (line === 'total') return;
+                if (!lineStatsMap[line]) lineStatsMap[line] = { videoCount: 0, traffic: 0 };
+                lineStatsMap[line].videoCount += count;
+                // Distributed traffic
+                lineStatsMap[line].traffic += totalTraffic * (count / stats.total);
+            });
+        });
+
+        // Convert to array for chart
+        const chartData = Object.entries(lineStatsMap).map(([line, data]) => ({
+            name: line,
+            videoCount: data.videoCount,
+            traffic: Math.round(data.traffic)
+        })).sort((a, b) => a.name.localeCompare(b.name));
+
+        // For comparison, calculate stats for previous period of same duration
+        const duration = end.getTime() - start.getTime();
+        const prevStart = new Date(start.getTime() - duration - (24 * 60 * 60 * 1000));
+        const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000));
+
+        const prevTasksCount = await this.prisma.larkListTask.count({
+            where: {
+                date: { gte: prevStart, lte: prevEnd },
+                ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
+            }
+        });
+
+        return {
+            chartData,
+            summary: {
+                totalVideos: tasks.length,
+                prevVideos: prevTasksCount,
+                totalTraffic: Math.round(Array.from(empTraffic.values()).reduce((a, b) => a + b, 0))
+            }
+        };
+    }
+
+    async clearAllListTasks() {
+        return this.prisma.larkListTask.deleteMany();
     }
 }
