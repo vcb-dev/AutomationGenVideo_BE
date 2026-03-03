@@ -156,7 +156,8 @@ export class LarkController {
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
         @Query('team') team?: string,
-        @Query('requesterEmail') requesterEmail?: string
+        @Query('requesterEmail') requesterEmail?: string,
+        @Query('timeType') timeType?: string
     ) {
         const filters = {};
         if (date) filters['date'] = date;
@@ -164,6 +165,7 @@ export class LarkController {
         if (endDate) filters['endDate'] = endDate;
         if (team) filters['team'] = team;
         if (requesterEmail) filters['requesterEmail'] = requesterEmail;
+        if (timeType) filters['timeType'] = timeType;
 
         return this.larkService.getUserActivityReports(filters);
     }

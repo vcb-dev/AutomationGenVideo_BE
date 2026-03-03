@@ -1230,7 +1230,7 @@ export class LarkService {
     }
 
     // Get combined user activity reports (LarkReport + LarkKPI)
-    async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string }) {
+    async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string; timeType?: string }) {
         try {
             // Fetch requester's role and team from LarkPermission
             let requesterRole = 'Member';
@@ -1277,8 +1277,31 @@ export class LarkService {
                 lte: endOfDay,
             };
 
-            const targetMonthNum = startOfDay.getMonth() + 1;
-            const targetYear = startOfDay.getFullYear();
+            let kpiMonthFallback = false;
+
+            // 1. Identify all month/year pairs in the selected range
+            const monthsInRange: { monthNum: number; year: number; formats: string[] }[] = [];
+            {
+                let curr = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1);
+                const endLimit = new Date(endOfDay.getFullYear(), endOfDay.getMonth(), 1);
+                while (curr <= endLimit) {
+                    const m = curr.getMonth() + 1;
+                    const y = curr.getFullYear();
+                    monthsInRange.push({
+                        monthNum: m,
+                        year: y,
+                        formats: [
+                            `T${m}`, `T${m < 10 ? '0' + m : m}`,
+                            `Tháng ${m}`, `tháng ${m}`,
+                            `Thang ${m}`, `thang ${m}`,
+                            `${m}`, m < 10 ? `0${m}` : `${m}`,
+                            ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m],
+                            ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m]
+                        ].filter(Boolean)
+                    });
+                    curr.setMonth(curr.getMonth() + 1);
+                }
+            }
 
             // Fetch reports (unfiltered by team initially to allow cross-team detection)
             const reports = await this.prisma.larkReport.findMany({
@@ -1289,83 +1312,34 @@ export class LarkService {
             // Fetch all KPIs for the matching year/month if possible
             const allKpiInDb = await this.prisma.larkKPI.findMany();
 
-            const monthFormats = [
-                `T${targetMonthNum}`,
-                `T${targetMonthNum < 10 ? '0' + targetMonthNum : targetMonthNum}`,
-                `Tháng ${targetMonthNum}`,
-                `tháng ${targetMonthNum}`,
-                `Thang ${targetMonthNum}`,
-                `thang ${targetMonthNum}`,
-                `${targetMonthNum}`,
-                targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`,
-                ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][targetMonthNum],
-                ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][targetMonthNum]
-            ].filter(Boolean);
-
+            // Filter KPIs that match ANY month in range
             let kpiData = allKpiInDb.filter(k => {
                 if (k.state?.toLowerCase() === 'off') return false;
-                const m = (k.month || '').trim();
-                if (!m) {
-                    // No month set: include if report_date is in target month
-                    const rd = k.report_date;
-                    if (rd) {
-                        const d = new Date(rd);
-                        return d.getMonth() + 1 === targetMonthNum && d.getFullYear() === targetYear;
+                const mStr = (k.month || '').trim();
+
+                // If no month set on record, check report_date
+                if (!mStr) {
+                    const rd = k.report_date ? new Date(k.report_date) : null;
+                    return rd && monthsInRange.some(m => rd.getMonth() + 1 === m.monthNum && rd.getFullYear() === m.year);
+                }
+
+                // Match against our generated formats for each month in range
+                return monthsInRange.some(monthInfo => {
+                    if (monthInfo.formats.includes(mStr)) return true;
+                    // Flexible matching
+                    const mDigits = mStr.match(/\d+/g);
+                    if (mDigits && mDigits.some(d => parseInt(d, 10) === monthInfo.monthNum)) {
+                        // If multiple digits, assume one might be the year
+                        if (mDigits.length > 1) {
+                            return mDigits.some(d => parseInt(d, 10) === monthInfo.year);
+                        }
+                        return true;
                     }
                     return false;
-                }
-                if (monthFormats.includes(m)) return true;
-                // Flexible: any string containing target month number (e.g. "2026-02", "KPI T2")
-                const monthNum = parseInt(targetMonthNum.toString(), 10);
-                const mDigits = m.match(/\d+/g);
-                if (mDigits && mDigits.some(d => parseInt(d, 10) === monthNum)) return true;
-                // ISO-style "YYYY-MM"
-                if (/^\d{4}-\d{1,2}$/.test(m)) {
-                    const [, mo] = m.split('-').map(Number);
-                    return mo === monthNum;
-                }
-                return false;
+                });
             });
 
-            // Fallback: nếu không có bản ghi KPI nào khớp tháng → thử tháng trước, rồi tháng trước nữa
-            let kpiMonthFallback = false;
-            if (kpiData.length === 0 && allKpiInDb.length > 0) {
-                // Try previous months (up to 3 months back)
-                for (let i = 1; i <= 3 && kpiData.length === 0; i++) {
-                    let prevMonth = targetMonthNum - i;
-                    if (prevMonth <= 0) prevMonth += 12;
-                    const prevFormats = [
-                        `T${prevMonth}`,
-                        `T${prevMonth < 10 ? '0' + prevMonth : prevMonth}`,
-                        `Tháng ${prevMonth}`,
-                        `tháng ${prevMonth}`,
-                        `${prevMonth}`,
-                        prevMonth < 10 ? `0${prevMonth}` : `${prevMonth}`,
-                    ].filter(Boolean);
-                    kpiData = allKpiInDb.filter(k => {
-                        if (k.state?.toLowerCase() === 'off') return false;
-                        const m = (k.month || '').trim();
-                        if (!m) return false;
-                        if (prevFormats.includes(m)) return true;
-                        const mDigits = m.match(/\d+/g);
-                        return mDigits ? mDigits.some(d => parseInt(d, 10) === prevMonth) : false;
-                    });
-                    if (kpiData.length > 0) {
-                        kpiMonthFallback = true;
-                        this.logger.warn(`No KPI for month ${targetMonthNum}/${targetYear}; using ${kpiData.length} records from month ${prevMonth} as fallback.`);
-                    }
-                }
-                // Ultimate fallback: use all records if still empty
-                if (kpiData.length === 0) {
-                    kpiData = allKpiInDb.filter(k => k.state?.toLowerCase() !== 'off');
-                    kpiMonthFallback = kpiData.length > 0;
-                    if (kpiMonthFallback) {
-                        this.logger.warn(`No KPI for recent months; using all ${kpiData.length} KPI records in DB as fallback.`);
-                    }
-                }
-            }
-
-            this.logger.log(`Filtered ${kpiData.length} KPIs for month ${targetMonthNum}/${targetYear} (formats: ${monthFormats.slice(0, 6).join(', ')}...). Total in DB: ${allKpiInDb.length}`);
+            this.logger.log(`Filtered ${kpiData.length} KPIs for range [${startOfDay.toISOString()} - ${endOfDay.toISOString()}]. Months covered: ${monthsInRange.length}`);
 
             // Fetch all employees to get positions
             const employees = await this.prisma.larkEmployee.findMany();
@@ -1419,25 +1393,29 @@ export class LarkService {
             const reportKpiMapByName = new Map();
 
             dailyReportKpis.forEach(rk => {
+                const date = new Date(rk.report_date || (rk as any).date);
+                const month = date.getMonth() + 1;
+                const year = date.getFullYear();
+                const timeKey = `${month}_${year}`;
+
                 const emailKey = rk.email?.toLowerCase().trim();
                 const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
 
-                const existing = emailKey ? reportKpiMapByEmail.get(emailKey) : (nameKey ? reportKpiMapByName.get(nameKey) : null);
+                const userMonthKeyE = emailKey ? `${emailKey}_${timeKey}` : null;
+                const userMonthKeyN = nameKey ? `${nameKey}_${timeKey}` : null;
 
-                if (existing) {
-                    // Update: sum metrics but keep latest metadata
-                    existing.kpi_day = (existing.kpi_day || 0) + (rk.kpi_day || 0);
-                    existing.completed_day = (existing.completed_day || 0) + (rk.completed_day || 0);
-                    existing.task_auto = (existing.task_auto || 0) + (rk.task_auto || 0);
-                    existing.task_new = (existing.task_new || 0) + (rk.task_new || 0);
-                    existing.traffic_month = (Number(existing.traffic_month) || 0) + (Number(rk.traffic_month) || 0);
-                    // Image/Avatar: take non-null if existing is null
-                    if (!existing.image_url && rk.image_url) existing.image_url = rk.image_url;
-                } else {
-                    // Start new aggregated record (clone to avoid mutating the original fetched objects)
-                    const clone = { ...rk };
-                    if (emailKey) reportKpiMapByEmail.set(emailKey, clone);
-                    if (nameKey) reportKpiMapByName.set(nameKey, clone);
+                // Take latest record for each user/month pair in the range
+                if (userMonthKeyE) {
+                    const existing = reportKpiMapByEmail.get(userMonthKeyE);
+                    if (!existing || new Date(rk.report_date) > new Date(existing.report_date)) {
+                        reportKpiMapByEmail.set(userMonthKeyE, rk);
+                    }
+                }
+                if (userMonthKeyN) {
+                    const existing = reportKpiMapByName.get(userMonthKeyN);
+                    if (!existing || new Date(rk.report_date) > new Date(existing.report_date)) {
+                        reportKpiMapByName.set(userMonthKeyN, rk);
+                    }
                 }
             });
 
@@ -1445,7 +1423,7 @@ export class LarkService {
             const kpiByNameTeam = new Map();
             const kpiByName = new Map();
 
-            // Store unique KPI per person for aggregation
+            // Store unique KPI per person-month for aggregation
             const kpisForAggregation = new Map();
             const nameToPersonKey = new Map();
 
@@ -1454,23 +1432,33 @@ export class LarkService {
                 const teamKey = kpi.team?.toLowerCase().trim() || '';
                 const trimmedEmpId = kpi.employee_id?.trim();
 
-                // Use record ID as ultimate fallback for key to ensure data is counted
+                // Determine the month/year for this KPI record to key it uniquely within a range
+                let kpiMonth = 0;
+                let kpiYear = 0;
+                const mStr = (kpi.month || '').trim();
+                const matchedMonth = monthsInRange.find(mInfo => {
+                    if (mInfo.formats.includes(mStr)) return true;
+                    const mDigits = mStr.match(/\d+/g);
+                    return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
+                }) || monthsInRange[0];
+                kpiMonth = matchedMonth.monthNum;
+                kpiYear = matchedMonth.year;
+
                 const personKey = trimmedEmpId || nameKey || kpi.id;
+                const personMonthKey = `${personKey}_${kpiMonth}_${kpiYear}`;
 
                 if (nameKey) {
                     nameToPersonKey.set(nameKey, personKey);
                     if (teamKey) {
                         kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
                     }
-                    // Also store by name as secondary (prefer records with image)
                     if (!kpiByName.has(nameKey) || kpi.link_image || kpi.image_url) {
                         kpiByName.set(nameKey, kpi);
                     }
                 }
 
-                // For summary calculation, we take the one with highest progress or latest
-                if (!kpisForAggregation.has(personKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personKey).completed_month || 0)) {
-                    kpisForAggregation.set(personKey, kpi);
+                if (!kpisForAggregation.has(personMonthKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personMonthKey).completed_month || 0)) {
+                    kpisForAggregation.set(personMonthKey, kpi);
                 }
             });
 
@@ -1506,10 +1494,14 @@ export class LarkService {
                     }
 
                     const personKey = nameToPersonKey.get(nameKey) || nameKey;
+                    const reportMonthNum = (r.date ? new Date(r.date) : new Date()).getMonth() + 1;
+                    const reportYear = (r.date ? new Date(r.date) : new Date()).getFullYear();
+                    const personMonthKey = `${personKey}_${reportMonthNum}_${reportYear}`;
 
-                    if (!kpisForAggregation.has(personKey)) {
-                        kpisForAggregation.set(personKey, {
+                    if (!kpisForAggregation.has(personMonthKey)) {
+                        kpisForAggregation.set(personMonthKey, {
                             id: `report_${r.id}`,
+                            employee_id: personKey !== nameKey ? personKey : null,
                             name: r.name,
                             team: r.team || 'Khác',
                             kpi_day: 0,
@@ -1600,9 +1592,29 @@ export class LarkService {
                     checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true;
                 }
 
-                // Get high-fidelity KPI report data for this specific person today
-                const reportKpi = (report?.email ? reportKpiMapByEmail.get(report.email.toLowerCase().trim()) : null) ||
-                    reportKpiMapByName.get(nameKey);
+                // Get the specific month key for this KPI record to lookup reportKpi
+                let kpiMonth = 0;
+                let kpiYear = 0;
+                const mStr = (kpi.month || '').trim();
+                const matchedMonth = monthsInRange.find(mInfo => {
+                    if (mInfo.formats.includes(mStr)) return true;
+                    const mDigits = mStr.match(/\d+/g);
+                    return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
+                }) || monthsInRange[0];
+                kpiMonth = matchedMonth.monthNum;
+                kpiYear = matchedMonth.year;
+                const timeKey = `${kpiMonth}_${kpiYear}`;
+
+                // Get high-fidelity KPI report data for this specific person and month
+                const rKpiEmailKey = report?.email ? `${report.email.toLowerCase().trim()}_${timeKey}` : null;
+                const rKpiNameKey = `${nameKey}_${timeKey}`;
+
+                const reportKpi = (rKpiEmailKey ? reportKpiMapByEmail.get(rKpiEmailKey) : null) ||
+                    reportKpiMapByName.get(rKpiNameKey);
+
+                const isCurrentMonth = matchedMonth.monthNum === (new Date().getMonth() + 1) && matchedMonth.year === new Date().getFullYear();
+                const incrementalTraffic = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt bao nhiêu traffic cho video mới?']) || 0 : 0;
+                const incrementalRevenue = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0;
 
                 return {
                     id: kpi.id,
@@ -1626,9 +1638,8 @@ export class LarkService {
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     completed_month: reportKpi ? Number(reportKpi.completed_month) : (kpi.completed_month || 0),
                     // Traffic & Revenue for the selected range:
-                    // Unified calculation: Latest MTD for Traffic & Revenue
-                    traffic_range: (reportKpi ? Number(reportKpi.traffic_month || 0) : 0) + (answersData ? Number(answersData['Bạn đã đạt bao nhiêu traffic cho video mới?']) || 0 : 0),
-                    revenue_range: (reportKpi ? Number(reportKpi.revenue_month || 0) : 0) + (answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0),
+                    traffic_range: (reportKpi ? Number(reportKpi.traffic_month || 0) : 0) + incrementalTraffic,
+                    revenue_range: (reportKpi ? Number(reportKpi.revenue_month || 0) : 0) + incrementalRevenue,
                     task_progress: reportKpi ? {
                         task_auto: reportKpi.task_auto || 0,
                         task_new: reportKpi.task_new || 0,
@@ -1636,6 +1647,8 @@ export class LarkService {
                     } : null,
                     traffic_month: Math.max(Number(reportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
                     revenue_month: Math.max(Number(reportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
+                    trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
+                    revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
                     channelCount: huykChannelMap.get(nameKey) || 0,
                     isAuthorizedForReport,
@@ -1643,8 +1656,40 @@ export class LarkService {
                 };
             });
 
-            // Filter out nulls
-            const allValidResults = allResults.filter(r => r !== null) as any[];
+            // --- NEW: Group by Person to aggregate stats across months if viewing range ---
+            const groupedResults = new Map();
+            allResults.filter(r => r !== null).forEach(r => {
+                // Use a normalized name-fallback key if employee_id is null to catch cases where it's inconsistent
+                const key = r.employee_id || r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || r.personKey;
+
+                if (!groupedResults.has(key)) {
+                    groupedResults.set(key, { ...r });
+                } else {
+                    const existing = groupedResults.get(key);
+                    // Sum numeric metrics
+                    existing.done += r.done;
+                    existing.videoCount += r.videoCount;
+                    existing.kpi_day += r.kpi_day;
+                    existing.kpi_month += r.kpi_month;
+                    existing.completed_day += r.completed_day;
+                    existing.completed_month += r.completed_month;
+                    existing.traffic_range += r.traffic_range;
+                    existing.revenue_range += r.revenue_range;
+                    existing.traffic_month += r.traffic_month;
+                    existing.revenue_month += r.revenue_month;
+                    existing.trafficTarget += r.trafficTarget;
+                    existing.revenueTarget += r.revenueTarget;
+                    existing.channelCount = Math.max(existing.channelCount, r.channelCount);
+                    // Keep metadata from latest record (assuming allResults is somewhat chronological or month-indexed)
+                    if (r.date && (!existing.date || new Date(r.date) > new Date(existing.date))) {
+                        existing.date = r.date;
+                        existing.status = r.status;
+                        existing.avatar = r.avatar || existing.avatar;
+                    }
+                }
+            });
+
+            const allValidResults = Array.from(groupedResults.values());
 
             // Phân tách dữ liệu Báo cáo và BXH
             const combinedResults = allValidResults.filter(r => r.isAuthorizedForReport);
@@ -1692,13 +1737,10 @@ export class LarkService {
                 // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
                 aggregates.totalVideoTarget += Number(r.kpi_month || 0);
                 aggregates.totalVideoCompleted += Number(r.completed_month || 0);
-                aggregates.totalTrafficCompleted += Number(r.traffic_month || 0);
-                aggregates.totalRevenueCompleted += Number(r.revenue_month || 0);
-
-                const nameKey = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                const kpi = kpiByName.get(nameKey);
-                aggregates.totalTrafficTarget += parseInt(kpi?.target_traffic_month || '0') || 0;
-                aggregates.totalRevenueTarget += parseInt(kpi?.target_revenue_month || '0') || 0;
+                aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
+                aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
+                aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
+                aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
             });
 
             // Count reports and channels for today separately, based on combinedResults
@@ -1711,7 +1753,7 @@ export class LarkService {
             // Calculate rankings using rankingList (which honors team filter for everyone)
 
             const trafficRanking = rankingList
-                .sort((a, b) => Number(b.traffic_month || 0) - Number(a.traffic_month || 0))
+                .sort((a, b) => Number(b.traffic_range || 0) - Number(a.traffic_range || 0))
                 .slice(0, 10)
                 .map((kpi, index) => {
                     const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
@@ -1723,12 +1765,12 @@ export class LarkService {
                         name: kpi.name,
                         position: employee?.position || null,
                         avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
-                        value: Number(kpi.traffic_month || 0).toLocaleString('vi-VN')
+                        value: Number(kpi.traffic_range || 0).toLocaleString('vi-VN')
                     };
                 });
 
             const revenueRanking = rankingList
-                .sort((a, b) => Number(b.revenue_month || 0) - Number(a.revenue_month || 0))
+                .sort((a, b) => Number(b.revenue_range || 0) - Number(a.revenue_range || 0))
                 .slice(0, 10)
                 .map((kpi, index) => {
                     const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
@@ -1740,7 +1782,7 @@ export class LarkService {
                         name: kpi.name,
                         position: employee?.position || null,
                         avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
-                        value: Number(kpi.revenue_month || 0).toLocaleString('vi-VN')
+                        value: Number(kpi.revenue_range || 0).toLocaleString('vi-VN')
                     };
                 });
 
