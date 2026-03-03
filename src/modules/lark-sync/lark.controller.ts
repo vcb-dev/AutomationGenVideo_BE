@@ -117,19 +117,6 @@ export class LarkController {
         }
     }
 
-    @Post('sync-report-kpi')
-    @ApiOperation({ summary: 'Manually trigger Report KPI sync from Lark (Task Progress)' })
-    async syncReportKPIData() {
-        try {
-            const result = await this.larkService.syncReportKPIData();
-            return {
-                message: 'Report KPI sync completed successfully',
-                ...result
-            };
-        } catch (error) {
-            return { message: 'Report KPI sync failed', error: error.message };
-        }
-    }
 
     @Post('cleanup-kpi')
     @ApiOperation({ summary: 'Manually trigger cleanup of invalid KPI records' })
