@@ -834,10 +834,10 @@ export class LarkService {
         });
     }
 
-    // Fetch KPI records from Lark
+    // Fetch KPI records from Lark - Updated to use tblh9DeeqDBItrg7 as requested
     async fetchKPIRecords() {
         const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.KPI_TABLE_ID}/records`;
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.REPORT_KPI_TABLE_ID}/records`;
 
         let allRecords = [];
         let pageToken = '';
@@ -873,7 +873,7 @@ export class LarkService {
 
             return allRecords;
         } catch (error) {
-            this.logger.error('Failed to fetch KPI records from Lark', error);
+            this.logger.error('Failed to fetch KPI records (from Report Table) from Lark', error);
             throw error;
         }
     }
@@ -882,7 +882,10 @@ export class LarkService {
     async syncKPIData() {
         try {
             const records = await this.fetchKPIRecords();
-            this.logger.log(`Fetched ${records.length} KPI records from Lark. Syncing to database...`);
+            this.logger.log(`Fetched ${records.length} KPI records from Lark Report Table. Clearing database and syncing...`);
+
+            // Clear old data since we are switching table source
+            await this.prisma.larkKPI.deleteMany({});
 
             let syncedCount = 0;
             const rawSamples = [];
@@ -2743,71 +2746,188 @@ export class LarkService {
     async getDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
         const start = filters?.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
         const end = filters?.endDate ? new Date(filters.endDate) : new Date();
-        const teamFilter = filters?.team === 'All' ? null : filters?.team;
+        const teamFilter = filters?.team === 'All' || !filters?.team ? null : filters?.team;
+        const startMonth = String(start.getMonth() + 1);
 
-        // Fetch Tasks in range
-        const tasks = await this.prisma.larkListTask.findMany({
-            where: {
-                date: { gte: start, lte: end },
-                ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
-            },
-            select: { id: true, content_type: true, employee_id: true, employee_name: true }
-        });
+        // Fetch everything in parallel
+        const [tasks, kpis, usersWithChannels] = await Promise.all([
+            this.prisma.larkListTask.findMany({
+                where: {
+                    date: { gte: start, lte: end },
+                    ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
+                },
+                select: { id: true, content_type: true, employee_id: true, employee_name: true, employee_email: true, team: true }
+            }),
+            this.prisma.larkKPI.findMany({
+                where: {
+                    OR: [
+                        { report_date: { gte: start, lte: end } },
+                        { month: { contains: startMonth } }
+                    ]
+                },
+                orderBy: { report_date: 'desc' }
+            }),
+            this.prisma.user.findMany({
+                select: {
+                    email: true,
+                    roles: true,
+                    _count: {
+                        select: { tracked_channels: true }
+                    }
+                }
+            })
+        ]);
 
-        // Group tasks by employee and content_type
-        const empTaskStats = new Map<string, { [line: string]: number, total: number }>();
+        // Helper maps
+        const userMapByEmail = new Map<string, typeof usersWithChannels[0]>();
+        usersWithChannels.forEach(u => userMapByEmail.set(u.email.toLowerCase(), u));
+
+        // Group tasks by employee to get video counts
+        const empStats = new Map<string, {
+            name: string,
+            email: string,
+            empId: string,
+            team: string,
+            videoCount: number,
+            lineCounts: { [line: string]: number },
+            traffic: number,
+            revenue: number,
+            channels: number,
+            isLeader: boolean
+        }>();
+
+        const idToEmail = new Map<string, string>();
+
         tasks.forEach(task => {
+            const email = (task.employee_email || 'unknown').toLowerCase();
             const empId = task.employee_id || 'unknown';
+            if (empId !== 'unknown' && email !== 'unknown') {
+                idToEmail.set(empId, email);
+            }
+
+            if (!empStats.has(email)) {
+                const user = userMapByEmail.get(email);
+                empStats.set(email, {
+                    name: task.employee_name || 'Unknown',
+                    email: email,
+                    empId: empId,
+                    team: task.team || 'Khác',
+                    videoCount: 0,
+                    lineCounts: {},
+                    traffic: 0,
+                    revenue: 0,
+                    channels: user?._count.tracked_channels || 0,
+                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                });
+            }
+            const stats = empStats.get(email)!;
+            stats.videoCount++;
             const line = task.content_type || 'Khác';
-            if (!empTaskStats.has(empId)) {
-                empTaskStats.set(empId, { total: 0 });
-            }
-            const stats = empTaskStats.get(empId);
-            stats[line] = (stats[line] || 0) + 1;
-            stats.total++;
+            stats.lineCounts[line] = (stats.lineCounts[line] || 0) + 1;
         });
 
-        // Fetch KPIs for the same employees involved to get their traffic
-        const kpis = await this.prisma.larkKPI.findMany({
-            where: {
-                employee_id: { in: Array.from(empTaskStats.keys()) },
-                ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
-            }
-        });
-
-        // Map employee_id -> traffic (summed if multiple records in range, though usually it's monthly)
-        const empTraffic = new Map<string, number>();
+        // Supplement with KPI data for traffic/revenue
+        // Usually we want the latest KPI record for each person in the range
+        const processedEmpInKpi = new Set<string>();
         kpis.forEach(kpi => {
-            const empId = kpi.employee_id || 'unknown';
-            const traffic = Number(kpi.traffic_month || 0);
-            empTraffic.set(empId, Math.max(empTraffic.get(empId) || 0, traffic));
+            // Extract email from kpi.employee_data (User field in Lark) or use idToEmail map
+            let email = '';
+            const empData: any = kpi.employee_data;
+            if (empData && Array.isArray(empData.users) && empData.users[0]?.email) {
+                email = empData.users[0].email.toLowerCase();
+            } else if (kpi.employee_id && idToEmail.has(kpi.employee_id)) {
+                email = idToEmail.get(kpi.employee_id)!;
+            }
+
+            if (!email || processedEmpInKpi.has(email)) return;
+            processedEmpInKpi.add(email);
+
+            if (!empStats.has(email)) {
+                const user = userMapByEmail.get(email);
+                empStats.set(email, {
+                    name: kpi.name || 'Unknown',
+                    email: email,
+                    empId: kpi.employee_id || 'unknown',
+                    team: kpi.team || 'Khác',
+                    videoCount: 0,
+                    lineCounts: {},
+                    traffic: 0,
+                    revenue: 0,
+                    channels: user?._count.tracked_channels || 0,
+                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                });
+            }
+            const stats = empStats.get(email)!;
+            stats.traffic = Number(kpi.traffic_month || 0);
+            stats.revenue = Number(kpi.revenue_month || 0);
         });
 
-        // Aggregate by Line
+        // 1. Chart Data (Aggregate by Line)
         const lineStatsMap: { [line: string]: { videoCount: number, traffic: number } } = {};
-        empTaskStats.forEach((stats, empId) => {
-            const totalTraffic = empTraffic.get(empId) || 0;
-            Object.entries(stats).forEach(([line, count]) => {
-                if (line === 'total') return;
+        empStats.forEach(stats => {
+            const totalVideosForSymmetry = stats.videoCount || 1;
+            Object.entries(stats.lineCounts).forEach(([line, count]) => {
                 if (!lineStatsMap[line]) lineStatsMap[line] = { videoCount: 0, traffic: 0 };
                 lineStatsMap[line].videoCount += count;
-                // Distributed traffic
-                lineStatsMap[line].traffic += totalTraffic * (count / stats.total);
+                // Distributed traffic based on proportion of videos in this line
+                lineStatsMap[line].traffic += stats.traffic * (count / totalVideosForSymmetry);
             });
         });
 
-        // Convert to array for chart
         const chartData = Object.entries(lineStatsMap).map(([line, data]) => ({
             name: line,
             videoCount: data.videoCount,
             traffic: Math.round(data.traffic)
         })).sort((a, b) => a.name.localeCompare(b.name));
 
-        // For comparison, calculate stats for previous period of same duration
+        // 2. Regional/Team Tables
+        const getRegion = (teamName: string) => {
+            const t = (teamName || '').toLowerCase();
+            if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
+            return 'vn';
+        };
+
+        const regionalStats = {
+            vn: { summary: { videos: 0, traffic: 0, revenue: 0, channels: 0 }, teamsBySlug: {} as any },
+            global: { summary: { videos: 0, traffic: 0, revenue: 0, channels: 0 }, teamsBySlug: {} as any }
+        };
+
+        empStats.forEach(stats => {
+            const region = getRegion(stats.team);
+            const target: any = regionalStats[region];
+            const teamSlug = stats.team || 'Khác';
+
+            target.summary.videos += stats.videoCount;
+            target.summary.traffic += stats.traffic;
+            target.summary.revenue += stats.revenue;
+            target.summary.channels += stats.channels;
+
+            if (!target.teamsBySlug[teamSlug]) {
+                target.teamsBySlug[teamSlug] = { name: teamSlug, members: [], stats: { videos: 0, traffic: 0, revenue: 0, channels: 0 } };
+            }
+            target.teamsBySlug[teamSlug].members.push(stats);
+            target.teamsBySlug[teamSlug].stats.videos += stats.videoCount;
+            target.teamsBySlug[teamSlug].stats.traffic += stats.traffic;
+            target.teamsBySlug[teamSlug].stats.revenue += stats.revenue;
+            target.teamsBySlug[teamSlug].stats.channels += stats.channels;
+        });
+
+        // Format for frontend
+        const formatRegion = (region: any) => {
+            const teams = Object.values(region.teamsBySlug).map((team: any) => ({
+                ...team,
+                members: team.members.map((m: any) => ({
+                    ...m,
+                    contribution: region.summary.videos > 0 ? ((m.videoCount / region.summary.videos) * 100).toFixed(1) + '%' : '0%'
+                })).sort((a: any, b: any) => (b.isLeader ? 1 : 0) - (a.isLeader ? 1 : 0) || b.videoCount - a.videoCount)
+            }));
+            return { summary: region.summary, teams };
+        };
+
+        // Comparison for Summary Card
         const duration = end.getTime() - start.getTime();
         const prevStart = new Date(start.getTime() - duration - (24 * 60 * 60 * 1000));
         const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000));
-
         const prevTasksCount = await this.prisma.larkListTask.count({
             where: {
                 date: { gte: prevStart, lte: prevEnd },
@@ -2820,7 +2940,12 @@ export class LarkService {
             summary: {
                 totalVideos: tasks.length,
                 prevVideos: prevTasksCount,
-                totalTraffic: Math.round(Array.from(empTraffic.values()).reduce((a, b) => a + b, 0))
+                totalTraffic: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.traffic, 0)),
+                totalRevenue: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.revenue, 0))
+            },
+            regionalStats: {
+                vn: formatRegion(regionalStats.vn),
+                global: formatRegion(regionalStats.global)
             }
         };
     }
