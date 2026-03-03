@@ -25,7 +25,6 @@ export class LarkService {
     private readonly KPI_TABLE_ID: string;
     private readonly EMPLOYEE_TABLE_ID: string;
     private readonly PERMISSION_TABLE_ID: string;
-    private readonly REPORT_KPI_TABLE_ID: string;
     private readonly LIST_TASK_TABLE_ID: string;
 
     constructor(
@@ -44,7 +43,6 @@ export class LarkService {
         this.KPI_TABLE_ID = this.configService.get<string>('LARK_KPI_TABLE_ID');
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
         this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
-        this.REPORT_KPI_TABLE_ID = this.configService.get<string>('LARK_REPORT_KPI_TABLE_ID');
         this.LIST_TASK_TABLE_ID = this.configService.get<string>('LARK_LIST_TASK_TABLE_ID') || 'tblUubDhUoJ9TV7m';
     }
 
@@ -92,7 +90,6 @@ export class LarkService {
                 this.syncEmployeeData(),
                 this.syncPermissionData(),
                 this.syncHuykChannelData(),
-                this.syncReportKPIData(),
                 this.syncListTaskData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
@@ -835,54 +832,12 @@ export class LarkService {
     }
 
     // Fetch KPI records from Lark - Updated to use tblh9DeeqDBItrg7 as requested
-    async fetchKPIRecords() {
-        const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.REPORT_KPI_TABLE_ID}/records`;
-
-        let allRecords = [];
-        let pageToken = '';
-        let hasMore = true;
-
-        try {
-            while (hasMore) {
-                const response = await firstValueFrom(
-                    this.httpService.get(url, {
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                        },
-                        params: {
-                            text_field_as_key: true,
-                            page_size: 100,
-                            page_token: pageToken || undefined
-                        },
-                    }),
-                );
-
-                if (response.data.code !== 0) {
-                    throw new Error(`Lark API Error: ${response.data.msg}`);
-                }
-
-                const data = response.data.data;
-                if (data.items) {
-                    allRecords = allRecords.concat(data.items);
-                }
-
-                hasMore = data.has_more;
-                pageToken = data.page_token;
-            }
-
-            return allRecords;
-        } catch (error) {
-            this.logger.error('Failed to fetch KPI records (from Report Table) from Lark', error);
-            throw error;
-        }
-    }
 
     // Sync KPI data from Lark to database
     async syncKPIData() {
         try {
-            const records = await this.fetchKPIRecords();
-            this.logger.log(`Fetched ${records.length} KPI records from Lark Report Table. Clearing database and syncing...`);
+            const records = await this.fetchLarkRecordsGeneric(this.KPI_BASE_ID, this.KPI_TABLE_ID);
+            this.logger.log(`Fetched ${records.length} KPI records from Lark (Table: ${this.KPI_TABLE_ID}). Clearing database and syncing...`);
 
             // Clear old data since we are switching table source
             await this.prisma.larkKPI.deleteMany({});
@@ -891,6 +846,7 @@ export class LarkService {
             const rawSamples = [];
             const allKeys = new Set<string>();
 
+            const kpiRecordsToInsert: any[] = [];
             for (const record of records) {
                 Object.keys(record.fields).forEach(k => allKeys.add(k));
                 if (rawSamples.length < 3) rawSamples.push(record);
@@ -900,81 +856,53 @@ export class LarkService {
                 // Skip garbage: No name or just whitespace/Unknown
                 const cleanName = (kpiData.name || '').trim();
                 if (!cleanName || cleanName.toLowerCase() === 'unknown') {
-                    this.logger.debug(`Skipping invalid KPI record during sync: ${record.record_id}`);
                     continue;
                 }
 
                 // Skip records that are useless (no name AND no team)
                 if (!kpiData.name && !kpiData.team) {
-                    this.logger.debug(`Skipping empty KPI record: ${record.record_id}`);
                     continue;
                 }
 
-                await this.prisma.larkKPI.upsert({
-                    where: { id: kpiData.id },
-                    update: {
-                        employee_id: kpiData.employee_id,
-                        name: kpiData.name,
-                        tag: kpiData.tag,
-                        team: kpiData.team,
-                        image_url: kpiData.image_url,
-                        kpi_day: kpiData.kpi_day,
-                        kpi_month: kpiData.kpi_month,
-                        kpii_status: kpiData.kpii_status,
-                        kpi_day_percent: kpiData.kpi_day_percent,
-                        completed_day: kpiData.completed_day,
-                        completed_month: kpiData.completed_month,
-                        task_new: kpiData.task_new,
-                        task_new_month: kpiData.task_new_month,
-                        task_auto: kpiData.task_auto,
-                        task_auto_month: kpiData.task_auto_month,
-                        task_creative: kpiData.task_creative,
-                        content_win_new: kpiData.content_win_new,
-                        revenue_month: kpiData.revenue_month,
-                        traffic_month: kpiData.traffic_month,
-                        target_revenue_month: kpiData.target_revenue_month,
-                        target_traffic_month: kpiData.target_traffic_month,
-                        kpi_progress_month: kpiData.kpi_progress_month,
-                        employee_status: kpiData.employee_status,
-                        state: kpiData.state,
-                        employee_data: kpiData.employee_data,
-                        report_date: kpiData.report_date,
-                        month: kpiData.month,
-                        link_image: kpiData.link_image,
-                    },
-                    create: {
-                        id: kpiData.id,
-                        employee_id: kpiData.employee_id,
-                        name: kpiData.name,
-                        tag: kpiData.tag,
-                        team: kpiData.team,
-                        image_url: kpiData.image_url,
-                        kpi_day: kpiData.kpi_day,
-                        kpi_month: kpiData.kpi_month,
-                        kpii_status: kpiData.kpii_status,
-                        kpi_day_percent: kpiData.kpi_day_percent,
-                        completed_day: kpiData.completed_day,
-                        completed_month: kpiData.completed_month,
-                        task_new: kpiData.task_new,
-                        task_new_month: kpiData.task_new_month,
-                        task_auto: kpiData.task_auto,
-                        task_auto_month: kpiData.task_auto_month,
-                        task_creative: kpiData.task_creative,
-                        content_win_new: kpiData.content_win_new,
-                        revenue_month: kpiData.revenue_month,
-                        traffic_month: kpiData.traffic_month,
-                        target_revenue_month: kpiData.target_revenue_month,
-                        target_traffic_month: kpiData.target_traffic_month,
-                        kpi_progress_month: kpiData.kpi_progress_month,
-                        employee_status: kpiData.employee_status,
-                        state: kpiData.state,
-                        employee_data: kpiData.employee_data,
-                        report_date: kpiData.report_date,
-                        month: kpiData.month,
-                        link_image: kpiData.link_image,
-                    },
+                kpiRecordsToInsert.push({
+                    id: kpiData.id,
+                    employee_id: kpiData.employee_id,
+                    name: kpiData.name,
+                    tag: kpiData.tag,
+                    team: kpiData.team,
+                    image_url: kpiData.image_url,
+                    kpi_day: kpiData.kpi_day,
+                    kpi_month: kpiData.kpi_month,
+                    kpii_status: kpiData.kpii_status,
+                    kpi_day_percent: kpiData.kpi_day_percent,
+                    completed_day: kpiData.completed_day,
+                    completed_month: kpiData.completed_month,
+                    task_new: kpiData.task_new,
+                    task_new_month: kpiData.task_new_month,
+                    task_auto: kpiData.task_auto,
+                    task_auto_month: kpiData.task_auto_month,
+                    task_creative: kpiData.task_creative,
+                    content_win_new: kpiData.content_win_new,
+                    revenue_month: kpiData.revenue_month,
+                    traffic_month: kpiData.traffic_month,
+                    target_revenue_month: kpiData.target_revenue_month,
+                    target_traffic_month: kpiData.target_traffic_month,
+                    kpi_progress_month: kpiData.kpi_progress_month,
+                    employee_status: kpiData.employee_status,
+                    state: kpiData.state,
+                    employee_data: kpiData.employee_data,
+                    report_date: kpiData.report_date,
+                    month: kpiData.month,
+                    link_image: kpiData.link_image,
                 });
-                syncedCount++;
+            }
+
+            if (kpiRecordsToInsert.length > 0) {
+                await this.prisma.larkKPI.createMany({
+                    data: kpiRecordsToInsert,
+                    skipDuplicates: true, // Safety against Lark sending same record_id twice
+                });
+                syncedCount = kpiRecordsToInsert.length;
             }
 
             this.logger.log(`Successfully synced ${syncedCount} KPI records.`);
@@ -990,102 +918,6 @@ export class LarkService {
         }
     }
 
-    // Sync Report KPI data from Lark (tblh9DeeqDBItrg7) to database
-    async syncReportKPIData() {
-        try {
-            if (!this.KPI_BASE_ID || !this.REPORT_KPI_TABLE_ID) {
-                this.logger.warn('LARK_KPI_BASE_ID or LARK_REPORT_KPI_TABLE_ID not configured');
-                return { synced: 0, total: 0 };
-            }
-
-            const records = await this.fetchLarkRecordsGeneric(this.KPI_BASE_ID, this.REPORT_KPI_TABLE_ID);
-            this.logger.log(`Fetched ${records.length} Report KPI records from Lark. Syncing to database...`);
-
-            let syncedCount = 0;
-            for (const record of records) {
-                const mappedData = this.mapRecordToReportKPI(record);
-
-                if (!mappedData.email && !mappedData.name) continue;
-
-                await (this.prisma as any).$executeRawUnsafe(`
-                    INSERT INTO "lark_report_kpi" (
-                        "id", "employee_id", "name", "email", "team", "month", "report_date",
-                        "kpi_day", "kpi_month", "completed_day", "completed_month", "kpi_status",
-                        "task_auto", "task_auto_month", "task_new", "task_new_month", "traffic_month",
-                        "status", "image_url", "updated_at"
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
-                    ON CONFLICT ("id") DO UPDATE SET
-                        "employee_id" = EXCLUDED."employee_id",
-                        "name" = EXCLUDED."name",
-                        "email" = EXCLUDED."email",
-                        "team" = EXCLUDED."team",
-                        "month" = EXCLUDED."month",
-                        "report_date" = EXCLUDED."report_date",
-                        "kpi_day" = EXCLUDED."kpi_day",
-                        "kpi_month" = EXCLUDED."kpi_month",
-                        "completed_day" = EXCLUDED."completed_day",
-                        "completed_month" = EXCLUDED."completed_month",
-                        "kpi_status" = EXCLUDED."kpi_status",
-                        "task_auto" = EXCLUDED."task_auto",
-                        "task_auto_month" = EXCLUDED."task_auto_month",
-                        "task_new" = EXCLUDED."task_new",
-                        "task_new_month" = EXCLUDED."task_new_month",
-                        "traffic_month" = EXCLUDED."traffic_month",
-                        "status" = EXCLUDED."status",
-                        "image_url" = EXCLUDED."image_url",
-                        "updated_at" = NOW();
-                `,
-                    mappedData.id, mappedData.employee_id, mappedData.name, mappedData.email, mappedData.team, mappedData.month, mappedData.report_date,
-                    mappedData.kpi_day, mappedData.kpi_month, mappedData.completed_day, mappedData.completed_month, mappedData.kpi_status,
-                    mappedData.task_auto, mappedData.task_auto_month, mappedData.task_new, mappedData.task_new_month, mappedData.traffic_month,
-                    mappedData.status, mappedData.image_url);
-
-                syncedCount++;
-            }
-
-            this.logger.log(`Successfully synced ${syncedCount} Report KPI records.`);
-            return { synced: syncedCount, total: records.length };
-        } catch (error) {
-            this.logger.error('Failed to sync Report KPI data', error);
-            throw error;
-        }
-    }
-
-    private mapRecordToReportKPI(record: any) {
-        const fields = record.fields;
-        const person = Array.isArray(fields['Nhân viên']) ? fields['Nhân viên'][0] : (fields['Nhân viên'] || {});
-
-        // Handle timestamp conversion
-        let reportDate = null;
-        if (fields['Ngày báo cáo']) {
-            const val = Number(fields['Ngày báo cáo']);
-            if (!isNaN(val)) reportDate = new Date(val);
-        }
-
-        return {
-            id: record.record_id,
-            employee_id: fields['ID nhân viên'] || null,
-            name: person.name || null,
-            email: person.email || null,
-            team: fields['Team'] || null,
-            month: fields['Tháng'] || null,
-            report_date: reportDate,
-            kpi_day: Number(fields['KPI Ngày']) || 0,
-            kpi_month: Number(fields['KPI THÁNG']) || 0,
-            completed_day: Number(fields['Hoàn thành']) || 0,
-            completed_month: Number(fields['Hoàn thành Tháng']) || 0,
-            kpi_status: fields['KPII'] || null,
-            task_auto: Number(fields['Task Auto']) || 0,
-            task_auto_month: Number(fields['Task Auto Tháng']) || 0,
-            task_new: Number(fields['Task mới']) || 0,
-            task_new_month: Number(fields['Task mới tháng']) || 0,
-            traffic_month: fields['Traffic Tháng'] ? BigInt(fields['Traffic Tháng']) : BigInt(0),
-            revenue_month: fields['Doanh thu Tháng'] ? BigInt(fields['Doanh thu Tháng']) : BigInt(0),
-            revenue_day: fields['Doanh thu'] ? BigInt(fields['Doanh thu']) : BigInt(0),
-            status: fields['Trạng thái'] || null,
-            image_url: fields['Link ảnh'] || (Array.isArray(fields['Link ảnh']) ? fields['Link ảnh'][0]?.url : null),
-        };
-    }
 
     // Map Lark KPI record to database format
     private mapRecordToKPI(record: any) {
@@ -1176,9 +1008,9 @@ export class LarkService {
         let reportDate = null;
         const ngayBaoCao = findValue(['Ngày báo cáo', 'Ngay bao cao']);
         if (ngayBaoCao) {
-            if (typeof ngayBaoCao === 'number') {
-                const excelEpoch = new Date(1899, 11, 30);
-                reportDate = new Date(excelEpoch.getTime() + ngayBaoCao * 24 * 60 * 60 * 1000);
+            const val = Number(ngayBaoCao);
+            if (!isNaN(val)) {
+                reportDate = new Date(val);
             } else {
                 reportDate = new Date(ngayBaoCao);
             }
@@ -1195,36 +1027,42 @@ export class LarkService {
             return null;
         };
 
+        // Helper for numeric parsing
+        const parseNum = (val: any): number | null => {
+            const n = Number(extractString(val));
+            return isNaN(n) ? null : n;
+        };
+
         return {
             id: record.record_id,
-            employee_id: findValue(['ID nhân viên', 'ID nhan vien']) || null,
+            employee_id: extractString(findValue(['ID nhân viên', 'ID nhan vien'])) || null,
             name: name,
-            tag: findValue(['TAG']) || null,
-            team: findValue(['Team']) || null,
+            tag: extractString(findValue(['TAG'])) || null,
+            team: extractString(findValue(['Team'])) || null,
             image_url: imageUrl,
-            kpi_day: findValue(['KPI Ngày', 'KPI Ngay']) ?? null,
-            kpi_month: findValue(['KPI THÁNG', 'KPI THANG']) ?? null,
-            kpii_status: findValue(['KPII']) || null,
+            kpi_day: parseNum(findValue(['KPI Ngày', 'KPI Ngay'])),
+            kpi_month: parseNum(findValue(['KPI THÁNG', 'KPI THANG'])),
+            kpii_status: extractString(findValue(['KPII'])) || null,
             kpi_day_percent: kpiDayPercent,
-            completed_day: findValue(['Hoàn thành', 'Hoan thanh']) ?? null,
-            completed_month: findValue(['Hoàn thành Tháng', 'Hoan thanh Thang']) ?? null,
-            task_new: findValue(['Task mới', 'Task moi']) ?? null,
-            task_new_month: findValue(['Task mới tháng', 'Task moi thang']) ?? null,
-            task_auto: taskAutoVal,
-            task_auto_month: findValue(['Task Auto Tháng', 'Task Auto Thang']) ?? null,
+            completed_day: parseNum(findValue(['Hoàn thành', 'Hoan thanh'])),
+            completed_month: parseNum(findValue(['Hoàn thành Tháng', 'Hoan thanh Thang'])),
+            task_new: parseNum(findValue(['Task mới', 'Task moi'])),
+            task_new_month: parseNum(findValue(['Task mới tháng', 'Task moi thang'])),
+            task_auto: parseNum(findValue(['Số task tự động', 'So task tu dong', 'Task Auto'])),
+            task_auto_month: parseNum(findValue(['Task Auto Tháng', 'Task Auto Thang'])),
             task_creative: taskCreative,
-            content_win_new: findValue(['Content win mới', 'Content win moi']) ?? null,
+            content_win_new: parseNum(findValue(['Content win mới', 'Content win moi'])),
             revenue_month: cleanBigInt(findValue(['Doanh thu tháng', 'Doanh thu thang', 'Doanh thu', 'Revenue'])),
             traffic_month: cleanBigInt(findValue(['Traffic Tháng', 'Traffic Thang', 'Traffic', 'Traffi'])),
-            target_revenue_month: findValue(['Mục tiêu doanh thu tháng', 'Muc tieu doanh thu thang']) || null,
-            target_traffic_month: findValue(['Mục tiêu Traffic tháng', 'Muc tieu Traffic thang']) || null,
-            kpi_progress_month: findValue(['Tiến độ KPI tháng', 'Tien do KPI thang']) ?? null,
-            employee_status: findValue(['Tình trạng', 'Tinh trang']) || null,
-            state: findValue(['Trạng thái', 'Trang thai']) || null,
+            target_revenue_month: extractString(findValue(['Mục tiêu doanh thu tháng', 'Muc tieu doanh thu thang'])) || null,
+            target_traffic_month: extractString(findValue(['Mục tiêu Traffic tháng', 'Muc tieu Traffic thang'])) || null,
+            kpi_progress_month: parseNum(findValue(['Tiến độ KPI tháng', 'Tien do KPI thang'])),
+            employee_status: extractString(findValue(['Tình trạng', 'Tinh trang'])) || null,
+            state: extractString(findValue(['Trạng thái', 'Trang thai'])) || null,
             employee_data: findValue(['Nhân viên', 'Nhan vien']) || null,
             report_date: reportDate,
-            month: findValue(['Tháng', 'Thang']) || null,
-            link_image: findValue(['Link ảnh', 'Link anh', 'flddOHyBPa']) || null,
+            month: extractString(findValue(['Tháng', 'Thang'])) || null,
+            link_image: extractString(findValue(['Link ảnh', 'Link anh', 'flddOHyBPa'])) || null,
         };
     }
 
@@ -2759,12 +2597,6 @@ export class LarkService {
                 select: { id: true, content_type: true, employee_id: true, employee_name: true, employee_email: true, team: true }
             }),
             this.prisma.larkKPI.findMany({
-                where: {
-                    OR: [
-                        { report_date: { gte: start, lte: end } },
-                        { month: { contains: startMonth } }
-                    ]
-                },
                 orderBy: { report_date: 'desc' }
             }),
             this.prisma.user.findMany({
@@ -2827,40 +2659,60 @@ export class LarkService {
         });
 
         // Supplement with KPI data for traffic/revenue
-        // Usually we want the latest KPI record for each person in the range
-        const processedEmpInKpi = new Set<string>();
+        // Use the latest KPI record per employee to get the most up-to-date monthly totals
+        this.logger.debug(`Processing ${kpis.length} KPI records for traffic/revenue in dashboard analytics`);
+        const processedEmpInKpi = new Set<string>();   // Basic dedup for empStats creation
+        const empTrafficAssigned = new Set<string>();  // Track who already got a non-zero traffic/revenue
+
         kpis.forEach(kpi => {
-            // Extract email from kpi.employee_data (User field in Lark) or use idToEmail map
+            // Extract email from kpi.employee_data - stored as plain array [{id, name, email, ...}]
             let email = '';
             const empData: any = kpi.employee_data;
-            if (empData && Array.isArray(empData.users) && empData.users[0]?.email) {
+
+            if (Array.isArray(empData) && empData.length > 0 && empData[0]?.email) {
+                email = empData[0].email.toLowerCase();
+            } else if (empData && Array.isArray(empData.users) && empData.users[0]?.email) {
                 email = empData.users[0].email.toLowerCase();
             } else if (kpi.employee_id && idToEmail.has(kpi.employee_id)) {
                 email = idToEmail.get(kpi.employee_id)!;
             }
 
-            if (!email || processedEmpInKpi.has(email)) return;
-            processedEmpInKpi.add(email);
+            if (!email) return;
 
-            if (!empStats.has(email)) {
-                const user = userMapByEmail.get(email);
-                empStats.set(email, {
-                    name: kpi.name || 'Unknown',
-                    email: email,
-                    empId: kpi.employee_id || 'unknown',
-                    team: kpi.team || 'Khác',
-                    videoCount: 0,
-                    lineCounts: {},
-                    traffic: 0,
-                    revenue: 0,
-                    channels: user?._count.tracked_channels || 0,
-                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
-                });
+            const trafficVal = Number(kpi.traffic_month || 0);
+            const revenueVal = Number(kpi.revenue_month || 0);
+
+            // Create the empStats entry only once per employee
+            if (!processedEmpInKpi.has(email)) {
+                processedEmpInKpi.add(email);
+                if (!empStats.has(email)) {
+                    const user = userMapByEmail.get(email);
+                    empStats.set(email, {
+                        name: kpi.name || 'Unknown',
+                        email: email,
+                        empId: kpi.employee_id || 'unknown',
+                        team: kpi.team || 'Khác',
+                        videoCount: 0,
+                        lineCounts: {},
+                        traffic: trafficVal,
+                        revenue: revenueVal,
+                        channels: user?._count.tracked_channels || 0,
+                        isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                    });
+                    if (trafficVal > 0 || revenueVal > 0) empTrafficAssigned.add(email);
+                    return;
+                }
             }
-            const stats = empStats.get(email)!;
-            stats.traffic = Number(kpi.traffic_month || 0);
-            stats.revenue = Number(kpi.revenue_month || 0);
+
+            // For employees already in map, find the latest record that actually has non-zero traffic/revenue
+            if (!empTrafficAssigned.has(email) && (trafficVal > 0 || revenueVal > 0)) {
+                const stats = empStats.get(email)!;
+                stats.traffic = trafficVal;
+                stats.revenue = revenueVal;
+                empTrafficAssigned.add(email);
+            }
         });
+        this.logger.debug(`After KPI processing: empStats has ${empStats.size} employees. Traffic assigned to: ${empTrafficAssigned.size}`);
 
         // 1. Chart Data (Aggregate by Line)
         const lineStatsMap: { [line: string]: { videoCount: number, traffic: number } } = {};
