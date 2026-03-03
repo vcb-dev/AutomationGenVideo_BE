@@ -1757,39 +1757,44 @@ export class LarkService {
                 }
             });
 
-            const globalTotals = { videos: 0, traffic: 0, revenue: 0, videoTarget: 0, trafficTarget: 0, revenueTarget: 0 };
+            const globalTotals = { videos: 0, traffic: 0, revenue: 0, channels: 0, videoTarget: 0, trafficTarget: 0, revenueTarget: 0 };
             const teamBreakdown = {};
 
             // Calculate breakdowns based on the same range-filtered results used in the summary
             allValidResults.forEach(r => {
-                const team = r.team || 'Khác';
-                if (!teamBreakdown[team]) {
-                    teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0 };
-                }
                 const v = r.done || 0;
                 const t = Number(r.traffic_range || 0);
                 const re = Number(r.revenue_range || 0);
+                const c = r.channelCount || 0;
 
                 globalTotals.videos += v;
                 globalTotals.traffic += t;
                 globalTotals.revenue += re;
+                globalTotals.channels += c;
 
+                const team = r.team || 'Khác';
+                if (!teamBreakdown[team]) {
+                    teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0, channels: 0 };
+                }
                 teamBreakdown[team].videos += v;
                 teamBreakdown[team].traffic += t;
                 teamBreakdown[team].revenue += re;
+                teamBreakdown[team].channels += c;
             });
 
             const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
                 team,
                 videoPct: globalTotals.videos ? Math.round((stats.videos / globalTotals.videos) * 100) : 0,
                 trafficPct: globalTotals.traffic ? Math.round((stats.traffic / globalTotals.traffic) * 100) : 0,
-                revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0
+                revenuePct: globalTotals.revenue ? Math.round((stats.revenue / globalTotals.revenue) * 100) : 0,
+                channels: stats.channels || 0,
+                channelPct: globalTotals.channels ? Math.round(((stats.channels || 0) / globalTotals.channels) * 100) : 0
             })).sort((a, b) => b.videoPct - a.videoPct);
 
             // Calculate Group-level contributions (Global vs Việt Nam)
             const groupTotals = {
-                global: { videos: 0, traffic: 0, revenue: 0 },
-                vn: { videos: 0, traffic: 0, revenue: 0 }
+                global: { videos: 0, traffic: 0, revenue: 0, channels: 0 },
+                vn: { videos: 0, traffic: 0, revenue: 0, channels: 0 }
             };
 
             const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
@@ -1805,10 +1810,12 @@ export class LarkService {
                     groupTotals.global.videos += stats.videos;
                     groupTotals.global.traffic += stats.traffic;
                     groupTotals.global.revenue += stats.revenue;
+                    groupTotals.global.channels += (stats.channels || 0);
                 } else {
                     groupTotals.vn.videos += stats.videos;
                     groupTotals.vn.traffic += stats.traffic;
                     groupTotals.vn.revenue += stats.revenue;
+                    groupTotals.vn.channels += (stats.channels || 0);
                 }
             });
 
@@ -1817,17 +1824,21 @@ export class LarkService {
                     videos: groupTotals.global.videos,
                     traffic: groupTotals.global.traffic,
                     revenue: groupTotals.global.revenue,
+                    channels: groupTotals.global.channels,
                     videoPct: globalTotals.videos ? Math.round((groupTotals.global.videos / globalTotals.videos) * 100) : 0,
                     trafficPct: globalTotals.traffic ? Math.round((groupTotals.global.traffic / globalTotals.traffic) * 100) : 0,
-                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.global.revenue / globalTotals.revenue) * 100) : 0
+                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.global.revenue / globalTotals.revenue) * 100) : 0,
+                    channelPct: globalTotals.channels ? Math.round((groupTotals.global.channels / globalTotals.channels) * 100) : 0
                 },
                 vn: {
                     videos: groupTotals.vn.videos,
                     traffic: groupTotals.vn.traffic,
                     revenue: groupTotals.vn.revenue,
+                    channels: groupTotals.vn.channels,
                     videoPct: globalTotals.videos ? Math.round((groupTotals.vn.videos / globalTotals.videos) * 100) : 0,
                     trafficPct: globalTotals.traffic ? Math.round((groupTotals.vn.traffic / globalTotals.traffic) * 100) : 0,
-                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.vn.revenue / globalTotals.revenue) * 100) : 0
+                    revenuePct: globalTotals.revenue ? Math.round((groupTotals.vn.revenue / globalTotals.revenue) * 100) : 0,
+                    channelPct: globalTotals.channels ? Math.round((groupTotals.vn.channels / globalTotals.channels) * 100) : 0
                 }
             };
 
