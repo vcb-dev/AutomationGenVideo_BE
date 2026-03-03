@@ -2584,9 +2584,7 @@ export class LarkService {
         if (r.includes('MANAGER')) roles.push('MANAGER');
 
         if (r.includes('LEAD') || r.includes('TRƯỞNG')) {
-            if (t.includes('VIDEO')) roles.push('LEADER_VIDEO');
-            else if (t.includes('CONTENT')) roles.push('LEADER_CONTENT');
-            else roles.push('MANAGER'); // Fallback for general leaders
+            roles.push('LEADER');
         } else {
             // Check team for basic roles
             if (t.includes('VIDEO')) roles.push('EDITOR');

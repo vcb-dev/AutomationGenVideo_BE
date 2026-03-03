@@ -32,20 +32,20 @@ async function main() {
   });
   console.log('✅ Manager account created:', manager.email);
 
-  const leaderVideoPassword = await bcrypt.hash('leader123', 10);
-  const leaderVideo = await prisma.user.upsert({
-    where: { email: 'leader-video@vietchibao.com' },
+  const leaderPassword = await bcrypt.hash('leader123', 10);
+  const leader = await prisma.user.upsert({
+    where: { email: 'leader@vietchibao.com' },
     update: {},
     create: {
-      email: 'leader-video@vietchibao.com',
-      password_hash: leaderVideoPassword,
-      full_name: 'Leader Video',
-      roles: ['LEADER_VIDEO', 'LEADER_CONTENT'],
+      email: 'leader@vietchibao.com',
+      password_hash: leaderPassword,
+      full_name: 'Team Leader',
+      roles: ['LEADER'],
       manager_id: manager.id,
       is_active: true,
     },
   });
-  console.log('✅ Leader Video account created:', leaderVideo.email);
+  console.log('✅ Leader account created:', leader.email);
 
   const editorPassword = await bcrypt.hash('editor123', 10);
   const editor = await prisma.user.upsert({
@@ -57,7 +57,7 @@ async function main() {
       full_name: 'Test Editor',
       roles: ['EDITOR', 'CONTENT'],
       manager_id: manager.id,
-      team_leader_id: leaderVideo.id,
+      team_leader_id: leader.id,
       is_active: true,
     },
   });
@@ -80,7 +80,7 @@ async function main() {
   console.log('\n📋 Test Accounts:');
   console.log('Admin:    admin@vietchibao.com / admin123 → [ADMIN]');
   console.log('Manager:  manager@vietchibao.com / manager123 → [MANAGER]');
-  console.log('Leader:   leader-video@vietchibao.com / leader123 → [LEADER_VIDEO, LEADER_CONTENT]');
+  console.log('Leader:   leader@vietchibao.com / leader123 → [LEADER]');
   console.log('Editor:   editor@vietchibao.com / editor123 → [EDITOR, CONTENT]');
 }
 

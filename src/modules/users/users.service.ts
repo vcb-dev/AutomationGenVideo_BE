@@ -12,7 +12,7 @@ import * as bcrypt from "bcrypt";
 
 // Helper: check if roles array contains a Leader role
 function hasLeaderRole(roles: UserRole[]): boolean {
-  return roles.includes(UserRole.LEADER_VIDEO) || roles.includes(UserRole.LEADER_CONTENT);
+  return roles.includes(UserRole.LEADER);
 }
 
 // Helper: check if roles array contains a staff role (Editor or Content)
@@ -55,7 +55,7 @@ export class UsersService {
 
       if (!teamLeader || !hasLeaderRole(teamLeader.roles)) {
         throw new BadRequestException(
-          "Invalid team_leader_id: must reference a user with LEADER_VIDEO or LEADER_CONTENT role",
+          "Invalid team_leader_id: must reference a user with LEADER role",
         );
       }
     }
@@ -320,7 +320,7 @@ export class UsersService {
   async getAvailableManagers() {
     const managers = await this.prisma.user.findMany({
       where: {
-        roles: { hasSome: [UserRole.MANAGER, UserRole.LEADER_VIDEO, UserRole.LEADER_CONTENT] },
+        roles: { hasSome: [UserRole.MANAGER, UserRole.LEADER] },
         is_active: true,
       },
       select: {

@@ -67,7 +67,7 @@ export class UsersController {
 
   @Get("my-editors")
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.LEADER_VIDEO, UserRole.LEADER_CONTENT)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.LEADER)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get all editors managed by current manager with their channel statistics" })
   @ApiResponse({

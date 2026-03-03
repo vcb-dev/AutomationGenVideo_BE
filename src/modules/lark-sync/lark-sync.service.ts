@@ -12,7 +12,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
         private readonly prisma: PrismaService,
         private readonly larkService: LarkService,
     ) { }
- 
+
     // ──────────────────────────────────────────────────────────────────────────
     // Chạy 1 lần ngay khi ứng dụng khởi động
     // ──────────────────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
 
         const leaders = await this.prisma.user.findMany({
             where: {
-                roles: { hasSome: ['LEADER_VIDEO', 'LEADER_CONTENT'] as any[] },
+                roles: { has: 'LEADER' as any },
                 is_active: true,
             },
         });

@@ -546,8 +546,7 @@ model LarkKPI {
 enum UserRole {
   ADMIN
   MANAGER
-  LEADER_VIDEO
-  LEADER_CONTENT
+  LEADER
   EDITOR
   CONTENT
 }

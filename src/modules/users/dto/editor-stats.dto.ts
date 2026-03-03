@@ -84,7 +84,7 @@ export class EditorWithStatsDto {
   @ApiProperty()
   avatar: string | null;
 
-  @ApiProperty({ enum: ['ADMIN', 'MANAGER', 'LEADER_VIDEO', 'LEADER_CONTENT', 'EDITOR', 'CONTENT'], isArray: true })
+  @ApiProperty({ enum: ['ADMIN', 'MANAGER', 'LEADER', 'EDITOR', 'CONTENT'], isArray: true })
   roles: string[];
 
   @ApiProperty()
