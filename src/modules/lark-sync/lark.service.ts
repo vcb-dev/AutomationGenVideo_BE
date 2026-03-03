@@ -1178,6 +1178,17 @@ export class LarkService {
             }
         }
 
+        const cleanBigInt = (val: any): bigint | null => {
+            if (val === null || val === undefined) return null;
+            if (typeof val === 'number') return BigInt(Math.floor(val));
+            if (typeof val === 'string') {
+                const clean = val.replace(/[^0-9.-]/g, '').split('.')[0]; // Only digits
+                return clean ? BigInt(clean) : BigInt(0);
+            }
+            if (Array.isArray(val) && val.length > 0) return cleanBigInt(val[0]);
+            return null;
+        };
+
         return {
             id: record.record_id,
             employee_id: findValue(['ID nhân viên', 'ID nhan vien']) || null,
@@ -1197,8 +1208,8 @@ export class LarkService {
             task_auto_month: findValue(['Task Auto Tháng', 'Task Auto Thang']) ?? null,
             task_creative: taskCreative,
             content_win_new: findValue(['Content win mới', 'Content win moi']) ?? null,
-            revenue_month: findValue(['Doanh thu tháng', 'Doanh thu thang']) != null ? BigInt(findValue(['Doanh thu tháng', 'Doanh thu thang'])) : null,
-            traffic_month: findValue(['Traffic Tháng', 'Traffic Thang']) != null ? BigInt(findValue(['Traffic Tháng', 'Traffic Thang'])) : null,
+            revenue_month: cleanBigInt(findValue(['Doanh thu tháng', 'Doanh thu thang', 'Doanh thu', 'Revenue'])),
+            traffic_month: cleanBigInt(findValue(['Traffic Tháng', 'Traffic Thang', 'Traffic', 'Traffi'])),
             target_revenue_month: findValue(['Mục tiêu doanh thu tháng', 'Muc tieu doanh thu thang']) || null,
             target_traffic_month: findValue(['Mục tiêu Traffic tháng', 'Muc tieu Traffic thang']) || null,
             kpi_progress_month: findValue(['Tiến độ KPI tháng', 'Tien do KPI thang']) ?? null,
@@ -1623,8 +1634,8 @@ export class LarkService {
                         task_new: reportKpi.task_new || 0,
                         kpi_status: reportKpi.kpi_status || 'N/A'
                     } : null,
-                    traffic_month: kpi.traffic_month ? Number(kpi.traffic_month) : 0,
-                    revenue_month: kpi.revenue_month ? Number(kpi.revenue_month) : 0,
+                    traffic_month: Math.max(Number(reportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
+                    revenue_month: Math.max(Number(reportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
                     channelCount: huykChannelMap.get(nameKey) || 0,
                     isAuthorizedForReport,
@@ -1678,10 +1689,11 @@ export class LarkService {
                 if (isResigned) return;
                 if (!r.name || r.name.toLowerCase() === 'unknown') return;
 
-                aggregates.totalVideoTarget += Number(r.dailyGoal || 0);
-                aggregates.totalVideoCompleted += Number(r.done || 0);
-                aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
-                aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
+                // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
+                aggregates.totalVideoTarget += Number(r.kpi_month || 0);
+                aggregates.totalVideoCompleted += Number(r.completed_month || 0);
+                aggregates.totalTrafficCompleted += Number(r.traffic_month || 0);
+                aggregates.totalRevenueCompleted += Number(r.revenue_month || 0);
 
                 const nameKey = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                 const kpi = kpiByName.get(nameKey);
