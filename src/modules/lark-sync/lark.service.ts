@@ -1529,8 +1529,8 @@ export class LarkService {
             // --- NEW: Group by Person to aggregate stats across months if viewing range ---
             const groupedResults = new Map();
             allResults.filter(r => r !== null).forEach(r => {
-                // Use a normalized name-fallback key if employee_id is null to catch cases where it's inconsistent
-                const key = r.employee_id || r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || r.personKey;
+                // Use a normalized name as primary key to prevent duplicate cards for the same person
+                const key = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || r.employee_id || r.personKey;
 
                 if (!groupedResults.has(key)) {
                     groupedResults.set(key, { ...r });
