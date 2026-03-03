@@ -397,6 +397,7 @@ model video_management_searchhistory {
   error_message                 String?
   execution_time                Float
   expires_at                    DateTime                        @db.Timestamptz(6)
+  search_mode                   String                          @default("hashtag") @db.VarChar(20)
   video_management_scrapedvideo video_management_scrapedvideo[]
 
   @@index([platform, keyword, created_at(sort: Desc)], map: "video_manag_platfor_cf643f_idx")
@@ -615,6 +616,203 @@ model LarkPermission {
   @@index([name])
   @@map("lark_permissions")
 }
+
+// ============================================================
+// Django-managed tables (AI Service) — DO NOT MODIFY
+// These are managed by Django migrations. Prisma needs to know 
+// about them so `db push` doesn't drop them.
+// ============================================================
+
+model video_management_facebookpagecache {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  username        String   @unique @db.VarChar(255)
+  page_name       String   @db.VarChar(255)
+  avatar_url      String   @db.VarChar(1000)
+  followers_count BigInt
+  likes_count     BigInt
+  page_description String
+  page_category   String   @db.VarChar(255)
+  verified        Boolean
+  raw_data        Json
+  expires_at      DateTime @db.Timestamptz(6)
+  last_fetched_at DateTime @db.Timestamptz(6)
+
+  @@index([username])
+  @@index([expires_at])
+}
+
+model video_management_tiktokusercache {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  username        String   @unique @db.VarChar(255)
+  display_name    String   @db.VarChar(255)
+  avatar_url      String?
+  followers_count BigInt
+  likes_count     BigInt
+  videos_count    Int
+  raw_data        Json
+  expires_at      DateTime @db.Timestamptz(6)
+  last_fetched_at DateTime @db.Timestamptz(6)
+
+  @@index([username])
+  @@index([expires_at])
+}
+
+model video_management_generatedcontent {
+  id                 BigInt   @id @default(autoincrement())
+  created_at         DateTime @db.Timestamptz(6)
+  updated_at         DateTime @db.Timestamptz(6)
+  source_video_id    BigInt
+  content_type       String   @db.VarChar(2)
+  title              String   @db.VarChar(500)
+  script             String
+  hook               String
+  problem            String
+  solution           String
+  cta                String
+  estimated_duration Int
+  word_count         Int
+  ai_model           String   @db.VarChar(50)
+  prompt_used        String
+  is_approved        Boolean
+  notes              String
+}
+
+model video_management_productlist {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  name            String   @db.VarChar(255)
+  file_name       String   @db.VarChar(500)
+  file_path       String   @db.VarChar(1000)
+  total_products  Int
+  description     String
+  video_management_product video_management_product[]
+}
+
+model video_management_product {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  product_list_id BigInt
+  name            String   @db.VarChar(500)
+  category        String   @db.VarChar(255)
+  price           Decimal? @db.Decimal(15, 2)
+  description     String
+  highlights      String
+  sku             String   @db.VarChar(255)
+  raw_data        Json
+  product_list    video_management_productlist @relation(fields: [product_list_id], references: [id], onDelete: Cascade)
+
+  @@index([product_list_id])
+  @@index([name])
+}
+
+model video_management_localvideofile {
+  id            BigInt   @id @default(autoincrement())
+  created_at    DateTime @db.Timestamptz(6)
+  updated_at    DateTime @db.Timestamptz(6)
+  file_path     String   @db.VarChar(1000)
+  folder_type   String   @db.VarChar(50)
+  duration      Float
+  file_size     BigInt
+  has_audio     Boolean
+  width         Int?
+  height        Int?
+  modified_time DateTime @db.Timestamptz(6)
+  is_available  Boolean
+
+  @@index([file_path])
+  @@index([folder_type])
+}
+
+model video_management_indexedvideo {
+  id            BigInt   @id @default(autoincrement())
+  created_at    DateTime @db.Timestamptz(6)
+  updated_at    DateTime @db.Timestamptz(6)
+  file_path     String   @db.VarChar(1000)
+  folder_type   String   @db.VarChar(50)
+  duration      Float
+  file_size     BigInt
+  has_audio     Boolean
+  width         Int?
+  height        Int?
+  last_used_at  DateTime? @db.Timestamptz(6)
+  use_count     Int
+  modified_time DateTime @db.Timestamptz(6)
+  is_available  Boolean
+  video_management_videoclipcache video_management_videoclipcache[]
+
+  @@unique([file_path, folder_type])
+  @@index([file_path])
+  @@index([folder_type])
+  @@index([is_available])
+}
+
+model video_management_videoclipcache {
+  id                BigInt   @id @default(autoincrement())
+  created_at        DateTime @db.Timestamptz(6)
+  updated_at        DateTime @db.Timestamptz(6)
+  source_video_id   BigInt
+  clip_path         String   @unique @db.VarChar(1000)
+  start_time        Float
+  duration          Float
+  file_size         BigInt
+  last_accessed_at  DateTime @db.Timestamptz(6)
+  access_count      Int
+  generated_with_gpu Boolean
+  generation_time   Float
+  source_video      video_management_indexedvideo @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
+
+  @@index([source_video_id])
+  @@index([clip_path])
+}
+
+model video_management_searchquery {
+  id             BigInt   @id @default(autoincrement())
+  created_at     DateTime @db.Timestamptz(6)
+  updated_at     DateTime @db.Timestamptz(6)
+  keyword        String   @db.VarChar(500)
+  platform       String   @db.VarChar(20)
+  search_count   Int      @default(1)
+  last_searched  DateTime @db.Timestamptz(6)
+
+  @@unique([keyword, platform])
+  @@index([keyword])
+  @@index([platform])
+}
+
+model video_management_trendingkeyword {
+  id            BigInt   @id @default(autoincrement())
+  created_at    DateTime @db.Timestamptz(6)
+  updated_at    DateTime @db.Timestamptz(6)
+  keyword       String   @db.VarChar(500)
+  platform      String   @db.VarChar(20)
+  score         Float    @default(0)
+  source        String   @db.VarChar(50)
+  expires_at    DateTime @db.Timestamptz(6)
+
+  @@index([keyword])
+  @@index([platform])
+  @@index([expires_at])
+}
+
+model video_management_appuser {
+  id         BigInt   @id @default(autoincrement())
+  created_at DateTime @db.Timestamptz(6)
+  updated_at DateTime @db.Timestamptz(6)
+  email      String   @unique @db.VarChar(255)
+  name       String   @db.VarChar(255)
+  lark_id    String?  @db.VarChar(255)
+  role       String   @db.VarChar(50)
+  team       String?  @db.VarChar(100)
+
+  @@index([email])
+}
+
 model LarkReportKPI {
   id              String    @id
   employee_id     String?
