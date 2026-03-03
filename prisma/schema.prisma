@@ -843,3 +843,35 @@ model LarkReportKPI {
   @@index([name])
   @@map("lark_report_kpi")
 }
+
+model LarkListTask {
+  id                String   @id
+  caption           String?  @db.Text
+  deadline          String?
+  file_content_url  String?  @db.Text
+  file_content_name String?
+  file_voice_token  String?
+  employee_id       String?
+  employee_name     String?
+  employee_email    String?
+  content           String?  @db.Text
+  sku               String?
+  source_huyk       String?  @db.Text
+  source_outro      String?  @db.Text
+  source_collection String?  @db.Text
+  team              String?
+  tiktok_post       String?
+  status            String?
+  content_type      String?
+  product_name      String?
+  link_tiktok       String?  @db.Text
+  date              DateTime?
+  created_at_lark   DateTime?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@index([employee_id])
+  @@index([employee_email])
+  @@index([team])
+  @@map("lark_list_tasks")
+}
