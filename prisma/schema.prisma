@@ -21,6 +21,7 @@ model User {
   manager_id          String?
   team_leader_id      String?
   is_active           Boolean          @default(true)
+  custom_permissions  String[]         @default([])
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
   search_histories    SearchHistory[]
