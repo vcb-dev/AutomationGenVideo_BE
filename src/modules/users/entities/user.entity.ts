@@ -38,6 +38,10 @@ export class UserEntity implements User {
   manager_id: string | null;
   team_leader_id: string | null;
   is_active: boolean;
+
+  @ApiProperty({ type: [String] })
+  custom_permissions: string[];
+
   created_at: Date;
   updated_at: Date;
 }

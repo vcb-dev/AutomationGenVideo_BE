@@ -17,6 +17,7 @@ import { DouyinModule } from './douyin/douyin.module';
 import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
 import { LarkModule } from './modules/lark-sync/lark.module';
+import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { LarkModule } from './modules/lark-sync/lark.module';
     XiaohongshuModule,
     SearchRecommendationModule,
     LarkModule,
+    RolePermissionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
