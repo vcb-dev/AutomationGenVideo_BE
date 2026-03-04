@@ -61,6 +61,11 @@ export class CreateUserDto {
   @IsString()
   avatar?: string;
 
+  @ApiPropertyOptional({ example: "Team A" })
+  @IsOptional()
+  @IsString()
+  team?: string;
+
   @ApiPropertyOptional({ type: [String], example: ['performance', 'dashboard'] })
   @IsArray()
   @IsString({ each: true })
