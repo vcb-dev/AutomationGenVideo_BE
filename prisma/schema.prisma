@@ -39,6 +39,16 @@ model User {
   @@map("users")
 }
 
+model RolePermission {
+  id         String   @id @default(uuid())
+  role       UserRole @unique
+  menu_ids   String[] // Array of allowed menu IDs/paths
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("role_permissions")
+}
+
 model TrackedChannel {
   id                  String      @id @default(uuid())
   user_id             String
