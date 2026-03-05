@@ -207,9 +207,10 @@ export class LarkController {
     @ApiOperation({ summary: 'Update status of a ReportOutstanding record' })
     async updateOutstandingStatus(
         @Body('id') id: string,
-        @Body('status') status: string
+        @Body('status') status: string,
+        @Body('approvedBy') approvedBy?: string
     ) {
-        return this.larkService.updateOutstandingStatus(id, status);
+        return this.larkService.updateOutstandingStatus(id, status, approvedBy);
     }
     @Get('inspect-generic')
     @ApiOperation({ summary: 'Inspect any Lark table structure' })
