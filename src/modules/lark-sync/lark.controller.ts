@@ -220,33 +220,33 @@ export class LarkController {
         return this.larkService.inspectTableGeneric(baseId, tableId);
     }
 
-    @Post('sync-huyk-channel')
-    @ApiOperation({ summary: 'Manually trigger Huyk Channel data sync from Lark' })
-    async syncHuykChannelData() {
+    @Post('sync-channel')
+    @ApiOperation({ summary: 'Manually trigger Channel data sync from Lark' })
+    async syncChannelData() {
         try {
-            await this.larkService.syncHuykChannelData();
-            return { message: 'Huyk Channel sync completed successfully' };
+            await this.larkService.syncChannelData();
+            return { message: 'Channel sync completed successfully' };
         } catch (error) {
-            return { message: 'Huyk Channel sync failed', error: error.message };
+            return { message: 'Channel sync failed', error: error.message };
         }
     }
 
-    @Post('reset-huyk-channel')
-    @ApiOperation({ summary: 'Clear and re-sync Huyk Channel data' })
-    async resetHuykChannelData() {
+    @Post('reset-channel')
+    @ApiOperation({ summary: 'Clear and re-sync Channel data' })
+    async resetChannelData() {
         try {
-            await this.larkService.clearHuykChannels();
-            await this.larkService.syncHuykChannelData();
-            return { message: 'Huyk Channel reset and sync completed successfully' };
+            await this.larkService.clearChannels();
+            await this.larkService.syncChannelData();
+            return { message: 'Channel reset and sync completed successfully' };
         } catch (error) {
-            return { message: 'Huyk Channel reset failed', error: error.message };
+            return { message: 'Channel reset failed', error: error.message };
         }
     }
 
-    @Get('huyk-channel')
-    @ApiOperation({ summary: 'Get Huyk Channel data from Database' })
-    async getHuykChannel() {
-        return this.larkService.getHuykChannelData();
+    @Get('channel')
+    @ApiOperation({ summary: 'Get Channel data from Database' })
+    async getChannel() {
+        return this.larkService.getChannelData();
     }
 
     @Post('sync-hr')

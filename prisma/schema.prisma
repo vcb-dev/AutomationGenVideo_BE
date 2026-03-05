@@ -592,7 +592,7 @@ model ReportOutstanding {
   @@map("report_outstanding")
 }
 
-model HuykChannel {
+model Channel {
   id           String   @id
   name         String
   platform     String?  // Nền tảng
