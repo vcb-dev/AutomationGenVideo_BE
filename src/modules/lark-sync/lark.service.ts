@@ -430,6 +430,7 @@ export class LarkService {
                     this.httpService.get(url, {
                         headers: { Authorization: `Bearer ${token}` },
                         params: {
+                            text_field_as_key: true,
                             page_size: 100,
                             page_token: pageToken || undefined
                         },
@@ -2540,7 +2541,7 @@ export class LarkService {
             source_huyk: extractLink(fields['Source HuyK']),
             source_outro: extractLink(fields['Source Outro']),
             source_collection: extractLink(fields['Source Sản phẩm sưu tầm']),
-            team: Array.isArray(fields['Team']) ? fields['Team'][0] : (fields['Team'] || null),
+            team: extractString(fields['Team']),
             tiktok_post: extractString(fields['Tiktok Post']),
             status: fields['Trạng Thái'] || null,
             content_type: fields['Tuyến Nội Dung'] || null,
@@ -2584,11 +2585,32 @@ export class LarkService {
     async getDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
         const start = filters?.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
         const end = filters?.endDate ? new Date(filters.endDate) : new Date();
-        const teamFilter = filters?.team === 'All' || !filters?.team ? null : filters?.team;
-        const startMonth = String(start.getMonth() + 1);
+        const teamFilter = filters?.team === 'All' || !filters?.team ? null : filters?.team.toLowerCase().trim();
 
-        // Fetch everything in parallel
-        const [tasks, kpis, usersWithChannels] = await Promise.all([
+        // 1. Identify target months for KPI matching
+        const monthsInRange: { monthNum: number; year: number; formats: string[] }[] = [];
+        {
+            let curr = new Date(start.getFullYear(), start.getMonth(), 1);
+            const endLimit = new Date(end.getFullYear(), end.getMonth(), 1);
+            while (curr <= endLimit) {
+                const m = curr.getMonth() + 1;
+                const y = curr.getFullYear();
+                monthsInRange.push({
+                    monthNum: m,
+                    year: y,
+                    formats: [
+                        `T${m}`, `T${m < 10 ? '0' + m : m}`,
+                        `Tháng ${m}`, `tháng ${m}`,
+                        `Thang ${m}`, `thang ${m}`,
+                        `${m}`, m < 10 ? `0${m}` : `${m}`
+                    ]
+                });
+                curr.setMonth(curr.getMonth() + 1);
+            }
+        }
+
+        // Fetch everything
+        const [tasks, allKpisInDb, usersWithChannels] = await Promise.all([
             this.prisma.larkListTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
@@ -2610,11 +2632,28 @@ export class LarkService {
             })
         ]);
 
+        // Filter KPIs matching the selected period
+        const kpis = allKpisInDb.filter(k => {
+            if (k.state?.toLowerCase() === 'off') return false;
+            const mStr = (k.month || '').trim();
+
+            if (!mStr) {
+                const rd = k.report_date ? new Date(k.report_date) : null;
+                return rd && monthsInRange.some(m => rd.getMonth() + 1 === m.monthNum && rd.getFullYear() === m.year);
+            }
+
+            return monthsInRange.some(monthInfo => {
+                if (monthInfo.formats.includes(mStr)) return true;
+                const mDigits = mStr.match(/\d+/g);
+                return mDigits && mDigits.some(d => parseInt(d, 10) === monthInfo.monthNum);
+            });
+        });
+
         // Helper maps
         const userMapByEmail = new Map<string, typeof usersWithChannels[0]>();
         usersWithChannels.forEach(u => userMapByEmail.set(u.email.toLowerCase(), u));
 
-        // Group tasks by employee to get video counts
+        // Group Stats Map
         const empStats = new Map<string, {
             name: string,
             email: string,
@@ -2628,101 +2667,88 @@ export class LarkService {
             isLeader: boolean
         }>();
 
-        const idToEmail = new Map<string, string>();
+        // 1. First Pass: Base everyone on LarkKPI metadata and "completed_month" as requested
+        kpis.forEach(kpi => {
+            const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+            const email = this.extractEmailFromKpi(kpi);
+            const key = email || nameKey;
 
-        tasks.forEach(task => {
-            const email = (task.employee_email || 'unknown').toLowerCase();
-            const empId = task.employee_id || 'unknown';
-            if (empId !== 'unknown' && email !== 'unknown') {
-                idToEmail.set(empId, email);
+            if (!key) return;
+
+            const trafficVal = Number(kpi.traffic_month || 0);
+            const revenueVal = Number(kpi.revenue_month || 0);
+            const videosVal = Number(kpi.completed_month || 0);
+            const teamName = kpi.team || 'Khác';
+
+            // Filter by team if requested
+            if (teamFilter && !teamName.toLowerCase().includes(teamFilter) && !teamFilter.includes(teamName.toLowerCase())) {
+                return;
             }
 
-            if (!empStats.has(email)) {
-                const user = userMapByEmail.get(email);
-                empStats.set(email, {
+            // Keep the latest/best record for the range if duplicates exist
+            if (empStats.has(key)) {
+                const existing = empStats.get(key)!;
+                existing.videoCount = Math.max(existing.videoCount, videosVal);
+                existing.traffic = Math.max(existing.traffic, trafficVal);
+                existing.revenue = Math.max(existing.revenue, revenueVal);
+            } else {
+                const user = email ? userMapByEmail.get(email) : null;
+                empStats.set(key, {
+                    name: kpi.name || 'Unknown',
+                    email: email || '',
+                    empId: kpi.employee_id || 'unknown',
+                    team: teamName,
+                    videoCount: videosVal,
+                    lineCounts: {},
+                    traffic: trafficVal,
+                    revenue: revenueVal,
+                    channels: user?._count.tracked_channels || 0,
+                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                });
+            }
+        });
+
+        // 2. Second Pass: Distribute LarkListTask into Line Breakdown
+        tasks.forEach(task => {
+            const email = (task.employee_email || '').toLowerCase().trim();
+            const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+            const key = email || nameKey;
+
+            if (empStats.has(key)) {
+                const stats = empStats.get(key)!;
+                const line = task.content_type || 'Khác';
+                stats.lineCounts[line] = (stats.lineCounts[line] || 0) + 1;
+            } else {
+                // If person not in KPI, we can still show them if they have tasks, but user says "based on KPI"
+                // For completeness/visual parity with chart, we add them if they have tasks
+                const user = email ? userMapByEmail.get(email) : null;
+                empStats.set(key, {
                     name: task.employee_name || 'Unknown',
                     email: email,
-                    empId: empId,
+                    empId: task.employee_id || 'unknown',
                     team: task.team || 'Khác',
-                    videoCount: 0,
-                    lineCounts: {},
+                    videoCount: 0, // Will be updated by tasks if we want, but user said "based on KPI"
+                    lineCounts: { [task.content_type || 'Khác']: 1 },
                     traffic: 0,
                     revenue: 0,
                     channels: user?._count.tracked_channels || 0,
                     isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
                 });
+                // If we want task row count as fallback:
+                empStats.get(key)!.videoCount = 1;
             }
-            const stats = empStats.get(email)!;
-            stats.videoCount++;
-            const line = task.content_type || 'Khác';
-            stats.lineCounts[line] = (stats.lineCounts[line] || 0) + 1;
+            // For existing ones, if they have tasks, it adds to breakdown but doesn't change their KPI 'videoCount'
         });
 
-        // Supplement with KPI data for traffic/revenue
-        // Use the latest KPI record per employee to get the most up-to-date monthly totals
-        this.logger.debug(`Processing ${kpis.length} KPI records for traffic/revenue in dashboard analytics`);
-        const processedEmpInKpi = new Set<string>();   // Basic dedup for empStats creation
-        const empTrafficAssigned = new Set<string>();  // Track who already got a non-zero traffic/revenue
-
-        kpis.forEach(kpi => {
-            // Extract email from kpi.employee_data - stored as plain array [{id, name, email, ...}]
-            let email = '';
-            const empData: any = kpi.employee_data;
-
-            if (Array.isArray(empData) && empData.length > 0 && empData[0]?.email) {
-                email = empData[0].email.toLowerCase();
-            } else if (empData && Array.isArray(empData.users) && empData.users[0]?.email) {
-                email = empData.users[0].email.toLowerCase();
-            } else if (kpi.employee_id && idToEmail.has(kpi.employee_id)) {
-                email = idToEmail.get(kpi.employee_id)!;
-            }
-
-            if (!email) return;
-
-            const trafficVal = Number(kpi.traffic_month || 0);
-            const revenueVal = Number(kpi.revenue_month || 0);
-
-            // Create the empStats entry only once per employee
-            if (!processedEmpInKpi.has(email)) {
-                processedEmpInKpi.add(email);
-                if (!empStats.has(email)) {
-                    const user = userMapByEmail.get(email);
-                    empStats.set(email, {
-                        name: kpi.name || 'Unknown',
-                        email: email,
-                        empId: kpi.employee_id || 'unknown',
-                        team: kpi.team || 'Khác',
-                        videoCount: 0,
-                        lineCounts: {},
-                        traffic: trafficVal,
-                        revenue: revenueVal,
-                        channels: user?._count.tracked_channels || 0,
-                        isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
-                    });
-                    if (trafficVal > 0 || revenueVal > 0) empTrafficAssigned.add(email);
-                    return;
-                }
-            }
-
-            // For employees already in map, find the latest record that actually has non-zero traffic/revenue
-            if (!empTrafficAssigned.has(email) && (trafficVal > 0 || revenueVal > 0)) {
-                const stats = empStats.get(email)!;
-                stats.traffic = trafficVal;
-                stats.revenue = revenueVal;
-                empTrafficAssigned.add(email);
-            }
-        });
-        this.logger.debug(`After KPI processing: empStats has ${empStats.size} employees. Traffic assigned to: ${empTrafficAssigned.size}`);
-
-        // 1. Chart Data (Aggregate by Line)
+        // 3. Chart Data (Aggregate by Line)
         const lineStatsMap: { [line: string]: { videoCount: number, traffic: number } } = {};
         empStats.forEach(stats => {
-            const totalVideosForSymmetry = stats.videoCount || 1;
+            const totalTasks = Object.values(stats.lineCounts).reduce((a, b) => a + b, 0) || 1;
             Object.entries(stats.lineCounts).forEach(([line, count]) => {
                 if (!lineStatsMap[line]) lineStatsMap[line] = { videoCount: 0, traffic: 0 };
                 lineStatsMap[line].videoCount += count;
-                // Distributed traffic based on proportion of videos in this line
-                lineStatsMap[line].traffic += stats.traffic * (count / totalVideosForSymmetry);
+                // Distributed traffic based on proportion of tasks in this line
+                lineStatsMap[line].traffic += stats.traffic * (count / totalTasks);
             });
         });
 
@@ -2730,9 +2756,9 @@ export class LarkService {
             name: line,
             videoCount: data.videoCount,
             traffic: Math.round(data.traffic)
-        })).sort((a, b) => a.name.localeCompare(b.name));
+        })).sort((a, b) => b.videoCount - a.videoCount);
 
-        // 2. Regional/Team Tables
+        // 4. Regional/Team Tables
         const getRegion = (teamName: string) => {
             const t = (teamName || '').toLowerCase();
             if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
@@ -2764,7 +2790,6 @@ export class LarkService {
             target.teamsBySlug[teamSlug].stats.channels += stats.channels;
         });
 
-        // Format for frontend
         const formatRegion = (region: any) => {
             const teams = Object.values(region.teamsBySlug).map((team: any) => ({
                 ...team,
@@ -2787,10 +2812,12 @@ export class LarkService {
             }
         });
 
+        const totalVideosInRange = Array.from(empStats.values()).reduce((sum, s) => sum + s.videoCount, 0);
+
         return {
             chartData,
             summary: {
-                totalVideos: tasks.length,
+                totalVideos: totalVideosInRange,
                 prevVideos: prevTasksCount,
                 totalTraffic: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.traffic, 0)),
                 totalRevenue: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.revenue, 0))
@@ -2800,6 +2827,16 @@ export class LarkService {
                 global: formatRegion(regionalStats.global)
             }
         };
+    }
+
+    private extractEmailFromKpi(kpi: any): string | null {
+        const empData: any = kpi.employee_data;
+        if (Array.isArray(empData) && empData.length > 0 && empData[0]?.email) {
+            return empData[0].email.toLowerCase();
+        } else if (empData && Array.isArray(empData.users) && empData.users[0]?.email) {
+            return empData.users[0].email.toLowerCase();
+        }
+        return null;
     }
 
     async clearAllListTasks() {
