@@ -586,6 +586,7 @@ model ReportOutstanding {
   idea_content String?  @db.Text
   status       String?  // duyệt/ ho tro
   email        String?
+  approved_by  String?  // người duyệt
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 

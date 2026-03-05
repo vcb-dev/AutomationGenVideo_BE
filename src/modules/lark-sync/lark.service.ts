@@ -2385,12 +2385,19 @@ export class LarkService {
             throw error;
         }
     }
-    async updateOutstandingStatus(id: string, status: string) {
+    async updateOutstandingStatus(id: string, status: string, approvedBy?: string) {
         try {
-            await this.prisma.$executeRawUnsafe(
-                `UPDATE "report_outstanding" SET "status" = $1 WHERE "id" = $2`,
-                status, id
-            );
+            if (approvedBy) {
+                await this.prisma.$executeRawUnsafe(
+                    `UPDATE "report_outstanding" SET "status" = $1, "approved_by" = $2 WHERE "id" = $3`,
+                    status, approvedBy, id
+                );
+            } else {
+                await this.prisma.$executeRawUnsafe(
+                    `UPDATE "report_outstanding" SET "status" = $1 WHERE "id" = $2`,
+                    status, id
+                );
+            }
             return { success: true, message: 'Status updated successfully' };
         } catch (error) {
             this.logger.error(`Failed to update outstanding status for id ${id}`, error);
