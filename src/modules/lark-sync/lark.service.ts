@@ -89,7 +89,7 @@ export class LarkService {
                 this.syncKPIData(),
                 this.syncEmployeeData(),
                 this.syncPermissionData(),
-                this.syncHuykChannelData(),
+                this.syncChannelData(),
                 this.syncListTaskData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
@@ -357,15 +357,15 @@ export class LarkService {
         }
     }
 
-    async syncHuykChannelData() {
+    async syncChannelData() {
         try {
             // This table tbljWdSiFVVWVqfp belongs to the REPORT_BASE_ID
             const baseId = this.configService.get<string>('LARK_REPORT_BASE_ID') || 'Q5Fmby8DVaKOyusfR8glgRB6gbf';
             const tableId = 'tbljWdSiFVVWVqfp';
 
-            this.logger.log(`Syncing Huyk Channel table: ${tableId} from base: ${baseId}`);
+            this.logger.log(`Syncing Channel table: ${tableId} from base: ${baseId}`);
             const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
-            this.logger.log(`Fetched ${records.length} records from Huyk Channel table. Syncing to HuykChannel model...`);
+            this.logger.log(`Fetched ${records.length} records from Channel table. Syncing to Channel model...`);
 
             const extractString = (val: any): string | null => {
                 if (!val) return null;
@@ -393,26 +393,26 @@ export class LarkService {
                     owner: extractString(fields['NV traffic xây kênh']) || '',
                 };
 
-                await this.prisma.huykChannel.upsert({
+                await this.prisma.channel.upsert({
                     where: { id: data.id },
                     update: data,
                     create: data,
                 });
             }
-            this.logger.log(`Successfully synced ${records.length} records to HuykChannel.`);
+            this.logger.log(`Successfully synced ${records.length} records to Channel.`);
         } catch (error) {
-            this.logger.error('Failed to sync Huyk Channel data', error);
+            this.logger.error('Failed to sync Channel data', error);
         }
     }
 
-    async getHuykChannelData() {
-        return this.prisma.huykChannel.findMany({
+    async getChannelData() {
+        return this.prisma.channel.findMany({
             orderBy: { created_at: 'desc' }
         });
     }
 
-    async clearHuykChannels() {
-        return this.prisma.huykChannel.deleteMany({});
+    async clearChannels() {
+        return this.prisma.channel.deleteMany({});
     }
 
     async fetchLarkRecordsGeneric(baseId: string, tableId: string) {
@@ -1007,13 +1007,23 @@ export class LarkService {
 
         // Date parsing
         let reportDate = null;
-        const ngayBaoCao = findValue(['Ngày báo cáo', 'Ngay bao cao']);
-        if (ngayBaoCao) {
-            const val = Number(ngayBaoCao);
-            if (!isNaN(val)) {
-                reportDate = new Date(val);
-            } else {
-                reportDate = new Date(ngayBaoCao);
+        const rawNgayBaoCao = findValue(['Ngày báo cáo', 'Ngay bao cao', 'Ngày', 'Ngay', 'NGÀY']);
+        if (rawNgayBaoCao) {
+            const stringVal = extractString(rawNgayBaoCao);
+            const numVal = Number(stringVal);
+            if (!isNaN(numVal) && stringVal !== null) {
+                // If it's a timestamp (ms or s) or a small number (Excel date)
+                if (numVal > 1000000000000) {
+                    reportDate = new Date(numVal);
+                } else if (numVal > 30000 && numVal < 60000) {
+                    // Excel serial date (approx 1982 to 2064)
+                    reportDate = new Date((numVal - 25569) * 86400 * 1000);
+                } else {
+                    // Might be seconds or other format
+                    reportDate = new Date(numVal * (numVal < 10000000000 ? 1000 : 1));
+                }
+            } else if (stringVal) {
+                reportDate = new Date(stringVal);
             }
         }
 
@@ -1062,7 +1072,7 @@ export class LarkService {
             state: extractString(findValue(['Trạng thái', 'Trang thai'])) || null,
             employee_data: findValue(['Nhân viên', 'Nhan vien']) || null,
             report_date: reportDate,
-            month: extractString(findValue(['Tháng', 'Thang'])) || null,
+            month: extractString(findValue(['Tháng', 'Thang', 'THÁNG'])) || null,
             link_image: extractString(findValue(['Link ảnh', 'Link anh', 'flddOHyBPa'])) || null,
         };
     }
@@ -1215,13 +1225,13 @@ export class LarkService {
                 }
             });
 
-            // Fetch all Huyk Channels to count per user
-            const allHuykChannels = await this.prisma.huykChannel.findMany();
-            const huykChannelMap = new Map();
-            allHuykChannels.forEach(h => {
+            // Fetch all Channels to count per user
+            const allChannels = await this.prisma.channel.findMany();
+            const channelMap = new Map();
+            allChannels.forEach(h => {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
-                    huykChannelMap.set(ownerKey, (huykChannelMap.get(ownerKey) || 0) + 1);
+                    channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
                 }
             });
 
@@ -1521,7 +1531,7 @@ export class LarkService {
                     trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
                     revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
-                    channelCount: huykChannelMap.get(nameKey) || 0,
+                    channelCount: channelMap.get(nameKey) || 0,
                     isAuthorizedForReport,
                     isMatchForRanking
                 };
@@ -2076,7 +2086,7 @@ export class LarkService {
                 this.prisma.larkEmployee.findFirst({
                     where: { name: { equals: userName.trim(), mode: 'insensitive' } }
                 }),
-                this.prisma.huykChannel.count({
+                this.prisma.channel.count({
                     where: { owner: { equals: userName.trim(), mode: 'insensitive' } }
                 })
             ]);
@@ -2108,7 +2118,7 @@ export class LarkService {
                     compTotals.revenue += Number(k.revenue_month || 0);
                 });
 
-                const companyChannelsCount = await this.prisma.huykChannel.count().catch(() => 0);
+                const companyChannelsCount = await this.prisma.channel.count().catch(() => 0);
 
                 companyStats = {
                     totalVideo: compTotals.video,
@@ -2155,7 +2165,7 @@ export class LarkService {
                 // Calculate team channels
                 try {
                     const teamMembers = Array.from(teamLatestMap.values()).map(k => k.name?.trim()).filter(Boolean);
-                    const teamChannelsCount = await this.prisma.huykChannel.count({
+                    const teamChannelsCount = await this.prisma.channel.count({
                         where: { owner: { in: teamMembers, mode: 'insensitive' } }
                     });
                     teamTotals.channels = teamChannelsCount;
