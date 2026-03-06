@@ -1101,6 +1101,23 @@ export class LarkService {
                     requesterRole = (permission.role || 'Member').toLowerCase();
                     requesterTeam = permission.team;
                 }
+
+                // FALLBACK: If not found in LarkPermission or team/role is missing, check System User table
+                if (requesterRole === 'member' || !requesterTeam) {
+                    const sysUser = await this.prisma.user.findFirst({
+                        where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } }
+                    });
+                    if (sysUser) {
+                        // If System says Leader but Lark says Member/null, trust System
+                        if (sysUser.roles.some(r => r === 'LEADER' || r === 'MANAGER' || r === 'ADMIN') && requesterRole === 'member') {
+                            requesterRole = sysUser.roles.includes('ADMIN') ? 'admin' :
+                                sysUser.roles.includes('MANAGER') ? 'manager' : 'leader';
+                        }
+                        if (!requesterTeam && sysUser.team) {
+                            requesterTeam = sysUser.team;
+                        }
+                    }
+                }
             }
 
             // Fetch reports with optional filters
@@ -1127,10 +1144,20 @@ export class LarkService {
                 endOfDay.setHours(23, 59, 59, 999);
             }
 
-            whereClause.date = {
-                gte: startOfDay,
-                lte: endOfDay,
-            };
+            whereClause.OR = [
+                {
+                    date: {
+                        gte: startOfDay,
+                        lte: endOfDay,
+                    }
+                }
+            ];
+
+            if (filters?.requesterEmail) {
+                whereClause.OR.push({
+                    email: { equals: filters.requesterEmail, mode: 'insensitive' }
+                });
+            }
 
             let kpiMonthFallback = false;
 
@@ -1503,6 +1530,7 @@ export class LarkService {
                     personKey: personKey,
                     name: kpi.name,
                     position: position,
+                    role: personPerm?.role || null,
                     email: report?.email || reportKpi?.email || null,
                     team: effectiveTeam,
                     avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
