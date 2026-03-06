@@ -26,6 +26,7 @@ export class LarkService {
     private readonly EMPLOYEE_TABLE_ID: string;
     private readonly PERMISSION_TABLE_ID: string;
     private readonly LIST_TASK_TABLE_ID: string;
+    private readonly OUTSTANDING_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -44,6 +45,7 @@ export class LarkService {
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
         this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
         this.LIST_TASK_TABLE_ID = this.configService.get<string>('LARK_LIST_TASK_TABLE_ID') || 'tblUubDhUoJ9TV7m';
+        this.OUTSTANDING_TABLE_ID = this.configService.get<string>('LARK_OUTSTANDING_TABLE_ID') || 'tbluurIuf2qDCdFr';
     }
 
     async getAccessToken(): Promise<string> {
@@ -91,6 +93,7 @@ export class LarkService {
                 this.syncPermissionData(),
                 this.syncChannelData(),
                 this.syncListTaskData(),
+                this.syncOutstandingData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -192,8 +195,6 @@ export class LarkService {
                     },
                 });
 
-                // Extract and sync outstandings
-                await this.extractAndSyncOutstandings(reportData);
 
                 syncedCount++;
             }
@@ -204,68 +205,52 @@ export class LarkService {
         }
     }
 
-    private async extractAndSyncOutstandings(reportData: any) {
-        let answers = reportData.answers;
-        if (typeof answers === 'string') {
-            try { answers = JSON.parse(answers); } catch (e) { return; }
-        }
-        if (!answers || typeof answers !== 'object') return;
+    async syncOutstandingData() {
+        try {
+            const baseId = this.REPORT_BASE_ID;
+            const tableId = this.OUTSTANDING_TABLE_ID;
 
-        const date = reportData.date || new Date();
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const dateStr = startOfDay.toISOString().split('T')[0];
+            this.logger.log(`Syncing Outstanding table: ${tableId} from base: ${baseId}`);
+            const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
+            this.logger.log(`Fetched ${records.length} records from Outstanding table.`);
 
-        const findAnswer = (keywords: string[]) => {
-            for (const key of Object.keys(answers)) {
-                if (keywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
-                    const val = answers[key];
-                    if (val && !['không', 'không có', 'chưa', 'none', ''].includes(val.toString().toLowerCase().trim())) {
-                        return val;
-                    }
+            const extractString = (val: any): string | null => {
+                if (!val) return null;
+                if (typeof val === 'string') return val;
+                if (Array.isArray(val) && val.length > 0) {
+                    const first = val[0];
+                    return first.name || first.text || (typeof first === 'string' ? first : null);
                 }
-            }
-            return null;
-        };
+                return String(val);
+            };
 
-        const rules = [
-            {
-                content: 'Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI',
-                answer: findAnswer(['4. ban co dong gop', '4. ban co bat ky y tuong', '4. ban co dang ki'])
-                    || findAnswer(['dong gop y tuong hay de xuat'])
-            },
-            {
-                content: 'KHÓ KHĂN CẦN HỖ TRỢ',
-                answer: findAnswer(['3. ban co gap kho khan', '3. ban co gap tro ngai'])
-                    || findAnswer(['co gap kho khan nao can ho tro'])
-            },
-            {
-                content: 'SẢN PHẨM WIN',
-                answer: findAnswer(['5. ban co san pham', '5. ban co clip win'])
-                    || findAnswer(['co san pham (a4 - a5) nao win moi khong'])
-            },
-            {
-                content: 'VIDEO WIN',
-                answer: findAnswer(['thanh vien nao co video win nhat', 'video win nhat'])
-            }
-        ];
+            for (const record of records) {
+                const fields = record.fields;
 
-        for (const rule of rules) {
-            if (rule.answer) {
-                // Use a stable ID to prevent duplicates: [name]_[date]_[type]
-                const stableId = Buffer.from(`${reportData.name}_${dateStr}_${rule.content}`).toString('base64').substring(0, 50);
+                const data = {
+                    id: record.record_id,
+                    name: extractString(fields['HoTen']),
+                    date: extractString(fields['Ngày tháng']),
+                    team: extractString(fields['Team']),
+                    role: extractString(fields['Role']),
+                    email: extractString(fields['Email']),
+                    status: extractString(fields['Trang Thai']),
+                    employee: fields['Nhân viên'] ? fields['Nhân viên'] : null,
+                    updated_at: new Date()
+                };
 
-                await this.prisma.$executeRawUnsafe(`
-                    INSERT INTO "report_outstanding" ("id", "name", "date", "team", "content", "idea_content", "email", "created_at", "updated_at")
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-                    ON CONFLICT ("id") DO UPDATE SET
-                    "team" = EXCLUDED."team",
-                    "content" = EXCLUDED."content",
-                    "idea_content" = EXCLUDED."idea_content",
-                    "email" = EXCLUDED."email",
-                    "updated_at" = NOW()
-                `, stableId, reportData.name, startOfDay, reportData.team, rule.content, String(rule.answer), reportData.email);
+                await (this.prisma as any).reportOutstanding.upsert({
+                    where: { id: data.id },
+                    update: data,
+                    create: {
+                        ...data,
+                        created_at: new Date()
+                    }
+                });
             }
+            this.logger.log(`Synced ${records.length} outstanding records.`);
+        } catch (error) {
+            this.logger.error('Failed to sync outstanding data', error);
         }
     }
 
