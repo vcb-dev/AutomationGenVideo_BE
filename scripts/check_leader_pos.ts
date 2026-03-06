@@ -15,7 +15,15 @@ async function main() {
                 name: { contains: name, mode: 'insensitive' }
             }
         });
-        console.log('Permission Position:', permission?.position);
+
+        // Also check lark_employees for position
+        const employee = await prisma.larkEmployee.findFirst({
+            where: {
+                name: { contains: name, mode: 'insensitive' }
+            }
+        });
+
+        console.log('Permission Position:', employee?.position);
         console.log('Permission Role:', permission?.role);
 
         // Check reports
