@@ -578,17 +578,20 @@ enum DuplicateStatus {
 }
 
 model ReportOutstanding {
-  id           String   @id
-  name         String?
-  date         String?
-  team         String?
-  role         String?
-  email        String?
-  status       String?
-  employee     Json?
-  approved_by  String?
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  id              String   @id
+  name            String?
+  date            String?
+  team            String?
+  role            String?
+  email           String?
+  category        String?
+  content         String?
+  status          String?
+  approved_by     String?
+  approval_status String?
+  employee        Json?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
 
   @@map("report_outstanding")
 }
