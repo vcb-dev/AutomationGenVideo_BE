@@ -1109,15 +1109,25 @@ export class LarkService {
                     });
                     if (sysUser) {
                         // If System says Leader but Lark says Member/null, trust System
-                        if (sysUser.roles.some(r => r === 'LEADER' || r === 'MANAGER' || r === 'ADMIN') && requesterRole === 'member') {
+                        if (sysUser.roles.some(r => r === 'LEADER' || r === 'MANAGER' || r === 'ADMIN' || r === 'EDITOR' || r === 'CONTENT') && requesterRole === 'member') {
                             requesterRole = sysUser.roles.includes('ADMIN') ? 'admin' :
-                                sysUser.roles.includes('MANAGER') ? 'manager' : 'leader';
+                                sysUser.roles.includes('MANAGER') ? 'manager' :
+                                    sysUser.roles.includes('LEADER') ? 'leader' : 'member';
                         }
                         if (!requesterTeam && sysUser.team) {
                             requesterTeam = sysUser.team;
                         }
                     }
                 }
+            }
+
+            // --- RESTRICTION LOGIC ---
+            // If the requester is not an Admin or Manager, force them to see only their team's data
+            const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
+            let enforcedTeam = null;
+
+            if (!isInternalAdmin && requesterTeam) {
+                enforcedTeam = requesterTeam;
             }
 
             // Fetch reports with optional filters
@@ -1463,14 +1473,20 @@ export class LarkService {
                     effectiveTeamNormalized.includes(teamFilterNormalized) ||
                     teamFilterNormalized.includes(effectiveTeamNormalized);
 
-                // 2. Logic cho Báo cáo (Reports) & Summary:
-                // - Mọi người xem được các báo cáo nếu khớp bộ lọc team (đảm bảo tính minh bạch cho Hiệu suất)
-                // - Luôn bao gồm bản thân để phục vụ tab "Cá nhân"
                 const personPerm = permMap.get(nameKey);
                 const isSelf = filters?.requesterEmail && personPerm?.email &&
                     personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
 
-                let isAuthorizedForReport = isMatchForRanking || isSelf;
+                // 2. Logic cho Báo cáo (Reports) & Summary:
+                // - Admin/Manager xem được tất cả theo bộ lọc
+                // - Member/Leader chỉ xem được báo cáo của Team mình (kể cả khi đang ở BXH "All")
+                let isAuthorizedForReport = false;
+                if (isInternalAdmin) {
+                    isAuthorizedForReport = isMatchForRanking || isSelf;
+                } else {
+                    const myTeam = requesterTeam?.toLowerCase().trim();
+                    isAuthorizedForReport = (myTeam && effectiveTeamNormalized === myTeam) || isSelf;
+                }
 
                 // Nếu không khớp cả 2 thì bỏ qua record này
                 if (!isMatchForRanking && !isAuthorizedForReport) {
@@ -1650,8 +1666,8 @@ export class LarkService {
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
 
-                // --- FIX: Sum channels from all people in the team range, not just those who reported today ---
-                if (r.isAuthorizedForReport) {
+                // --- Sum channels from currently matched people in ranking/team selection ---
+                if (r.isMatchForRanking) {
                     aggregates.totalChannels += (r.channelCount || 0);
                 }
             });
@@ -2266,11 +2282,13 @@ export class LarkService {
             try {
                 let membersWhere: any = { month: targetMonth };
 
-                if (requesterRole === 'admin' || requesterRole === 'manager') {
-                    // See everyone
-                } else if (requesterRole === 'leader' && requesterTeam) {
+                if (isAdmin) {
+                    // Admin/Manager sees everyone
+                } else if (requesterTeam) {
+                    // Leader and Member see their whole team
                     membersWhere.team = requesterTeam;
-                } else {
+                } else if (userName) {
+                    // Fallback to only themselves if no team info
                     membersWhere.name = userName;
                 }
 
