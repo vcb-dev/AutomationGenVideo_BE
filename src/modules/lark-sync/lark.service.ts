@@ -227,14 +227,25 @@ export class LarkService {
             for (const record of records) {
                 const fields = record.fields;
 
+                const findField = (names: string[]) => {
+                    for (const name of names) {
+                        if (fields[name] !== undefined) return fields[name];
+                    }
+                    return null;
+                };
+
                 const data = {
                     id: record.record_id,
-                    name: extractString(fields['HoTen']),
-                    date: extractString(fields['Ngày tháng']),
-                    team: extractString(fields['Team']),
-                    role: extractString(fields['Role']),
-                    email: extractString(fields['Email']),
-                    status: extractString(fields['Trang Thai']),
+                    name: extractString(findField(['HoTen', 'Họ Tên'])),
+                    date: extractString(findField(['Ngày tháng', 'Ngày tháng'])),
+                    team: extractString(findField(['Team'])),
+                    role: extractString(findField(['Role', 'Chức danh'])),
+                    email: extractString(findField(['Email'])),
+                    category: extractString(findField(['Phân loại', 'Phân loại'])),
+                    content: extractString(findField(['Nội dung', 'Nội dung'])),
+                    status: extractString(findField(['Trang Thai', 'Trạng thái'])),
+                    approved_by: extractString(findField(['Người duyệt', 'Người Duyệt'])),
+                    approval_status: extractString(findField(['Duyệt', 'Duyệt'])),
                     employee: fields['Nhân viên'] ? fields['Nhân viên'] : null,
                     updated_at: new Date()
                 };
@@ -1248,13 +1259,27 @@ export class LarkService {
             });
 
             // Fetch all Channels to count per user
-            const allChannels = await this.prisma.channel.findMany();
+            const allChannelsInDb = await this.prisma.channel.findMany({
+                where: { status: 'Đang hoạt động' }
+            });
+
             const channelMap = new Map();
-            allChannels.forEach(h => {
+            const regionalChannelCounts = { vn: 0, global: 0 };
+
+            const getRegionInternal = (teamName: string) => {
+                const t = (teamName || '').toLowerCase();
+                if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
+                return 'vn';
+            };
+
+            allChannelsInDb.forEach(h => {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
                 }
+
+                const region = getRegionInternal(h.team_traffic || '');
+                regionalChannelCounts[region]++;
             });
 
             const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
@@ -1629,7 +1654,7 @@ export class LarkService {
                 totalTrafficCompleted: 0,
                 totalRevenueTarget: 0,
                 totalRevenueCompleted: 0,
-                totalChannels: 0,
+                totalChannels: regionalChannelCounts.vn + regionalChannelCounts.global,
                 totalReports: 0,
                 reportedCount: 0
             };
@@ -1651,10 +1676,7 @@ export class LarkService {
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
 
-                // --- Sum channels from currently matched people in ranking/team selection ---
-                if (r.isMatchForRanking) {
-                    aggregates.totalChannels += (r.channelCount || 0);
-                }
+                // --- Channels are already counted globally from Channel table for the summary ---
             });
 
             // Count reports for today separately
@@ -1725,7 +1747,7 @@ export class LarkService {
                 globalTotals.videos += v;
                 globalTotals.traffic += t;
                 globalTotals.revenue += re;
-                globalTotals.channels += c;
+                // globalTotals.channels is already set from Channel table direct count internally below
 
                 const team = r.team || 'Khác';
                 if (!teamBreakdown[team]) {
@@ -1748,8 +1770,8 @@ export class LarkService {
 
             // Calculate Group-level contributions (Global vs Việt Nam)
             const groupTotals = {
-                global: { videos: 0, traffic: 0, revenue: 0, channels: 0 },
-                vn: { videos: 0, traffic: 0, revenue: 0, channels: 0 }
+                global: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.global },
+                vn: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn }
             };
 
             const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
@@ -1765,14 +1787,15 @@ export class LarkService {
                     groupTotals.global.videos += stats.videos;
                     groupTotals.global.traffic += stats.traffic;
                     groupTotals.global.revenue += stats.revenue;
-                    groupTotals.global.channels += (stats.channels || 0);
                 } else {
                     groupTotals.vn.videos += stats.videos;
                     groupTotals.vn.traffic += stats.traffic;
                     groupTotals.vn.revenue += stats.revenue;
-                    groupTotals.vn.channels += (stats.channels || 0);
                 }
             });
+
+            // Update globalTotals.channels to be consistent with the sum of group channels
+            globalTotals.channels = groupTotals.global.channels + groupTotals.vn.channels;
 
             const groupContributions = {
                 global: {
@@ -2658,7 +2681,7 @@ export class LarkService {
         }
 
         // Fetch everything
-        const [tasks, allKpisInDb, usersWithChannels] = await Promise.all([
+        const [tasks, allKpisInDb, usersWithChannels, allChannels] = await Promise.all([
             this.prisma.larkListTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
@@ -2676,6 +2699,12 @@ export class LarkService {
                     _count: {
                         select: { tracked_channels: true }
                     }
+                }
+            }),
+            this.prisma.channel.findMany({
+                where: {
+                    status: 'Đang hoạt động',
+                    ...(teamFilter ? { team_traffic: { contains: teamFilter, mode: 'insensitive' } } : {})
                 }
             })
         ]);
@@ -2700,6 +2729,27 @@ export class LarkService {
         // Helper maps
         const userMapByEmail = new Map<string, typeof usersWithChannels[0]>();
         usersWithChannels.forEach(u => userMapByEmail.set(u.email.toLowerCase(), u));
+
+        // Maps channels by owner
+        const channelsByOwnerMap = new Map<string, number>();
+        allChannels.forEach(c => {
+            if (c.owner) {
+                const ownerKey = c.owner.toLowerCase().trim().replace(/\s+/g, ' ');
+                channelsByOwnerMap.set(ownerKey, (channelsByOwnerMap.get(ownerKey) || 0) + 1);
+            }
+        });
+
+        const getRegion = (teamName: string) => {
+            const t = (teamName || '').toLowerCase();
+            if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
+            return 'vn';
+        };
+
+        const regionalChannelCounts = { vn: 0, global: 0 };
+        allChannels.forEach(c => {
+            const region = getRegion(c.team_traffic || '');
+            regionalChannelCounts[region]++;
+        });
 
         // Group Stats Map
         const empStats = new Map<string, {
@@ -2750,7 +2800,7 @@ export class LarkService {
                     lineCounts: {},
                     traffic: trafficVal,
                     revenue: revenueVal,
-                    channels: user?._count.tracked_channels || 0,
+                    channels: channelsByOwnerMap.get(nameKey) || user?._count.tracked_channels || 0,
                     isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
                 });
             }
@@ -2779,7 +2829,7 @@ export class LarkService {
                     lineCounts: { [task.content_type || 'Khác']: 1 },
                     traffic: 0,
                     revenue: 0,
-                    channels: user?._count.tracked_channels || 0,
+                    channels: channelsByOwnerMap.get(nameKey) || user?._count.tracked_channels || 0,
                     isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
                 });
                 // If we want task row count as fallback:
@@ -2806,16 +2856,9 @@ export class LarkService {
             traffic: Math.round(data.traffic)
         })).sort((a, b) => b.videoCount - a.videoCount);
 
-        // 4. Regional/Team Tables
-        const getRegion = (teamName: string) => {
-            const t = (teamName || '').toLowerCase();
-            if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
-            return 'vn';
-        };
-
         const regionalStats = {
-            vn: { summary: { videos: 0, traffic: 0, revenue: 0, channels: 0 }, teamsBySlug: {} as any },
-            global: { summary: { videos: 0, traffic: 0, revenue: 0, channels: 0 }, teamsBySlug: {} as any }
+            vn: { summary: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn }, teamsBySlug: {} as any },
+            global: { summary: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.global }, teamsBySlug: {} as any }
         };
 
         empStats.forEach(stats => {
@@ -2826,7 +2869,7 @@ export class LarkService {
             target.summary.videos += stats.videoCount;
             target.summary.traffic += stats.traffic;
             target.summary.revenue += stats.revenue;
-            target.summary.channels += stats.channels;
+            // regional summary channel count is already set from Channel table direct count
 
             if (!target.teamsBySlug[teamSlug]) {
                 target.teamsBySlug[teamSlug] = { name: teamSlug, members: [], stats: { videos: 0, traffic: 0, revenue: 0, channels: 0 } };
