@@ -578,15 +578,15 @@ enum DuplicateStatus {
 }
 
 model ReportOutstanding {
-  id           String   @id @default(uuid())
-  name         String
-  date         DateTime @default(now())
+  id           String   @id
+  name         String?
+  date         String?
   team         String?
-  content      String?  @db.Text
-  idea_content String?  @db.Text
-  status       String?  // duyệt/ ho tro
+  role         String?
   email        String?
-  approved_by  String?  // người duyệt
+  status       String?
+  employee     Json?
+  approved_by  String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
