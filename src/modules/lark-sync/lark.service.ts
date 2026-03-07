@@ -2439,22 +2439,191 @@ export class LarkService {
             throw error;
         }
     }
+    private fieldMaps: Map<string, any> = new Map();
+
+    private async getTableFields(baseId: string, tableId: string) {
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/fields`;
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(url, {
+                    headers: { Authorization: `Bearer ${token}` },
+                })
+            );
+            return response.data.data?.items || [];
+        } catch (error) {
+            this.logger.error(`Failed to fetch fields for table ${tableId}`, error);
+            return [];
+        }
+    }
+
+    private async getOutstandingFieldMap() {
+        const cacheKey = `${this.REPORT_BASE_ID}_${this.OUTSTANDING_TABLE_ID}`;
+        if (this.fieldMaps.has(cacheKey)) {
+            return this.fieldMaps.get(cacheKey);
+        }
+
+        const fields = await this.getTableFields(this.REPORT_BASE_ID, this.OUTSTANDING_TABLE_ID);
+        const map = {
+            approval_status: 'Duyệt',
+            status: 'Trạng thái',
+            approved_by: 'Người duyệt'
+        };
+
+        // Try to find exact matches in the table structure (handling normalization/alt spellings)
+        const normalize = (s: string) => s.normalize('NFD').toLowerCase().replace(/[^\x00-\x7F]/g, "");
+
+        const findField = (labels: string[]) => {
+            for (const label of labels) {
+                const found = fields.find(f =>
+                    f.field_name === label ||
+                    normalize(f.field_name) === normalize(label)
+                );
+                if (found) return found.field_name;
+            }
+            return labels[0];
+        };
+
+        const result = {
+            approval_status: findField(['Duyệt', 'Duyệt', 'Duyet']),
+            status: findField(['Trang Thai', 'Trạng thái', 'Trạng Thái']),
+            approved_by: findField(['Người duyệt', 'Người duyệt', 'Nguoi duyet'])
+        };
+
+        this.fieldMaps.set(cacheKey, result);
+        this.logger.log(`Field mapping for Outstanding table: ${JSON.stringify(result)}`);
+        return result;
+    }
+
+    private async updateBitableRecord(baseId: string, tableId: string, recordId: string, fields: any) {
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records/${recordId}`;
+
+        // Use batch_update internally if single PATCH fails or just always use it?
+        // Let's try to make single PATCH work first with correct field names
+        try {
+            const response = await firstValueFrom(
+                this.httpService.patch(url, { fields }, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                })
+            );
+            return response.data;
+        } catch (error) {
+            this.logger.error(`Failed to update Bitable record ${recordId} at ${url}`, error.response?.data || error.message);
+            // Fallback to batch_update if 404/FieldNameNotFound
+            if (error.response?.status === 404) {
+                const batchUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records/batch_update`;
+                try {
+                    const batchRes = await firstValueFrom(
+                        this.httpService.post(batchUrl, {
+                            records: [{ record_id: recordId, fields }]
+                        }, {
+                            headers: {
+                                Authorization: `Bearer ${token}`,
+                                'Content-Type': 'application/json',
+                            },
+                        })
+                    );
+                    return batchRes.data;
+                } catch (batchErr) {
+                    this.logger.error(`Batch update also failed for ${recordId}`, batchErr.response?.data || batchErr.message);
+                    throw batchErr;
+                }
+            }
+            throw error;
+        }
+    }
+
     async updateOutstandingStatus(id: string, status: string, approvedBy?: string) {
         try {
+            // Update local database
+            // We update both status and approval_status for compatibility
             if (approvedBy) {
                 await this.prisma.$executeRawUnsafe(
-                    `UPDATE "report_outstanding" SET "status" = $1, "approved_by" = $2 WHERE "id" = $3`,
+                    `UPDATE "report_outstanding" SET "status" = $1, "approval_status" = $1, "approved_by" = $2, "updated_at" = NOW() WHERE "id" = $3`,
                     status, approvedBy, id
                 );
             } else {
                 await this.prisma.$executeRawUnsafe(
-                    `UPDATE "report_outstanding" SET "status" = $1 WHERE "id" = $2`,
+                    `UPDATE "report_outstanding" SET "status" = $1, "approval_status" = $1, "updated_at" = NOW() WHERE "id" = $2`,
                     status, id
                 );
             }
-            return { success: true, message: 'Status updated successfully' };
+
+            // Sync to Lark Suite if it's not a local record
+            if (id && !id.startsWith('out_')) {
+                const larkFields: any = {
+                    'Duyệt': status,
+                    'Trạng thái': status,
+                };
+                if (approvedBy) {
+                    larkFields['Người duyệt'] = approvedBy;
+                }
+
+                await this.updateBitableRecord(
+                    this.REPORT_BASE_ID,
+                    this.OUTSTANDING_TABLE_ID,
+                    id,
+                    larkFields
+                );
+            }
+
+            return { success: true, message: 'Status updated successfully and synced to Lark' };
         } catch (error) {
             this.logger.error(`Failed to update outstanding status for id ${id}`, error);
+            throw error;
+        }
+    }
+
+    async pushAllOutstandingData() {
+        try {
+            const outstandings = await (this.prisma as any).reportOutstanding.findMany();
+            this.logger.log(`Pushing ${outstandings.length} outstanding records to Lark Suite...`);
+
+            const fieldMap = await this.getOutstandingFieldMap();
+            let pushedCount = 0;
+            const skippedIds = [];
+            const failedItems = [];
+
+            for (const item of outstandings) {
+                // Only push if it has a valid Lark record ID
+                if (item.id && !item.id.startsWith('out_')) {
+                    const fields: any = {};
+                    fields[fieldMap.approval_status] = item.approval_status || 'Chưa Duyệt';
+                    fields[fieldMap.status] = item.status || 'Chưa Duyệt';
+                    if (item.approved_by) {
+                        fields[fieldMap.approved_by] = item.approved_by;
+                    }
+
+                    try {
+                        await this.updateBitableRecord(
+                            this.REPORT_BASE_ID,
+                            this.OUTSTANDING_TABLE_ID,
+                            item.id,
+                            fields
+                        );
+                        pushedCount++;
+                    } catch (err) {
+                        failedItems.push({ id: item.id, error: err.message });
+                    }
+                } else {
+                    skippedIds.push(item.id);
+                }
+            }
+
+            return {
+                success: true,
+                pushedCount,
+                total: outstandings.length,
+                skippedCount: skippedIds.length,
+                failedCount: failedItems.length
+            };
+        } catch (error) {
+            this.logger.error('Failed to push all outstanding data to Lark', error);
             throw error;
         }
     }

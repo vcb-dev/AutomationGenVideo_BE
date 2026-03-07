@@ -212,6 +212,12 @@ export class LarkController {
     ) {
         return this.larkService.updateOutstandingStatus(id, status, approvedBy);
     }
+
+    @Post('push-outstanding-data')
+    @ApiOperation({ summary: 'Push all local outstanding data to Lark Suite' })
+    async pushOutstandingData() {
+        return this.larkService.pushAllOutstandingData();
+    }
     @Get('inspect-generic')
     @ApiOperation({ summary: 'Inspect any Lark table structure' })
     async inspectGeneric(
