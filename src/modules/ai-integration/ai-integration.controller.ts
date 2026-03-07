@@ -29,6 +29,7 @@ export class AiIntegrationController {
       searchDto.page || 1,
       searchDto.min_comments || 0,
       searchDto.search_mode ?? 'hashtag',
+      searchDto.session_id,
     );
   }
 
@@ -170,7 +171,7 @@ export class AiIntegrationController {
   @HttpCode(HttpStatus.ACCEPTED)
   @UseInterceptors(FileInterceptor('audio'))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ 
+  @ApiOperation({
     summary: '⚡ Smart Mix Video (NEW - 5-13s)',
     description: 'High-performance mix using pre-processing + lazy loading. 20-30x faster than old mix!'
   })
@@ -188,8 +189,8 @@ export class AiIntegrationController {
       },
     },
   })
-  @ApiResponse({ 
-    status: 202, 
+  @ApiResponse({
+    status: 202,
     description: 'Mix started',
     schema: {
       type: 'object',
@@ -217,7 +218,7 @@ export class AiIntegrationController {
 
   @Post('index-folders')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Index videos from folders (one-time setup)',
     description: 'Scan and index video metadata into database for fast mixing'
   })
@@ -226,7 +227,7 @@ export class AiIntegrationController {
       type: 'object',
       required: ['folders'],
       properties: {
-        folders: { 
+        folders: {
           type: 'object',
           description: 'Map of folder_type to folder_path',
           example: {
@@ -262,8 +263,8 @@ export class AiIntegrationController {
       },
     },
   })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Returns video count',
     schema: {
       type: 'object',
@@ -281,7 +282,7 @@ export class AiIntegrationController {
   @HttpCode(HttpStatus.ACCEPTED)
   @UseInterceptors(FileInterceptor('audio'))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Manual mix video - User provides 10 folder paths',
     description: 'Mix video với 10 folder paths được user chọn thủ công (path input mode)'
   })
@@ -307,8 +308,8 @@ export class AiIntegrationController {
       },
     },
   })
-  @ApiResponse({ 
-    status: 202, 
+  @ApiResponse({
+    status: 202,
     description: 'Mix started successfully',
     schema: {
       type: 'object',
@@ -332,7 +333,7 @@ export class AiIntegrationController {
   @HttpCode(HttpStatus.ACCEPTED)
   @UseInterceptors(FileInterceptor('audio'))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Auto mix video - BE orchestrates folder scanning and mixing',
     description: `
       BE handles business logic:
@@ -387,8 +388,8 @@ export class AiIntegrationController {
       }
     }
   })
-  @ApiResponse({ 
-    status: 202, 
+  @ApiResponse({
+    status: 202,
     description: 'Mix started successfully, returns progress_id',
     schema: {
       example: {
@@ -416,8 +417,8 @@ export class AiIntegrationController {
 
   @Get('mix-video/status/:progressId')
   @ApiOperation({ summary: 'Check mix video progress and get results' })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Returns current progress and results when done',
     schema: {
       example: {
@@ -467,8 +468,8 @@ export class AiIntegrationController {
       required: ['audio'],
     },
   })
-  @ApiResponse({ 
-    status: 202, 
+  @ApiResponse({
+    status: 202,
     description: 'Upload received, mix process started',
     schema: {
       example: {

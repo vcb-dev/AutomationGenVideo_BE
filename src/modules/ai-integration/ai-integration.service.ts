@@ -66,6 +66,8 @@ export class AiIntegrationService {
 
     searchMode = 'hashtag',
 
+    sessionId?: string,
+
   ): Promise<any> {
 
     const url = `${this.aiServiceUrl}/api/search/`;
@@ -101,6 +103,8 @@ export class AiIntegrationService {
           page,
 
           search_mode: searchMode,
+
+          session_id: sessionId,
 
         }, {
 

@@ -574,7 +574,7 @@ model ReportOutstanding {
   team         String?
   content      String?  @db.Text
   idea_content String?  @db.Text
-  status       String?  // duyệt/ ho tro
+  status       String? // duyệt/ ho tro
   email        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
@@ -585,12 +585,12 @@ model ReportOutstanding {
 model HuykChannel {
   id           String   @id
   name         String
-  platform     String?  // Nền tảng
-  channel_id   String?  // ID kênh hiện tại
-  link_channel String?  // Link kênh
-  status       String?  // Trạng thái hoạt động
-  team_traffic String?  // Team Traffic
-  owner        String?  // Họ và tên
+  platform     String? // Nền tảng
+  channel_id   String? // ID kênh hiện tại
+  link_channel String? // Link kênh
+  status       String? // Trạng thái hoạt động
+  team_traffic String? // Team Traffic
+  owner        String? // Họ và tên
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
@@ -624,20 +624,20 @@ model LarkPermission {
 // ============================================================
 
 model video_management_facebookpagecache {
-  id              BigInt   @id @default(autoincrement())
-  created_at      DateTime @db.Timestamptz(6)
-  updated_at      DateTime @db.Timestamptz(6)
-  username        String   @unique @db.VarChar(255)
-  page_name       String   @db.VarChar(255)
-  avatar_url      String   @db.VarChar(1000)
-  followers_count BigInt
-  likes_count     BigInt
+  id               BigInt   @id @default(autoincrement())
+  created_at       DateTime @db.Timestamptz(6)
+  updated_at       DateTime @db.Timestamptz(6)
+  username         String   @unique @db.VarChar(255)
+  page_name        String   @db.VarChar(255)
+  avatar_url       String   @db.VarChar(1000)
+  followers_count  BigInt
+  likes_count      BigInt
   page_description String
-  page_category   String   @db.VarChar(255)
-  verified        Boolean
-  raw_data        Json
-  expires_at      DateTime @db.Timestamptz(6)
-  last_fetched_at DateTime @db.Timestamptz(6)
+  page_category    String   @db.VarChar(255)
+  verified         Boolean
+  raw_data         Json
+  expires_at       DateTime @db.Timestamptz(6)
+  last_fetched_at  DateTime @db.Timestamptz(6)
 
   @@index([username])
   @@index([expires_at])
@@ -682,28 +682,28 @@ model video_management_generatedcontent {
 }
 
 model video_management_productlist {
-  id              BigInt   @id @default(autoincrement())
-  created_at      DateTime @db.Timestamptz(6)
-  updated_at      DateTime @db.Timestamptz(6)
-  name            String   @db.VarChar(255)
-  file_name       String   @db.VarChar(500)
-  file_path       String   @db.VarChar(1000)
-  total_products  Int
-  description     String
+  id                       BigInt                     @id @default(autoincrement())
+  created_at               DateTime                   @db.Timestamptz(6)
+  updated_at               DateTime                   @db.Timestamptz(6)
+  name                     String                     @db.VarChar(255)
+  file_name                String                     @db.VarChar(500)
+  file_path                String                     @db.VarChar(1000)
+  total_products           Int
+  description              String
   video_management_product video_management_product[]
 }
 
 model video_management_product {
-  id              BigInt   @id @default(autoincrement())
-  created_at      DateTime @db.Timestamptz(6)
-  updated_at      DateTime @db.Timestamptz(6)
+  id              BigInt                       @id @default(autoincrement())
+  created_at      DateTime                     @db.Timestamptz(6)
+  updated_at      DateTime                     @db.Timestamptz(6)
   product_list_id BigInt
-  name            String   @db.VarChar(500)
-  category        String   @db.VarChar(255)
-  price           Decimal? @db.Decimal(15, 2)
+  name            String                       @db.VarChar(500)
+  category        String                       @db.VarChar(255)
+  price           Decimal?                     @db.Decimal(15, 2)
   description     String
   highlights      String
-  sku             String   @db.VarChar(255)
+  sku             String                       @db.VarChar(255)
   raw_data        Json
   product_list    video_management_productlist @relation(fields: [product_list_id], references: [id], onDelete: Cascade)
 
@@ -712,38 +712,39 @@ model video_management_product {
 }
 
 model video_management_localvideofile {
-  id            BigInt   @id @default(autoincrement())
-  created_at    DateTime @db.Timestamptz(6)
-  updated_at    DateTime @db.Timestamptz(6)
-  file_path     String   @db.VarChar(1000)
-  folder_type   String   @db.VarChar(50)
-  duration      Float
-  file_size     BigInt
-  has_audio     Boolean
-  width         Int?
-  height        Int?
-  modified_time DateTime @db.Timestamptz(6)
-  is_available  Boolean
+  id               BigInt    @id @default(autoincrement())
+  created_at       DateTime  @db.Timestamptz(6)
+  updated_at       DateTime  @db.Timestamptz(6)
+  file_path        String    @unique @db.VarChar(1000)
+  folder_type      String    @db.VarChar(50)
+  folder_name      String?   @db.VarChar(50)
+  duration         Float
+  file_size        BigInt
+  has_audio        Boolean
+  width            Int?
+  height           Int?
+  modified_time    DateTime  @db.Timestamptz(6)
+  last_accessed_at DateTime? @db.Timestamptz(6)
+  is_available     Boolean
 
-  @@index([file_path])
   @@index([folder_type])
 }
 
 model video_management_indexedvideo {
-  id            BigInt   @id @default(autoincrement())
-  created_at    DateTime @db.Timestamptz(6)
-  updated_at    DateTime @db.Timestamptz(6)
-  file_path     String   @db.VarChar(1000)
-  folder_type   String   @db.VarChar(50)
-  duration      Float
-  file_size     BigInt
-  has_audio     Boolean
-  width         Int?
-  height        Int?
-  last_used_at  DateTime? @db.Timestamptz(6)
-  use_count     Int
-  modified_time DateTime @db.Timestamptz(6)
-  is_available  Boolean
+  id                              BigInt                            @id @default(autoincrement())
+  created_at                      DateTime                          @db.Timestamptz(6)
+  updated_at                      DateTime                          @db.Timestamptz(6)
+  file_path                       String                            @db.VarChar(1000)
+  folder_type                     String                            @db.VarChar(50)
+  duration                        Float
+  file_size                       BigInt
+  has_audio                       Boolean
+  width                           Int?
+  height                          Int?
+  last_used_at                    DateTime?                         @db.Timestamptz(6)
+  use_count                       Int
+  modified_time                   DateTime                          @db.Timestamptz(6)
+  is_available                    Boolean
   video_management_videoclipcache video_management_videoclipcache[]
 
   @@unique([file_path, folder_type])
@@ -753,48 +754,54 @@ model video_management_indexedvideo {
 }
 
 model video_management_videoclipcache {
-  id                BigInt   @id @default(autoincrement())
-  created_at        DateTime @db.Timestamptz(6)
-  updated_at        DateTime @db.Timestamptz(6)
-  source_video_id   BigInt
-  clip_path         String   @unique @db.VarChar(1000)
-  start_time        Float
-  duration          Float
-  file_size         BigInt
-  last_accessed_at  DateTime @db.Timestamptz(6)
-  access_count      Int
+  id                 BigInt                        @id @default(autoincrement())
+  created_at         DateTime                      @db.Timestamptz(6)
+  updated_at         DateTime                      @db.Timestamptz(6)
+  source_video_id    BigInt
+  clip_path          String                        @unique @db.VarChar(1000)
+  start_time         Float
+  duration           Float
+  file_size          BigInt
+  last_accessed_at   DateTime                      @db.Timestamptz(6)
+  access_count       Int
   generated_with_gpu Boolean
-  generation_time   Float
-  source_video      video_management_indexedvideo @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
+  generation_time    Float
+  source_video       video_management_indexedvideo @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
 
   @@index([source_video_id])
   @@index([clip_path])
 }
 
 model video_management_searchquery {
-  id             BigInt   @id @default(autoincrement())
-  created_at     DateTime @db.Timestamptz(6)
-  updated_at     DateTime @db.Timestamptz(6)
-  keyword        String   @db.VarChar(500)
-  platform       String   @db.VarChar(20)
-  search_count   Int      @default(1)
-  last_searched  DateTime @db.Timestamptz(6)
+  id            BigInt   @id @default(autoincrement())
+  created_at    DateTime @db.Timestamptz(6)
+  updated_at    DateTime @db.Timestamptz(6)
+  keyword       String   @map("query") @db.VarChar(500)
+  platform      String   @db.VarChar(20)
+  search_count  Int      @default(1)
+  result_count  Int?     @default(0)
+  last_searched DateTime @db.Timestamptz(6)
 
-  @@unique([keyword, platform])
+  @@unique([keyword, platform], map: "video_management_searchquery_query_platform_49712969_uniq")
   @@index([keyword])
   @@index([platform])
 }
 
 model video_management_trendingkeyword {
-  id            BigInt   @id @default(autoincrement())
-  created_at    DateTime @db.Timestamptz(6)
-  updated_at    DateTime @db.Timestamptz(6)
-  keyword       String   @db.VarChar(500)
-  platform      String   @db.VarChar(20)
-  score         Float    @default(0)
-  source        String   @db.VarChar(50)
-  expires_at    DateTime @db.Timestamptz(6)
+  id          BigInt   @id @default(autoincrement())
+  created_at  DateTime @db.Timestamptz(6)
+  updated_at  DateTime @db.Timestamptz(6)
+  keyword     String   @db.VarChar(500)
+  platform    String   @db.VarChar(20)
+  score       Float    @default(0)
+  source      String   @db.VarChar(50)
+  expires_at  DateTime @db.Timestamptz(6)
+  total_likes BigInt?
+  total_views BigInt?
+  trend_score Float?
+  video_count Int?
 
+  @@unique([keyword, platform], map: "video_management_trendingkeyword_keyword_platform_c976f167_uniq")
   @@index([keyword])
   @@index([platform])
   @@index([expires_at])
@@ -812,4 +819,3 @@ model video_management_appuser {
 
   @@index([email])
 }
-
