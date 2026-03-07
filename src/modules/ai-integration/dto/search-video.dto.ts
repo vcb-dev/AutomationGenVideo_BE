@@ -67,6 +67,11 @@ export class SearchVideoDto {
   @IsString()
   @IsOptional()
   search_mode?: string;
+
+  @ApiPropertyOptional({ description: 'Session ID for reproducible shuffling across pagination', default: '' })
+  @IsString()
+  @IsOptional()
+  session_id?: string;
 }
 
 export class UserVideosDto {

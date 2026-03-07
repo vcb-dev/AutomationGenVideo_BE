@@ -23,7 +23,7 @@ import { LarkModule } from './modules/lark-sync/lark.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: [join(process.cwd(), ".env"), ".env"],
-      ignoreEnvFile: false,
+      ignoreEnvFile: process.env.NODE_ENV === 'production',
     }),
     ThrottlerModule.forRoot([
       {
