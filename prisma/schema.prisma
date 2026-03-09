@@ -557,9 +557,7 @@ model LarkKPI {
 enum UserRole {
   ADMIN
   MANAGER
-  LEADER
-  EDITOR
-  CONTENT
+  MEMBER
 }
 
 enum Platform {
