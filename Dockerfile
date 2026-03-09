@@ -1,28 +1,18 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
-# Install OpenSSL for Prisma
 RUN apk add --no-cache openssl
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm install
-
-# Copy source
-COPY . .
-
-# Generate Prisma Client
+COPY prisma ./prisma
 RUN npx prisma generate
 
-# Build the application
+COPY . .
 RUN npm run build
 
-# Expose port
 EXPOSE 3000
 
-# Start the application with migrations
-CMD sh -c "npx prisma migrate deploy && npx prisma db seed && node dist/src/main"
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/src/main"]

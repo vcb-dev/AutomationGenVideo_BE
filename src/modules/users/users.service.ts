@@ -65,10 +65,12 @@ export class UsersService {
       ? await bcrypt.hash(createUserDto.password, 10)
       : null;
 
-    // Build roles array
-    const roles = createUserDto.roles || (createUserDto as any).role
-      ? [((createUserDto as any).role)]
-      : [];
+    // Build roles array (fix operator precedence bug)
+    const roles: UserRole[] = (createUserDto.roles && createUserDto.roles.length > 0)
+      ? createUserDto.roles.filter((r): r is UserRole => r !== undefined && r !== null)
+      : (createUserDto as any).role
+        ? [(createUserDto as any).role as UserRole]
+        : [];
 
     // Create user
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
