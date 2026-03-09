@@ -9,6 +9,7 @@ import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
+import { LarkService } from "../lark-sync/lark.service";
 
 // Helper: check if roles array contains a staff role (MEMBER)
 function hasStaffRole(roles: UserRole[]): boolean {
@@ -17,7 +18,10 @@ function hasStaffRole(roles: UserRole[]): boolean {
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) { }
+  constructor(
+    private prisma: PrismaService,
+    private larkService: LarkService,
+  ) { }
 
   async create(createUserDto: CreateUserDto) {
     // Check if email already exists
@@ -253,6 +257,17 @@ export class UsersService {
 
       return [result];
     });
+
+    // --- Fire-and-forget: Push changes to Lark Suite AFTER DB is confirmed updated ---
+    if (nameChanged || teamChanged || emailChanged) {
+      this.larkService.pushUserChangesToLark({
+        oldName,
+        oldEmail,
+        ...(nameChanged ? { newName } : {}),
+        ...(teamChanged ? { newTeam } : {}),
+        ...(emailChanged ? { newEmail } : {}),
+      }).catch(err => console.error('[LarkSync] Failed to push user changes to Lark:', err));
+    }
 
     return updatedUser;
   }
