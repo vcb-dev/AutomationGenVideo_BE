@@ -163,21 +163,98 @@ export class UsersService {
     }
     delete updateData.role;
 
-    return this.prisma.user.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        email: true,
-        full_name: true,
-        roles: true,
-        manager_id: true,
-        team_leader_id: true,
-        is_active: true,
-        created_at: true,
-        updated_at: true,
-      },
+    // --- Cross-table sync ---
+    const nameChanged = updateUserDto.full_name && updateUserDto.full_name !== user.full_name;
+    const teamChanged = updateUserDto.team !== undefined && updateUserDto.team !== user.team;
+    const emailChanged = updateUserDto.email && updateUserDto.email !== user.email;
+
+    const oldEmail = user.email;
+    const oldName = user.full_name;
+    const newName = updateUserDto.full_name ?? user.full_name;
+    const newTeam = updateUserDto.team ?? user.team;
+    const newEmail = updateUserDto.email ?? user.email;
+
+    // Run main update + sync in transaction
+    const [updatedUser] = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.user.update({
+        where: { id },
+        data: updateData,
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          roles: true,
+          manager_id: true,
+          team_leader_id: true,
+          is_active: true,
+          created_at: true,
+          updated_at: true,
+        },
+      });
+
+      // Sync LarkReport (match by email hoặc name)
+      if (nameChanged || teamChanged || emailChanged) {
+        const larkReportWhere: any = {};
+        if (oldEmail) larkReportWhere.email = oldEmail;
+
+        if (oldEmail || oldName) {
+          await tx.larkReport.updateMany({
+            where: oldEmail ? { email: oldEmail } : { name: oldName },
+            data: {
+              ...(nameChanged ? { name: newName } : {}),
+              ...(teamChanged ? { team: newTeam } : {}),
+              ...(emailChanged ? { email: newEmail } : {}),
+            },
+          });
+
+          // Sync LarkReportKPI
+          await tx.larkReportKPI.updateMany({
+            where: oldEmail ? { email: oldEmail } : { name: oldName },
+            data: {
+              ...(nameChanged ? { name: newName } : {}),
+              ...(teamChanged ? { team: newTeam } : {}),
+              ...(emailChanged ? { email: newEmail } : {}),
+            },
+          });
+
+          // Sync LarkListTask (match by email or name)
+          await tx.larkListTask.updateMany({
+            where: oldEmail ? { employee_email: oldEmail } : { employee_name: oldName },
+            data: {
+              ...(nameChanged ? { employee_name: newName } : {}),
+              ...(teamChanged ? { team: newTeam } : {}),
+              ...(emailChanged ? { employee_email: newEmail } : {}),
+            },
+          });
+
+          // Sync LarkKPI (match by name)
+          if (nameChanged || teamChanged) {
+            await tx.larkKPI.updateMany({
+              where: { name: oldName },
+              data: {
+                ...(nameChanged ? { name: newName } : {}),
+                ...(teamChanged ? { team: newTeam } : {}),
+              },
+            });
+          }
+
+          // Sync LarkEmployee (match by name)
+          if (nameChanged || teamChanged) {
+            await tx.larkEmployee.updateMany({
+              where: { name: oldName },
+              data: {
+                ...(nameChanged ? { name: newName } : {}),
+                ...(teamChanged ? { team: newTeam } : {}),
+              },
+            });
+          }
+        }
+      }
+
+      return [result];
     });
+
+    return updatedUser;
   }
 
   async remove(id: string) {
