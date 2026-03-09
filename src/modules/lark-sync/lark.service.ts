@@ -2496,6 +2496,151 @@ export class LarkService {
         return result;
     }
 
+    /**
+     * Search records in a Lark bitable table by a filter string (Lark formula syntax)
+     * Returns array of { record_id, fields }
+     */
+    private async searchLarkRecords(baseId: string, tableId: string, filter: string): Promise<{ record_id: string; fields: any }[]> {
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
+        const allRecords: any[] = [];
+        let pageToken = '';
+        let hasMore = true;
+
+        while (hasMore) {
+            const response = await firstValueFrom(
+                this.httpService.get(url, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    params: {
+                        text_field_as_key: true,
+                        page_size: 100,
+                        filter,
+                        ...(pageToken ? { page_token: pageToken } : {}),
+                    },
+                })
+            );
+            if (response.data.code !== 0) break;
+            const data = response.data.data;
+            allRecords.push(...(data.items || []));
+            hasMore = data.has_more;
+            pageToken = data.page_token;
+        }
+        return allRecords;
+    }
+
+    /**
+     * Push user info changes (name, team, email) to all synced Lark bitable tables.
+     * Called fire-and-forget after DB local is already updated.
+     */
+    async pushUserChangesToLark(params: {
+        oldName: string;
+        oldEmail: string;
+        newName?: string;
+        newTeam?: string;
+        newEmail?: string;
+    }) {
+        const { oldName, oldEmail, newName, newTeam, newEmail } = params;
+        const nameChanged = newName && newName !== oldName;
+        const teamChanged = newTeam !== undefined;
+        const emailChanged = newEmail && newEmail !== oldEmail;
+
+        if (!nameChanged && !teamChanged && !emailChanged) return;
+
+        this.logger.log(`[LarkSync] Pushing user changes to Lark Suite for: ${oldEmail || oldName}`);
+
+        // Helper: build batch_update records from search results
+        const buildBatchPayload = (records: any[], fieldUpdates: Record<string, string>) => {
+            return records.map(r => ({ record_id: r.record_id, fields: fieldUpdates }));
+        };
+
+        // Helper: batch update to a table
+        const batchUpdate = async (baseId: string, tableId: string, records: any[]) => {
+            if (!records.length) return;
+            const token = await this.getAccessToken();
+            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records/batch_update`;
+            // Lark allows max 500 records per batch
+            const chunks = [];
+            for (let i = 0; i < records.length; i += 200) chunks.push(records.slice(i, i + 200));
+            for (const chunk of chunks) {
+                try {
+                    await firstValueFrom(
+                        this.httpService.post(url, { records: chunk }, {
+                            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        })
+                    );
+                } catch (e) {
+                    this.logger.warn(`[LarkSync] batch_update failed: ${e.message}`);
+                }
+            }
+        };
+
+        // ── 1. lark_reports (REPORT_BASE_ID / REPORT_TABLE_ID) ──────────────────
+        try {
+            const filter = oldEmail
+                ? `CurrentValue.[Email] = "${oldEmail}"`
+                : `CurrentValue.[Họ và Tên] = "${oldName}"`;
+            const records = await this.searchLarkRecords(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, filter);
+            const updates: Record<string, string> = {};
+            if (nameChanged) updates['Họ và Tên'] = newName;
+            if (teamChanged) updates['Team'] = newTeam;
+            if (emailChanged) updates['Email'] = newEmail;
+            await batchUpdate(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, buildBatchPayload(records, updates));
+            this.logger.log(`[LarkSync] lark_reports: updated ${records.length} records`);
+        } catch (e) { this.logger.warn(`[LarkSync] lark_reports sync failed: ${e.message}`); }
+
+        // ── 2. report_outstanding (REPORT_BASE_ID / OUTSTANDING_TABLE_ID) ───────
+        try {
+            const filter = oldEmail
+                ? `CurrentValue.[Email] = "${oldEmail}"`
+                : `CurrentValue.[Họ và Tên] = "${oldName}"`;
+            const records = await this.searchLarkRecords(this.REPORT_BASE_ID, this.OUTSTANDING_TABLE_ID, filter);
+            const updates: Record<string, string> = {};
+            if (nameChanged) updates['Họ và Tên'] = newName;
+            if (teamChanged) updates['Team'] = newTeam;
+            if (emailChanged) updates['Email'] = newEmail;
+            await batchUpdate(this.REPORT_BASE_ID, this.OUTSTANDING_TABLE_ID, buildBatchPayload(records, updates));
+            this.logger.log(`[LarkSync] outstanding: updated ${records.length} records`);
+        } catch (e) { this.logger.warn(`[LarkSync] outstanding sync failed: ${e.message}`); }
+
+        // ── 3. lark_kpi (KPI_BASE_ID / KPI_TABLE_ID) ────────────────────────────
+        try {
+            const records = await this.searchLarkRecords(this.KPI_BASE_ID, this.KPI_TABLE_ID,
+                `CurrentValue.[Họ và Tên] = "${oldName}"`);
+            const updates: Record<string, string> = {};
+            if (nameChanged) updates['Họ và Tên'] = newName;
+            if (teamChanged) updates['Team'] = newTeam;
+            await batchUpdate(this.KPI_BASE_ID, this.KPI_TABLE_ID, buildBatchPayload(records, updates));
+            this.logger.log(`[LarkSync] lark_kpi: updated ${records.length} records`);
+        } catch (e) { this.logger.warn(`[LarkSync] lark_kpi sync failed: ${e.message}`); }
+
+        // ── 4. lark_employees (KPI_BASE_ID / EMPLOYEE_TABLE_ID) ─────────────────
+        try {
+            const records = await this.searchLarkRecords(this.KPI_BASE_ID, this.EMPLOYEE_TABLE_ID,
+                `CurrentValue.[Họ và Tên] = "${oldName}"`);
+            const updates: Record<string, string> = {};
+            if (nameChanged) updates['Họ và Tên'] = newName;
+            if (teamChanged) updates['Team'] = newTeam;
+            await batchUpdate(this.KPI_BASE_ID, this.EMPLOYEE_TABLE_ID, buildBatchPayload(records, updates));
+            this.logger.log(`[LarkSync] lark_employees: updated ${records.length} records`);
+        } catch (e) { this.logger.warn(`[LarkSync] lark_employees sync failed: ${e.message}`); }
+
+        // ── 5. lark_list_tasks (KPI_BASE_ID / LIST_TASK_TABLE_ID) ───────────────
+        try {
+            const filter = oldEmail
+                ? `CurrentValue.[Email] = "${oldEmail}"`
+                : `CurrentValue.[Họ và Tên] = "${oldName}"`;
+            const records = await this.searchLarkRecords(this.KPI_BASE_ID, this.LIST_TASK_TABLE_ID, filter);
+            const updates: Record<string, string> = {};
+            if (nameChanged) updates['Họ và Tên'] = newName;
+            if (teamChanged) updates['Team'] = newTeam;
+            if (emailChanged) updates['Email'] = newEmail;
+            await batchUpdate(this.KPI_BASE_ID, this.LIST_TASK_TABLE_ID, buildBatchPayload(records, updates));
+            this.logger.log(`[LarkSync] lark_list_tasks: updated ${records.length} records`);
+        } catch (e) { this.logger.warn(`[LarkSync] lark_list_tasks sync failed: ${e.message}`); }
+
+        this.logger.log(`[LarkSync] Done pushing user changes to Lark Suite`);
+    }
+
     private async updateBitableRecord(baseId: string, tableId: string, recordId: string, fields: any) {
         const token = await this.getAccessToken();
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records/${recordId}`;
