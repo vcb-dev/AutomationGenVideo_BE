@@ -1,22 +1,30 @@
 import { PassportStrategy } from "@nestjs/passport";
 import { Strategy, VerifyCallback } from "passport-google-oauth20";
 import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { AuthService, GoogleUser } from "../auth.service";
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   constructor(
-    configService: ConfigService,
     private authService: AuthService,
   ) {
-    const clientID =
-      configService.get<string>("GOOGLE_CLIENT_ID") || "placeholder";
-    const clientSecret =
-      configService.get<string>("GOOGLE_CLIENT_SECRET") || "placeholder";
+    const clientID = process.env.OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || "placeholder";
+    const clientSecret = process.env.OAUTH_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || "placeholder";
     const callbackURL =
-      configService.get<string>("GOOGLE_CALLBACK_URL") ||
+      process.env.GOOGLE_CALLBACK_URL ||
       "http://localhost:3000/auth/google/callback";
+
+    console.log("[GoogleStrategy] ENV CHECK:", {
+      OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID ? "SET" : "MISSING",
+      GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ? "SET" : "MISSING",
+      OAUTH_CLIENT_SECRET: process.env.OAUTH_CLIENT_SECRET ? "SET" : "MISSING",
+      GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? "SET" : "MISSING",
+      GOOGLE_CALLBACK_URL: process.env.GOOGLE_CALLBACK_URL ? "SET" : "MISSING",
+    });
+    console.log("[GoogleStrategy] clientID:", clientID ? clientID.substring(0, 20) + "..." : "MISSING");
+    console.log("[GoogleStrategy] clientSecret last8:", clientSecret ? "..." + clientSecret.slice(-8) : "MISSING");
+    console.log("[GoogleStrategy] callbackURL:", callbackURL);
+
     super({
       clientID,
       clientSecret,
