@@ -25,12 +25,12 @@ export class CreateUserDto {
   @IsString()
   full_name: string;
 
-  @ApiPropertyOptional({ enum: UserRole, example: UserRole.EDITOR, description: "Single role (backward compatible)" })
+  @ApiPropertyOptional({ enum: UserRole, example: UserRole.MEMBER, description: "Single role (backward compatible)" })
   @IsEnum(UserRole)
   @IsOptional()
   role?: UserRole;
 
-  @ApiPropertyOptional({ enum: UserRole, isArray: true, example: [UserRole.EDITOR, UserRole.CONTENT], description: "Multiple roles" })
+  @ApiPropertyOptional({ enum: UserRole, isArray: true, example: [UserRole.MEMBER], description: "Multiple roles" })
   @IsArray()
   @IsEnum(UserRole, { each: true })
   @IsOptional()

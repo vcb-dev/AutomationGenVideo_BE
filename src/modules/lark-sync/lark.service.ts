@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { UserRole } from '@prisma/client';
 
 @Injectable()
 export class LarkService {
@@ -1105,10 +1106,9 @@ export class LarkService {
                     });
                     if (sysUser) {
                         // If System says Leader but Lark says Member/null, trust System
-                        if (sysUser.roles.some(r => r === 'LEADER' || r === 'MANAGER' || r === 'ADMIN' || r === 'EDITOR' || r === 'CONTENT') && requesterRole === 'member') {
-                            requesterRole = sysUser.roles.includes('ADMIN') ? 'admin' :
-                                sysUser.roles.includes('MANAGER') ? 'manager' :
-                                    sysUser.roles.includes('LEADER') ? 'leader' : 'member';
+                        if (sysUser.roles.some(r => r === UserRole.MANAGER || r === UserRole.ADMIN || r === UserRole.MEMBER) && requesterRole === 'member') {
+                            requesterRole = sysUser.roles.includes(UserRole.ADMIN) ? 'admin' :
+                                sysUser.roles.includes(UserRole.MANAGER) ? 'manager' : 'member';
                         }
                         if (!requesterTeam && sysUser.team) {
                             requesterTeam = sysUser.team;
@@ -2660,24 +2660,16 @@ export class LarkService {
     mapToUserRoles(role: string, team: string): string[] {
         const roles: string[] = [];
         const r = (role || '').toUpperCase();
-        const t = (team || '').toUpperCase();
 
-        if (r.includes('ADMIN')) roles.push('ADMIN');
-        if (r.includes('MANAGER')) roles.push('MANAGER');
-
-        if (r.includes('LEAD') || r.includes('TRƯỞNG')) {
-            roles.push('LEADER');
+        if (r.includes('ADMIN')) {
+            roles.push('ADMIN');
+        } else if (r.includes('MANAGER')) {
+            roles.push('MANAGER');
         } else {
-            // Check team for basic roles
-            if (t.includes('VIDEO')) roles.push('EDITOR');
-            else if (t.includes('CONTENT')) roles.push('CONTENT');
-            else roles.push('EDITOR'); // Default
+            roles.push('MEMBER');
         }
 
-        // Deduplicate and ensure at least one role
-        const result = Array.from(new Set(roles));
-        if (result.length === 0) result.push('EDITOR');
-        return result;
+        return Array.from(new Set(roles));
     }
 
     private rkReportAvatar(rk: any): string | null {
@@ -2970,7 +2962,7 @@ export class LarkService {
                     traffic: trafficVal,
                     revenue: revenueVal,
                     channels: channelsByOwnerMap.get(nameKey) || user?._count.tracked_channels || 0,
-                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                    isLeader: user?.roles.includes(UserRole.MANAGER) || user?.roles.includes(UserRole.ADMIN) || false
                 });
             }
         });
@@ -2999,7 +2991,7 @@ export class LarkService {
                     traffic: 0,
                     revenue: 0,
                     channels: channelsByOwnerMap.get(nameKey) || user?._count.tracked_channels || 0,
-                    isLeader: user?.roles.includes('LEADER') || user?.roles.includes('ADMIN') || false
+                    isLeader: user?.roles.includes(UserRole.MANAGER) || user?.roles.includes(UserRole.ADMIN) || false
                 });
                 // If we want task row count as fallback:
                 empStats.get(key)!.videoCount = 1;

@@ -67,7 +67,7 @@ export class UsersController {
 
   @Get("my-editors")
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get all editors managed by current manager with their channel statistics" })
   @ApiResponse({
@@ -134,9 +134,10 @@ export class UsersController {
   }
 
   @Patch("select-manager/:managerId")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MEMBER)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Select a manager for current user (EDITOR only)" })
+  @ApiOperation({ summary: "Select a manager for current user (MEMBER only)" })
   @ApiResponse({
     status: 200,
     description: "Manager assigned successfully",
@@ -145,4 +146,3 @@ export class UsersController {
     return this.usersService.selectManager(req.user.id, managerId);
   }
 }
-

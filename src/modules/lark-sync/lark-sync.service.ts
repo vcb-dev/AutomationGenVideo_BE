@@ -117,35 +117,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
 
     private async assignTeamRelationships(): Promise<void> {
-        this.logger.log('🔗 Assigning team relationships...');
-
-        const leaders = await this.prisma.user.findMany({
-            where: {
-                roles: { has: 'LEADER' as any },
-                is_active: true,
-            },
-        });
-
-        const managers = await this.prisma.user.findMany({
-            where: {
-                roles: { has: 'MANAGER' as any },
-                is_active: true,
-            },
-        });
-
-        if (managers.length > 0) {
-            const defaultManager = managers[0];
-            for (const leader of leaders) {
-                if (!leader.manager_id) {
-                    await this.prisma.user.update({
-                        where: { id: leader.id },
-                        data: { manager_id: defaultManager.id },
-                    });
-                    this.logger.log(`🔗 Assigned leader ${leader.email} → manager ${defaultManager.email}`);
-                }
-            }
-        }
-
+        this.logger.log('🔗 Team relationship step complete (Simplified: leaders removed)');
         this.logger.log('✅ Team relationships assigned');
     }
 

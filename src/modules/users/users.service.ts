@@ -10,14 +10,9 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
 
-// Helper: check if roles array contains a Leader role
-function hasLeaderRole(roles: UserRole[]): boolean {
-  return roles.includes(UserRole.LEADER);
-}
-
-// Helper: check if roles array contains a staff role (Editor or Content)
+// Helper: check if roles array contains a staff role (MEMBER)
 function hasStaffRole(roles: UserRole[]): boolean {
-  return roles.includes(UserRole.EDITOR) || roles.includes(UserRole.CONTENT);
+  return roles.includes(UserRole.MEMBER);
 }
 
 @Injectable()
@@ -47,15 +42,15 @@ export class UsersService {
       }
     }
 
-    // Validate team_leader_id if provided
+    // Validate team_leader_id if provided (now just manager_id logic effectively)
     if (createUserDto.team_leader_id) {
       const teamLeader = await this.prisma.user.findUnique({
         where: { id: createUserDto.team_leader_id },
       });
 
-      if (!teamLeader || !hasLeaderRole(teamLeader.roles)) {
+      if (!teamLeader || !teamLeader.roles.includes(UserRole.MANAGER)) {
         throw new BadRequestException(
-          "Invalid team_leader_id: must reference a user with LEADER role",
+          "Invalid team_leader_id: must reference a user with MANAGER role",
         );
       }
     }
@@ -204,23 +199,18 @@ export class UsersService {
       where: { id: managerId },
     });
 
-    console.log('👤 Manager/Leader found:', manager ? { id: manager.id, email: manager.email, roles: manager.roles } : 'NOT FOUND');
+    console.log('👤 Manager found:', manager ? { id: manager.id, email: manager.email, roles: manager.roles } : 'NOT FOUND');
 
-    if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !manager.roles.includes(UserRole.ADMIN) && !hasLeaderRole(manager.roles))) {
-      throw new BadRequestException('Only managers, admins, and leaders can view their team members');
+    if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !manager.roles.includes(UserRole.ADMIN))) {
+      throw new BadRequestException('Only managers and admins can view their team members');
     }
 
     const whereClause: any = {
       is_active: true,
     };
 
-    if (hasLeaderRole(manager.roles) && !manager.roles.includes(UserRole.MANAGER)) {
-      // Leaders see their team members
-      whereClause.team_leader_id = managerId;
-    } else {
-      // Managers/Admins see all their assigned members
-      whereClause.manager_id = managerId;
-    }
+    // Managers/Admins see all their assigned members
+    whereClause.manager_id = managerId;
 
     const editors = await this.prisma.user.findMany({
       where: whereClause,
@@ -326,7 +316,7 @@ export class UsersService {
   async getAvailableManagers() {
     const managers = await this.prisma.user.findMany({
       where: {
-        roles: { hasSome: [UserRole.MANAGER, UserRole.LEADER] },
+        roles: { hasSome: [UserRole.MANAGER, UserRole.ADMIN] },
         is_active: true,
       },
       select: {
@@ -353,36 +343,16 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    if (!hasStaffRole(user.roles) && !hasLeaderRole(user.roles)) {
-      throw new BadRequestException('Only editors, content creators, and leaders can select a manager');
+    if (!hasStaffRole(user.roles)) {
+      throw new BadRequestException('Only members can select a manager');
     }
 
     const manager = await this.prisma.user.findUnique({
       where: { id: managerId },
     });
 
-    if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !hasLeaderRole(manager.roles) && !manager.roles.includes(UserRole.ADMIN))) {
-      throw new BadRequestException('Invalid manager/leader selected');
-    }
-
-    if (hasLeaderRole(manager.roles)) {
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: { team_leader_id: managerId },
-        select: {
-          id: true,
-          email: true,
-          full_name: true,
-          roles: true,
-          manager_id: true,
-          team_leader_id: true,
-        },
-      });
-
-      return {
-        message: 'Leader assigned successfully',
-        user: updatedUser,
-      };
+    if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !manager.roles.includes(UserRole.ADMIN))) {
+      throw new BadRequestException('Invalid manager selected');
     }
 
     const updatedUser = await this.prisma.user.update({
@@ -401,5 +371,6 @@ export class UsersService {
       message: 'Manager assigned successfully',
       user: updatedUser,
     };
+
   }
 }
