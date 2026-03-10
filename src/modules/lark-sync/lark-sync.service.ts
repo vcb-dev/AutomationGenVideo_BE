@@ -76,6 +76,19 @@ export class LarkSyncService implements OnApplicationBootstrap {
                 });
 
                 if (existingUser) {
+                    // --- GIẢI PHÁP AN TOÀN: Kiểm tra chốt chặn thời gian ---
+                    // Nếu user mới được sửa trên App gần đây (ví dụ trong vòng 60 phút)
+                    // thì không cho Lark sync ghi đè lên, để đợi Lark cập nhật xong đã.
+                    const lastUpdate = (existingUser as any).last_app_update_at;
+                    if (lastUpdate) {
+                        const diffMinutes = (Date.now() - new Date(lastUpdate).getTime()) / (1000 * 60);
+                        if (diffMinutes < 60) {
+                            this.logger.warn(`[LarkSync] 🛡️ Skip overwrite for ${parsed.email}: Recently updated in App (${Math.round(diffMinutes)} mins ago)`);
+                            result.skipped++;
+                            continue;
+                        }
+                    }
+
                     await this.prisma.user.update({
                         where: { email: parsed.email },
                         data: {
