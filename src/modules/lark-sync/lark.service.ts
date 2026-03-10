@@ -58,7 +58,7 @@ export class LarkService {
             return this.accessToken;
         }
 
-        try {
+        return this.withRetry(async () => {
             const response = await firstValueFrom(
                 this.httpService.post(
                     'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
@@ -77,10 +77,7 @@ export class LarkService {
             this.accessToken = tenant_access_token;
             this.tokenExpiresAt = Date.now() + (expire - 300) * 1000; // Expire 5 mins early
             return this.accessToken;
-        } catch (error) {
-            this.logger.error('Failed to get access token', error);
-            throw error;
-        }
+        }, 3, 'getAccessToken');
     }
 
     @Cron(CronExpression.EVERY_30_MINUTES)
@@ -2408,36 +2405,31 @@ export class LarkService {
         let hasMore = true;
         let pageToken = '';
 
-        try {
-            while (hasMore) {
-                const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
-                const response = await firstValueFrom(
-                    this.httpService.get(url, {
-                        headers: { Authorization: `Bearer ${token}` },
-                        params: {
-                            text_field_as_key: true,
-                            page_size: 100,
-                            page_token: pageToken || undefined
-                        },
-                    }),
-                );
+        while (hasMore) {
+            const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
+            const response = await this.withRetry(() => firstValueFrom(
+                this.httpService.get(url, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    params: {
+                        text_field_as_key: true,
+                        page_size: 100,
+                        page_token: pageToken || undefined
+                    },
+                }),
+            ), 3, `fetchAllRecords(${tableId})`);
 
-                if (response.data.code !== 0) {
-                    throw new Error(`Lark API Error: ${response.data.msg}`);
-                }
-
-                const data = response.data.data;
-                if (data.items) {
-                    allRecords = allRecords.concat(data.items);
-                }
-                hasMore = data.has_more;
-                pageToken = data.page_token;
+            if (response.data.code !== 0) {
+                throw new Error(`Lark API Error: ${response.data.msg}`);
             }
-            return allRecords;
-        } catch (error) {
-            this.logger.error(`Failed to fetch records from table ${tableId}`, error);
-            throw error;
+
+            const data = response.data.data;
+            if (data.items) {
+                allRecords = allRecords.concat(data.items);
+            }
+            hasMore = data.has_more;
+            pageToken = data.page_token;
         }
+        return allRecords;
     }
     private fieldMaps: Map<string, any> = new Map();
 
@@ -2508,7 +2500,7 @@ export class LarkService {
         let hasMore = true;
 
         while (hasMore) {
-            const response = await firstValueFrom(
+            const response = await this.withRetry(() => firstValueFrom(
                 this.httpService.get(url, {
                     headers: { Authorization: `Bearer ${token}` },
                     params: {
@@ -2518,7 +2510,7 @@ export class LarkService {
                         ...(pageToken ? { page_token: pageToken } : {}),
                     },
                 })
-            );
+            ), 3, `searchLarkRecords(${tableId})`);
             if (response.data.code !== 0) break;
             const data = response.data.data;
             allRecords.push(...(data.items || []));
@@ -2526,6 +2518,35 @@ export class LarkService {
             pageToken = data.page_token;
         }
         return allRecords;
+    }
+
+    /**
+     * Retry utility: thử lại tối đa `maxRetries` lần với exponential backoff.
+     * Lần 1 thất bại → chờ 1s → lần 2, thất bại → chờ 2s → lần 3...
+     */
+    async withRetry<T>(
+        fn: () => Promise<T>,
+        maxRetries = 3,
+        label = 'operation',
+    ): Promise<T> {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await fn();
+            } catch (err) {
+                this.logger.warn(
+                    `[Retry] ${label} — lần ${attempt}/${maxRetries} thất bại: ${err.message}`,
+                );
+                if (attempt === maxRetries) {
+                    this.logger.error(
+                        `[Retry] ${label} — đã thử ${maxRetries} lần, bỏ cuộc.`,
+                    );
+                    throw err;
+                }
+                const waitMs = 1000 * attempt; // 1s, 2s, 3s...
+                this.logger.log(`[Retry] Chờ ${waitMs}ms trước khi thử lại...`);
+                await new Promise(r => setTimeout(r, waitMs));
+            }
+        }
     }
 
     /**
@@ -2562,15 +2583,15 @@ export class LarkService {
             const chunks = [];
             for (let i = 0; i < records.length; i += 200) chunks.push(records.slice(i, i + 200));
             for (const chunk of chunks) {
-                try {
-                    await firstValueFrom(
+                await this.withRetry(
+                    () => firstValueFrom(
                         this.httpService.post(url, { records: chunk }, {
                             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
                         })
-                    );
-                } catch (e) {
-                    this.logger.warn(`[LarkSync] batch_update failed: ${e.message}`);
-                }
+                    ),
+                    3,
+                    `batchUpdate(${tableId})`,
+                );
             }
         };
 

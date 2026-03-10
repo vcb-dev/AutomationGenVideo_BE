@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { CreateUserDto } from "./dto/create-user.dto";
@@ -18,6 +19,8 @@ function hasStaffRole(roles: UserRole[]): boolean {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private prisma: PrismaService,
     private larkService: LarkService,
@@ -258,15 +261,32 @@ export class UsersService {
       return [result];
     });
 
-    // --- Fire-and-forget: Push changes to Lark Suite AFTER DB is confirmed updated ---
+    // --- Fire-and-forget với Retry: Push lên Lark sau khi DB đã cập nhật ---
     if (nameChanged || teamChanged || emailChanged) {
-      this.larkService.pushUserChangesToLark({
+      const pushParams = {
         oldName,
         oldEmail,
         ...(nameChanged ? { newName } : {}),
         ...(teamChanged ? { newTeam } : {}),
         ...(emailChanged ? { newEmail } : {}),
-      }).catch(err => console.error('[LarkSync] Failed to push user changes to Lark:', err));
+      };
+
+      // Chạy nền (không chặn response), retry tối đa 3 lần
+      this.larkService
+        .withRetry(
+          () => this.larkService.pushUserChangesToLark(pushParams),
+          3,
+          `pushUserChangesToLark(${oldEmail || oldName})`,
+        )
+        .then(() =>
+          this.logger.log(`[LarkSync] ✅ Push lên Lark thành công cho: ${oldEmail || oldName}`),
+        )
+        .catch(err =>
+          this.logger.error(
+            `[LarkSync] ❌ Push lên Lark thất bại sau 3 lần thử cho: ${oldEmail || oldName}`,
+            err.message,
+          ),
+        );
     }
 
     return updatedUser;
