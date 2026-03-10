@@ -1,0 +1,271 @@
+[
+  {
+    "field_id": "fldGG5HQbI",
+    "field_name": "Email",
+    "is_extend": false,
+    "is_primary": true,
+    "is_synced": false,
+    "property": null,
+    "type": 1,
+    "ui_type": "Text"
+  },
+  {
+    "field_id": "fldtakQWAI",
+    "field_name": "Nhân viên",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": {
+      "multiple": false
+    },
+    "type": 11,
+    "ui_type": "User"
+  },
+  {
+    "field_id": "fldxSTyI8N",
+    "field_name": "HoTen",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": null,
+    "type": 1,
+    "ui_type": "Text"
+  },
+  {
+    "field_id": "fldTO5hVCs",
+    "field_name": "Role",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": {
+      "options": [
+        {
+          "color": 0,
+          "id": "opthYQtsTH",
+          "name": "Admin"
+        },
+        {
+          "color": 1,
+          "id": "optaUSyDZY",
+          "name": "Member"
+        },
+        {
+          "color": 2,
+          "id": "optdp02LUm",
+          "name": "Leader"
+        },
+        {
+          "color": 3,
+          "id": "optnjfzLmu",
+          "name": "Kế toán"
+        },
+        {
+          "color": 5,
+          "id": "optZqTAmyD",
+          "name": "Media"
+        },
+        {
+          "color": 4,
+          "id": "opt1232258474",
+          "name": "EDITOR"
+        },
+        {
+          "color": 6,
+          "id": "opt43440858",
+          "name": "ADMIN"
+        }
+      ]
+    },
+    "type": 3,
+    "ui_type": "SingleSelect"
+  },
+  {
+    "field_id": "fldG5U3MCE",
+    "field_name": "Team",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": {
+      "options": [
+        {
+          "color": 2,
+          "id": "optgmAjxPX",
+          "name": "Team K1"
+        },
+        {
+          "color": 3,
+          "id": "opth87zsh9",
+          "name": "Team K2"
+        },
+        {
+          "color": 0,
+          "id": "optLSu0E6l",
+          "name": "AFF 01"
+        },
+        {
+          "color": 1,
+          "id": "optonYfIIw",
+          "name": "AFF 02"
+        },
+        {
+          "color": 4,
+          "id": "optdYBBB79",
+          "name": "Global - JP1"
+        },
+        {
+          "color": 5,
+          "id": "opt7VPlNbt",
+          "name": "Global - Indo"
+        },
+        {
+          "color": 6,
+          "id": "optLOnq82e",
+          "name": "Team K0"
+        },
+        {
+          "color": 7,
+          "id": "optsAgErUN",
+          "name": "Team ADS"
+        },
+        {
+          "color": 8,
+          "id": "opteRGl6SB",
+          "name": "MEDIA"
+        },
+        {
+          "color": 9,
+          "id": "optowWD7Fz",
+          "name": "DATA"
+        },
+        {
+          "color": 33,
+          "id": "optfnEgAuR",
+          "name": "Global Thái Lan"
+        },
+        {
+          "color": 0,
+          "id": "optLFMbFec",
+          "name": "Scale Data"
+        },
+        {
+          "color": 1,
+          "id": "optiePtUbQ",
+          "name": "3D"
+        },
+        {
+          "color": 2,
+          "id": "optKIKV2Ad",
+          "name": "Global Đài Loan"
+        }
+      ]
+    },
+    "type": 3,
+    "ui_type": "SingleSelect"
+  },
+  {
+    "field_id": "fldGCFlf5g",
+    "field_name": "Ngày tháng",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": null,
+    "type": 1,
+    "ui_type": "Text"
+  },
+  {
+    "field_id": "fldBE7PWdq",
+    "field_name": "Phân loại",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": {
+      "options": [
+        {
+          "color": 40,
+          "id": "optqvbvZbL",
+          "name": "Sản phẩm win "
+        },
+        {
+          "color": 48,
+          "id": "optWCI4wtK",
+          "name": "Ý tưởng "
+        },
+        {
+          "color": 33,
+          "id": "optUHWv94d",
+          "name": "Khó khăn cần hỗ trợ"
+        },
+        {
+          "color": 0,
+          "id": "opt1685189487",
+          "name": "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"
+        },
+        {
+          "color": 1,
+          "id": "opt1763203051",
+          "name": "KHÓ KHĂN CẦN HỖ TRỢ"
+        },
+        {
+          "color": 2,
+          "id": "opt1594947512",
+          "name": "VIDEO SẢN PHẨM WIN"
+        },
+        {
+          "color": 3,
+          "id": "opt2057017582",
+          "name": "VIDEO WIN"
+        }
+      ]
+    },
+    "type": 3,
+    "ui_type": "SingleSelect"
+  },
+  {
+    "field_id": "fld1ItzToa",
+    "field_name": "Nội dung",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": null,
+    "type": 1,
+    "ui_type": "Text"
+  },
+  {
+    "field_id": "fldn1LxZoE",
+    "field_name": "Người duyệt",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": null,
+    "type": 1,
+    "ui_type": "Text"
+  },
+  {
+    "field_id": "fldcEH5EB4",
+    "field_name": "Duyệt",
+    "is_extend": false,
+    "is_primary": false,
+    "is_synced": false,
+    "property": {
+      "options": [
+        {
+          "color": 26,
+          "id": "optOAtwh55",
+          "name": "Đã duyệt"
+        },
+        {
+          "color": 32,
+          "id": "optrxi7OEZ",
+          "name": "Chưa duyệt"
+        },
+        {
+          "color": 0,
+          "id": "opt622761420",
+          "name": "Chưa Duyệt"
+        }
+      ]
+    },
+    "type": 3,
+    "ui_type": "SingleSelect"
+  }
+]
