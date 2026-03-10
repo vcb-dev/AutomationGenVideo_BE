@@ -24,6 +24,7 @@ model User {
   custom_permissions  String[]         @default([])
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
+  last_app_update_at  DateTime?        @default(now())
   search_histories    SearchHistory[]
   tracked_channels    TrackedChannel[]
   manager             User?            @relation("ManagerEditors", fields: [manager_id], references: [id])

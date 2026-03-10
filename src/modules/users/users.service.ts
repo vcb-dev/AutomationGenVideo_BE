@@ -185,7 +185,10 @@ export class UsersService {
     const [updatedUser] = await this.prisma.$transaction(async (tx) => {
       const result = await tx.user.update({
         where: { id },
-        data: updateData,
+        data: {
+          ...updateUserDto,
+          last_app_update_at: new Date(),
+        },
         select: {
           id: true,
           email: true,
