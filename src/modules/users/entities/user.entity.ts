@@ -42,6 +42,9 @@ export class UserEntity implements User {
   @ApiProperty({ type: [String] })
   custom_permissions: string[];
 
+  @ApiProperty({ required: false, nullable: true })
+  last_app_update_at: Date | null;
+
   created_at: Date;
   updated_at: Date;
 }
