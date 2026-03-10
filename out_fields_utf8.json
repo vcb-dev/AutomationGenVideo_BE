@@ -1,0 +1,20 @@
+{
+  "fields": {
+    "Duyệt": "Chưa Duyệt",
+    "Email": "donga131101@gmail.com",
+    "HoTen": "Đỗ Thị Nga",
+    "Ngày tháng": "03/05/2026",
+    "Nhân viên": [
+      {
+        "email": "donga131101@gmail.com",
+        "en_name": "Ngân Nga",
+        "id": "ou_aeba42883152e43470514e8c45079bd8",
+        "name": "Đỗ Thị Nga"
+      }
+    ],
+    "Role": "Leader",
+    "Team": "Team K1"
+  },
+  "id": "recv6tpjd2IHLn",
+  "record_id": "recv6tpjd2IHLn"
+}

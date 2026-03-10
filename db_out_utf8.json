@@ -1,0 +1,226 @@
+[
+  {
+    "id": "recv6V7suphWmV",
+    "name": "Đặng Thị Hải Yến",
+    "date": "03/05/2026",
+    "team": null,
+    "role": "Kế toán",
+    "email": "ketoan@vcb.vn",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_bdbe21bd70aee5488e754b4f1b4f051a",
+        "name": "Đặng Thị Hải Yến",
+        "email": "ketoan.vienchibao@gmail.com",
+        "en_name": "Đặng Thị Hải Yến"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.326Z",
+    "updated_at": "2026-03-10T07:30:49.246Z"
+  },
+  {
+    "id": "recv6tpjd2IHLn",
+    "name": "Đỗ Thị Nga",
+    "date": "03/05/2026",
+    "team": "Team K1",
+    "role": "Leader",
+    "email": "donga131101@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_aeba42883152e43470514e8c45079bd8",
+        "name": "Đỗ Thị Nga",
+        "email": "donga131101@gmail.com",
+        "en_name": "Ngân Nga"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.007Z",
+    "updated_at": "2026-03-10T07:30:48.975Z"
+  },
+  {
+    "id": "recv6tpjd2RdUz",
+    "name": "Nguyễn Tuấn",
+    "date": "03/05/2026",
+    "team": "Team K1",
+    "role": "Member",
+    "email": "tuthanthuctap@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_617910b4e63e95395d34481d3b3e870b",
+        "name": "Nguyễn Tuấn",
+        "en_name": "Nguyễn Tuấn"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.077Z",
+    "updated_at": "2026-03-10T07:30:48.998Z"
+  },
+  {
+    "id": "recv6tpjd2SK2w",
+    "name": "Nguyễn An",
+    "date": "03/05/2026",
+    "team": "Team K1",
+    "role": "Member",
+    "email": "annguyen2111hb@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_898d74b152f9796c4c2b3b0169178454",
+        "name": "Nguyễn An",
+        "en_name": "Nguyễn An"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.085Z",
+    "updated_at": "2026-03-10T07:30:49.004Z"
+  },
+  {
+    "id": "recv6tpjd2d1J2",
+    "name": "Trần Mai Linh",
+    "date": "03/05/2026",
+    "team": "Team K1",
+    "role": "Member",
+    "email": "nglinh890@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_34b520b7243d06b78bb9c701ed593a8b",
+        "name": "Trần Mai Linh",
+        "email": "nglinh890@gmail.com",
+        "en_name": "Trần Mai Linh"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.063Z",
+    "updated_at": "2026-03-10T07:30:48.983Z"
+  },
+  {
+    "id": "recv6tpjd2fGSn",
+    "name": "hồ  đạt",
+    "date": "03/05/2026",
+    "team": "Team K1",
+    "role": "Member",
+    "email": "thanhdatho37ga02378@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_3d3133d3da71fc29993c38aea7eea164",
+        "name": "hồ  đạt",
+        "en_name": "Hồ Thành Đạt"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.069Z",
+    "updated_at": "2026-03-10T07:30:48.992Z"
+  },
+  {
+    "id": "recv6tpv6s006K",
+    "name": "Việt Ngô",
+    "date": "03/05/2026",
+    "team": "Team K2",
+    "role": "Member",
+    "email": "viet180703@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_4b4ece695d3d922444318ceb9c00ac1a",
+        "name": "Việt Ngô",
+        "en_name": "Việt Ngô"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.144Z",
+    "updated_at": "2026-03-10T07:30:49.035Z"
+  },
+  {
+    "id": "recv6tpv6s10Ng",
+    "name": "Việt Nguyễn",
+    "date": "03/05/2026",
+    "team": "Team ADS",
+    "role": "Member",
+    "email": "viet71098@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_288bea9b5088748e8420ba2a1f1b176f",
+        "name": "Việt Nguyễn",
+        "email": "viet71098@gmail.com",
+        "en_name": "Việt Nguyễn"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.259Z",
+    "updated_at": "2026-03-10T07:30:49.173Z"
+  },
+  {
+    "id": "recv6tpv6s1nQK",
+    "name": "Nguyễn Bá Tuấn Anh",
+    "date": "03/05/2026",
+    "team": "Team K0",
+    "role": "Member",
+    "email": "nbcatanh@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_ab4c545285a9411975c0e137f62cb652",
+        "name": "Nguyễn Bá Tuấn Anh",
+        "en_name": "Nguyễn Bá Tuấn Anh"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.253Z",
+    "updated_at": "2026-03-10T07:30:49.166Z"
+  },
+  {
+    "id": "recv6tpv6s3kAi",
+    "name": "Van Lien",
+    "date": "03/05/2026",
+    "team": "Global - JP1",
+    "role": "Member",
+    "email": "buivanlien8386@gmail.com",
+    "category": null,
+    "content": null,
+    "status": "Chưa Duyệt",
+    "approved_by": null,
+    "approval_status": "Chưa Duyệt",
+    "employee": [
+      {
+        "id": "ou_5bee8e5aaaa865e5e2fd6cf0a49a06b7",
+        "name": "Van Lien",
+        "en_name": "Van Lien"
+      }
+    ],
+    "created_at": "2026-03-10T04:30:01.223Z",
+    "updated_at": "2026-03-10T07:30:49.119Z"
+  }
+]

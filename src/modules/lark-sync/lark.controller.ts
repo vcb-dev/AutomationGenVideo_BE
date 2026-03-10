@@ -218,6 +218,17 @@ export class LarkController {
     async pushOutstandingData() {
         return this.larkService.pushAllOutstandingData();
     }
+
+    @Post('sync-outstanding')
+    @ApiOperation({ summary: 'Manually trigger Outstanding data sync from Lark to DB' })
+    async syncOutstandingData() {
+        try {
+            await this.larkService.syncOutstandingData();
+            return { message: 'Outstanding sync completed successfully' };
+        } catch (error) {
+            return { message: 'Outstanding sync failed', error: error.message };
+        }
+    }
     @Get('inspect-generic')
     @ApiOperation({ summary: 'Inspect any Lark table structure' })
     async inspectGeneric(
