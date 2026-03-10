@@ -1570,13 +1570,17 @@ export class LarkService {
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     completed_month: monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0),
                     // Stable monthly traffic/revenue for the Summary Cards:
-                    traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : 0) + incrementalTraffic,
-                    revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : 0) + incrementalRevenue,
+                    traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
+                    revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
                     task_progress: reportKpi ? {
                         task_auto: reportKpi.task_auto || 0,
                         task_new: reportKpi.task_new || 0,
                         kpi_status: reportKpi.kpi_status || 'N/A'
-                    } : null,
+                    } : {
+                        task_auto: kpi.task_auto || 0,
+                        task_new: kpi.task_new || 0,
+                        kpi_status: kpi.kpii_status || 'N/A'
+                    },
                     traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
                     revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
                     trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
@@ -1920,9 +1924,20 @@ export class LarkService {
             for (const record of records) {
                 const fields = record.fields;
                 const dateNow = new Date();
+                
+                // Field name mapping with fallbacks
+                const email = fields['Email'] || null;
+                const name = fields['Họ Tên'] || fields['HoTen'] || fields['Name'] || null;
+                const maPin = fields['Mã Pin'] || fields['MaPin'] || fields['Mã pin'] || null;
+                const employee = fields['Nhân viên'] || fields['Nhan vien'] ? JSON.stringify(fields['Nhân viên'] || fields['Nhan vien']) : null;
+                const role = fields['Role'] || fields['Chức vụ'] || null;
+                const team = fields['Team'] || fields['Phòng ban'] || null;
+                const status = fields['Trạng thái'] || fields['Trang Thai'] || fields['Status'] || null;
+                const permissions = fields['Permissions'] || fields['Quyền'] ? JSON.stringify(fields['Permissions'] || fields['Quyền']) : null;
+                
                 await this.prisma.$executeRawUnsafe(`
                     INSERT INTO "lark_permissions" ("id", "email", "name", "pin_code", "employee", "role", "team", "status", "permissions", "created_at", "updated_at")
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $10)
                     ON CONFLICT ("id") DO UPDATE SET
                     "email" = EXCLUDED."email",
                     "name" = EXCLUDED."name",
@@ -1933,10 +1948,7 @@ export class LarkService {
                     "status" = EXCLUDED."status",
                     "permissions" = EXCLUDED."permissions",
                     "updated_at" = $10
-                `, record.record_id, fields['Email'] || null, fields['HoTen'] || null, fields['MaPin'] || null,
-                    fields['Nhân viên'] ? JSON.stringify(fields['Nhân viên']) : null,
-                    fields['Role'] || null, fields['Team'] || null, fields['Trang Thai'] || null,
-                    fields['Permissions'] ? JSON.stringify(fields['Permissions']) : null, dateNow);
+                `, record.record_id, email, name, maPin, employee, role, team, status, permissions, dateNow);
             }
 
             this.logger.log('Lark Permission data sync completed.');
