@@ -1762,7 +1762,7 @@ export class LarkService {
 
             // Calculate breakdowns based on the same range-filtered results used in the summary
             allValidResults.forEach(r => {
-                const v = r.done || 0;
+                const v = Number(r.completed_month || 0);
                 const t = Number(r.traffic_range || 0);
                 const re = Number(r.revenue_range || 0);
                 const c = r.channelCount || 0;
@@ -3264,7 +3264,7 @@ export class LarkService {
             }
         });
 
-        const totalVideosInRange = Array.from(empStats.values()).reduce((sum, s) => sum + s.videoCount, 0);
+        const totalVideosInRange = tasks.length;
 
         return {
             chartData,
