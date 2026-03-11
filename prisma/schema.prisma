@@ -555,6 +555,29 @@ model LarkKPI {
   @@map("lark_kpi")
 }
 
+model LarkTraffic {
+  id              String   @id
+  date            DateTime?
+  employee        Json?
+  team            String?
+  month           String?
+  traffic_fb      BigInt?
+  traffic_ig      BigInt?
+  traffic_lemon8  BigInt?
+  traffic_thread  BigInt?
+  traffic_tiktok  BigInt?
+  traffic_yt      BigInt?
+  traffic_zalo    BigInt?
+  total_traffic   BigInt?
+  is_confirmed    String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([month])
+  @@index([team])
+  @@map("lark_traffic")
+}
+
 enum UserRole {
   ADMIN
   MANAGER
