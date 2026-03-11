@@ -1847,9 +1847,14 @@ export class LarkService {
             // Syncing is already handled by summing allValidResults directly into aggregates above.
             // Keeping globalTotals synced for groupContributions calculation below.
 
-            // Fetch outstanding reports (Ideas, Difficulties, Wins)
+            // Fetch outstanding reports (Ideas, Difficulties, Wins) excluding placeholders
             const reportOutstandings = await this.prisma.$queryRawUnsafe(`
                 SELECT * FROM "report_outstanding"
+                WHERE "content" NOT ILIKE '%không có%' 
+                  AND "content" NOT ILIKE '%khong co%' 
+                  AND "content" IS NOT NULL 
+                  AND "content" != '' 
+                  AND "content" != '-'
                 ORDER BY "date" DESC, "created_at" DESC
                 LIMIT 200
             `);
