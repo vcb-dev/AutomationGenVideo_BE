@@ -28,6 +28,7 @@ export class LarkService {
     private readonly PERMISSION_TABLE_ID: string;
     private readonly LIST_TASK_TABLE_ID: string;
     private readonly OUTSTANDING_TABLE_ID: string;
+    private readonly TRAFFIC_TABLE_ID: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -39,14 +40,15 @@ export class LarkService {
         this.APP_SECRET = this.configService.get<string>('LARK_APP_SECRET');
 
         // Load Bitable IDs from environment
-        this.REPORT_BASE_ID = this.configService.get<string>('LARK_REPORT_BASE_ID');
+        this.REPORT_BASE_ID = this.configService.get<string>('LARK_VCB_HR_BASE_ID');
         this.REPORT_TABLE_ID = this.configService.get<string>('LARK_REPORT_TABLE_ID');
-        this.KPI_BASE_ID = this.configService.get<string>('LARK_KPI_BASE_ID');
+        this.KPI_BASE_ID = this.configService.get<string>('LARK_QLTASK_BASE_ID');
         this.KPI_TABLE_ID = this.configService.get<string>('LARK_KPI_TABLE_ID');
         this.EMPLOYEE_TABLE_ID = this.configService.get<string>('LARK_EMPLOYEE_TABLE_ID');
         this.PERMISSION_TABLE_ID = this.configService.get<string>('LARK_PERMISSION_TABLE_ID');
         this.LIST_TASK_TABLE_ID = this.configService.get<string>('LARK_LIST_TASK_TABLE_ID') || 'tblUubDhUoJ9TV7m';
         this.OUTSTANDING_TABLE_ID = this.configService.get<string>('LARK_OUTSTANDING_TABLE_ID') || 'tbluurIuf2qDCdFr';
+        this.TRAFFIC_TABLE_ID = this.configService.get<string>('LARK_TRAFFIC_TABLE_ID') || 'tblsybBYaPKfsqQK';
     }
 
     async getAccessToken(): Promise<string> {
@@ -92,6 +94,7 @@ export class LarkService {
                 this.syncChannelData(),
                 this.syncListTaskData(),
                 this.syncOutstandingData(),
+                this.syncTrafficData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -200,6 +203,118 @@ export class LarkService {
             this.logger.log(`Successfully synced ${syncedCount} records.`);
         } catch (error) {
             this.logger.error('Failed to sync report data', error);
+        }
+    }
+
+    async syncTrafficData() {
+        const APP_TOKEN = this.KPI_BASE_ID;
+        const TABLE_ID = this.TRAFFIC_TABLE_ID;
+
+        try {
+            const token = await this.getAccessToken();
+            const config = { headers: { Authorization: `Bearer ${token}` } };
+            const records: any[] = [];
+            let pageToken = '';
+            let hasMore = true;
+
+            this.logger.log(`Fetching Traffic data from base: ${APP_TOKEN}, table: ${TABLE_ID}`);
+            while (hasMore) {
+                const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${TABLE_ID}/records?page_size=500${pageToken ? `&page_token=${pageToken}` : ''}`;
+                
+                const response = await firstValueFrom(this.httpService.get(url, config));
+                if (response.data.code !== 0) {
+                    throw new Error(`Failed to fetch traffic records: ${response.data.msg}`);
+                }
+
+                const data = response.data.data;
+                if (data.items) {
+                    records.push(...data.items);
+                }
+
+                hasMore = data.has_more;
+                pageToken = data.page_token;
+            }
+
+            this.logger.log(`Fetched ${records.length} traffic records from Lark. Syncing to database...`);
+
+            const cleanBigInt = (val: any): bigint | null => {
+                if (val === null || val === undefined) return null;
+                if (typeof val === 'number') return BigInt(Math.floor(val));
+                if (typeof val === 'string') {
+                    const clean = val.replace(/[^0-9.-]/g, '').split('.')[0];
+                    return clean ? BigInt(clean) : BigInt(0);
+                }
+                if (Array.isArray(val) && val.length > 0) return cleanBigInt(val[0]);
+                return null;
+            };
+
+            const extractString = (val: any): string | null => {
+                if (!val) return null;
+                if (typeof val === 'string') return val;
+                if (Array.isArray(val) && val.length > 0) {
+                    const first = val[0];
+                    return first.name || first.text || (typeof first === 'string' ? first : null);
+                }
+                if (typeof val === 'object') return val.name || val.text || null;
+                return String(val);
+            };
+
+            let syncedCount = 0;
+            for (const record of records) {
+                const fields = record.fields;
+
+                let date = null;
+                const dateVal = fields['Ngày'] || fields['Ngay'];
+                if (dateVal) {
+                    const numVal = Number(dateVal);
+                    if (!isNaN(numVal)) {
+                        date = new Date(numVal > 10000000000 ? numVal : (numVal > 30000 ? (numVal - 25569) * 86400 * 1000 : numVal * 1000));
+                    } else if (typeof dateVal === 'string') {
+                        date = new Date(dateVal);
+                    }
+                }
+
+                await this.prisma.larkTraffic.upsert({
+                    where: { id: record.record_id },
+                    update: {
+                        date: date,
+                        employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
+                        team: extractString(fields['Team']),
+                        month: extractString(fields['Tháng'] || fields['Thang']),
+                        traffic_fb: cleanBigInt(fields['Traffic FB']),
+                        traffic_ig: cleanBigInt(fields['Traffic IG']),
+                        traffic_lemon8: cleanBigInt(fields['Traffic Lemon 8']),
+                        traffic_thread: cleanBigInt(fields['Traffic Thread']),
+                        traffic_tiktok: cleanBigInt(fields['Traffic Tiktok']),
+                        traffic_yt: cleanBigInt(fields['Traffic YT']),
+                        traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
+                        total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
+                        is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
+                    },
+                    create: {
+                        id: record.record_id,
+                        date: date,
+                        employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
+                        team: extractString(fields['Team']),
+                        month: extractString(fields['Tháng'] || fields['Thang']),
+                        traffic_fb: cleanBigInt(fields['Traffic FB']),
+                        traffic_ig: cleanBigInt(fields['Traffic IG']),
+                        traffic_lemon8: cleanBigInt(fields['Traffic Lemon 8']),
+                        traffic_thread: cleanBigInt(fields['Traffic Thread']),
+                        traffic_tiktok: cleanBigInt(fields['Traffic Tiktok']),
+                        traffic_yt: cleanBigInt(fields['Traffic YT']),
+                        traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
+                        total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
+                        is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
+                    },
+                });
+
+                syncedCount++;
+            }
+
+            this.logger.log(`Successfully synced ${syncedCount} traffic records.`);
+        } catch (error) {
+            this.logger.error('Failed to sync Traffic data', error);
         }
     }
 
@@ -376,7 +491,7 @@ export class LarkService {
     async syncChannelData() {
         try {
             // This table tbljWdSiFVVWVqfp belongs to the REPORT_BASE_ID
-            const baseId = this.configService.get<string>('LARK_REPORT_BASE_ID') || 'Q5Fmby8DVaKOyusfR8glgRB6gbf';
+            const baseId = this.configService.get<string>('LARK_VCB_HR_BASE_ID') || 'Q5Fmby8DVaKOyusfR8glgRB6gbf';
             const tableId = 'tbljWdSiFVVWVqfp';
 
             this.logger.log(`Syncing Channel table: ${tableId} from base: ${baseId}`);
