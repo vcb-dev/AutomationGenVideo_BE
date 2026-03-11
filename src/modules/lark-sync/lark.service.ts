@@ -1423,12 +1423,13 @@ export class LarkService {
                         if (existing.answers && r.answers) {
                             const eAns = existing.answers as any;
                             const rAns = r.answers as any;
-                            const videoKey = 'Số video edit sử dụng >50% source từ quay?';
-                            if (rAns[videoKey]) {
+                            const videoKeyNew = Object.keys(rAns).find(k => k.toLowerCase().includes('50%'));
+                            const videoKeyOld = Object.keys(eAns).find(k => k.toLowerCase().includes('50%')) || videoKeyNew;
+                            if (videoKeyNew) {
                                 // Sum up numeric values
-                                const currentTotal = Number(eAns[videoKey]) || 0;
-                                const newVal = Number(rAns[videoKey]) || 0;
-                                eAns[videoKey] = currentTotal + newVal;
+                                const currentTotal = Number(eAns[videoKeyOld]) || 0;
+                                const newVal = Number(rAns[videoKeyNew]) || 0;
+                                eAns[videoKeyOld] = currentTotal + newVal;
                             }
                         }
                     } else {
@@ -1584,7 +1585,7 @@ export class LarkService {
                     date: report?.date || reportKpi?.report_date || null,
                     checklist,
                     answers: answersData,
-                    videoCount: Number(answersData?.['Số video edit sử dụng >50% source từ quay?'] || 0),
+                    videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
                     dailyGoal: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
