@@ -320,8 +320,47 @@ export class LarkService {
         }
     }
 
+    /**
+     * Upload a file buffer to Lark Drive and return file_token
+     * Uses: POST /open-apis/drive/v1/medias/upload_all (multipart/form-data)
+     */
+    async uploadEvidenceToLark(fileBuffer: Buffer, fileName: string, mimeType: string): Promise<string> {
+        const token = await this.getAccessToken();
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('file_name', fileName);
+        form.append('parent_type', 'bitable_file');
+        form.append('parent_node', this.KPI_BASE_ID);
+        form.append('size', fileBuffer.length.toString());
+        form.append('file', fileBuffer, { filename: fileName, contentType: mimeType });
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.post(
+                    'https://open.larksuite.com/open-apis/drive/v1/medias/upload_all',
+                    form,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            ...form.getHeaders(),
+                        },
+                    }
+                )
+            );
+
+            if (response.data.code !== 0) {
+                throw new Error(`Lark upload failed: ${response.data.msg}`);
+            }
+
+            return response.data.data.file_token;
+        } catch (error) {
+            this.logger.error('Failed to upload evidence to Lark:', error?.response?.data || error.message);
+            throw new Error('Could not upload evidence file to Lark');
+        }
+    }
+
     async submitTrafficReport(payload: any) {
-        const { email, name, traffic } = payload;
+        const { email, name, traffic, fileTokens } = payload;
         const now = new Date();
         const monthString = (now.getMonth() + 1).toString().padStart(2, '0') + '/' + now.getFullYear();
         
@@ -350,7 +389,7 @@ export class LarkService {
         
         const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel;
 
-        const larkFields = {
+        const larkFields: any = {
             'Ngày': now.getTime(),
             'Nhân viên': name,
             'HoTen': name,
@@ -367,6 +406,11 @@ export class LarkService {
             'Tổng Traffic': total,
             'Xác nhận': 'Pending'
         };
+
+        // Attach evidence file tokens if provided
+        if (fileTokens && fileTokens.length > 0) {
+            larkFields['Minh chứng'] = fileTokens.map((ft: string) => ({ file_token: ft }));
+        }
 
         try {
             const response = await firstValueFrom(
@@ -398,7 +442,8 @@ export class LarkService {
                     traffic_yt: BigInt(ytLevel),
                     traffic_zalo: BigInt(zaloLevel),
                     total_traffic: BigInt(total),
-                    is_confirmed: 'Pending'
+                    is_confirmed: 'Pending',
+                    evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
                 }
             });
 

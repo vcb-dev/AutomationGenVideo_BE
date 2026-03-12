@@ -1,6 +1,7 @@
 
 
-import { Controller, Get, Post, Query, Param, Res, Body } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { LarkSyncService } from './lark-sync.service';
@@ -315,5 +316,28 @@ export class LarkController {
     @ApiOperation({ summary: 'Submit daily traffic report' })
     async submitTrafficReport(@Body() data: any) {
         return this.larkService.submitTrafficReport(data);
+    }
+
+    @Post('upload-evidence')
+    @ApiOperation({ summary: 'Upload evidence images to Lark Drive and return file tokens' })
+    @UseInterceptors(FilesInterceptor('files', 5, {
+        limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+    }))
+    async uploadEvidence(@UploadedFiles() files: Array<Express.Multer.File>) {
+        if (!files || files.length === 0) {
+            return { message: 'No files uploaded', fileTokens: [] };
+        }
+
+        const fileTokens: string[] = [];
+        for (const file of files) {
+            const token = await this.larkService.uploadEvidenceToLark(
+                file.buffer,
+                file.originalname,
+                file.mimetype
+            );
+            fileTokens.push(token);
+        }
+
+        return { message: 'Files uploaded successfully', fileTokens };
     }
 }
