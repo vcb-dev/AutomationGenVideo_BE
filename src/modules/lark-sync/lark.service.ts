@@ -382,17 +382,32 @@ export class LarkService {
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, fileTokens } = payload;
         const now = new Date();
-        const monthString = (now.getMonth() + 1).toString().padStart(2, '0') + '/' + now.getFullYear();
+        const monthNum = now.getMonth() + 1;
+        const monthString = monthNum.toString().padStart(2, '0') + '/' + now.getFullYear(); // Local DB: 03/2026
+        const larkMonth = `T${monthNum}`; // Lark Option: T3
         
-        // Lookup team
+        // Lookup team - priority: User table > LarkPermission > LarkEmployee
         let team = '';
-        const userPerm = await this.getPermissionByEmail(email);
-        if (userPerm && userPerm.team) {
-            team = userPerm.team;
-        } else {
-            const emp = await this.prisma.larkEmployee.findFirst({ where: { name } });
-            if (emp && emp.team) team = emp.team;
+        
+        // 1. FIRST: Try from User table (most reliable - admin sets this directly)
+        const userRecord = await this.prisma.user.findFirst({ where: { email } });
+        if (userRecord?.team) {
+            team = userRecord.team;
         }
+        
+        // 2. Fallback: Try from LarkPermission
+        if (!team) {
+            const userPerm = await this.getPermissionByEmail(email);
+            if (userPerm?.team) team = userPerm.team;
+        }
+        
+        // 3. Last resort: Try from LarkEmployee by name
+        if (!team) {
+            const emp = await this.prisma.larkEmployee.findFirst({ where: { name } });
+            if (emp?.team) team = emp.team;
+        }
+        
+        this.logger.debug(`Team resolved for ${email}: "${team}"`);
 
         const token = await this.getAccessToken();
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/records`;
@@ -436,14 +451,10 @@ export class LarkService {
             const metaResp = await firstValueFrom(
                 this.httpService.get(fieldsMetaUrl, { headers: { Authorization: `Bearer ${tkn}` } })
             );
-            // Lark may return data.data.field or data.data.item depending on version
             const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
             const existingOptions: any[] = fieldDef?.property?.options || [];
-            this.logger.debug(`Tháng options count: ${existingOptions.length}`);
-            const optionExists = existingOptions.some((o: any) => o.name === monthString);
-            if (!optionExists) {
-                // Add the new month option to the field
-                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: monthString }];
+            if (!existingOptions.some((o: any) => o.name === larkMonth)) {
+                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: larkMonth }];
                 await firstValueFrom(
                     this.httpService.put(fieldsMetaUrl, {
                         field_name: 'Tháng',
@@ -451,12 +462,38 @@ export class LarkService {
                         property: { options: newOptions }
                     }, { headers: { Authorization: `Bearer ${tkn}` } })
                 );
-                this.logger.log(`Created new Tháng option: ${monthString}`);
             }
-            larkFields['Tháng'] = monthString;
-        } catch (thangErr) {
-            this.logger.warn(`Could not set Tháng field (will skip): ${thangErr?.message || thangErr}`);
-            // Don't throw, proceed without Tháng
+            larkFields['Tháng'] = larkMonth;
+        } catch (err) {
+            this.logger.warn(`Could not sync Tháng option: ${err.message}`);
+        }
+
+        // Handle 'Team' (Single Select type 3) - ensure option exists
+        if (team) {
+            try {
+                const teamFieldId = 'fldDPQRZfs';
+                const teamMetaUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields/${teamFieldId}`;
+                const tkn = await this.getAccessToken();
+                const metaResp = await firstValueFrom(
+                    this.httpService.get(teamMetaUrl, { headers: { Authorization: `Bearer ${tkn}` } })
+                );
+                const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
+                const existingOptions: any[] = fieldDef?.property?.options || [];
+                if (!existingOptions.some((o: any) => o.name === team)) {
+                    const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: team }];
+                    await firstValueFrom(
+                        this.httpService.put(teamMetaUrl, {
+                            field_name: 'Team',
+                            type: 3,
+                            property: { options: newOptions }
+                        }, { headers: { Authorization: `Bearer ${tkn}` } })
+                    );
+                }
+                larkFields['Team'] = team;
+            } catch (err) {
+                this.logger.warn(`Could not sync Team option: ${err.message}`);
+                larkFields['Team'] = team; // Try anyway
+            }
         }
 
         // Attach evidence file tokens if provided
