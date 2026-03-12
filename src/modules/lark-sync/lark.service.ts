@@ -278,6 +278,7 @@ export class LarkService {
                     where: { id: record.record_id },
                     update: {
                         date: date,
+                        name: extractString(fields['HoTen'] || fields['Họ Tên']),
                         employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
                         team: extractString(fields['Team']),
                         month: extractString(fields['Tháng'] || fields['Thang']),
@@ -294,6 +295,7 @@ export class LarkService {
                     create: {
                         id: record.record_id,
                         date: date,
+                        name: extractString(fields['HoTen'] || fields['Họ Tên']),
                         employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
                         team: extractString(fields['Team']),
                         month: extractString(fields['Tháng'] || fields['Thang']),

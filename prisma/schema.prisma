@@ -557,6 +557,7 @@ model LarkKPI {
 
 model LarkTraffic {
   id              String   @id
+  name            String?
   date            DateTime?
   employee        Json?
   team            String?
