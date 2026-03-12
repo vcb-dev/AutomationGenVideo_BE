@@ -320,6 +320,95 @@ export class LarkService {
         }
     }
 
+    async submitTrafficReport(payload: any) {
+        const { email, name, traffic } = payload;
+        const now = new Date();
+        const monthString = (now.getMonth() + 1).toString().padStart(2, '0') + '/' + now.getFullYear();
+        
+        // Lookup team
+        let team = '';
+        const userPerm = await this.getPermissionByEmail(email);
+        if (userPerm && userPerm.team) {
+            team = userPerm.team;
+        } else {
+            const emp = await this.prisma.larkEmployee.findFirst({ where: { name } });
+            if (emp && emp.team) team = emp.team;
+        }
+
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/records`;
+
+        const cleanBi = (v: any) => v ? parseInt(v) : 0;
+        
+        const fbLevel = cleanBi(traffic.fb);
+        const igLevel = cleanBi(traffic.ig);
+        const threadLevel = cleanBi(traffic.thread);
+        const tiktokLevel = cleanBi(traffic.tiktok);
+        const lemon8Level = cleanBi(traffic.lemon8);
+        const ytLevel = cleanBi(traffic.yt);
+        const zaloLevel = cleanBi(traffic.zalo);
+        
+        const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel;
+
+        const larkFields = {
+            'Ngày': now.getTime(),
+            'Nhân viên': name,
+            'HoTen': name,
+            'Họ Tên': name,
+            'Team': team,
+            'Tháng': monthString,
+            'Traffic FB': fbLevel,
+            'Traffic IG': igLevel,
+            'Traffic Lemon 8': lemon8Level,
+            'Traffic Thread': threadLevel,
+            'Traffic Tiktok': tiktokLevel,
+            'Traffic YT': ytLevel,
+            'Traffic Zalo': zaloLevel,
+            'Tổng Traffic': total,
+            'Xác nhận': 'Pending'
+        };
+
+        try {
+            const response = await firstValueFrom(
+                this.httpService.post(url, { fields: larkFields }, {
+                    headers: { Authorization: `Bearer ${token}` }
+                })
+            );
+
+            if (response.data.code !== 0) {
+                this.logger.error(`Failed to post traffic to Lark: ${response.data.msg}`);
+                throw new Error(`Failed to post traffic to Lark: ${response.data.msg}`);
+            }
+
+            const recordId = response.data.data.record.record_id;
+
+            await this.prisma.larkTraffic.create({
+                data: {
+                    id: recordId,
+                    name: name,
+                    date: now,
+                    employee: name,
+                    team: team,
+                    month: monthString,
+                    traffic_fb: BigInt(fbLevel),
+                    traffic_ig: BigInt(igLevel),
+                    traffic_lemon8: BigInt(lemon8Level),
+                    traffic_thread: BigInt(threadLevel),
+                    traffic_tiktok: BigInt(tiktokLevel),
+                    traffic_yt: BigInt(ytLevel),
+                    traffic_zalo: BigInt(zaloLevel),
+                    total_traffic: BigInt(total),
+                    is_confirmed: 'Pending'
+                }
+            });
+
+            return { message: 'Traffic report submitted successfully', recordId };
+        } catch (error) {
+            this.logger.error('Error submitting traffic report:', error);
+            throw new Error('Could not submit traffic report');
+        }
+    }
+
     async syncOutstandingData() {
         try {
             const baseId = this.REPORT_BASE_ID;

@@ -310,4 +310,10 @@ export class LarkController {
             return { message: 'List Task sync failed', error: error.message };
         }
     }
+
+    @Post('traffic-report')
+    @ApiOperation({ summary: 'Submit daily traffic report' })
+    async submitTrafficReport(@Body() data: any) {
+        return this.larkService.submitTrafficReport(data);
+    }
 }
