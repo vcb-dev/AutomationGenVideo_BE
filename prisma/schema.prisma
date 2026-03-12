@@ -569,6 +569,7 @@ model LarkTraffic {
   traffic_tiktok  BigInt?
   traffic_yt      BigInt?
   traffic_zalo    BigInt?
+  traffic_twitter BigInt?
   total_traffic   BigInt?
   is_confirmed    String?
   evidence_files  String?  // Lark file tokens JSON array
