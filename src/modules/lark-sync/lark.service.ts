@@ -413,6 +413,7 @@ export class LarkService {
         // Field types from Lark API:
         // Type 1=Text, 2=Number, 3=Select, 5=DateTime, 11=User, 17=Attachment, 19=Link/Single-select, 20=Formula (READ-ONLY)
         // DO NOT write to: type 11 (User needs Lark UID), type 20 (Formula - auto-calculated)
+        // NOTE: 'Tháng' is type 3 (Single Select) - we must ensure the option exists first
         const larkFields: any = {
             'HoTen': name,                  // type 1 - Text ✅
             'Traffic Tiktok': tiktokLevel,  // type 2 - Number ✅
@@ -426,6 +427,37 @@ export class LarkService {
             // 'Tổng Traffic' is type 20 (Formula) - Lark calculates it automatically, DO NOT write
             'Ngày': now.getTime(),          // type 5 - DateTime (Unix ms) ✅
         };
+
+        // Handle 'Tháng' (Single Select type 3) - create option if not exists, then set
+        try {
+            const thangFieldId = 'fldUuF47AJ';
+            const fieldsMetaUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields/${thangFieldId}`;
+            const tkn = await this.getAccessToken();
+            const metaResp = await firstValueFrom(
+                this.httpService.get(fieldsMetaUrl, { headers: { Authorization: `Bearer ${tkn}` } })
+            );
+            // Lark may return data.data.field or data.data.item depending on version
+            const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
+            const existingOptions: any[] = fieldDef?.property?.options || [];
+            this.logger.debug(`Tháng options count: ${existingOptions.length}`);
+            const optionExists = existingOptions.some((o: any) => o.name === monthString);
+            if (!optionExists) {
+                // Add the new month option to the field
+                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: monthString }];
+                await firstValueFrom(
+                    this.httpService.put(fieldsMetaUrl, {
+                        field_name: 'Tháng',
+                        type: 3,
+                        property: { options: newOptions }
+                    }, { headers: { Authorization: `Bearer ${tkn}` } })
+                );
+                this.logger.log(`Created new Tháng option: ${monthString}`);
+            }
+            larkFields['Tháng'] = monthString;
+        } catch (thangErr) {
+            this.logger.warn(`Could not set Tháng field (will skip): ${thangErr?.message || thangErr}`);
+            // Don't throw, proceed without Tháng
+        }
 
         // Attach evidence file tokens if provided
         if (fileTokens && fileTokens.length > 0) {
