@@ -406,8 +406,9 @@ export class LarkService {
         const lemon8Level = cleanBi(traffic.lemon8);
         const ytLevel = cleanBi(traffic.yt);
         const zaloLevel = cleanBi(traffic.zalo);
+        const twitterLevel = cleanBi(traffic.twitter);
         
-        const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel;
+        const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel + twitterLevel;
 
         // Field types from Lark API:
         // Type 1=Text, 2=Number, 3=Select, 5=DateTime, 11=User, 17=Attachment, 19=Link/Single-select, 20=Formula (READ-ONLY)
@@ -421,6 +422,7 @@ export class LarkService {
             'Traffic Zalo': zaloLevel,      // type 2 - Number ✅
             'Traffic Thread': threadLevel,  // type 2 - Number ✅
             'Traffic Lemon 8': lemon8Level, // type 2 - Number ✅
+            'Traffic Twitter': twitterLevel,// type 2 - Number ✅
             // 'Tổng Traffic' is type 20 (Formula) - Lark calculates it automatically, DO NOT write
             'Ngày': now.getTime(),          // type 5 - DateTime (Unix ms) ✅
         };
@@ -459,6 +461,7 @@ export class LarkService {
                     traffic_tiktok: BigInt(tiktokLevel),
                     traffic_yt: BigInt(ytLevel),
                     traffic_zalo: BigInt(zaloLevel),
+                    traffic_twitter: BigInt(twitterLevel),
                     total_traffic: BigInt(total),
                     is_confirmed: 'Pending',
                     evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
