@@ -318,6 +318,12 @@ export class LarkController {
         return this.larkService.submitTrafficReport(data);
     }
 
+    @Get('debug-traffic-fields')
+    @ApiOperation({ summary: 'DEBUG: List all field names in the Traffic Lark table' })
+    async debugTrafficFields() {
+        return this.larkService.getTrafficTableFields();
+    }
+
     @Post('upload-evidence')
     @ApiOperation({ summary: 'Upload evidence images to Lark Drive and return file tokens' })
     @UseInterceptors(FilesInterceptor('files', 5, {
