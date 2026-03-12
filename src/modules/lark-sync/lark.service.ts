@@ -382,9 +382,7 @@ export class LarkService {
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, fileTokens } = payload;
         const now = new Date();
-        const monthNum = now.getMonth() + 1;
-        const monthString = monthNum.toString().padStart(2, '0') + '/' + now.getFullYear(); // Local DB: 03/2026
-        const larkMonth = `T${monthNum}`; // Lark Option: T3
+        const monthString = (now.getMonth() + 1).toString().padStart(2, '0') + '/' + now.getFullYear();
         
         // Lookup team - priority: User table > LarkPermission > LarkEmployee
         let team = '';
@@ -453,8 +451,8 @@ export class LarkService {
             );
             const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
             const existingOptions: any[] = fieldDef?.property?.options || [];
-            if (!existingOptions.some((o: any) => o.name === larkMonth)) {
-                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: larkMonth }];
+            if (!existingOptions.some((o: any) => o.name === monthString)) {
+                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: monthString }];
                 await firstValueFrom(
                     this.httpService.put(fieldsMetaUrl, {
                         field_name: 'Tháng',
@@ -463,7 +461,7 @@ export class LarkService {
                     }, { headers: { Authorization: `Bearer ${tkn}` } })
                 );
             }
-            larkFields['Tháng'] = larkMonth;
+            larkFields['Tháng'] = monthString;
         } catch (err) {
             this.logger.warn(`Could not sync Tháng option: ${err.message}`);
         }
