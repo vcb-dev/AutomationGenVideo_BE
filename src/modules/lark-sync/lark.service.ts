@@ -291,7 +291,7 @@ export class LarkService {
                         traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
                         total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
                         is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
-                    },
+                    } as any,
                     create: {
                         id: record.record_id,
                         date: date,
@@ -308,7 +308,7 @@ export class LarkService {
                         traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
                         total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
                         is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
-                    },
+                    } as any,
                 });
 
                 syncedCount++;
@@ -318,6 +318,26 @@ export class LarkService {
         } catch (error) {
             this.logger.error('Failed to sync Traffic data', error);
         }
+    }
+
+    /**
+     * DEBUG: Fetch all field metadata from the Traffic table in Lark
+     */
+    async getTrafficTableFields() {
+        const token = await this.getAccessToken();
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields`;
+        const response = await firstValueFrom(
+            this.httpService.get(url, { headers: { Authorization: `Bearer ${token}` } })
+        );
+        const fields = response.data?.data?.items || [];
+        return {
+            total: fields.length,
+            fields: fields.map((f: any) => ({
+                id: f.field_id,
+                name: f.field_name,
+                type: f.type,
+            }))
+        };
     }
 
     /**
@@ -389,22 +409,20 @@ export class LarkService {
         
         const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel;
 
+        // Field types from Lark API:
+        // Type 1=Text, 2=Number, 3=Select, 5=DateTime, 11=User, 17=Attachment, 19=Link/Single-select, 20=Formula (READ-ONLY)
+        // DO NOT write to: type 11 (User needs Lark UID), type 20 (Formula - auto-calculated)
         const larkFields: any = {
-            'Ngày': now.getTime(),
-            'Nhân viên': name,
-            'HoTen': name,
-            'Họ Tên': name,
-            'Team': team,
-            'Tháng': monthString,
-            'Traffic FB': fbLevel,
-            'Traffic IG': igLevel,
-            'Traffic Lemon 8': lemon8Level,
-            'Traffic Thread': threadLevel,
-            'Traffic Tiktok': tiktokLevel,
-            'Traffic YT': ytLevel,
-            'Traffic Zalo': zaloLevel,
-            'Tổng Traffic': total,
-            'Xác nhận': 'Pending'
+            'HoTen': name,                  // type 1 - Text ✅
+            'Traffic Tiktok': tiktokLevel,  // type 2 - Number ✅
+            'Traffic FB': fbLevel,          // type 2 - Number ✅
+            'Traffic IG': igLevel,          // type 2 - Number ✅
+            'Traffic YT': ytLevel,          // type 2 - Number ✅
+            'Traffic Zalo': zaloLevel,      // type 2 - Number ✅
+            'Traffic Thread': threadLevel,  // type 2 - Number ✅
+            'Traffic Lemon 8': lemon8Level, // type 2 - Number ✅
+            // 'Tổng Traffic' is type 20 (Formula) - Lark calculates it automatically, DO NOT write
+            'Ngày': now.getTime(),          // type 5 - DateTime (Unix ms) ✅
         };
 
         // Attach evidence file tokens if provided
@@ -420,7 +438,7 @@ export class LarkService {
             );
 
             if (response.data.code !== 0) {
-                this.logger.error(`Failed to post traffic to Lark: ${response.data.msg}`);
+                this.logger.error(`Failed to post traffic to Lark. Code=${response.data.code} Msg=${response.data.msg}. Fields sent: ${JSON.stringify(larkFields)}`);
                 throw new Error(`Failed to post traffic to Lark: ${response.data.msg}`);
             }
 
@@ -444,13 +462,14 @@ export class LarkService {
                     total_traffic: BigInt(total),
                     is_confirmed: 'Pending',
                     evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
-                }
+                } as any
             });
 
             return { message: 'Traffic report submitted successfully', recordId };
         } catch (error) {
-            this.logger.error('Error submitting traffic report:', error);
-            throw new Error('Could not submit traffic report');
+            const errMsg = error?.response?.data || error?.message || String(error);
+            this.logger.error('Error submitting traffic report. Detail:', JSON.stringify(errMsg));
+            throw new Error(`Could not submit traffic report: ${JSON.stringify(errMsg)}`);
         }
     }
 
