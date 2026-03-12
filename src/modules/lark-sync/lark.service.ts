@@ -382,7 +382,7 @@ export class LarkService {
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, fileTokens } = payload;
         const now = new Date();
-        const monthString = (now.getMonth() + 1).toString().padStart(2, '0') + '/' + now.getFullYear();
+        const monthString = 'T' + (now.getMonth() + 1).toString();
         
         // Lookup team - priority: User table > LarkPermission > LarkEmployee
         let team = '';
@@ -3269,6 +3269,21 @@ export class LarkService {
             return String(val);
         };
 
+        // Special handler for Single Select fields - avoids storing raw Lark option IDs (opt...)
+        const extractSingleSelect = (val: any): string | null => {
+            if (!val) return null;
+            // Lark SingleSelect often returns [{id: 'optXXX', name: 'Team K0', color: ...}]
+            if (Array.isArray(val) && val.length > 0) {
+                const first = val[0];
+                if (first && typeof first === 'object') return first.name || null;
+                if (typeof first === 'string' && !first.startsWith('opt')) return first;
+                return null;
+            }
+            if (typeof val === 'object') return val.name || null;
+            if (typeof val === 'string' && !val.startsWith('opt')) return val;
+            return null;
+        };
+
         const extractLink = (val: any): string | null => {
             if (!val) return null;
             if (typeof val === 'string') return val;
@@ -3319,10 +3334,10 @@ export class LarkService {
             source_huyk: extractLink(fields['Source HuyK']),
             source_outro: extractLink(fields['Source Outro']),
             source_collection: extractLink(fields['Source Sản phẩm sưu tầm']),
-            team: extractString(fields['Team']),
+            team: extractSingleSelect(fields['Team']),
             tiktok_post: extractString(fields['Tiktok Post']),
             status: fields['Trạng Thái'] || null,
-            content_type: fields['Tuyến Nội Dung'] || null,
+            content_type: extractSingleSelect(fields['Tuyến Nội Dung']) || extractString(fields['Tuyến Nội Dung']),
             product_name: extractString(fields['Tên Sản Phẩm']),
             link_tiktok: fields['Link Tiktok'] || null,
             date: extractDate(fields['Ngày']),
@@ -3392,7 +3407,7 @@ export class LarkService {
             this.prisma.larkListTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
-                    ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
+                    // Note: team field in ListTask may be null (Lookup field type) - do NOT filter by team here
                 },
                 select: { id: true, content_type: true, employee_id: true, employee_name: true, employee_email: true, team: true }
             }),
@@ -3436,6 +3451,24 @@ export class LarkService {
         // Helper maps
         const userMapByEmail = new Map<string, typeof usersWithChannels[0]>();
         usersWithChannels.forEach(u => userMapByEmail.set(u.email.toLowerCase(), u));
+
+        // Build name -> team map from KPI data (most reliable team source)
+        const nameToTeamMap = new Map<string, string>();
+        allKpisInDb.forEach(k => {
+            const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ');
+            if (nameKey && k.team && !k.team.startsWith('opt')) {
+                nameToTeamMap.set(nameKey, k.team);
+            }
+        });
+
+        // Helper to get team from any source (avoid opt... IDs)
+        const resolveTeam = (taskTeam: string | null, nameKey: string): string => {
+            // If the stored team is null or a Lark option ID, look it up from KPI
+            if (!taskTeam || taskTeam.startsWith('opt')) {
+                return nameToTeamMap.get(nameKey) || 'Khác';
+            }
+            return taskTeam;
+        };
 
         // Maps channels by owner
         const channelsByOwnerMap = new Map<string, number>();
@@ -3523,24 +3556,33 @@ export class LarkService {
                 const stats = empStats.get(key)!;
                 const line = task.content_type || 'Khác';
                 stats.lineCounts[line] = (stats.lineCounts[line] || 0) + 1;
+                // Also fix team if it's currently 'Khác' and we can resolve better
+                if (stats.team === 'Khác') {
+                    const resolved = resolveTeam(task.team, nameKey);
+                    if (resolved !== 'Khác') stats.team = resolved;
+                }
             } else {
-                // If person not in KPI, we can still show them if they have tasks, but user says "based on KPI"
-                // For completeness/visual parity with chart, we add them if they have tasks
+                // If person not in KPI, we can still show them if they have tasks
                 const user = email ? userMapByEmail.get(email) : null;
+                const resolvedTeam = resolveTeam(task.team, nameKey);
+
+                // Apply team filter for these fallback entries
+                if (teamFilter && !resolvedTeam.toLowerCase().includes(teamFilter) && !teamFilter.includes(resolvedTeam.toLowerCase())) {
+                    return;
+                }
+
                 empStats.set(key, {
                     name: task.employee_name || 'Unknown',
                     email: email,
                     empId: task.employee_id || 'unknown',
-                    team: task.team || 'Khác',
-                    videoCount: 0, // Will be updated by tasks if we want, but user said "based on KPI"
+                    team: resolvedTeam,
+                    videoCount: 1,
                     lineCounts: { [task.content_type || 'Khác']: 1 },
                     traffic: 0,
                     revenue: 0,
                     channels: channelsByOwnerMap.get(nameKey) || user?._count.tracked_channels || 0,
                     isLeader: user?.roles.includes(UserRole.MANAGER) || user?.roles.includes(UserRole.ADMIN) || false
                 });
-                // If we want task row count as fallback:
-                empStats.get(key)!.videoCount = 1;
             }
             // For existing ones, if they have tasks, it adds to breakdown but doesn't change their KPI 'videoCount'
         });
