@@ -84,16 +84,16 @@ export class LarkService {
 
     @Cron(CronExpression.EVERY_30_MINUTES)
     async handleCron() {
-        this.logger.log('Starting scheduled Lark data sync (Reports, KPI, Employees)...');
+        this.logger.log('Starting scheduled Lark data sync (KPI, Employees)...');
         try {
             await Promise.all([
-                this.syncReportData(),
+                // this.syncReportData(), // User requested to disable sync for LarkReport
                 this.syncKPIData(),
                 this.syncEmployeeData(),
                 this.syncPermissionData(),
                 this.syncChannelData(),
                 this.syncListTaskData(),
-                this.syncOutstandingData(),
+                // this.syncOutstandingData(), // User requested to disable sync for ReportOutstanding
                 this.syncTrafficData(),
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
@@ -3151,7 +3151,8 @@ export class LarkService {
                 );
             }
 
-            // Sync to Lark Suite if it's not a local record
+            // Sync to Lark Suite disabled as per user request
+            /*
             if (id && !id.startsWith('out_')) {
                 const larkFields: any = {
                     'Duyệt': status,
@@ -3168,8 +3169,9 @@ export class LarkService {
                     larkFields
                 );
             }
+            */
 
-            return { success: true, message: 'Status updated successfully and synced to Lark' };
+            return { success: true, message: 'Status updated successfully (Local only)' };
         } catch (error) {
             this.logger.error(`Failed to update outstanding status for id ${id}`, error);
             throw error;
