@@ -499,6 +499,7 @@ export class LarkService {
             larkFields['Minh chứng'] = fileTokens.map((ft: string) => ({ file_token: ft }));
         }
 
+        /*
         try {
             const response = await firstValueFrom(
                 this.httpService.post(url, { fields: larkFields }, {
@@ -540,6 +541,37 @@ export class LarkService {
             const errMsg = error?.response?.data || error?.message || String(error);
             this.logger.error('Error submitting traffic report. Detail:', JSON.stringify(errMsg));
             throw new Error(`Could not submit traffic report: ${JSON.stringify(errMsg)}`);
+        }
+        */
+
+        // Local only saving
+        const localRecordId = `local_trf_${Date.now()}`;
+        try {
+            await this.prisma.larkTraffic.create({
+                data: {
+                    id: localRecordId,
+                    name: name,
+                    date: now,
+                    employee: name,
+                    team: team,
+                    month: monthString,
+                    traffic_fb: BigInt(fbLevel),
+                    traffic_ig: BigInt(igLevel),
+                    traffic_lemon8: BigInt(lemon8Level),
+                    traffic_thread: BigInt(threadLevel),
+                    traffic_tiktok: BigInt(tiktokLevel),
+                    traffic_yt: BigInt(ytLevel),
+                    traffic_zalo: BigInt(zaloLevel),
+                    traffic_twitter: BigInt(twitterLevel),
+                    total_traffic: BigInt(total),
+                    is_confirmed: 'Pending',
+                    evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
+                } as any
+            });
+            return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
+        } catch (dbError) {
+            this.logger.error('Error saving local traffic report:', dbError);
+            throw new Error(`Could not save local traffic report: ${dbError.message}`);
         }
     }
 
