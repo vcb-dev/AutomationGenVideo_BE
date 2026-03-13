@@ -584,6 +584,7 @@ model LarkTraffic {
 enum UserRole {
   ADMIN
   MANAGER
+  LEADER
   MEMBER
 }
 

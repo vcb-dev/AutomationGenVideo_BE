@@ -69,7 +69,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
                     continue;
                 }
 
-                const userRoles = this.larkService.mapToUserRoles(parsed.role, parsed.team);
+                const userRoles = this.larkService.mapToUserRoles(parsed.role, parsed.team, parsed.position);
 
                 const existingUser = await this.prisma.user.findUnique({
                     where: { email: parsed.email },

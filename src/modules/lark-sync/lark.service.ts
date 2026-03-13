@@ -3191,26 +3191,32 @@ export class LarkService {
         const fields = record.fields;
         if (!fields['Email']) return null;
 
-        const trangThai = String(fields['Trang Thai'] || '').toLowerCase();
+        const trangThai = String(fields['Trang Thai'] || fields['Trạng thái'] || '').toLowerCase();
         const isActive = trangThai !== 'da nghi' && trangThai !== 'đã nghỉ' && trangThai !== 'nghi viec';
 
         return {
             email: fields['Email'],
-            full_name: fields['HoTen'] || 'Unknown',
-            role: fields['Role'] || 'MEMBER',
-            team: fields['Team'] || 'None',
+            full_name: fields['HoTen'] || fields['Họ Tên'] || 'Unknown',
+            role: fields['Role'] || fields['Chức vụ'] || 'MEMBER',
+            team: fields['Team'] || fields['Phòng ban'] || 'None',
+            position: fields['Chức vụ'] || fields['Position'] || fields['Role'] || '',
             is_active: isActive,
         };
     }
 
-    mapToUserRoles(role: string, team: string): string[] {
+    mapToUserRoles(role: string, team: string, position?: string): string[] {
         const roles: string[] = [];
         const r = (role || '').toUpperCase();
+        const p = (position || '').toUpperCase();
+
+        const leaderKeywords = ['LEADER', 'LEAD', 'TRƯỞNG', 'QUẢN LÝ', 'TP '];
 
         if (r.includes('ADMIN')) {
             roles.push('ADMIN');
         } else if (r.includes('MANAGER')) {
             roles.push('MANAGER');
+        } else if (leaderKeywords.some(key => r.includes(key) || p.includes(key))) {
+            roles.push('LEADER');
         } else {
             roles.push('MEMBER');
         }
