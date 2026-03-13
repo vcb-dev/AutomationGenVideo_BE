@@ -44,7 +44,7 @@ model User {
 model RolePermission {
   id         String   @id @default(uuid())
   role       UserRole @unique
-  menu_ids   String[] // Array of allowed menu IDs/paths
+  menu_ids   String[]
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -62,13 +62,13 @@ model TrackedChannel {
   total_likes         BigInt      @default(0)
   total_views         BigInt      @default(0)
   total_videos        Int         @default(0)
-  posts_count         Int?
   engagement_rate     Float       @default(0)
   is_active           Boolean     @default(true)
   last_synced_at      DateTime?
   created_at          DateTime    @default(now())
   updated_at          DateTime    @updatedAt
   initial_video_count Int         @default(0)
+  posts_count         Int?
   user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   video_posts         VideoPost[]
 
@@ -79,9 +79,8 @@ model TrackedChannel {
   @@map("tracked_channels")
 }
 
-// Voice: AI voice models for text-to-speech (managed by Django AI Service)
 model Voice {
-  id               BigInt   @id @default(autoincrement()) // Django uses BigAutoField
+  id               BigInt   @id @default(autoincrement())
   name             String   @db.VarChar(255)
   voice_id         String   @unique @db.VarChar(255)
   provider         String   @default("heygen") @db.VarChar(50)
@@ -90,7 +89,7 @@ model Voice {
   language         String   @default("vi") @db.VarChar(10)
   gender           String?  @db.VarChar(20)
   sample_audio_url String?
-  source_video_id  BigInt? // Foreign key to video_management_scrapedvideo
+  source_video_id  BigInt?
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @updatedAt @db.Timestamptz(6)
 
@@ -101,7 +100,6 @@ model Voice {
   @@map("video_management_voice")
 }
 
-// Video: Represents a unique video content created by an editor
 model Video {
   id            String            @id @default(uuid())
   user_id       String
@@ -556,8 +554,7 @@ model LarkKPI {
 }
 
 model LarkTraffic {
-  id              String   @id
-  name            String?
+  id              String    @id
   date            DateTime?
   employee        Json?
   team            String?
@@ -569,38 +566,17 @@ model LarkTraffic {
   traffic_tiktok  BigInt?
   traffic_yt      BigInt?
   traffic_zalo    BigInt?
-  traffic_twitter BigInt?
   total_traffic   BigInt?
   is_confirmed    String?
-  evidence_files  String?  // Lark file tokens JSON array
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+  name            String?
+  evidence_files  String?
+  traffic_twitter BigInt?
 
   @@index([month])
   @@index([team])
   @@map("lark_traffic")
-}
-
-enum UserRole {
-  ADMIN
-  MANAGER
-  LEADER
-  MEMBER
-}
-
-enum Platform {
-  TIKTOK
-  INSTAGRAM
-  FACEBOOK
-  DOUYIN
-  XIAOHONGSHU
-}
-
-enum DuplicateStatus {
-  UNIQUE
-  DUPLICATE
-  PENDING_REVIEW
-  SUSPICIOUS
 }
 
 model ReportOutstanding {
@@ -625,12 +601,12 @@ model ReportOutstanding {
 model Channel {
   id           String   @id
   name         String
-  platform     String? // Nền tảng
-  channel_id   String? // ID kênh hiện tại
-  link_channel String? // Link kênh
-  status       String? // Trạng thái hoạt động
-  team_traffic String? // Team Traffic
-  owner        String? // Họ và tên
+  platform     String?
+  channel_id   String?
+  link_channel String?
+  status       String?
+  team_traffic String?
+  owner        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
@@ -656,12 +632,6 @@ model LarkPermission {
   @@index([name])
   @@map("lark_permissions")
 }
-
-// ============================================================
-// Django-managed tables (AI Service) — DO NOT MODIFY
-// These are managed by Django migrations. Prisma needs to know 
-// about them so `db push` doesn't drop them.
-// ============================================================
 
 model video_management_reportsettings {
   id                 BigInt   @id @default(autoincrement())
@@ -904,33 +874,55 @@ model LarkReportKPI {
 }
 
 model LarkListTask {
-  id                String   @id
-  caption           String?  @db.Text
+  id                String    @id
+  caption           String?
   deadline          String?
-  file_content_url  String?  @db.Text
+  file_content_url  String?
   file_content_name String?
   file_voice_token  String?
   employee_id       String?
   employee_name     String?
   employee_email    String?
-  content           String?  @db.Text
+  content           String?
   sku               String?
-  source_huyk       String?  @db.Text
-  source_outro      String?  @db.Text
-  source_collection String?  @db.Text
+  source_huyk       String?
+  source_outro      String?
+  source_collection String?
   team              String?
   tiktok_post       String?
   status            String?
   content_type      String?
   product_name      String?
-  link_tiktok       String?  @db.Text
+  link_tiktok       String?
   date              DateTime?
   created_at_lark   DateTime?
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
 
   @@index([employee_id])
   @@index([employee_email])
   @@index([team])
   @@map("lark_list_tasks")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  MEMBER
+  LEADER
+}
+
+enum Platform {
+  TIKTOK
+  INSTAGRAM
+  FACEBOOK
+  DOUYIN
+  XIAOHONGSHU
+}
+
+enum DuplicateStatus {
+  UNIQUE
+  DUPLICATE
+  PENDING_REVIEW
+  SUSPICIOUS
 }
