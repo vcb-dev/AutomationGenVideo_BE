@@ -1654,13 +1654,54 @@ export class LarkService {
             const monthRangeStart = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1, 0, 0, 0, 0);
             const monthRangeEnd = new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999);
 
-            const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
-                where: {
-                    report_date: {
-                        gte: monthRangeStart,
-                        lte: monthRangeEnd,
+            const [monthlyReportKpis, monthRangeTasks] = await Promise.all([
+                (this.prisma as any).larkReportKPI.findMany({
+                    where: {
+                        report_date: {
+                            gte: monthRangeStart,
+                            lte: monthRangeEnd,
+                        }
                     }
+                }),
+                this.prisma.larkListTask.findMany({
+                    where: {
+                        date: {
+                            gte: monthRangeStart,
+                            lte: monthRangeEnd
+                        }
+                    },
+                    select: { team: true, employee_name: true, employee_email: true }
+                })
+            ]);
+
+            // Build helper map for team resolution (same as DashboardAnalytics)
+            const nameToTeamMapLocal = new Map<string, string>();
+            allKpiInDb.forEach(k => {
+                const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ');
+                if (nameKey && k.team && !k.team.startsWith('opt')) {
+                    nameToTeamMapLocal.set(nameKey, k.team);
                 }
+            });
+
+            // Count tasks per person and per region for summary cards
+            const tasksPerPerson = new Map<string, number>();
+            const taskVideosByGroup = { global: 0, vn: 0 };
+            
+            monthRangeTasks.forEach(task => {
+                const email = (task.employee_email || '').toLowerCase().trim();
+                const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const personKey = email || nameKey;
+                
+                if (personKey) {
+                    tasksPerPerson.set(personKey, (tasksPerPerson.get(personKey) || 0) + 1);
+                }
+
+                let teamName = task.team;
+                if (!teamName || teamName.startsWith('opt')) {
+                    teamName = nameToTeamMapLocal.get(nameKey) || 'Khác';
+                }
+                const region = getRegionInternal(teamName);
+                taskVideosByGroup[region]++;
             });
 
             const reportKpiMapByEmail = new Map();
@@ -1936,7 +1977,7 @@ export class LarkService {
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                    completed_month: monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0),
+                    completed_month: tasksPerPerson.get(personKey) || (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
                     // Stable monthly traffic/revenue for the Summary Cards:
                     traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
                     revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
@@ -2039,7 +2080,7 @@ export class LarkService {
 
                 // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
                 aggregates.totalVideoTarget += Number(r.kpi_month || 0);
-                aggregates.totalVideoCompleted += Number(r.completed_month || 0);
+                // aggregates.totalVideoCompleted = monthRangeTasks.length (Set below to include everyone)
                 aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
                 aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
@@ -2047,6 +2088,9 @@ export class LarkService {
 
                 // --- Channels are already counted globally from Channel table for the summary ---
             });
+
+            // Set total videos from task count to match DashboardAnalytics (includes unknown people)
+            aggregates.totalVideoCompleted = monthRangeTasks.length;
 
             // Count reports for today separately
             combinedResults.forEach(r => {
@@ -2128,6 +2172,9 @@ export class LarkService {
                 teamBreakdown[team].channels += c;
             });
 
+            // Ensure global total matches the big summary card
+            globalTotals.videos = monthRangeTasks.length;
+
             const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
                 team,
                 videoPct: globalTotals.videos ? Math.round((stats.videos / globalTotals.videos) * 100) : 0,
@@ -2146,20 +2193,24 @@ export class LarkService {
             const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
             const vnTeamNames = ['Team K0', 'Team K1', 'Team K2', 'AFF 01', 'Team ADS', 'MEDIA CHUNG'];
 
-            Object.entries(teamBreakdown).forEach(([team, stats]: [string, any]) => {
-                const teamLower = team.toLowerCase();
-                const isGlobal = teamLower.includes('global') ||
-                    teamLower.includes('jp') ||
-                    globalTeamNames.some(gt => gt.toLowerCase() === teamLower);
+            // Use task-based volumes for the group contributions to match the summary cards
+            groupTotals.global.videos = taskVideosByGroup.global;
+            groupTotals.vn.videos = taskVideosByGroup.vn;
+            
+            // Still sum traffic and revenue from individual results
+            allValidResults.forEach(r => {
+                const t = Number(r.traffic_range || 0);
+                const re = Number(r.revenue_range || 0);
 
-                if (isGlobal) {
-                    groupTotals.global.videos += stats.videos;
-                    groupTotals.global.traffic += stats.traffic;
-                    groupTotals.global.revenue += stats.revenue;
+                const team = r.team || 'Khác';
+                const region = getRegionInternal(team);
+
+                if (region === 'global') {
+                    groupTotals.global.traffic += t;
+                    groupTotals.global.revenue += re;
                 } else {
-                    groupTotals.vn.videos += stats.videos;
-                    groupTotals.vn.traffic += stats.traffic;
-                    groupTotals.vn.revenue += stats.revenue;
+                    groupTotals.vn.traffic += t;
+                    groupTotals.vn.revenue += re;
                 }
             });
 
@@ -3196,26 +3247,32 @@ export class LarkService {
         const fields = record.fields;
         if (!fields['Email']) return null;
 
-        const trangThai = String(fields['Trang Thai'] || '').toLowerCase();
+        const trangThai = String(fields['Trang Thai'] || fields['Trạng thái'] || '').toLowerCase();
         const isActive = trangThai !== 'da nghi' && trangThai !== 'đã nghỉ' && trangThai !== 'nghi viec';
 
         return {
             email: fields['Email'],
-            full_name: fields['HoTen'] || 'Unknown',
-            role: fields['Role'] || 'MEMBER',
-            team: fields['Team'] || 'None',
+            full_name: fields['HoTen'] || fields['Họ Tên'] || 'Unknown',
+            role: fields['Role'] || fields['Chức vụ'] || 'MEMBER',
+            team: fields['Team'] || fields['Phòng ban'] || 'None',
+            position: fields['Chức vụ'] || fields['Position'] || fields['Role'] || '',
             is_active: isActive,
         };
     }
 
-    mapToUserRoles(role: string, team: string): string[] {
+    mapToUserRoles(role: string, team: string, position?: string): string[] {
         const roles: string[] = [];
         const r = (role || '').toUpperCase();
+        const p = (position || '').toUpperCase();
+
+        const leaderKeywords = ['LEADER', 'LEAD', 'TRƯỞNG', 'QUẢN LÝ', 'TP '];
 
         if (r.includes('ADMIN')) {
             roles.push('ADMIN');
         } else if (r.includes('MANAGER')) {
             roles.push('MANAGER');
+        } else if (leaderKeywords.some(key => r.includes(key) || p.includes(key))) {
+            roles.push('LEADER');
         } else {
             roles.push('MEMBER');
         }
