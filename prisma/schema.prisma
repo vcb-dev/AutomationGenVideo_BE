@@ -581,6 +581,14 @@ model LarkTraffic {
   evidence_lemon8  String?
   evidence_zalo    String?
   evidence_twitter String?
+  channel_fb      String?
+  channel_ig      String?
+  channel_tiktok  String?
+  channel_yt      String?
+  channel_thread  String?
+  channel_lemon8  String?
+  channel_zalo    String?
+  channel_twitter String?
 
   @@index([month])
   @@index([team])

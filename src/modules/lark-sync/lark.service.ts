@@ -380,7 +380,7 @@ export class LarkService {
     }
 
     async submitTrafficReport(payload: any) {
-        const { email, name, traffic, platformEvidences, reportDate } = payload;
+        const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
         const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
@@ -575,6 +575,14 @@ export class LarkService {
                     evidence_lemon8: platformEvidences?.lemon8 ? JSON.stringify(platformEvidences.lemon8) : null,
                     evidence_zalo: platformEvidences?.zalo ? JSON.stringify(platformEvidences.zalo) : null,
                     evidence_twitter: platformEvidences?.twitter ? JSON.stringify(platformEvidences.twitter) : null,
+                    channel_fb: channels?.fb || null,
+                    channel_ig: channels?.ig || null,
+                    channel_tiktok: channels?.tiktok || null,
+                    channel_yt: channels?.yt || null,
+                    channel_thread: channels?.thread || null,
+                    channel_lemon8: channels?.lemon8 || null,
+                    channel_zalo: channels?.zalo || null,
+                    channel_twitter: channels?.twitter || null,
                 } as any
             });
             return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
