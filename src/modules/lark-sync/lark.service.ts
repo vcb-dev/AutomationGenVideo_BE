@@ -810,9 +810,21 @@ export class LarkService {
         }
     }
 
-    async getChannelData() {
+    async getChannelData(owner?: string, team?: string) {
+        const where: any = {
+            status: 'Đang hoạt động'
+        };
+
+        if (owner || team) {
+            where.OR = [
+                ...(owner ? [{ owner: { contains: owner, mode: 'insensitive' } }] : []),
+                ...(team ? [{ team_traffic: { contains: team, mode: 'insensitive' } }] : [])
+            ];
+        }
+
         return this.prisma.channel.findMany({
-            orderBy: { created_at: 'desc' }
+            where,
+            orderBy: { name: 'asc' }
         });
     }
 
