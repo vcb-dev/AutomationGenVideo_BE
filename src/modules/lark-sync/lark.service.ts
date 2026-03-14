@@ -380,8 +380,9 @@ export class LarkService {
     }
 
     async submitTrafficReport(payload: any) {
-        const { email, name, traffic, fileTokens } = payload;
-        const now = new Date();
+        const { email, name, traffic, platformEvidences, reportDate } = payload;
+        const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
+        const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
         
         // Lookup team - priority: User table > LarkPermission > LarkEmployee
@@ -566,6 +567,14 @@ export class LarkService {
                     total_traffic: BigInt(total),
                     is_confirmed: 'Pending',
                     evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
+                    evidence_fb: platformEvidences?.fb ? JSON.stringify(platformEvidences.fb) : null,
+                    evidence_ig: platformEvidences?.ig ? JSON.stringify(platformEvidences.ig) : null,
+                    evidence_tiktok: platformEvidences?.tiktok ? JSON.stringify(platformEvidences.tiktok) : null,
+                    evidence_yt: platformEvidences?.yt ? JSON.stringify(platformEvidences.yt) : null,
+                    evidence_thread: platformEvidences?.thread ? JSON.stringify(platformEvidences.thread) : null,
+                    evidence_lemon8: platformEvidences?.lemon8 ? JSON.stringify(platformEvidences.lemon8) : null,
+                    evidence_zalo: platformEvidences?.zalo ? JSON.stringify(platformEvidences.zalo) : null,
+                    evidence_twitter: platformEvidences?.twitter ? JSON.stringify(platformEvidences.twitter) : null,
                 } as any
             });
             return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
