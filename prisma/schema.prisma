@@ -573,6 +573,14 @@ model LarkTraffic {
   name            String?
   evidence_files  String?
   traffic_twitter BigInt?
+  evidence_fb      String?
+  evidence_ig      String?
+  evidence_tiktok  String?
+  evidence_yt      String?
+  evidence_thread  String?
+  evidence_lemon8  String?
+  evidence_zalo    String?
+  evidence_twitter String?
 
   @@index([month])
   @@index([team])
