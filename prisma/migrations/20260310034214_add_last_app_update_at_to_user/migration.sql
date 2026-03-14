@@ -23,7 +23,12 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'users' AND column_name = 'roles'
   ) THEN
+    -- Drop DEFAULT first (PostgreSQL cannot auto-cast default value to new enum type)
+    ALTER TABLE "users" ALTER COLUMN "roles" DROP DEFAULT;
+    -- Alter type (pre-migrate scripts have already mapped old values to ADMIN/MANAGER/MEMBER)
     ALTER TABLE "users" ALTER COLUMN "roles" TYPE "UserRole_new"[] USING ("roles"::text::"UserRole_new"[]);
+    -- Restore DEFAULT with new enum type
+    ALTER TABLE "users" ALTER COLUMN "roles" SET DEFAULT ARRAY[]::"UserRole_new"[];
   END IF;
 
   -- Only alter role_permissions if table already exists
