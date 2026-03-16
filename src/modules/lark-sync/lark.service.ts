@@ -819,6 +819,15 @@ export class LarkService {
                 return String(val);
             };
 
+            const extractEmail = (val: any): string | null => {
+                if (!val) return null;
+                if (Array.isArray(val) && val.length > 0) {
+                    return val[0].email || null;
+                }
+                if (typeof val === 'object') return val.email || null;
+                return null;
+            };
+
             for (const record of records) {
                 const fields = record.fields;
 
@@ -832,6 +841,7 @@ export class LarkService {
                     status: extractString(fields['Trạng thái hoạt động']) || '',
                     team_traffic: extractString(fields['Team Traffic']) || '',
                     owner: extractString(fields['NV traffic xây kênh']) || '',
+                    email: extractEmail(fields['NV traffic xây kênh']) || null,
                 };
 
                 await this.prisma.channel.upsert({
@@ -846,12 +856,14 @@ export class LarkService {
         }
     }
 
-    async getChannelData(owner?: string, team?: string) {
+    async getChannelData(owner?: string, team?: string, email?: string) {
         const where: any = {
-            status: 'Đang hoạt động'
+            status: { contains: 'Đang hoạt động', mode: 'insensitive' }
         };
 
-        if (owner || team) {
+        if (email) {
+            where.email = { equals: email, mode: 'insensitive' };
+        } else if (owner || team) {
             where.OR = [
                 ...(owner ? [{ owner: { contains: owner, mode: 'insensitive' } }] : []),
                 ...(team ? [{ team_traffic: { contains: team, mode: 'insensitive' } }] : [])

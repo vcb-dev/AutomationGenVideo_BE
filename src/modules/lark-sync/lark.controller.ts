@@ -266,9 +266,10 @@ export class LarkController {
     @ApiOperation({ summary: 'Get Channel data from Database' })
     async getChannel(
         @Query('owner') owner?: string,
-        @Query('team') team?: string
+        @Query('team') team?: string,
+        @Query('email') email?: string,
     ) {
-        return this.larkService.getChannelData(owner, team);
+        return this.larkService.getChannelData(owner, team, email);
     }
 
     @Post('sync-hr')
