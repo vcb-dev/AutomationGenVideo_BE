@@ -1302,12 +1302,28 @@ export class LarkService {
                 orderBy: { date: 'desc' },
             });
 
-            // Fetch all KPIs for the matching year/month if possible
-            const allKpiInDb = await this.prisma.larkKPI.findMany();
+            // --- OPTIMIZATION: Filter KPIs at the DB level instead of fetching all ---
+            const allKpiFormats = monthsInRange.flatMap(m => m.formats);
+            const startOfRange = monthsInRange[0] ? new Date(monthsInRange[0].year, monthsInRange[0].monthNum - 1, 1) : startOfDay;
+            const endOfRange = endOfDay;
 
-            // Filter KPIs that match ANY month in range
+            const allKpiInDb = await this.prisma.larkKPI.findMany({
+                where: {
+                    OR: [
+                        { month: { in: allKpiFormats } },
+                        {
+                            AND: [
+                                { month: null },
+                                { report_date: { gte: startOfRange, lte: endOfRange } }
+                            ]
+                        }
+                    ],
+                    state: { not: 'off' }
+                }
+            });
+
+            // Filter KPIs that match ANY month in range (Secondary JS filter for safety with complex digits)
             let kpiData = allKpiInDb.filter(k => {
-                if (k.state?.toLowerCase() === 'off') return false;
                 const mStr = (k.month || '').trim();
 
                 // If no month set on record, check report_date
@@ -1332,7 +1348,7 @@ export class LarkService {
                 });
             });
 
-            this.logger.log(`Filtered ${kpiData.length} KPIs for range [${startOfDay.toISOString()} - ${endOfDay.toISOString()}]. Months covered: ${monthsInRange.length}`);
+            this.logger.log(`[Optimization] Fetched ${allKpiInDb.length} KPIs from DB (filtered), ${kpiData.length} passed JS filter.`);
 
             // Fetch all employees to get positions
             const employees = await this.prisma.larkEmployee.findMany();
@@ -1350,7 +1366,9 @@ export class LarkService {
             });
 
             // Fetch all permissions for identifying requester in results
-            const permissions = await this.prisma.$queryRawUnsafe<any[]>('SELECT * FROM "lark_permissions"');
+            const permissions = await this.prisma.larkPermission.findMany({
+                select: { id: true, name: true, email: true, role: true, team: true }
+            });
 
             const permMap = new Map();
             permissions.forEach(p => {
@@ -1453,16 +1471,32 @@ export class LarkService {
 
                 const mergeUpdate = (existing: any, current: any) => {
                     const res = { ...existing };
-                    res.completed_day = (Number(res.completed_day) || 0) + (Number(current.completed_day) || 0);
+                    
+                    // Prioritize current record if it has the actual target date we are looking at
+                    // Otherwise, use Math.max to avoid overwriting progress with 0
+                    const currentRD = current.report_date ? new Date(current.report_date).toDateString() : null;
+                    const existingRD = existing.report_date ? new Date(existing.report_date).toDateString() : null;
+                    const targetRD = startOfDay.toDateString();
+
+                    if (currentRD === targetRD) {
+                        res.completed_day = Number(current.completed_day) || 0;
+                        res.report_date = current.report_date;
+                    } else if (existingRD !== targetRD) {
+                        res.completed_day = Math.max(Number(res.completed_day) || 0, Number(current.completed_day) || 0);
+                        if (!existing.report_date || (current.report_date && new Date(current.report_date) > new Date(existing.report_date))) {
+                            res.report_date = current.report_date;
+                        }
+                    }
+
+                    res.kpi_day = Math.max(Number(res.kpi_day) || 0, Number(current.kpi_day) || 0);
                     res.task_auto = (Number(res.task_auto) || 0) + (Number(current.task_auto) || 0);
                     res.task_new = (Number(res.task_new) || 0) + (Number(current.task_new) || 0);
-                    // For status-like fields, take the latest
-                    if (!existing.report_date || new Date(current.report_date) > new Date(existing.report_date)) {
+                    
+                    if (currentRD === targetRD || !res.kpi_status || res.kpi_status === 'N/A') {
                         res.kpi_status = current.kpi_status;
-                        res.report_date = current.report_date;
                         res.team = current.team || existing.team;
-                        res.kpi_day = current.kpi_day;
                     }
+                    
                     return res;
                 };
 
@@ -1544,11 +1578,23 @@ export class LarkService {
                     kpisForAggregation.set(personMonthKey, { ...kpi });
                 } else {
                     const existing = kpisForAggregation.get(personMonthKey);
-                    // SUM completed_day for the month total as records might be daily
-                    existing.completed_day = (Number(existing.completed_day) || 0) + (Number(kpi.completed_day) || 0);
-                    // Keep latest/max for other monthly stable fields
+                    const targetRD = startOfDay.toDateString();
+                    const currentRD = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
+                    const existingRD = existing.report_date ? new Date(existing.report_date).toDateString() : null;
+
+                    // If we have a record for the SPECIFIC day asked for, use it.
+                    // Otherwise keep the high-water mark (Math.max) for the month.
+                    if (currentRD === targetRD) {
+                        existing.completed_day = Number(kpi.completed_day) || 0;
+                        existing.report_date = kpi.report_date;
+                    } else if (existingRD !== targetRD) {
+                        existing.completed_day = Math.max(Number(existing.completed_day) || 0, Number(kpi.completed_day) || 0);
+                    }
+
+                    // For monthly fields, always keep the max/latest
                     existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
                     existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
+                    existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
                     
                     // Handle BigInt for traffic/revenue
                     const currentTraffic = BigInt(kpi.traffic_month || 0);
@@ -1556,7 +1602,10 @@ export class LarkService {
                     const existingTraffic = BigInt(existing.traffic_month || 0);
                     const existingRevenue = BigInt(existing.revenue_month || 0);
                     
-                    if (currentTraffic > existingTraffic) existing.traffic_month = kpi.traffic_month;
+                    if (currentTraffic > existingTraffic) {
+                        existing.traffic_month = kpi.traffic_month;
+                        if (kpi.report_date) existing.report_date = kpi.report_date;
+                    }
                     if (currentRevenue > existingRevenue) existing.revenue_month = kpi.revenue_month;
                     
                     // Keep latest target strings
@@ -1565,11 +1614,8 @@ export class LarkService {
                 }
             });
 
-            // Fetch reports for the specific day
-            const dailyReports = await this.prisma.larkReport.findMany({
-                where: whereClause,
-                orderBy: { date: 'desc' },
-            });
+            // --- OPTIMIZATION: Reuse reports fetched at beginning instead of fetching again ---
+            const dailyReports = reports;
 
             // Map reports by name for fast lookup
             const reportsMap = new Map();
@@ -1743,6 +1789,7 @@ export class LarkService {
                 const isCurrentMonth = matchedMonth.monthNum === (new Date().getMonth() + 1) && matchedMonth.year === new Date().getFullYear();
                 const incrementalTraffic = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt bao nhiêu traffic cho video mới?']) || 0 : 0;
                 const incrementalRevenue = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0;
+                const isRange = filters?.timeType && !['today', 'yesterday'].includes(filters.timeType);
 
                 return {
                     id: kpi.id,
@@ -1760,8 +1807,9 @@ export class LarkService {
                     checklist,
                     answers: answersData,
                     videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
-                    dailyGoal: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
-                    done: (reportKpi && Number(reportKpi.completed_day) > Number(kpi.completed_day)) ? Number(reportKpi.completed_day) : Number(kpi.completed_day || 0),
+                    // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
+                    dailyGoal: (isRange ? (kpi.kpi_month || monthlyReportKpi?.kpi_month || 0) : (reportKpi?.kpi_day ?? (kpi.kpi_day || 0))),
+                    done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
@@ -3199,11 +3247,23 @@ export class LarkService {
             this.prisma.larkListTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
-                    // Note: team field in ListTask may be null (Lookup field type) - do NOT filter by team here
+                    status: { in: ['Done', 'Đã hoàn thành', 'Hoàn thành'] }
                 },
                 select: { id: true, content_type: true, employee_id: true, employee_name: true, employee_email: true, team: true }
             }),
             this.prisma.larkKPI.findMany({
+                where: {
+                    OR: [
+                        { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                        {
+                            AND: [
+                                { month: null },
+                                { report_date: { gte: start, lte: end } }
+                            ]
+                        }
+                    ],
+                    state: { not: 'off' }
+                },
                 orderBy: { report_date: 'desc' }
             }),
             this.prisma.user.findMany({
@@ -3318,17 +3378,34 @@ export class LarkService {
             // Keep the latest/best record for the range if duplicates exist
             if (empStats.has(key)) {
                 const existing = empStats.get(key)!;
+                // Use Math.max for all progress fields to avoid 0-overwrites
                 existing.videoCount = Math.max(existing.videoCount, videosVal);
                 existing.traffic = Math.max(existing.traffic, trafficVal);
                 existing.revenue = Math.max(existing.revenue, revenueVal);
+                
+                // If the selected range is just one day, we prefer that day's completed_day
+                const targetDStr = start.toDateString();
+                const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
+                if (start.getTime() === end.getTime() && kpiDStr === targetDStr) {
+                    // Update videoCount to daily count if specifically looking at one day
+                    existing.videoCount = Number(kpi.completed_day) || existing.videoCount;
+                }
             } else {
                 const user = email ? userMapByEmail.get(email) : null;
+                const targetDStr = start.toDateString();
+                const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
+                
+                // Use completed_day if single day selected, else completed_month
+                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr) 
+                    ? (Number(kpi.completed_day) || 0)
+                    : videosVal;
+
                 empStats.set(key, {
                     name: kpi.name || 'Unknown',
                     email: email || '',
                     empId: kpi.employee_id || 'unknown',
                     team: teamName,
-                    videoCount: videosVal,
+                    videoCount: effectiveVideoCount,
                     lineCounts: {},
                     traffic: trafficVal,
                     revenue: revenueVal,
