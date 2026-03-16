@@ -383,6 +383,20 @@ export class LarkService {
 
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
+        
+        // Time constraint: 17:00 - 18:00 (5 PM - 6 PM)
+        const nowServer = new Date();
+        const hour = nowServer.getHours();
+        
+        // Check if user is Admin/Manager to bypass constraint
+        const userRec = await this.prisma.user.findFirst({ where: { email } });
+        const roles = userRec?.roles || [];
+        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
+        
+        if (!isAdmin && (hour < 17 || hour >= 18)) {
+            throw new Error('Giờ báo cáo Traffic quy định từ 17:00 đến 18:00 hàng ngày. Vui lòng quay lại báo cáo trong khung giờ này.');
+        }
+
         const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
