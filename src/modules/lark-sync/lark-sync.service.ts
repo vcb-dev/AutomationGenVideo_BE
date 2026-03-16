@@ -1,11 +1,11 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
-export class LarkSyncService implements OnApplicationBootstrap {
+export class LarkSyncService {
     private readonly logger = new Logger(LarkSyncService.name);
 
     constructor(
@@ -14,23 +14,11 @@ export class LarkSyncService implements OnApplicationBootstrap {
     ) { }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Chạy 1 lần ngay khi ứng dụng khởi động
+    // Tự động chạy mỗi 3 tiếng (0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00)
     // ──────────────────────────────────────────────────────────────────────────
-    async onApplicationBootstrap() {
-        this.logger.log('🚀 Application started — running initial Lark sync...');
-        try {
-            await this.syncFromLark();
-        } catch (err) {
-            this.logger.error(`❌ Initial Lark sync failed: ${err.message}`);
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Tự động chạy mỗi 12 tiếng: 6:00 sáng và 18:00 tối (giờ Việt Nam)
-    // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 6,18 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 */3 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledSync() {
-        this.logger.log('⏰ Scheduled Lark sync triggered (every 12 hours)');
+        this.logger.log('⏰ Scheduled Lark HR sync triggered (every 3 hours)');
         try {
             const result = await this.syncFromLark();
             this.logger.log(

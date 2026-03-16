@@ -97,19 +97,12 @@ export class AuthService {
       throw new UnauthorizedException("User already exists");
     }
 
-    // Only allow EDITOR and CONTENT roles for Google signup
-    if (role !== "EDITOR" && role !== "CONTENT") {
-      throw new UnauthorizedException(
-        "Invalid role. Only EDITOR and CONTENT roles are allowed for Google signup.",
-      );
-    }
-
-    // Prepare user data
+    // Prepare user data - always assign MEMBER role for new users
     const userData: any = {
       email: googleUser.email,
       full_name: `${googleUser.firstName} ${googleUser.lastName}`.trim(),
       password: "", // Will be set to null by UsersService
-      roles: [role],
+      roles: ["MEMBER"],
     };
 
     // Auto-assign default manager for EDITOR and CONTENT roles
