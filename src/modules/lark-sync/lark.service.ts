@@ -1,4 +1,4 @@
-﻿
+
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -2091,6 +2091,9 @@ export class LarkService {
                         existing.date = r.date;
                         existing.status = r.status;
                         existing.avatar = r.avatar || existing.avatar;
+                        // Use latest qualitative data
+                        existing.checklist = r.checklist;
+                        existing.answers = r.answers;
                     }
                 }
             });
