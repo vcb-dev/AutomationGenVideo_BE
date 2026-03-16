@@ -1733,6 +1733,9 @@ export class LarkService {
 
             const channelMap = new Map();
             const regionalChannelCounts = { vn: 0, global: 0 };
+            let totalChannelsMatchingFilter = 0;
+            const currentTeamFilterRaw = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
+            const currentTeamFilter = currentTeamFilterRaw; 
 
             const getRegionInternal = (teamName: string) => {
                 const t = (teamName || '').toLowerCase();
@@ -1746,8 +1749,23 @@ export class LarkService {
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
                 }
 
-                const region = getRegionInternal(h.team_traffic || '');
-                regionalChannelCounts[region]++;
+                const teamNorm = (h.team_traffic || '').toLowerCase().trim();
+                let isMatch = false;
+                if (!currentTeamFilter) {
+                    isMatch = true;
+                } else if (currentTeamFilter === 'all global') {
+                    isMatch = getRegionInternal(teamNorm) === 'global';
+                } else if (currentTeamFilter === 'all vn') {
+                    isMatch = getRegionInternal(teamNorm) === 'vn';
+                } else {
+                    isMatch = teamNorm === currentTeamFilter || teamNorm.includes(currentTeamFilter) || currentTeamFilter.includes(teamNorm);
+                }
+
+                if (isMatch) {
+                    const region = getRegionInternal(h.team_traffic || '');
+                    regionalChannelCounts[region]++;
+                    totalChannelsMatchingFilter++;
+                }
             });
 
             const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
@@ -1795,22 +1813,39 @@ export class LarkService {
             // Count tasks per person and per region for summary cards
             const tasksPerPerson = new Map<string, number>();
             const taskVideosByGroup = { global: 0, vn: 0 };
+            let totalTasksMatchingFilter = 0;
             
             monthRangeTasks.forEach(task => {
-                const email = (task.employee_email || '').toLowerCase().trim();
-                const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                const personKey = email || nameKey;
-                
-                if (personKey) {
-                    tasksPerPerson.set(personKey, (tasksPerPerson.get(personKey) || 0) + 1);
-                }
-
                 let teamName = task.team;
                 if (!teamName || teamName.startsWith('opt')) {
+                    const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
                     teamName = nameToTeamMapLocal.get(nameKey) || 'Khác';
                 }
-                const region = getRegionInternal(teamName);
-                taskVideosByGroup[region]++;
+                const teamNorm = teamName.toLowerCase().trim();
+                let isMatch = false;
+                if (!currentTeamFilter) {
+                    isMatch = true;
+                } else if (currentTeamFilter === 'all global') {
+                    isMatch = getRegionInternal(teamNorm) === 'global';
+                } else if (currentTeamFilter === 'all vn') {
+                    isMatch = getRegionInternal(teamNorm) === 'vn';
+                } else {
+                    isMatch = teamNorm === currentTeamFilter || teamNorm.includes(currentTeamFilter) || currentTeamFilter.includes(teamNorm);
+                }
+
+                if (isMatch) {
+                    const email = (task.employee_email || '').toLowerCase().trim();
+                    const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const personKey = email || nameKey;
+                    
+                    if (personKey) {
+                        tasksPerPerson.set(personKey, (tasksPerPerson.get(personKey) || 0) + 1);
+                    }
+
+                    const region = getRegionInternal(teamName);
+                    taskVideosByGroup[region]++;
+                    totalTasksMatchingFilter++;
+                }
             });
 
             const reportKpiMapByEmail = new Map();
@@ -1950,7 +1985,8 @@ export class LarkService {
                 }
             });
 
-            const teamFilterNormalized = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
+            const teamFilterRaw = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
+            const teamFilterNormalized = (teamFilterRaw === 'all global' || teamFilterRaw === 'all vn') ? teamFilterRaw : teamFilterRaw;
 
             const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
                 const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
@@ -1987,11 +2023,19 @@ export class LarkService {
                 const effectiveTeam = report?.team || kpi.team || 'Khác';
                 const effectiveTeamNormalized = effectiveTeam.toLowerCase().trim();
 
-                // Relaxed team matching
-                const isMatchForRanking = !teamFilterNormalized ||
-                    effectiveTeamNormalized === teamFilterNormalized ||
-                    effectiveTeamNormalized.includes(teamFilterNormalized) ||
-                    teamFilterNormalized.includes(effectiveTeamNormalized);
+                // Relaxed team matching with support for special group filters
+                let isMatchForRanking = false;
+                if (!teamFilterNormalized) {
+                    isMatchForRanking = true;
+                } else if (teamFilterNormalized === 'all global') {
+                    isMatchForRanking = getRegionInternal(effectiveTeamNormalized) === 'global';
+                } else if (teamFilterNormalized === 'all vn') {
+                    isMatchForRanking = getRegionInternal(effectiveTeamNormalized) === 'vn';
+                } else {
+                    isMatchForRanking = effectiveTeamNormalized === teamFilterNormalized ||
+                        effectiveTeamNormalized.includes(teamFilterNormalized) ||
+                        teamFilterNormalized.includes(effectiveTeamNormalized);
+                }
 
                 const personPerm = permMap.get(nameKey);
                 const isSelf = filters?.requesterEmail && personPerm?.email &&
@@ -2176,13 +2220,13 @@ export class LarkService {
                 totalTrafficCompleted: 0,
                 totalRevenueTarget: 0,
                 totalRevenueCompleted: 0,
-                totalChannels: regionalChannelCounts.vn + regionalChannelCounts.global,
+                totalChannels: totalChannelsMatchingFilter,
                 totalReports: 0,
                 reportedCount: 0
             };
 
-            // Calculate summary aggregates from mapped results (which already handle summing for ranges)
-            allValidResults.forEach(r => {
+            // Calculate summary aggregates using only people matching the team filter (rankingList)
+            rankingList.forEach(r => {
                 const employee = employeeMap.get(r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '') || (r.employee_id ? employeeMap.get(r.employee_id.trim()) : null);
                 const empStatus = (employee?.status || '').toLowerCase().trim();
                 const isResigned = empStatus.includes('nghỉ') || empStatus === 'da nghi';
@@ -2192,17 +2236,14 @@ export class LarkService {
 
                 // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
                 aggregates.totalVideoTarget += Number(r.kpi_month || 0);
-                // aggregates.totalVideoCompleted = monthRangeTasks.length (Set below to include everyone)
                 aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
                 aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
-
-                // --- Channels are already counted globally from Channel table for the summary ---
             });
 
-            // Set total videos from task count to match DashboardAnalytics (includes unknown people)
-            aggregates.totalVideoCompleted = monthRangeTasks.length;
+            // Set total videos from filtered task count
+            aggregates.totalVideoCompleted = totalTasksMatchingFilter;
 
             // Count reports for today separately
             combinedResults.forEach(r => {
@@ -2262,8 +2303,8 @@ export class LarkService {
             const globalTotals = { videos: 0, traffic: 0, revenue: 0, channels: 0, videoTarget: 0, trafficTarget: 0, revenueTarget: 0 };
             const teamBreakdown = {};
 
-            // Calculate breakdowns based on the same range-filtered results used in the summary
-            allValidResults.forEach(r => {
+            // Calculate breakdowns based on the people matching the team filter (rankingList)
+            rankingList.forEach(r => {
                 const v = Number(r.completed_month || 0);
                 const t = Number(r.traffic_range || 0);
                 const re = Number(r.revenue_range || 0);
@@ -2272,7 +2313,7 @@ export class LarkService {
                 globalTotals.videos += v;
                 globalTotals.traffic += t;
                 globalTotals.revenue += re;
-                // globalTotals.channels is already set from Channel table direct count internally below
+                // globalTotals.channels will be set to aggregates.totalChannels after this loop
 
                 const team = r.team || 'Khác';
                 if (!teamBreakdown[team]) {
@@ -2285,7 +2326,8 @@ export class LarkService {
             });
 
             // Ensure global total matches the big summary card
-            globalTotals.videos = monthRangeTasks.length;
+            globalTotals.videos = totalTasksMatchingFilter;
+            globalTotals.channels = totalChannelsMatchingFilter;
 
             const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
                 team,
