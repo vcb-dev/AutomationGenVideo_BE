@@ -1,4 +1,4 @@
-
+﻿
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -82,7 +82,7 @@ export class LarkService {
         }, 3, 'getAccessToken');
     }
 
-    @Cron(CronExpression.EVERY_30_MINUTES)
+    @Cron('0 */3 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCron() {
         this.logger.log('Starting scheduled Lark data sync (KPI, Employees)...');
         try {
@@ -1957,7 +1957,12 @@ export class LarkService {
                     isAuthorizedForReport = isMatchForRanking || isSelf;
                 } else {
                     const myTeam = requesterTeam?.toLowerCase().trim();
-                    isAuthorizedForReport = (myTeam && effectiveTeamNormalized === myTeam) || isSelf;
+                    if (!myTeam) {
+                        // No team assigned: show all (unrestricted)
+                        isAuthorizedForReport = isMatchForRanking || isSelf;
+                    } else {
+                        isAuthorizedForReport = effectiveTeamNormalized === myTeam || isSelf;
+                    }
                 }
 
                 // Nếu không khớp cả 2 thì bỏ qua record này

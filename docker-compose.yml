@@ -1,6 +1,29 @@
 version: '3.8'
 
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: video_production_app
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - MEILISEARCH_HOST=http://meilisearch:7700
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      meilisearch:
+        condition: service_started
+      redis:
+        condition: service_started
+    volumes:
+      - ./storage:/app/storage
+
+  # Chỉ dùng khi chạy local (dev). Trên GCP dùng Cloud SQL thay thế.
   postgres:
     image: postgres:15-alpine
     container_name: video_production_db
@@ -18,6 +41,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    profiles:
+      - local
 
   meilisearch:
     image: getmeili/meilisearch:v1.7

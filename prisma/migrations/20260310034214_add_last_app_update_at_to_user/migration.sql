@@ -13,71 +13,93 @@
   - You are about to drop the `user_usage_stats` table. If the table is not empty, all the data it contains will be lost.
 
 */
--- AlterEnum
-BEGIN;
-CREATE TYPE "UserRole_new" AS ENUM ('ADMIN', 'MANAGER', 'MEMBER');
-ALTER TABLE "users" ALTER COLUMN "roles" TYPE "UserRole_new"[] USING ("roles"::text::"UserRole_new"[]);
-ALTER TABLE "role_permissions" ALTER COLUMN "role" TYPE "UserRole_new" USING ("role"::text::"UserRole_new");
-ALTER TYPE "UserRole" RENAME TO "UserRole_old";
-ALTER TYPE "UserRole_new" RENAME TO "UserRole";
-DROP TYPE "UserRole_old";
-COMMIT;
+-- AlterEnum (safe version: handles both fresh install and existing DB with manual migrations)
+DO $$
+BEGIN
+  CREATE TYPE "UserRole_new" AS ENUM ('ADMIN', 'MANAGER', 'MEMBER');
+
+  -- Only alter roles column if it already exists (was added via manual migration)
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'roles'
+  ) THEN
+    -- Drop DEFAULT first (PostgreSQL cannot auto-cast default value to new enum type)
+    ALTER TABLE "users" ALTER COLUMN "roles" DROP DEFAULT;
+    -- Alter type (pre-migrate scripts have already mapped old values to ADMIN/MANAGER/MEMBER)
+    ALTER TABLE "users" ALTER COLUMN "roles" TYPE "UserRole_new"[] USING ("roles"::text::"UserRole_new"[]);
+    -- Restore DEFAULT with new enum type
+    ALTER TABLE "users" ALTER COLUMN "roles" SET DEFAULT ARRAY[]::"UserRole_new"[];
+  END IF;
+
+  -- Only alter role_permissions if table already exists
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'role_permissions'
+  ) THEN
+    ALTER TABLE "role_permissions" ALTER COLUMN "role" TYPE "UserRole_new" USING ("role"::text::"UserRole_new");
+  END IF;
+
+  ALTER TYPE "UserRole" RENAME TO "UserRole_old";
+  ALTER TYPE "UserRole_new" RENAME TO "UserRole";
+  DROP TYPE "UserRole_old" CASCADE;
+END $$;
 
 -- DropForeignKey
-ALTER TABLE "duplicate_reviews" DROP CONSTRAINT "duplicate_reviews_new_video_id_fkey";
+ALTER TABLE "duplicate_reviews" DROP CONSTRAINT IF EXISTS "duplicate_reviews_new_video_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "duplicate_reviews" DROP CONSTRAINT "duplicate_reviews_reviewed_by_fkey";
+ALTER TABLE "duplicate_reviews" DROP CONSTRAINT IF EXISTS "duplicate_reviews_reviewed_by_fkey";
 
 -- DropForeignKey
-ALTER TABLE "duplicate_reviews" DROP CONSTRAINT "duplicate_reviews_suspected_duplicate_of_fkey";
+ALTER TABLE "duplicate_reviews" DROP CONSTRAINT IF EXISTS "duplicate_reviews_suspected_duplicate_of_fkey";
 
 -- DropForeignKey
-ALTER TABLE "user_activity_logs" DROP CONSTRAINT "user_activity_logs_user_id_fkey";
+ALTER TABLE "user_activity_logs" DROP CONSTRAINT IF EXISTS "user_activity_logs_user_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "user_rate_limits" DROP CONSTRAINT "user_rate_limits_user_id_fkey";
+ALTER TABLE "user_rate_limits" DROP CONSTRAINT IF EXISTS "user_rate_limits_user_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "user_usage_stats" DROP CONSTRAINT "user_usage_stats_user_id_fkey";
+ALTER TABLE "user_usage_stats" DROP CONSTRAINT IF EXISTS "user_usage_stats_user_id_fkey";
 
 -- DropIndex
-DROP INDEX "users_last_login_at_idx";
+DROP INDEX IF EXISTS "users_last_login_at_idx";
 
 -- DropIndex
-DROP INDEX "users_role_idx";
+DROP INDEX IF EXISTS "users_role_idx";
 
 -- AlterTable
 ALTER TABLE "tracked_channels" ADD COLUMN     "posts_count" INTEGER;
 
--- AlterTable
-ALTER TABLE "users" DROP COLUMN "last_activity_at",
-DROP COLUMN "last_login_at",
-DROP COLUMN "role",
-DROP COLUMN "total_action_count",
-DROP COLUMN "total_login_count",
-ADD COLUMN     "custom_permissions" TEXT[] DEFAULT ARRAY[]::TEXT[],
-ADD COLUMN     "lark_permissions" JSONB,
-ADD COLUMN     "last_app_update_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
-ADD COLUMN     "ma_pin" TEXT,
-ADD COLUMN     "roles" "UserRole"[] DEFAULT ARRAY[]::"UserRole"[],
-ADD COLUMN     "team" TEXT,
-ADD COLUMN     "team_leader_id" TEXT;
+-- AlterTable (safe: IF EXISTS for columns that may have been dropped by CASCADE)
+ALTER TABLE "users"
+  DROP COLUMN IF EXISTS "last_activity_at",
+  DROP COLUMN IF EXISTS "last_login_at",
+  DROP COLUMN IF EXISTS "role",
+  DROP COLUMN IF EXISTS "total_action_count",
+  DROP COLUMN IF EXISTS "total_login_count",
+  ADD COLUMN IF NOT EXISTS "custom_permissions" TEXT[] DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS "lark_permissions" JSONB,
+  ADD COLUMN IF NOT EXISTS "last_app_update_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS "ma_pin" TEXT,
+  ADD COLUMN IF NOT EXISTS "roles" "UserRole"[] DEFAULT ARRAY[]::"UserRole"[],
+  ADD COLUMN IF NOT EXISTS "team" TEXT,
+  ADD COLUMN IF NOT EXISTS "team_leader_id" TEXT;
 
 -- AlterTable
 ALTER TABLE "video_management_searchhistory" ADD COLUMN     "search_mode" VARCHAR(20) NOT NULL DEFAULT 'hashtag';
 
 -- DropTable
-DROP TABLE "duplicate_reviews";
+DROP TABLE IF EXISTS "duplicate_reviews";
 
 -- DropTable
-DROP TABLE "user_activity_logs";
+DROP TABLE IF EXISTS "user_activity_logs";
 
 -- DropTable
-DROP TABLE "user_rate_limits";
+DROP TABLE IF EXISTS "user_rate_limits";
 
 -- DropTable
-DROP TABLE "user_usage_stats";
+DROP TABLE IF EXISTS "user_usage_stats";
 
 -- CreateTable
 CREATE TABLE "role_permissions" (
