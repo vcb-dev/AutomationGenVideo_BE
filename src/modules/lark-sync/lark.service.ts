@@ -94,7 +94,7 @@ export class LarkService {
                 this.syncChannelData(),
                 this.syncListTaskData(),
                 // this.syncOutstandingData(), // User requested to disable sync for ReportOutstanding
-                this.syncTrafficData(),
+                // this.syncTrafficData(), // User requested to disable sync for LarkTraffic
             ]);
             this.logger.log('Scheduled Lark data sync completed successfully.');
         } catch (error) {
@@ -151,175 +151,13 @@ export class LarkService {
     }
 
     async syncReportData() {
-        try {
-            const records = await this.fetchLarkRecords();
-            this.logger.log(`Fetched ${records.length} records from Lark. Syncing to database...`);
-
-            // Migration: Update old labels
-            await this.prisma.$executeRawUnsafe(`UPDATE "report_outstanding" SET "content" = 'SẢN PHẨM WIN' WHERE "content" = 'VIDEO SẢN PHẨM WIN'`);
-
-            if (records.length > 0) {
-                this.logger.debug('First record fields keys:', Object.keys(records[0].fields));
-                this.logger.debug('First record fields:', JSON.stringify(records[0].fields, null, 2));
-            }
-
-            let syncedCount = 0;
-            for (const record of records) {
-                const reportData = this.mapRecordToReport(record);
-
-                // Skip garbage
-                if (!reportData.name || reportData.name === 'Unknown') {
-                    this.logger.debug(`Skipping garbage report record: ${record.record_id}`);
-                    continue;
-                }
-
-                await this.prisma.larkReport.upsert({
-                    where: { id: reportData.id },
-                    update: {
-                        email: reportData.email,
-                        name: reportData.name,
-                        employee: reportData.employee,
-                        role: reportData.role,
-                        team: reportData.team,
-                        date: reportData.date,
-                        answers: reportData.answers,
-                    },
-                    create: {
-                        id: reportData.id,
-                        email: reportData.email,
-                        name: reportData.name,
-                        employee: reportData.employee,
-                        role: reportData.role,
-                        team: reportData.team,
-                        date: reportData.date,
-                        answers: reportData.answers,
-                    },
-                });
-
-
-                syncedCount++;
-            }
-
-            this.logger.log(`Successfully synced ${syncedCount} records.`);
-        } catch (error) {
-            this.logger.error('Failed to sync report data', error);
-        }
+        this.logger.log('[LarkSync] syncReportData disabled - this table is now independent.');
+        return;
     }
 
     async syncTrafficData() {
-        const APP_TOKEN = this.KPI_BASE_ID;
-        const TABLE_ID = this.TRAFFIC_TABLE_ID;
-
-        try {
-            const token = await this.getAccessToken();
-            const config = { headers: { Authorization: `Bearer ${token}` } };
-            const records: any[] = [];
-            let pageToken = '';
-            let hasMore = true;
-
-            this.logger.log(`Fetching Traffic data from base: ${APP_TOKEN}, table: ${TABLE_ID}`);
-            while (hasMore) {
-                const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${TABLE_ID}/records?page_size=500${pageToken ? `&page_token=${pageToken}` : ''}`;
-                
-                const response = await firstValueFrom(this.httpService.get(url, config));
-                if (response.data.code !== 0) {
-                    throw new Error(`Failed to fetch traffic records: ${response.data.msg}`);
-                }
-
-                const data = response.data.data;
-                if (data.items) {
-                    records.push(...data.items);
-                }
-
-                hasMore = data.has_more;
-                pageToken = data.page_token;
-            }
-
-            this.logger.log(`Fetched ${records.length} traffic records from Lark. Syncing to database...`);
-
-            const cleanBigInt = (val: any): bigint | null => {
-                if (val === null || val === undefined) return null;
-                if (typeof val === 'number') return BigInt(Math.floor(val));
-                if (typeof val === 'string') {
-                    const clean = val.replace(/[^0-9.-]/g, '').split('.')[0];
-                    return clean ? BigInt(clean) : BigInt(0);
-                }
-                if (Array.isArray(val) && val.length > 0) return cleanBigInt(val[0]);
-                return null;
-            };
-
-            const extractString = (val: any): string | null => {
-                if (!val) return null;
-                if (typeof val === 'string') return val;
-                if (Array.isArray(val) && val.length > 0) {
-                    const first = val[0];
-                    return first.name || first.text || (typeof first === 'string' ? first : null);
-                }
-                if (typeof val === 'object') return val.name || val.text || null;
-                return String(val);
-            };
-
-            let syncedCount = 0;
-            for (const record of records) {
-                const fields = record.fields;
-
-                let date = null;
-                const dateVal = fields['Ngày'] || fields['Ngay'];
-                if (dateVal) {
-                    const numVal = Number(dateVal);
-                    if (!isNaN(numVal)) {
-                        date = new Date(numVal > 10000000000 ? numVal : (numVal > 30000 ? (numVal - 25569) * 86400 * 1000 : numVal * 1000));
-                    } else if (typeof dateVal === 'string') {
-                        date = new Date(dateVal);
-                    }
-                }
-
-                await this.prisma.larkTraffic.upsert({
-                    where: { id: record.record_id },
-                    update: {
-                        date: date,
-                        name: extractString(fields['HoTen'] || fields['Họ Tên']),
-                        email: extractString(fields['Email']),
-                        employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
-                        team: extractString(fields['Team']),
-                        month: extractString(fields['Tháng'] || fields['Thang']),
-                        traffic_fb: cleanBigInt(fields['Traffic FB']),
-                        traffic_ig: cleanBigInt(fields['Traffic IG']),
-                        traffic_lemon8: cleanBigInt(fields['Traffic Lemon 8']),
-                        traffic_thread: cleanBigInt(fields['Traffic Thread']),
-                        traffic_tiktok: cleanBigInt(fields['Traffic Tiktok']),
-                        traffic_yt: cleanBigInt(fields['Traffic YT']),
-                        traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
-                        total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
-                        is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
-                    } as any,
-                    create: {
-                        id: record.record_id,
-                        date: date,
-                        name: extractString(fields['HoTen'] || fields['Họ Tên']),
-                        email: extractString(fields['Email']),
-                        employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
-                        team: extractString(fields['Team']),
-                        month: extractString(fields['Tháng'] || fields['Thang']),
-                        traffic_fb: cleanBigInt(fields['Traffic FB']),
-                        traffic_ig: cleanBigInt(fields['Traffic IG']),
-                        traffic_lemon8: cleanBigInt(fields['Traffic Lemon 8']),
-                        traffic_thread: cleanBigInt(fields['Traffic Thread']),
-                        traffic_tiktok: cleanBigInt(fields['Traffic Tiktok']),
-                        traffic_yt: cleanBigInt(fields['Traffic YT']),
-                        traffic_zalo: cleanBigInt(fields['Traffic Zalo']),
-                        total_traffic: cleanBigInt(fields['Tổng Traffic'] || fields['Tong Traffic']),
-                        is_confirmed: extractString(fields['Xác nhận'] || fields['Xac nhan']),
-                    } as any,
-                });
-
-                syncedCount++;
-            }
-
-            this.logger.log(`Successfully synced ${syncedCount} traffic records.`);
-        } catch (error) {
-            this.logger.error('Failed to sync Traffic data', error);
-        }
+        this.logger.log('[LarkSync] syncTrafficData disabled - this table is now independent.');
+        return;
     }
 
     /**
@@ -443,9 +281,6 @@ export class LarkService {
         
         this.logger.debug(`Team resolved for ${email}: "${team}"`);
 
-        const token = await this.getAccessToken();
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/records`;
-
         const cleanBi = (v: any) => v ? parseInt(v) : 0;
         
         const fbLevel = cleanBi(traffic.fb);
@@ -458,127 +293,6 @@ export class LarkService {
         const twitterLevel = cleanBi(traffic.twitter);
         
         const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel + twitterLevel;
-
-        // Field types from Lark API:
-        // Type 1=Text, 2=Number, 3=Select, 5=DateTime, 11=User, 17=Attachment, 19=Link/Single-select, 20=Formula (READ-ONLY)
-        // DO NOT write to: type 11 (User needs Lark UID), type 20 (Formula - auto-calculated)
-        // NOTE: 'Tháng' is type 3 (Single Select) - we must ensure the option exists first
-        const larkFields: any = {
-            'HoTen': name,                  // type 1 - Text ✅
-            'Traffic Tiktok': tiktokLevel,  // type 2 - Number ✅
-            'Traffic FB': fbLevel,          // type 2 - Number ✅
-            'Traffic IG': igLevel,          // type 2 - Number ✅
-            'Traffic YT': ytLevel,          // type 2 - Number ✅
-            'Traffic Zalo': zaloLevel,      // type 2 - Number ✅
-            'Traffic Thread': threadLevel,  // type 2 - Number ✅
-            'Traffic Lemon 8': lemon8Level, // type 2 - Number ✅
-            'Traffic Twitter': twitterLevel,// type 2 - Number ✅
-            // 'Tổng Traffic' is type 20 (Formula) - Lark calculates it automatically, DO NOT write
-            'Ngày': now.getTime(),          // type 5 - DateTime (Unix ms) ✅
-        };
-
-        // Handle 'Tháng' (Single Select type 3) - create option if not exists, then set
-        try {
-            const thangFieldId = 'fldUuF47AJ';
-            const fieldsMetaUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields/${thangFieldId}`;
-            const tkn = await this.getAccessToken();
-            const metaResp = await firstValueFrom(
-                this.httpService.get(fieldsMetaUrl, { headers: { Authorization: `Bearer ${tkn}` } })
-            );
-            const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
-            const existingOptions: any[] = fieldDef?.property?.options || [];
-            if (!existingOptions.some((o: any) => o.name === monthString)) {
-                const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: monthString }];
-                await firstValueFrom(
-                    this.httpService.put(fieldsMetaUrl, {
-                        field_name: 'Tháng',
-                        type: 3,
-                        property: { options: newOptions }
-                    }, { headers: { Authorization: `Bearer ${tkn}` } })
-                );
-            }
-            larkFields['Tháng'] = monthString;
-        } catch (err) {
-            this.logger.warn(`Could not sync Tháng option: ${err.message}`);
-        }
-
-        // Handle 'Team' (Single Select type 3) - ensure option exists
-        if (team) {
-            try {
-                const teamFieldId = 'fldDPQRZfs';
-                const teamMetaUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields/${teamFieldId}`;
-                const tkn = await this.getAccessToken();
-                const metaResp = await firstValueFrom(
-                    this.httpService.get(teamMetaUrl, { headers: { Authorization: `Bearer ${tkn}` } })
-                );
-                const fieldDef = metaResp.data?.data?.field || metaResp.data?.data?.item || {};
-                const existingOptions: any[] = fieldDef?.property?.options || [];
-                if (!existingOptions.some((o: any) => o.name === team)) {
-                    const newOptions = [...existingOptions.map((o: any) => ({ id: o.id, name: o.name, color: o.color })), { name: team }];
-                    await firstValueFrom(
-                        this.httpService.put(teamMetaUrl, {
-                            field_name: 'Team',
-                            type: 3,
-                            property: { options: newOptions }
-                        }, { headers: { Authorization: `Bearer ${tkn}` } })
-                    );
-                }
-                larkFields['Team'] = team;
-            } catch (err) {
-                this.logger.warn(`Could not sync Team option: ${err.message}`);
-                larkFields['Team'] = team; // Try anyway
-            }
-        }
-
-        // Attach evidence file tokens if provided
-        if (fileTokens && fileTokens.length > 0) {
-            larkFields['Minh chứng'] = fileTokens.map((ft: string) => ({ file_token: ft }));
-        }
-
-        /*
-        try {
-            const response = await firstValueFrom(
-                this.httpService.post(url, { fields: larkFields }, {
-                    headers: { Authorization: `Bearer ${token}` }
-                })
-            );
-
-            if (response.data.code !== 0) {
-                this.logger.error(`Failed to post traffic to Lark. Code=${response.data.code} Msg=${response.data.msg}. Fields sent: ${JSON.stringify(larkFields)}`);
-                throw new Error(`Failed to post traffic to Lark: ${response.data.msg}`);
-            }
-
-            const recordId = response.data.data.record.record_id;
-
-            await this.prisma.larkTraffic.create({
-                data: {
-                    id: recordId,
-                    name: name,
-                    date: now,
-                    employee: name,
-                    team: team,
-                    month: monthString,
-                    traffic_fb: BigInt(fbLevel),
-                    traffic_ig: BigInt(igLevel),
-                    traffic_lemon8: BigInt(lemon8Level),
-                    traffic_thread: BigInt(threadLevel),
-                    traffic_tiktok: BigInt(tiktokLevel),
-                    traffic_yt: BigInt(ytLevel),
-                    traffic_zalo: BigInt(zaloLevel),
-                    traffic_twitter: BigInt(twitterLevel),
-                    total_traffic: BigInt(total),
-                    is_confirmed: 'Pending',
-                    evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
-                } as any
-            });
-
-            return { message: 'Traffic report submitted successfully', recordId };
-        } catch (error) {
-            const errMsg = error?.response?.data || error?.message || String(error);
-            this.logger.error('Error submitting traffic report. Detail:', JSON.stringify(errMsg));
-            throw new Error(`Could not submit traffic report: ${JSON.stringify(errMsg)}`);
-        }
-        */
 
         // Local only saving
         const localRecordId = `local_trf_${Date.now()}`;
@@ -629,85 +343,8 @@ export class LarkService {
     }
 
     async syncOutstandingData() {
-        try {
-            const baseId = this.REPORT_BASE_ID;
-            const tableId = this.OUTSTANDING_TABLE_ID;
-
-            this.logger.log(`Syncing Outstanding table: ${tableId} from base: ${baseId}`);
-            const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
-            this.logger.log(`Fetched ${records.length} records from Outstanding table.`);
-
-            const extractString = (val: any): string | null => {
-                if (!val) return null;
-                if (typeof val === 'string') return val;
-                if (Array.isArray(val) && val.length > 0) {
-                    const first = val[0];
-                    return first.name || first.text || (typeof first === 'string' ? first : null);
-                }
-                return String(val);
-            };
-
-            for (const record of records) {
-                const fields = record.fields;
-
-                const findField = (names: string[]) => {
-                    for (const name of names) {
-                        if (fields[name] !== undefined) return fields[name];
-                    }
-                    return null;
-                };
-
-                const data = {
-                    id: record.record_id,
-                    name: extractString(findField(['HoTen', 'Họ Tên'])),
-                    date: extractString(findField(['Ngày tháng', 'Ngày tháng'])),
-                    team: extractString(findField(['Team'])),
-                    role: extractString(findField(['Role', 'Chức danh'])),
-                    email: extractString(findField(['Email'])),
-                    category: extractString(findField(['Phân loại', 'Phân loại'])),
-                    content: extractString(findField(['Nội dung', 'Nội dung'])),
-                    status: extractString(findField(['Duyệt', 'Duyệt', 'Trang Thai', 'Trạng thái'])),
-                    approved_by: extractString(findField(['Người duyệt', 'Người Duyệt'])),
-                    approval_status: extractString(findField(['Duyệt', 'Duyệt'])),
-                    employee: fields['Nhân viên'] ? fields['Nhân viên'] : null,
-                    updated_at: new Date()
-                };
-
-                // Remove duplicate local unsynced record generated by python backend if it exists
-                if (data.email && data.date && data.category) {
-                    const matched = await (this.prisma as any).reportOutstanding.findFirst({
-                        where: {
-                            email: data.email,
-                            date: data.date,
-                            category: data.category,
-                            id: { startsWith: 'out_' }
-                        }
-                    });
-                    
-                    if (matched) {
-                        try {
-                            await (this.prisma as any).reportOutstanding.delete({
-                                where: { id: matched.id }
-                            });
-                        } catch (err) {
-                            this.logger.warn(`Could not delete duplicate out_ record: ${matched.id}`);
-                        }
-                    }
-                }
-
-                await (this.prisma as any).reportOutstanding.upsert({
-                    where: { id: data.id },
-                    update: data,
-                    create: {
-                        ...data,
-                        created_at: new Date()
-                    }
-                });
-            }
-            this.logger.log(`Synced ${records.length} outstanding records.`);
-        } catch (error) {
-            this.logger.error('Failed to sync outstanding data', error);
-        }
+        this.logger.log('[LarkSync] syncOutstandingData disabled - this table is now independent.');
+        return;
     }
 
     async fetchLarkRecords() {
@@ -3192,33 +2829,7 @@ export class LarkService {
             }
         };
 
-        // ── 1. lark_reports (REPORT_BASE_ID / REPORT_TABLE_ID) ──────────────────
-        try {
-            const filter = oldEmail
-                ? `CurrentValue.[Email] = "${oldEmail}"`
-                : `CurrentValue.[Họ và Tên] = "${oldName}"`;
-            const records = await this.searchLarkRecords(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, filter);
-            const updates: Record<string, string> = {};
-            if (nameChanged) updates['Họ và Tên'] = newName;
-            if (teamChanged) updates['Team'] = newTeam;
-            if (emailChanged) updates['Email'] = newEmail;
-            await batchUpdate(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, buildBatchPayload(records, updates));
-            this.logger.log(`[LarkSync] lark_reports: updated ${records.length} records`);
-        } catch (e) { this.logger.warn(`[LarkSync] lark_reports sync failed: ${e.message}`); }
-
-        // ── 2. report_outstanding (REPORT_BASE_ID / OUTSTANDING_TABLE_ID) ───────
-        try {
-            const filter = oldEmail
-                ? `CurrentValue.[Email] = "${oldEmail}"`
-                : `CurrentValue.[Họ và Tên] = "${oldName}"`;
-            const records = await this.searchLarkRecords(this.REPORT_BASE_ID, this.OUTSTANDING_TABLE_ID, filter);
-            const updates: Record<string, string> = {};
-            if (nameChanged) updates['Họ và Tên'] = newName;
-            if (teamChanged) updates['Team'] = newTeam;
-            if (emailChanged) updates['Email'] = newEmail;
-            await batchUpdate(this.REPORT_BASE_ID, this.OUTSTANDING_TABLE_ID, buildBatchPayload(records, updates));
-            this.logger.log(`[LarkSync] outstanding: updated ${records.length} records`);
-        } catch (e) { this.logger.warn(`[LarkSync] outstanding sync failed: ${e.message}`); }
+        // Sections 1 & 2 (lark_reports, report_outstanding) decoupled from Lark Suite
 
         // ── 3. lark_kpi (KPI_BASE_ID / KPI_TABLE_ID) ────────────────────────────
         try {
@@ -3345,52 +2956,8 @@ export class LarkService {
     }
 
     async pushAllOutstandingData() {
-        try {
-            const outstandings = await (this.prisma as any).reportOutstanding.findMany();
-            this.logger.log(`Pushing ${outstandings.length} outstanding records to Lark Suite...`);
-
-            const fieldMap = await this.getOutstandingFieldMap();
-            let pushedCount = 0;
-            const skippedIds = [];
-            const failedItems = [];
-
-            for (const item of outstandings) {
-                // Only push if it has a valid Lark record ID
-                if (item.id && !item.id.startsWith('out_')) {
-                    const fields: any = {};
-                    fields[fieldMap.approval_status] = item.approval_status || 'Chưa Duyệt';
-                    fields[fieldMap.status] = item.status || 'Chưa Duyệt';
-                    if (item.approved_by) {
-                        fields[fieldMap.approved_by] = item.approved_by;
-                    }
-
-                    try {
-                        await this.updateBitableRecord(
-                            this.REPORT_BASE_ID,
-                            this.OUTSTANDING_TABLE_ID,
-                            item.id,
-                            fields
-                        );
-                        pushedCount++;
-                    } catch (err) {
-                        failedItems.push({ id: item.id, error: err.message });
-                    }
-                } else {
-                    skippedIds.push(item.id);
-                }
-            }
-
-            return {
-                success: true,
-                pushedCount,
-                total: outstandings.length,
-                skippedCount: skippedIds.length,
-                failedCount: failedItems.length
-            };
-        } catch (error) {
-            this.logger.error('Failed to push all outstanding data to Lark', error);
-            throw error;
-        }
+        this.logger.log('[LarkSync] pushAllOutstandingData disabled - this table is now independent.');
+        return { success: true, message: 'Pushing to Lark disabled.' };
     }
 
     async syncHRData() {
