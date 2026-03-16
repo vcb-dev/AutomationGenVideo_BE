@@ -630,10 +630,12 @@ model Channel {
   status       String?
   team_traffic String?
   owner        String?
+  email        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
   @@index([owner])
+  @@index([email])
   @@index([team_traffic])
   @@map("huyk_channels")
 }
