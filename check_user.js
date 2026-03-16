@@ -3,14 +3,13 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-  const user = await prisma.user.findFirst({
-    where: {
-      email: 'haducbaoviet0911@gmail.com'
-    }
+  const kpis = await prisma.larkKPI.findMany({
+    where: { month: 'T3', name: { contains: 'Toán' } }
   });
-  console.log(JSON.stringify(user, null, 2));
+  
+  kpis.forEach(k => {
+    console.log(`- name: ${k.name}, day: ${k.completed_day}, month_done: ${k.completed_month}, kpi_m: ${k.kpi_month}, progress: ${k.kpi_progress_month}, rd: ${k.report_date}`);
+  });
 }
 
-main()
-  .catch(e => console.error(e))
-  .finally(async () => await prisma.$disconnect());
+main().catch(console.error).finally(() => prisma.$disconnect());
