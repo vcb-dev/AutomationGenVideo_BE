@@ -279,6 +279,7 @@ export class LarkService {
                     update: {
                         date: date,
                         name: extractString(fields['HoTen'] || fields['Họ Tên']),
+                        email: extractString(fields['Email']),
                         employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
                         team: extractString(fields['Team']),
                         month: extractString(fields['Tháng'] || fields['Thang']),
@@ -296,6 +297,7 @@ export class LarkService {
                         id: record.record_id,
                         date: date,
                         name: extractString(fields['HoTen'] || fields['Họ Tên']),
+                        email: extractString(fields['Email']),
                         employee: fields['Nhân viên'] || fields['Nhan vien'] || null,
                         team: extractString(fields['Team']),
                         month: extractString(fields['Tháng'] || fields['Thang']),
@@ -551,6 +553,7 @@ export class LarkService {
             await this.prisma.larkTraffic.create({
                 data: {
                     id: localRecordId,
+                    email: email,
                     name: name,
                     date: now,
                     employee: name,

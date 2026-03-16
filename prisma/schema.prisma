@@ -575,6 +575,7 @@ model LarkTraffic {
   is_confirmed    String?
   created_at      DateTime  @default(now())
   updated_at      DateTime  @updatedAt
+  email           String?
   name            String?
   evidence_files  String?
   traffic_twitter BigInt?
@@ -597,6 +598,7 @@ model LarkTraffic {
 
   @@index([month])
   @@index([team])
+  @@index([email])
   @@map("lark_traffic")
 }
 
