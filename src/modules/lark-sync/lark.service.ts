@@ -397,6 +397,25 @@ export class LarkService {
             throw new Error('Giờ báo cáo Traffic quy định từ 17:00 đến 18:00 hàng ngày. Vui lòng quay lại báo cáo trong khung giờ này.');
         }
 
+        // 0. Check if already reported today (only for non-admins)
+        if (!isAdmin) {
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            
+            const alreadyReported = await (this.prisma.larkTraffic as any).findFirst({
+                where: {
+                    email: email,
+                    date: {
+                        gte: todayStart
+                    }
+                }
+            });
+            
+            if (alreadyReported) {
+                throw new Error('Bạn đã gửi báo cáo Traffic ngày hôm nay rồi.');
+            }
+        }
+
         const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
