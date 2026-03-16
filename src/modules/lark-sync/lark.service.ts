@@ -1781,25 +1781,14 @@ export class LarkService {
             const monthRangeStart = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1, 0, 0, 0, 0);
             const monthRangeEnd = new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999);
 
-            const [monthlyReportKpis, monthRangeTasks] = await Promise.all([
-                (this.prisma as any).larkReportKPI.findMany({
-                    where: {
-                        report_date: {
-                            gte: monthRangeStart,
-                            lte: monthRangeEnd,
-                        }
+            const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
+                where: {
+                    report_date: {
+                        gte: monthRangeStart,
+                        lte: monthRangeEnd,
                     }
-                }),
-                this.prisma.larkListTask.findMany({
-                    where: {
-                        date: {
-                            gte: monthRangeStart,
-                            lte: monthRangeEnd
-                        }
-                    },
-                    select: { team: true, employee_name: true, employee_email: true }
-                })
-            ]);
+                }
+            });
 
             // Build helper map for team resolution (same as DashboardAnalytics)
             const nameToTeamMapLocal = new Map<string, string>();
@@ -1810,58 +1799,44 @@ export class LarkService {
                 }
             });
 
-            // Count tasks per person and per region for summary cards
-            const tasksPerPerson = new Map<string, number>();
+            // Video completions are now sourced from KPI reports instead of ListTask to honor user request
             const taskVideosByGroup = { global: 0, vn: 0 };
-            let totalTasksMatchingFilter = 0;
-            
-            monthRangeTasks.forEach(task => {
-                let teamName = task.team;
-                if (!teamName || teamName.startsWith('opt')) {
-                    const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                    teamName = nameToTeamMapLocal.get(nameKey) || 'Khác';
-                }
-                const teamNorm = teamName.toLowerCase().trim();
-                let isMatch = false;
-                if (!currentTeamFilter) {
-                    isMatch = true;
-                } else if (currentTeamFilter === 'all global') {
-                    isMatch = getRegionInternal(teamNorm) === 'global';
-                } else if (currentTeamFilter === 'all vn') {
-                    isMatch = getRegionInternal(teamNorm) === 'vn';
-                } else {
-                    isMatch = teamNorm === currentTeamFilter || teamNorm.includes(currentTeamFilter) || currentTeamFilter.includes(teamNorm);
-                }
-
-                if (isMatch) {
-                    const email = (task.employee_email || '').toLowerCase().trim();
-                    const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
-                    const personKey = email || nameKey;
-                    
-                    if (personKey) {
-                        tasksPerPerson.set(personKey, (tasksPerPerson.get(personKey) || 0) + 1);
-                    }
-
-                    const region = getRegionInternal(teamName);
-                    taskVideosByGroup[region]++;
-                    totalTasksMatchingFilter++;
-                }
-            });
 
             const reportKpiMapByEmail = new Map();
             const reportKpiMapByName = new Map();
             const monthlyKpiMapByEmail = new Map();
             const monthlyKpiMapByName = new Map();
 
-            // Daily map (for report status on specific day)
+            // Daily map (for report status on specific day) - Modified to AGGREGATE completed_day values
             dailyReportKpis.forEach(rk => {
                 const date = new Date(rk.report_date || (rk as any).date);
                 const timeKey = `${date.getMonth() + 1}_${date.getFullYear()}`;
                 const emailKey = rk.email?.toLowerCase().trim();
                 const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
 
-                if (emailKey) reportKpiMapByEmail.set(`${emailKey}_${timeKey}`, rk);
-                if (nameKey) reportKpiMapByName.set(`${nameKey}_${timeKey}`, rk);
+                const mergeUpdate = (existing: any, current: any) => {
+                    const res = { ...existing };
+                    res.completed_day = (Number(res.completed_day) || 0) + (Number(current.completed_day) || 0);
+                    res.task_auto = (Number(res.task_auto) || 0) + (Number(current.task_auto) || 0);
+                    res.task_new = (Number(res.task_new) || 0) + (Number(current.task_new) || 0);
+                    // For status-like fields, take the latest
+                    if (!existing.report_date || new Date(current.report_date) > new Date(existing.report_date)) {
+                        res.kpi_status = current.kpi_status;
+                        res.report_date = current.report_date;
+                        res.team = current.team || existing.team;
+                        res.kpi_day = current.kpi_day;
+                    }
+                    return res;
+                };
+
+                if (emailKey) {
+                    const key = `${emailKey}_${timeKey}`;
+                    reportKpiMapByEmail.set(key, reportKpiMapByEmail.has(key) ? mergeUpdate(reportKpiMapByEmail.get(key), rk) : { ...rk });
+                }
+                if (nameKey) {
+                    const key = `${nameKey}_${timeKey}`;
+                    reportKpiMapByName.set(key, reportKpiMapByName.has(key) ? mergeUpdate(reportKpiMapByName.get(key), rk) : { ...rk });
+                }
             });
 
             // Monthly map (latest in month for Summary)
@@ -1913,7 +1888,10 @@ export class LarkService {
                 kpiYear = matchedMonth.year;
 
                 const personKey = trimmedEmpId || nameKey || kpi.id;
-                const personMonthKey = `${personKey}_${kpiMonth}_${kpiYear}`;
+                
+                // --- FIX: Use column 'month' (T1, T2...) for aggregation keys ---
+                const mStrNormalized = (kpi.month || '').trim().toUpperCase();
+                const personMonthKey = `${personKey}_${mStrNormalized}`;
 
                 if (nameKey) {
                     nameToPersonKey.set(nameKey, personKey);
@@ -1925,8 +1903,28 @@ export class LarkService {
                     }
                 }
 
-                if (!kpisForAggregation.has(personMonthKey) || (kpi.completed_month || 0) > (kpisForAggregation.get(personMonthKey).completed_month || 0)) {
-                    kpisForAggregation.set(personMonthKey, kpi);
+                if (!kpisForAggregation.has(personMonthKey)) {
+                    kpisForAggregation.set(personMonthKey, { ...kpi });
+                } else {
+                    const existing = kpisForAggregation.get(personMonthKey);
+                    // SUM completed_day for the month total as records might be daily
+                    existing.completed_day = (Number(existing.completed_day) || 0) + (Number(kpi.completed_day) || 0);
+                    // Keep latest/max for other monthly stable fields
+                    existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
+                    existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
+                    
+                    // Handle BigInt for traffic/revenue
+                    const currentTraffic = BigInt(kpi.traffic_month || 0);
+                    const currentRevenue = BigInt(kpi.revenue_month || 0);
+                    const existingTraffic = BigInt(existing.traffic_month || 0);
+                    const existingRevenue = BigInt(existing.revenue_month || 0);
+                    
+                    if (currentTraffic > existingTraffic) existing.traffic_month = kpi.traffic_month;
+                    if (currentRevenue > existingRevenue) existing.revenue_month = kpi.revenue_month;
+                    
+                    // Keep latest target strings
+                    if (kpi.target_traffic_month) existing.target_traffic_month = kpi.target_traffic_month;
+                    if (kpi.target_revenue_month) existing.target_revenue_month = kpi.target_revenue_month;
                 }
             });
 
@@ -2126,11 +2124,11 @@ export class LarkService {
                     answers: answersData,
                     videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
                     dailyGoal: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
-                    done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                    done: (reportKpi && Number(reportKpi.completed_day) > Number(kpi.completed_day)) ? Number(reportKpi.completed_day) : Number(kpi.completed_day || 0),
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
                     completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                    completed_month: tasksPerPerson.get(personKey) || (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
+                    completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
                     // Stable monthly traffic/revenue for the Summary Cards:
                     traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
                     revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
@@ -2157,7 +2155,9 @@ export class LarkService {
             // --- NEW: Group by Person to aggregate stats across months if viewing range ---
             const groupedResults = new Map();
             allResults.filter(r => r !== null).forEach(r => {
-                // Use a normalized name as primary key to prevent duplicate cards for the same person
+                // Use a normalized name + month as primary key to prevent duplicate cards for the same person
+                // But wait, the goal of groupedResults is to sum UP multiple records if they fall into the same VIEWING range
+                // If viewing a month, we want one card per person.
                 const key = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || r.employee_id || r.personKey;
 
                 if (!groupedResults.has(key)) {
@@ -2225,6 +2225,10 @@ export class LarkService {
                 reportedCount: 0
             };
 
+            // Reset group videos to sum from KPI results
+            taskVideosByGroup.global = 0;
+            taskVideosByGroup.vn = 0;
+
             // Calculate summary aggregates using only people matching the team filter (rankingList)
             rankingList.forEach(r => {
                 const employee = employeeMap.get(r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '') || (r.employee_id ? employeeMap.get(r.employee_id.trim()) : null);
@@ -2234,16 +2238,19 @@ export class LarkService {
                 if (isResigned) return;
                 if (!r.name || r.name.toLowerCase() === 'unknown') return;
 
+                const videoDone = Number(r.done || 0);
+                const region = getRegionInternal(r.team || '');
+
                 // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
                 aggregates.totalVideoTarget += Number(r.kpi_month || 0);
+                aggregates.totalVideoCompleted += videoDone;
                 aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
                 aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
-            });
 
-            // Set total videos from filtered task count
-            aggregates.totalVideoCompleted = totalTasksMatchingFilter;
+                taskVideosByGroup[region] += videoDone;
+            });
 
             // Count reports for today separately
             combinedResults.forEach(r => {
@@ -2326,7 +2333,7 @@ export class LarkService {
             });
 
             // Ensure global total matches the big summary card
-            globalTotals.videos = totalTasksMatchingFilter;
+            globalTotals.videos = aggregates.totalVideoCompleted;
             globalTotals.channels = totalChannelsMatchingFilter;
 
             const teamContributions = Object.entries(teamBreakdown).map(([team, stats]: [string, any]) => ({
@@ -3870,15 +3877,17 @@ export class LarkService {
             }
         });
 
-        const totalVideosInRange = tasks.length;
+        const totalVideosInRange = Array.from(empStats.values()).reduce((a, b) => a + Number(b.videoCount), 0);
+        const totalTrafficInRange = Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.traffic, 0));
+        const totalRevenueInRange = Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.revenue, 0));
 
         return {
             chartData,
             summary: {
                 totalVideos: totalVideosInRange,
-                prevVideos: prevTasksCount,
-                totalTraffic: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.traffic, 0)),
-                totalRevenue: Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.revenue, 0))
+                prevVideos: prevTasksCount, // Note: Previous period comparison still uses tasks for now
+                totalTraffic: totalTrafficInRange,
+                totalRevenue: totalRevenueInRange
             },
             regionalStats: {
                 vn: formatRegion(regionalStats.vn),
