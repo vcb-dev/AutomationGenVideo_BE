@@ -1550,7 +1550,7 @@ export class LarkService {
                 
                 // --- FIX: Use column 'month' (T1, T2...) for aggregation keys ---
                 const mStrNormalized = (kpi.month || '').trim().toUpperCase();
-                const personMonthKey = `${personKey}_${mStrNormalized}`;
+                const personMonthKey = `${personKey}_T${kpiMonth}_${kpiYear}`;
 
                 if (nameKey) {
                     nameToPersonKey.set(nameKey, personKey);
@@ -1796,7 +1796,8 @@ export class LarkService {
                     answers: answersData,
                     videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
                     // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
-                    dailyGoal: (isRange ? (kpi.kpi_month || monthlyReportKpi?.kpi_month || 0) : (reportKpi?.kpi_day ?? (kpi.kpi_day || 0))),
+                    // Force daily goal to always show the PER-DAY target, not monthly total
+                    dailyGoal: (reportKpi?.kpi_day ?? (kpi.kpi_day || 0)),
                     done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
                     kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
                     kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
@@ -1838,18 +1839,23 @@ export class LarkService {
                 } else {
                     const existing = groupedResults.get(key);
                     // Sum numeric metrics
+                    // Sum numeric RESULTS
                     existing.done += r.done;
                     existing.videoCount += r.videoCount;
-                    existing.kpi_day += r.kpi_day;
-                    existing.kpi_month += r.kpi_month;
-                    existing.completed_day += r.completed_day;
-                    existing.completed_month += r.completed_month;
                     existing.traffic_range += r.traffic_range;
                     existing.revenue_range += r.revenue_range;
+                    existing.completed_day += r.completed_day;
+                    existing.completed_month += r.completed_month;
                     existing.traffic_month += r.traffic_month;
                     existing.revenue_month += r.revenue_month;
-                    existing.trafficTarget += r.trafficTarget;
-                    existing.revenueTarget += r.revenueTarget;
+
+                    // TARGETS: Use latest or max, DO NOT SUM
+                    existing.kpi_day = Math.max(existing.kpi_day, r.kpi_day);
+                    existing.kpi_month = Math.max(existing.kpi_month, r.kpi_month);
+                    existing.trafficTarget = Math.max(existing.trafficTarget, r.trafficTarget);
+                    existing.revenueTarget = Math.max(existing.revenueTarget, r.revenueTarget);
+                    existing.dailyGoal = r.dailyGoal; // Take latest from the group
+
                     existing.channelCount = Math.max(existing.channelCount, r.channelCount);
                     // Keep metadata from latest record (assuming allResults is somewhat chronological or month-indexed)
                     if (r.date && (!existing.date || new Date(r.date) > new Date(existing.date))) {
