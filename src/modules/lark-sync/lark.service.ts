@@ -1388,7 +1388,7 @@ export class LarkService {
             employees.forEach(emp => {
                 if (emp.employee_id) employeeMap.set(emp.employee_id.trim(), emp);
                 if (emp.name) {
-                    const nameKey = emp.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    const nameKey = emp.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, emp);
                 }
             });
@@ -1396,7 +1396,7 @@ export class LarkService {
             const permMap = new Map();
             permissions.forEach(p => {
                 if (p.name) {
-                    const nameKey = p.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    const nameKey = p.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     permMap.set(nameKey, p);
                 }
                 if (p.email) permMap.set(p.email.toLowerCase().trim(), p);
@@ -1437,7 +1437,7 @@ export class LarkService {
             allKpiInDb.forEach(k => {
                 const rawName = k.name;
                 if (!rawName) return;
-                const nameKey = rawName.toLowerCase().trim().replace(/\s+/g, ' ');
+                const nameKey = rawName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                 if (k.team && !k.team.startsWith('opt')) {
                     nameToTeamMapLocal.set(nameKey, k.team);
                 }
@@ -1456,7 +1456,7 @@ export class LarkService {
                 const date = new Date(rk.report_date || (rk as any).date);
                 const timeKey = `${date.getMonth() + 1}_${date.getFullYear()}`;
                 const emailKey = rk.email?.toLowerCase().trim();
-                const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+                const nameKey = rk.name ? rk.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
 
                 const mergeUpdate = (existing: any, current: any) => {
                     const res = { ...existing };
@@ -1615,10 +1615,11 @@ export class LarkService {
             // Map reports by name for fast lookup
             const reportsMap = new Map();
             dailyReports.forEach(r => {
-                if (r.name) {
-                    const nameKey = r.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
-                    const existing = reportsMap.get(nameKey);
+                let nameKey = r.name ? r.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
+                const emailKey = r.email?.toLowerCase().trim();
 
+                if (nameKey) {
+                    const existing = reportsMap.get(nameKey);
                     if (existing) {
                         // Aggregate numeric answers
                         if (existing.answers && r.answers) {
@@ -1637,8 +1638,16 @@ export class LarkService {
                         // Clone to avoid mutation of findMany result
                         reportsMap.set(nameKey, { ...r });
                     }
+                }
+                
+                if (emailKey) {
+                    if (!reportsMap.has(emailKey)) {
+                        reportsMap.set(emailKey, nameKey ? reportsMap.get(nameKey) : { ...r });
+                    }
+                }
 
-                    const personKey = nameToPersonKey.get(nameKey) || nameKey;
+                if (nameKey || emailKey) {
+                    const personKey = nameKey ? (nameToPersonKey.get(nameKey) || nameKey) : emailKey;
                     const reportMonthNum = (r.date ? new Date(r.date) : new Date()).getMonth() + 1;
                     const reportYear = (r.date ? new Date(r.date) : new Date()).getFullYear();
                     const personMonthKey = `${personKey}_${reportMonthNum}_${reportYear}`;
@@ -1646,8 +1655,8 @@ export class LarkService {
                     if (!kpisForAggregation.has(personMonthKey)) {
                         kpisForAggregation.set(personMonthKey, {
                             id: `report_${r.id}`,
-                            employee_id: personKey !== nameKey ? personKey : null,
-                            name: r.name,
+                            employee_id: (nameKey && nameToPersonKey.get(nameKey)) ? nameToPersonKey.get(nameKey) : null,
+                            name: r.name || r.email,
                             team: r.team || 'Khác',
                             kpi_day: 0,
                             kpi_month: 0,
@@ -1665,14 +1674,15 @@ export class LarkService {
             const teamFilterNormalized = (teamFilterRaw === 'all global' || teamFilterRaw === 'all vn') ? teamFilterRaw : teamFilterRaw;
 
             const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
-                const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
 
                 // Final guard: Skip records with no effective name in dashboard
                 if (!nameKey || nameKey === 'unknown') {
                     return null;
                 }
 
-                const report = reportsMap.get(nameKey);
+                const emailKey = kpi.email?.toLowerCase().trim();
+                const report = (nameKey ? reportsMap.get(nameKey) : null) || (emailKey ? reportsMap.get(emailKey) : null);
 
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
                 const trimmedEmpId = kpi.employee_id?.trim();
