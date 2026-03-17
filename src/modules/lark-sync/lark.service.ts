@@ -1295,7 +1295,7 @@ export class LarkService {
             const isRangeFilter = filters?.team === 'All Global' || filters?.team === 'All VN';
             const dbTeamFilter = enforcedTeam || (filters?.team && filters.team !== 'All' && !isRangeFilter ? filters.team : null);
 
-            const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis] = await Promise.all([
+            const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb] = await Promise.all([
                 // 1. Fetch reports with filters
                 this.prisma.larkReport.findMany({
                     where: {
@@ -1351,6 +1351,12 @@ export class LarkService {
                             lte: new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999),
                         },
                         ...(dbTeamFilter ? { team: dbTeamFilter } : {})
+                    }
+                }),
+                // 8. Fetch Traffic reports for current day range
+                this.prisma.larkTraffic.findMany({
+                    where: {
+                        date: { gte: startOfDay, lte: endOfDay }
                     }
                 })
             ]);
@@ -1409,6 +1415,8 @@ export class LarkService {
             };
 
             const channelMap = new Map();
+            const channelEmailSet = new Set();
+            const channelNameSet = new Set();
             const regionalChannelCounts = { vn: 0, global: 0 };
             let totalChannelsMatchingFilter = 0;
             const currentTeamFilter = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
@@ -1417,6 +1425,12 @@ export class LarkService {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
+                    
+                    const normalizedOwner = h.owner.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
+                    channelNameSet.add(normalizedOwner);
+                }
+                if (h.email) {
+                    channelEmailSet.add(h.email.toLowerCase().trim());
                 }
                 const teamNorm = (h.team_traffic || '').toLowerCase().trim();
                 let isMatch = false;
@@ -1429,6 +1443,17 @@ export class LarkService {
                     const region = getRegionInternal(h.team_traffic || '');
                     regionalChannelCounts[region]++;
                     totalChannelsMatchingFilter++;
+                }
+            });
+
+            // Help track who reported traffic today
+            const trafficMapByEmail = new Map();
+            const trafficMapByName = new Map();
+            allTrafficInDb.forEach(t => {
+                if (t.email) trafficMapByEmail.set(t.email.toLowerCase().trim(), t);
+                if (t.name) {
+                    const nameKey = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
+                    trafficMapByName.set(nameKey, t);
                 }
             });
 
@@ -1796,6 +1821,28 @@ export class LarkService {
                 const incrementalRevenue = isCurrentMonth && answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0;
                 const isRange = filters?.timeType && !['today', 'yesterday'].includes(filters.timeType);
 
+                const personEmail = report?.email || reportKpi?.email || personPerm?.email;
+                const normalizedEmail = personEmail?.toLowerCase().trim();
+                const needsTraffic = (normalizedEmail && channelEmailSet.has(normalizedEmail)) || channelNameSet.has(nameKey);
+                const hasTraffic = (normalizedEmail && trafficMapByEmail.has(normalizedEmail)) || trafficMapByName.has(nameKey);
+                
+                let effectiveStatus = 'CHƯA BÁO CÁO';
+                const baseReported = !!(report || reportKpi);
+                
+                if (baseReported) {
+                    if (needsTraffic) {
+                        // If they build channels, they MUST also report traffic to be marked as reported
+                        effectiveStatus = hasTraffic ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO';
+                    } else {
+                        effectiveStatus = 'ĐÚNG HẠN';
+                    }
+                } else if (hasTraffic && needsTraffic) {
+                    // Even if no work report, if they reported traffic and that's their main task, maybe mark something?
+                    // User requested that if they HAVEN'T reported traffic, it's "CHƯA BÁO CÁO".
+                    // If they ONLY reported traffic, we'll keep it as "CHƯA BÁO CÁO" which is safe since they likely need to do the checklist too.
+                    effectiveStatus = 'CHƯA BÁO CÁO';
+                }
+
                 return {
                     id: kpi.id,
                     employee_id: trimmedEmpId,
@@ -1803,11 +1850,11 @@ export class LarkService {
                     name: kpi.name,
                     position: position,
                     role: personPerm?.role || null,
-                    email: report?.email || reportKpi?.email || null,
+                    email: personEmail || null,
                     team: effectiveTeam,
                     avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                     tag: kpi.tag || kpi.name || null,
-                    status: report ? 'ĐÚNG HẠN' : (reportKpi ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO'),
+                    status: effectiveStatus,
                     date: report?.date || reportKpi?.report_date || null,
                     checklist,
                     answers: answersData,
