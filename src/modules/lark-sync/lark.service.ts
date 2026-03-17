@@ -1031,6 +1031,7 @@ export class LarkService {
             return key.toLowerCase()
                 .normalize('NFD')
                 .replace(/[\u0300-\u036f]/g, '') // Remove accents
+                .replace(/đ/g, 'd') // Handle Vietnamese 'đ'
                 .replace(/\?/g, '') // Remove mangled question marks
                 .replace(/\s+/g, '') // Remove spaces
                 .trim();
@@ -1503,7 +1504,7 @@ export class LarkService {
                 const date = new Date(rk.report_date || (rk as any).date);
                 const timeKey = `${date.getMonth() + 1}_${date.getFullYear()}`;
                 const emailKey = rk.email?.toLowerCase().trim();
-                const nameKey = rk.name ? rk.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+                const nameKey = rk.name ? rk.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
 
                 if (emailKey) {
                     const key = `${emailKey}_${timeKey}`;
@@ -1530,7 +1531,7 @@ export class LarkService {
             const nameToPersonKey = new Map();
 
             kpiData.forEach(kpi => {
-                const nameKey = kpi.name ? kpi.name.toLowerCase().trim().replace(/\s+/g, ' ') : null;
+                const nameKey = kpi.name ? kpi.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
                 const teamKey = kpi.team?.toLowerCase().trim() || '';
                 const trimmedEmpId = kpi.employee_id?.trim();
 
@@ -1582,7 +1583,13 @@ export class LarkService {
                     // For monthly fields, always keep the max/latest
                     existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
                     existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
-                    existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
+                    
+                    if (currentRD === targetRD) {
+                        existing.kpi_day = Number(kpi.kpi_day) || 0;
+                        (existing as any).hasExactDayKpi = true;
+                    } else if (!(existing as any).hasExactDayKpi) {
+                        existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
+                    }
                     
                     // Handle BigInt for traffic/revenue
                     const currentTraffic = BigInt(kpi.traffic_month || 0);
@@ -1609,7 +1616,7 @@ export class LarkService {
             const reportsMap = new Map();
             dailyReports.forEach(r => {
                 if (r.name) {
-                    const nameKey = r.name.toLowerCase().trim().replace(/\s+/g, ' ');
+                    const nameKey = r.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     const existing = reportsMap.get(nameKey);
 
                     if (existing) {
@@ -1832,7 +1839,7 @@ export class LarkService {
                 // Use a normalized name + month as primary key to prevent duplicate cards for the same person
                 // But wait, the goal of groupedResults is to sum UP multiple records if they fall into the same VIEWING range
                 // If viewing a month, we want one card per person.
-                const key = r.name?.toLowerCase().trim().replace(/\s+/g, ' ') || r.employee_id || r.personKey;
+                const key = r.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || r.employee_id || r.personKey;
 
                 if (!groupedResults.has(key)) {
                     groupedResults.set(key, { ...r });
@@ -1850,11 +1857,19 @@ export class LarkService {
                     existing.revenue_month += r.revenue_month;
 
                     // TARGETS: Use latest or max, DO NOT SUM
-                    existing.kpi_day = Math.max(existing.kpi_day, r.kpi_day);
+                    // If we have an exact day match in one of the records, prioritize its kpi_day
+                    if ((r as any).hasExactDayKpi) {
+                        existing.kpi_day = r.kpi_day;
+                        existing.dailyGoal = r.dailyGoal;
+                        (existing as any).hasExactDayKpi = true;
+                    } else if (!(existing as any).hasExactDayKpi) {
+                        existing.kpi_day = Math.max(existing.kpi_day, r.kpi_day);
+                        existing.dailyGoal = (r.dailyGoal > 0) ? r.dailyGoal : existing.dailyGoal;
+                    }
+                    
                     existing.kpi_month = Math.max(existing.kpi_month, r.kpi_month);
                     existing.trafficTarget = Math.max(existing.trafficTarget, r.trafficTarget);
                     existing.revenueTarget = Math.max(existing.revenueTarget, r.revenueTarget);
-                    existing.dailyGoal = r.dailyGoal; // Take latest from the group
 
                     existing.channelCount = Math.max(existing.channelCount, r.channelCount);
                     // Keep metadata from latest record (assuming allResults is somewhat chronological or month-indexed)
