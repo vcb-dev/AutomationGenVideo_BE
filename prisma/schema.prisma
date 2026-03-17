@@ -497,6 +497,7 @@ model LarkReport {
   @@index([date])
   @@index([email])
   @@index([name])
+  @@index([team])
   @@map("lark_reports")
 }
 
@@ -515,6 +516,8 @@ model LarkEmployee {
   updated_at    DateTime  @updatedAt
 
   @@index([name])
+  @@index([team])
+  @@index([status])
   @@map("lark_employees")
 }
 
@@ -655,6 +658,7 @@ model LarkPermission {
 
   @@index([email])
   @@index([name])
+  @@index([team])
   @@map("lark_permissions")
 }
 
@@ -895,6 +899,7 @@ model LarkReportKPI {
   @@index([report_date])
   @@index([email])
   @@index([name])
+  @@index([team])
   @@map("lark_report_kpi")
 }
 

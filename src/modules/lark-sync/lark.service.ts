@@ -1255,22 +1255,16 @@ export class LarkService {
                 endOfDay.setHours(23, 59, 59, 999);
             }
 
-            whereClause.OR = [
-                {
-                    date: {
-                        gte: startOfDay,
-                        lte: endOfDay,
-                    }
-                }
-            ];
-
-            if (filters?.requesterEmail) {
-                whereClause.OR.push({
-                    email: { equals: filters.requesterEmail, mode: 'insensitive' }
-                });
-            }
+            whereClause.date = {
+                gte: startOfDay,
+                lte: endOfDay,
+            };
 
             let kpiMonthFallback = false;
+
+            // If a specific requester is provided, we don't need to fetch ALL their historical reports here.
+            // If we want to ensure they always see their today card, the current date filter already covers it.
+            // If they didn't report today, their card will still appear if they have a KPI record for this month.
 
             // 1. Identify all month/year pairs in the selected range
             const monthsInRange: { monthNum: number; year: number; formats: string[] }[] = [];
@@ -1296,31 +1290,69 @@ export class LarkService {
                 }
             }
 
-            // Fetch reports (unfiltered by team initially to allow cross-team detection)
-            const reports = await this.prisma.larkReport.findMany({
-                where: whereClause,
-                orderBy: { date: 'desc' },
-            });
+            // --- OPTIMIZATION: Push team filters to DB for all users, not just restricted ones ---
+            const isRangeFilter = filters?.team === 'All Global' || filters?.team === 'All VN';
+            const dbTeamFilter = enforcedTeam || (filters?.team && filters.team !== 'All' && !isRangeFilter ? filters.team : null);
 
-            // --- OPTIMIZATION: Filter KPIs at the DB level instead of fetching all ---
-            const allKpiFormats = monthsInRange.flatMap(m => m.formats);
-            const startOfRange = monthsInRange[0] ? new Date(monthsInRange[0].year, monthsInRange[0].monthNum - 1, 1) : startOfDay;
-            const endOfRange = endOfDay;
-
-            const allKpiInDb = await this.prisma.larkKPI.findMany({
-                where: {
-                    OR: [
-                        { month: { in: allKpiFormats } },
-                        {
-                            AND: [
-                                { month: null },
-                                { report_date: { gte: startOfRange, lte: endOfRange } }
-                            ]
-                        }
-                    ],
-                    state: { not: 'off' }
-                }
-            });
+            const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis] = await Promise.all([
+                // 1. Fetch reports with filters
+                this.prisma.larkReport.findMany({
+                    where: {
+                        ...whereClause,
+                        ...(dbTeamFilter ? { team: dbTeamFilter } : {})
+                    },
+                    orderBy: { date: 'desc' },
+                }),
+                // 2. Fetch KPIs with filters
+                this.prisma.larkKPI.findMany({
+                    where: {
+                        OR: [
+                            { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                            {
+                                AND: [
+                                    { month: null },
+                                    { report_date: { gte: monthsInRange[0] ? new Date(monthsInRange[0].year, monthsInRange[0].monthNum - 1, 1) : startOfDay, lte: endOfDay } }
+                                ]
+                            }
+                        ],
+                        state: { not: 'off' },
+                        ...(dbTeamFilter ? { team: dbTeamFilter } : {})
+                    }
+                }),
+                // 3. Fetch employees (Filtered if possible)
+                this.prisma.larkEmployee.findMany({
+                    where: dbTeamFilter ? { team: dbTeamFilter } : {}
+                }),
+                // 4. Fetch permissions (Filtered if possible)
+                this.prisma.larkPermission.findMany({
+                    select: { id: true, name: true, email: true, role: true, team: true },
+                    where: dbTeamFilter ? { team: dbTeamFilter } : {}
+                }),
+                // 5. Fetch channels
+                this.prisma.channel.findMany({
+                    where: { 
+                        status: 'Đang hoạt động',
+                        ...(dbTeamFilter ? { team_traffic: dbTeamFilter } : {})
+                    }
+                }),
+                // 6. Daily Report KPIs
+                (this.prisma as any).larkReportKPI.findMany({
+                    where: {
+                        report_date: { gte: startOfDay, lte: endOfDay },
+                        ...(dbTeamFilter ? { team: dbTeamFilter } : {})
+                    }
+                }),
+                // 7. Monthly Report KPIs
+                (this.prisma as any).larkReportKPI.findMany({
+                    where: {
+                        report_date: {
+                            gte: new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1, 0, 0, 0, 0),
+                            lte: new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999),
+                        },
+                        ...(dbTeamFilter ? { team: dbTeamFilter } : {})
+                    }
+                })
+            ]);
 
             // Filter KPIs that match ANY month in range (Secondary JS filter for safety with complex digits)
             let kpiData = allKpiInDb.filter(k => {
@@ -1348,26 +1380,16 @@ export class LarkService {
                 });
             });
 
-            this.logger.log(`[Optimization] Fetched ${allKpiInDb.length} KPIs from DB (filtered), ${kpiData.length} passed JS filter.`);
+            this.logger.debug(`[Optimization] Parallel fetch completed. Reports: ${reports.length}, KPIs: ${kpiData.length}`);
 
-            // Fetch all employees to get positions
-            const employees = await this.prisma.larkEmployee.findMany();
+            // Restore Map helpers and region logic
             const employeeMap = new Map();
             employees.forEach(emp => {
-                if (emp.employee_id) {
-                    employeeMap.set(emp.employee_id.trim(), emp);
-                }
+                if (emp.employee_id) employeeMap.set(emp.employee_id.trim(), emp);
                 if (emp.name) {
                     const nameKey = emp.name.toLowerCase().trim().replace(/\s+/g, ' ');
-                    if (!employeeMap.has(nameKey)) {
-                        employeeMap.set(nameKey, emp);
-                    }
+                    if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, emp);
                 }
-            });
-
-            // Fetch all permissions for identifying requester in results
-            const permissions = await this.prisma.larkPermission.findMany({
-                select: { id: true, name: true, email: true, role: true, team: true }
             });
 
             const permMap = new Map();
@@ -1376,21 +1398,8 @@ export class LarkService {
                     const nameKey = p.name.toLowerCase().trim().replace(/\s+/g, ' ');
                     permMap.set(nameKey, p);
                 }
-                if (p.email) {
-                    permMap.set(p.email.toLowerCase().trim(), p);
-                }
+                if (p.email) permMap.set(p.email.toLowerCase().trim(), p);
             });
-
-            // Fetch all Channels to count per user
-            const allChannelsInDb = await this.prisma.channel.findMany({
-                where: { status: 'Đang hoạt động' }
-            });
-
-            const channelMap = new Map();
-            const regionalChannelCounts = { vn: 0, global: 0 };
-            let totalChannelsMatchingFilter = 0;
-            const currentTeamFilterRaw = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
-            const currentTeamFilter = currentTeamFilterRaw; 
 
             const getRegionInternal = (teamName: string) => {
                 const t = (teamName || '').toLowerCase();
@@ -1398,23 +1407,22 @@ export class LarkService {
                 return 'vn';
             };
 
+            const channelMap = new Map();
+            const regionalChannelCounts = { vn: 0, global: 0 };
+            let totalChannelsMatchingFilter = 0;
+            const currentTeamFilter = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
+
             allChannelsInDb.forEach(h => {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
                 }
-
                 const teamNorm = (h.team_traffic || '').toLowerCase().trim();
                 let isMatch = false;
-                if (!currentTeamFilter) {
-                    isMatch = true;
-                } else if (currentTeamFilter === 'all global') {
-                    isMatch = getRegionInternal(teamNorm) === 'global';
-                } else if (currentTeamFilter === 'all vn') {
-                    isMatch = getRegionInternal(teamNorm) === 'vn';
-                } else {
-                    isMatch = teamNorm === currentTeamFilter || teamNorm.includes(currentTeamFilter) || currentTeamFilter.includes(teamNorm);
-                }
+                if (!currentTeamFilter) isMatch = true;
+                else if (currentTeamFilter === 'all global') isMatch = getRegionInternal(teamNorm) === 'global';
+                else if (currentTeamFilter === 'all vn') isMatch = getRegionInternal(teamNorm) === 'vn';
+                else isMatch = teamNorm === currentTeamFilter || teamNorm.includes(currentTeamFilter) || currentTeamFilter.includes(teamNorm);
 
                 if (isMatch) {
                     const region = getRegionInternal(h.team_traffic || '');
@@ -1423,33 +1431,13 @@ export class LarkService {
                 }
             });
 
-            const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
-                where: {
-                    report_date: {
-                        gte: startOfDay,
-                        lte: endOfDay,
-                    }
-                }
-            });
-
-            // --- FIX: Fetch records for the ENTIRE month range to ensure Summary cards stay monthly ---
-            const monthRangeStart = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1, 0, 0, 0, 0);
-            const monthRangeEnd = new Date(endOfDay.getFullYear(), endOfDay.getMonth() + 1, 0, 23, 59, 59, 999);
-
-            const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
-                where: {
-                    report_date: {
-                        gte: monthRangeStart,
-                        lte: monthRangeEnd,
-                    }
-                }
-            });
-
             // Build helper map for team resolution (same as DashboardAnalytics)
             const nameToTeamMapLocal = new Map<string, string>();
             allKpiInDb.forEach(k => {
-                const nameKey = k.name?.toLowerCase().trim().replace(/\s+/g, ' ');
-                if (nameKey && k.team && !k.team.startsWith('opt')) {
+                const rawName = k.name;
+                if (!rawName) return;
+                const nameKey = rawName.toLowerCase().trim().replace(/\s+/g, ' ');
+                if (k.team && !k.team.startsWith('opt')) {
                     nameToTeamMapLocal.set(nameKey, k.team);
                 }
             });
@@ -2374,37 +2362,38 @@ export class LarkService {
             const endOfToday = new Date(today.setHours(23, 59, 59, 999));
 
             let targetMonthNum = new Date().getMonth() + 1;
-            const allKpiInDb = await this.prisma.larkKPI.findMany();
-
-            const getKpisForMonth = (mNum: number) => {
+            
+            const getKpisForMonth = async (mNum: number) => {
                 const formats = [`T${mNum}`, `Tháng ${mNum}`, `tháng ${mNum}`, `${mNum}`, mNum < 10 ? `0${mNum}` : `${mNum}`];
-                return allKpiInDb.filter(k => {
-                    if (!k.month) return false;
-                    if (k.state?.toLowerCase() === 'off') return false;
-                    const m = k.month.trim();
-                    if (formats.includes(m)) return true;
-                    const mDigits = m.match(/\d+/g);
-                    return mDigits ? mDigits.some(d => parseInt(d) === mNum) : false;
+                return await this.prisma.larkKPI.findMany({
+                    where: {
+                        month: { in: formats },
+                        state: { not: 'off' }
+                    }
                 });
             };
 
-            let allTeamKpis = getKpisForMonth(targetMonthNum);
+            let allTeamKpis = await getKpisForMonth(targetMonthNum);
 
             // Fallback: If no KPIs for current month, find most recent month with data
-            if (allTeamKpis.length === 0 && allKpiInDb.length > 0) {
-                // Find latest month present in DB
-                const sortedByDate = [...allKpiInDb].sort((a, b) => (b.created_at?.getTime() || 0) - (a.created_at?.getTime() || 0));
-                const latestKpi = sortedByDate[0];
-                const mDigits = latestKpi.month?.match(/\d+/);
-                if (mDigits) {
-                    targetMonthNum = parseInt(mDigits[0]);
-                    allTeamKpis = getKpisForMonth(targetMonthNum);
-                    this.logger.log(`No data for T${new Date().getMonth() + 1}, falling back to month ${targetMonthNum}`);
+            if (allTeamKpis.length === 0) {
+                const latestKpi = await this.prisma.larkKPI.findFirst({
+                    where: { month: { not: null } },
+                    orderBy: { created_at: 'desc' }
+                });
+                
+                if (latestKpi && latestKpi.month) {
+                    const mDigits = latestKpi.month.match(/\d+/);
+                    if (mDigits) {
+                        targetMonthNum = parseInt(mDigits[0]);
+                        allTeamKpis = await getKpisForMonth(targetMonthNum);
+                        this.logger.log(`No data for T${new Date().getMonth() + 1}, falling back to month ${targetMonthNum}`);
+                    }
                 }
             }
 
             const targetMonth = `T${targetMonthNum}`;
-            const monthFormats = [`T${targetMonthNum}`, `Tháng ${targetMonthNum}`, `${targetMonthNum}`];
+            const monthFormats = [`T${targetMonthNum}`, `Tháng ${targetMonthNum}`, `${targetMonthNum}`, targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`];
 
 
             const [todayReport, employee, userChannelCount] = await Promise.all([
