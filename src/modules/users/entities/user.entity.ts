@@ -1,9 +1,9 @@
-import { User } from "@prisma/client";
+import { UserRole } from "@prisma/client";
 import { ApiProperty } from "@nestjs/swagger";
 import { Exclude } from "class-transformer";
-import { UserRole } from "@prisma/client";
 
-export class UserEntity implements User {
+/** Dữ liệu user trả API (khớp bảng users / Prisma, không kèm quan hệ) */
+export class UserEntity {
   id: string;
 
   @ApiProperty()
@@ -16,16 +16,13 @@ export class UserEntity implements User {
   full_name: string;
 
   @ApiProperty({ required: false, nullable: true })
-  avatar: string | null;
+  image_url: string | null;
 
   @Exclude()
   google_id: string | null;
 
   @ApiProperty({ enum: UserRole, isArray: true })
   roles: UserRole[];
-
-  @ApiProperty({ required: false, nullable: true })
-  ma_pin: string | null;
 
   @ApiProperty({ required: false, nullable: true })
   team: string | null;
@@ -44,6 +41,24 @@ export class UserEntity implements User {
 
   @ApiProperty({ required: false, nullable: true })
   last_app_update_at: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  lark_employee_record_id: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  employee_id: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  employee_data: any | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  employee_position: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  employee_status: string | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  employee_date: Date | null;
 
   created_at: Date;
   updated_at: Date;

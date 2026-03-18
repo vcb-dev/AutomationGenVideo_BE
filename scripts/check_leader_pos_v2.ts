@@ -4,17 +4,18 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-    console.log('--- Checking Positions in lark_employees ---');
+    console.log('--- Checking Positions (users + Lark fields) ---');
     const leaders = ['Đỗ Thị Nga', 'Lệnh Ngọc Khánh'];
 
     for (const name of leaders) {
         console.log(`\nResults for: ${name}`);
-        const employee = await prisma.larkEmployee.findFirst({
+        const employee = await prisma.user.findFirst({
             where: {
-                name: { contains: name, mode: 'insensitive' }
-            }
+                full_name: { contains: name, mode: 'insensitive' },
+                lark_employee_record_id: { not: null },
+            },
         });
-        console.log('Employee Position:', employee?.position);
+        console.log('Employee Position:', employee?.employee_position);
         console.log('Employee Team:', employee?.team);
 
         // Check recent reports

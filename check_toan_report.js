@@ -20,9 +20,10 @@ async function check() {
   console.log(`Reports for ${email} on 2026-03-17:`);
   console.log(JSON.stringify(reports, null, 2));
   
-  const employees = await prisma.larkEmployee.findMany({
+  const employees = await prisma.user.findMany({
     where: { 
-      name: { contains: 'Nguyễn Toán', mode: 'insensitive' }
+      full_name: { contains: 'Nguyễn Toán', mode: 'insensitive' },
+      lark_employee_record_id: { not: null },
     }
   });
   console.log('\nEmployee Records (by name):');

@@ -78,7 +78,6 @@ async function main() {
         const fullName = rec['HoTen']?.trim() || rec['Nhân viên']?.trim() || email.split('@')[0];
         const larkRole = rec['Role']?.trim() || 'Member';
         const team = rec['Team']?.trim() || null;
-        const maPin = rec['MaPin']?.trim() || null;
         const status = rec['Trang Thai']?.trim() || 'ON';
         const permissions = parsePermissions(rec['Permissions']);
 
@@ -94,14 +93,13 @@ async function main() {
                     data: {
                         full_name: fullName,
                         roles: roles as any[],
-                        ma_pin: maPin,
                         team: team,
                         lark_permissions: permissions,
                         is_active: isActive,
                     },
                 });
                 updated++;
-                console.log(`📝 Updated: ${email.padEnd(40)} | Pin: ${(maPin || '-').padEnd(12)} | [${roles.join(', ')}] | Team: ${team || '-'}`);
+                console.log(`📝 Updated: ${email.padEnd(40)} | [${roles.join(', ')}] | Team: ${team || '-'}`);
             } else {
                 const hash = await bcrypt.hash('VCB@2024', 10);
                 await prisma.user.create({
@@ -110,14 +108,13 @@ async function main() {
                         password_hash: hash,
                         full_name: fullName,
                         roles: roles as any[],
-                        ma_pin: maPin,
                         team: team,
                         lark_permissions: permissions,
                         is_active: isActive,
                     },
                 });
                 created++;
-                console.log(`✅ Created: ${email.padEnd(40)} | Pin: ${(maPin || '-').padEnd(12)} | [${roles.join(', ')}] | Team: ${team || '-'}`);
+                console.log(`✅ Created: ${email.padEnd(40)} | [${roles.join(', ')}] | Team: ${team || '-'}`);
             }
         } catch (err: any) {
             console.log(`❌ Error (${email}): ${err.message}`);
