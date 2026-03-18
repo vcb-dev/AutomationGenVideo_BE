@@ -1272,14 +1272,8 @@ export class LarkService {
                 }
             }
 
-            // --- RESTRICTION LOGIC ---
-            // If the requester is not an Admin or Manager, force them to see only their team's data
+            // --- MODIFIED: Removed team enforcement for Members/Leaders to allow full transparency in rankings ---
             const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
-            let enforcedTeam = null;
-
-            if (!isInternalAdmin && requesterTeam) {
-                enforcedTeam = requesterTeam;
-            }
 
             // Fetch reports with optional filters
             const whereClause: any = {};
@@ -1342,7 +1336,7 @@ export class LarkService {
 
             // --- OPTIMIZATION: Push team filters to DB for all users, not just restricted ones ---
             const isRangeFilter = filters?.team === 'All Global' || filters?.team === 'All VN';
-            const dbTeamFilter = enforcedTeam || (filters?.team && filters.team !== 'All' && !isRangeFilter ? filters.team : null);
+            const dbTeamFilter = filters?.team && filters.team !== 'All' && !isRangeFilter ? filters.team : null;
 
             const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb] = await Promise.all([
                 // 1. Fetch reports with filters
@@ -1824,20 +1818,8 @@ export class LarkService {
                     personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
 
                 // 2. Logic cho Báo cáo (Reports) & Summary:
-                // - Admin/Manager xem được tất cả theo bộ lọc
-                // - Member/Leader chỉ xem được báo cáo của Team mình (kể cả khi đang ở BXH "All")
-                let isAuthorizedForReport = false;
-                if (isInternalAdmin) {
-                    isAuthorizedForReport = isMatchForRanking || isSelf;
-                } else {
-                    const myTeam = requesterTeam?.toLowerCase().trim();
-                    if (!myTeam) {
-                        // No team assigned: show all (unrestricted)
-                        isAuthorizedForReport = isMatchForRanking || isSelf;
-                    } else {
-                        isAuthorizedForReport = effectiveTeamNormalized === myTeam || isSelf;
-                    }
-                }
+                // - Đã cập nhật theo yêu cầu: Mọi role (Admin, Manager, Leader, Member) đều có thể xem tất cả theo bộ lọc
+                const isAuthorizedForReport = isMatchForRanking || isSelf;
 
                 // Nếu không khớp cả 2 thì bỏ qua record này
                 if (!isMatchForRanking && !isAuthorizedForReport) {
