@@ -2215,6 +2215,33 @@ export class LarkService {
             })
         ]);
 
+        // Process traffic evidence URLs to use proxy
+        if (traffic) {
+            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+            platforms.forEach(p => {
+                const key = `evidence_${p}`;
+                if (traffic[key]) {
+                    try {
+                        const data = JSON.parse(traffic[key]);
+                        if (Array.isArray(data)) {
+                            const processed = data.map(item => {
+                                if (typeof item === 'string') return this.convertDriveUrl(item);
+                                if (item && item.url) {
+                                    return { ...item, url: this.convertDriveUrl(item.url) };
+                                }
+                                return item;
+                            });
+                            traffic[key] = JSON.stringify(processed);
+                        } else {
+                            traffic[key] = this.convertDriveUrl(traffic[key]);
+                        }
+                    } catch (e) {
+                        traffic[key] = this.convertDriveUrl(traffic[key]);
+                    }
+                }
+            });
+        }
+
         return { report, traffic };
     }
 
