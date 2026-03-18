@@ -83,6 +83,84 @@ export class AiIntegrationController {
     );
   }
 
+  @Post('facebook/insights')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Analyze Facebook competitor channel (Gemini insights)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['url'],
+      properties: {
+        url: { type: 'string', example: 'https://www.facebook.com/yourpage' },
+        max_posts: { type: 'number', default: 30 },
+        force_method: { type: 'string', enum: ['auto', 'graph', 'apify'], default: 'apify' },
+        language: { type: 'string', default: 'vi' },
+      },
+    },
+  })
+  async analyzeFacebookCompetitor(@Body() body: any) {
+    const { url, max_posts, force_method, language } = body || {};
+    if (!url) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.analyzeFacebookCompetitor(
+      url,
+      max_posts ?? 30,
+      (force_method as any) || 'apify',
+      language || 'vi',
+    );
+  }
+
+  @Post('facebook/channel-metrics')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Compute Facebook channel metrics (viral posts, ads, charts)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['url'],
+      properties: {
+        url: { type: 'string', example: 'https://www.facebook.com/yourpage' },
+        max_posts: { type: 'number', default: 80 },
+        force_method: { type: 'string', enum: ['auto', 'graph', 'apify'], default: 'apify' },
+      },
+    },
+  })
+  async facebookChannelMetrics(@Body() body: any) {
+    const { url, max_posts, force_method } = body || {};
+    if (!url) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.facebookChannelMetrics(
+      url,
+      max_posts ?? 80,
+      (force_method as any) || 'apify',
+    );
+  }
+
+  @Post('channel/insights')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Generic channel insights (Gemini) for all platforms' })
+  async channelInsights(@Body() body: any) {
+    const { platform, username, url, max_posts, language } = body || {};
+    const user = username || url;
+    if (!platform || !user) {
+      throw new HttpException('platform and username/url are required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.channelInsights(platform, user, max_posts ?? 30, language || 'vi');
+  }
+
+  @Post('channel/metrics')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Generic channel metrics (no Gemini) for all platforms' })
+  async channelMetrics(@Body() body: any) {
+    const { platform, username, url, max_posts } = body || {};
+    const user = username || url;
+    if (!platform || !user) {
+      throw new HttpException('platform and username/url are required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.channelMetrics(platform, user, max_posts ?? 80);
+  }
+
   @Get('search/history')
   @ApiOperation({ summary: 'Get search history' })
   @ApiQuery({ name: 'platform', required: false, description: 'Filter by platform' })
