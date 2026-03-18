@@ -158,6 +158,15 @@ export class LarkController {
         return this.larkService.getUserActivityReports(filters);
     }
 
+    @Get('user-report-details')
+    @ApiOperation({ summary: 'Get details of a report for a specific user and date' })
+    async getUserReportDetails(
+        @Query('email') email: string,
+        @Query('date') date: string,
+    ) {
+        return this.larkService.getUserReportDetails(email, date);
+    }
+
     @Get('personal-history')
     @ApiOperation({ summary: 'Get historical KPI data for a specific user' })
     async getPersonalHistory(

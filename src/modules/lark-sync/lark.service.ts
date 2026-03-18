@@ -2191,6 +2191,33 @@ export class LarkService {
         }
     }
 
+    async getUserReportDetails(email: string, dateStr: string) {
+        const date = new Date(dateStr);
+        const startOfDay = new Date(date);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(date);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const [report, traffic] = await Promise.all([
+            this.prisma.larkReport.findFirst({
+                where: {
+                    email: email,
+                    date: { gte: startOfDay, lte: endOfDay }
+                },
+                orderBy: { created_at: 'desc' }
+            }),
+            this.prisma.larkTraffic.findFirst({
+                where: {
+                    email: email,
+                    date: { gte: startOfDay, lte: endOfDay }
+                },
+                orderBy: { created_at: 'desc' }
+            })
+        ]);
+
+        return { report, traffic };
+    }
+
     private convertDriveUrl(url: string | null | undefined): string | null {
         if (!url) return null;
         if (url.includes('drive.google.com')) {
