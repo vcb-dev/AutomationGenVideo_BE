@@ -230,6 +230,182 @@ export class AiIntegrationService {
 
   }
 
+  /**
+   * Analyze Facebook competitor channel (Gemini insights via AI Service)
+   */
+  async analyzeFacebookCompetitor(
+    url: string,
+    maxPosts = 30,
+    forceMethod: 'auto' | 'graph' | 'apify' = 'apify',
+    language = 'vi',
+  ): Promise<any> {
+    const endpoint = `${this.aiServiceUrl}/api/facebook/competitor-insights/`;
+    this.logger.log(
+      `Calling AI Service competitor insights: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}, lang=${language}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            endpoint,
+            {
+              url,
+              max_posts: maxPosts,
+              force_method: forceMethod,
+              language,
+            },
+            {
+              timeout: 600000, // 10 minutes upper bound, thực tế Gemini trả lời nhanh hơn nhiều
+            },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.error(
+                `AI Service competitor insights error: ${error.message}`,
+                error.response?.data,
+              );
+              throw new HttpException(
+                error.response?.data || 'Failed to connect to AI Service (competitor insights)',
+                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }),
+          ),
+      );
+
+      return data;
+    } catch (error: any) {
+      this.logger.error(`Competitor insights failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Compute Facebook channel metrics (viral posts, ads, charts) via AI Service (Apify data).
+   * NOTE: This endpoint does NOT call Gemini, so it should be fast.
+   */
+  async facebookChannelMetrics(
+    url: string,
+    maxPosts = 80,
+    forceMethod: 'auto' | 'graph' | 'apify' = 'apify',
+  ): Promise<any> {
+    const endpoint = `${this.aiServiceUrl}/api/facebook/channel-metrics/`;
+    this.logger.log(
+      `Calling AI Service channel metrics: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            endpoint,
+            {
+              url,
+              max_posts: maxPosts,
+              force_method: forceMethod,
+            },
+            {
+              timeout: 600000, // 10 minutes upper bound
+            },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.error(
+                `AI Service channel metrics error: ${error.message}`,
+                error.response?.data,
+              );
+              throw new HttpException(
+                error.response?.data || 'Failed to connect to AI Service (channel metrics)',
+                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }),
+          ),
+      );
+
+      return data;
+    } catch (error: any) {
+      this.logger.error(`Channel metrics failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Generic channel insights (Gemini) for all platforms.
+   */
+  async channelInsights(platform: string, usernameOrUrl: string, maxPosts = 30, language = 'vi'): Promise<any> {
+    const endpoint = `${this.aiServiceUrl}/api/channel/insights/`;
+    this.logger.log(
+      `Calling AI Service generic insights: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}, lang=${language}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            endpoint,
+            {
+              platform,
+              username: usernameOrUrl,
+              max_posts: maxPosts,
+              language,
+            },
+            { timeout: 600000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.error(`AI Service generic insights error: ${error.message}`, error.response?.data);
+              throw new HttpException(
+                error.response?.data || 'Failed to connect to AI Service (generic insights)',
+                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }),
+          ),
+      );
+      return data;
+    } catch (error: any) {
+      this.logger.error(`Generic insights failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Generic channel metrics for all platforms (no Gemini).
+   */
+  async channelMetrics(platform: string, usernameOrUrl: string, maxPosts = 80): Promise<any> {
+    const endpoint = `${this.aiServiceUrl}/api/channel/metrics/`;
+    this.logger.log(
+      `Calling AI Service generic metrics: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            endpoint,
+            {
+              platform,
+              username: usernameOrUrl,
+              max_posts: maxPosts,
+            },
+            { timeout: 600000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.error(`AI Service generic metrics error: ${error.message}`, error.response?.data);
+              throw new HttpException(
+                error.response?.data || 'Failed to connect to AI Service (generic metrics)',
+                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }),
+          ),
+      );
+      return data;
+    } catch (error: any) {
+      this.logger.error(`Generic metrics failed: ${error.message}`);
+      throw error;
+    }
+  }
+
 
 
   /**
