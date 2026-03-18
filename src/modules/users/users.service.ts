@@ -17,6 +17,15 @@ function hasStaffRole(roles: UserRole[]): boolean {
   return roles.includes(UserRole.MEMBER);
 }
 
+/** Sau khi thêm image_url vào User — nếu TS báo lỗi select, chạy: npx prisma generate (tắt dev server nếu EPERM trên Windows). */
+type UserWithImageSelect = {
+  id: string;
+  email: string;
+  full_name: string;
+  image_url: string | null;
+  roles: UserRole[];
+};
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -76,10 +85,12 @@ export class UsersService {
 
     // Create user
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _password, role: _role, ...userData } = createUserDto as any;
+    const { password: _password, role: _role, avatar: _a, ...userData } = createUserDto as any;
+    const img = (createUserDto as any).image_url ?? (createUserDto as any).avatar;
     const user = await this.prisma.user.create({
       data: {
         ...userData,
+        ...(img != null ? { image_url: img } : {}),
         password_hash,
         roles,
         manager_id: createUserDto.manager_id || null,
@@ -159,6 +170,10 @@ export class UsersService {
 
     // Hash password if provided
     const updateData: any = { ...updateUserDto };
+    if ((updateUserDto as any).avatar != null && updateData.image_url == null) {
+      updateData.image_url = (updateUserDto as any).avatar;
+    }
+    delete updateData.avatar;
     if (updateUserDto.password) {
       updateData.password_hash = await bcrypt.hash(updateUserDto.password, 10);
       delete updateData.password;
@@ -248,12 +263,15 @@ export class UsersService {
             });
           }
 
-          // Sync LarkEmployee (match by name)
+          // Sync Lark fields on users (rows linked to Lark employee)
           if (nameChanged || teamChanged) {
-            await tx.larkEmployee.updateMany({
-              where: { name: oldName },
+            await (tx.user as any).updateMany({
+              where: {
+                full_name: oldName,
+                lark_employee_record_id: { not: null },
+              },
               data: {
-                ...(nameChanged ? { name: newName } : {}),
+                ...(nameChanged ? { full_name: newName } : {}),
                 ...(teamChanged ? { team: newTeam } : {}),
               },
             });
@@ -327,21 +345,23 @@ export class UsersService {
     // Managers/Admins see all their assigned members
     whereClause.manager_id = managerId;
 
-    const editors = await this.prisma.user.findMany({
+    const editors = (await this.prisma.user.findMany({
       where: whereClause,
       select: {
         id: true,
         email: true,
         full_name: true,
-        avatar: true,
+        image_url: true,
         roles: true,
         is_active: true,
         created_at: true,
-      },
+      } as any,
       orderBy: {
         created_at: 'desc',
       },
-    });
+    })) as unknown as Array<
+      UserWithImageSelect & { is_active: boolean; created_at: Date }
+    >;
 
     console.log('📝 Team members found:', editors.length);
 
@@ -408,6 +428,7 @@ export class UsersService {
 
         return {
           ...editor,
+          avatar: editor.image_url,
           stats: {
             total_channels: totalChannels,
             total_videos_produced: videosProduced,
@@ -429,7 +450,7 @@ export class UsersService {
   }
 
   async getAvailableManagers() {
-    const managers = await this.prisma.user.findMany({
+    const managers = (await this.prisma.user.findMany({
       where: {
         roles: { hasSome: [UserRole.MANAGER, UserRole.ADMIN] },
         is_active: true,
@@ -438,15 +459,15 @@ export class UsersService {
         id: true,
         email: true,
         full_name: true,
-        avatar: true,
+        image_url: true,
         roles: true,
-      },
+      } as any,
       orderBy: {
         full_name: 'asc',
       },
-    });
+    })) as unknown as UserWithImageSelect[];
 
-    return managers;
+    return managers.map((m) => ({ ...m, avatar: m.image_url }));
   }
 
   async selectManager(userId: string, managerId: string) {

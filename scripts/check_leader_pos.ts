@@ -16,14 +16,14 @@ async function main() {
             }
         });
 
-        // Also check lark_employees for position
-        const employee = await prisma.larkEmployee.findFirst({
+        const employee = await prisma.user.findFirst({
             where: {
-                name: { contains: name, mode: 'insensitive' }
-            }
+                full_name: { contains: name, mode: 'insensitive' },
+                lark_employee_record_id: { not: null },
+            },
         });
 
-        console.log('Permission Position:', employee?.position);
+        console.log('Employee position:', employee?.employee_position);
         console.log('Permission Role:', permission?.role);
 
         // Check reports

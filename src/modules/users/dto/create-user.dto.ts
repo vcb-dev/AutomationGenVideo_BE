@@ -56,10 +56,10 @@ export class CreateUserDto {
   @IsString()
   google_id?: string;
 
-  @ApiPropertyOptional({ example: "https://avatar.url" })
+  @ApiPropertyOptional({ example: "https://..." })
   @IsOptional()
   @IsString()
-  avatar?: string;
+  image_url?: string;
 
   @ApiPropertyOptional({ example: "Team A" })
   @IsOptional()
