@@ -2269,17 +2269,32 @@ export class LarkService {
         const endOfDay = new Date(date);
         endOfDay.setHours(23, 59, 59, 999);
 
+        // Find user name for fallback matching
+        const user = await this.prisma.user.findUnique({
+            where: { email }
+        });
+        const fullName = user?.full_name?.trim();
+
         const [report, traffic] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {
-                    email: email,
+                    OR: [
+                        { email: email },
+                        ...(fullName ? [{ name: { equals: fullName, mode: 'insensitive' as any } }] : [])
+                    ],
                     date: { gte: startOfDay, lte: endOfDay }
                 },
                 orderBy: { created_at: 'desc' }
             }),
             this.prisma.larkTraffic.findFirst({
                 where: {
-                    email: email,
+                    OR: [
+                        { email: email },
+                        ...(fullName ? [{ name: { equals: fullName, mode: 'insensitive' as any } }] : []),
+                        // Also try with trailing space if needed, or just rely on mode: insensitive for basic cases
+                        // but sometimes Lark has weird spaces
+                        ...(fullName ? [{ name: { contains: fullName, mode: 'insensitive' as any } }] : [])
+                    ],
                     date: { gte: startOfDay, lte: endOfDay }
                 },
                 orderBy: { created_at: 'desc' }
