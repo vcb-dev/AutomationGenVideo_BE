@@ -29,6 +29,38 @@ export class LarkSyncService {
         }
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Sync KPI + Employee + Reports mỗi 2 tiếng
+    // ──────────────────────────────────────────────────────────────────────────
+    @Cron('0 */2 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    async scheduledDataSync() {
+        this.logger.log('⏰ Scheduled Lark data sync triggered (KPI + Employee + Reports)');
+        try {
+            const kpi = await this.larkService.syncKPIData();
+            this.logger.log(`✅ KPI sync: ${kpi?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ KPI sync failed: ${err.message}`);
+        }
+        try {
+            const emp = await this.larkService.syncEmployeeData();
+            this.logger.log(`✅ Employee sync: ${emp?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ Employee sync failed: ${err.message}`);
+        }
+        try {
+            await this.larkService.syncReportData();
+            this.logger.log('✅ Report sync completed');
+        } catch (err) {
+            this.logger.error(`❌ Report sync failed: ${err.message}`);
+        }
+        try {
+            await this.larkService.syncPermissionData();
+            this.logger.log('✅ Permission sync completed');
+        } catch (err) {
+            this.logger.error(`❌ Permission sync failed: ${err.message}`);
+        }
+    }
+
     async syncFromLark(): Promise<{
         total: number;
         created: number;
