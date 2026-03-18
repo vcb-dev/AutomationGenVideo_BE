@@ -1,11 +1,13 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
+  engineType = "binary"
 }
 
-generator erd {
-  provider = "prisma-erd-generator"
-  output   = "../ERD.svg"
-}
+// generator erd {
+//   provider = "prisma-erd-generator"
+//   output   = "../ERD.svg"
+// }
 
 datasource db {
   provider = "postgresql"
@@ -17,10 +19,8 @@ model User {
   email               String           @unique
   password_hash       String?
   full_name           String
-  avatar              String?
   google_id           String?          @unique
   roles               UserRole[]       @default([])
-  ma_pin              String?
   team                String?
   lark_permissions    Json?
   manager_id          String?
@@ -30,6 +30,19 @@ model User {
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
   last_app_update_at  DateTime?        @default(now())
+
+  /// Bitable record id — đồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
+  lark_employee_record_id String?      @unique
+  employee_id         String?          @unique
+  image_url           String?
+  employee_data       Json?
+  /// Chức vụ từ Lark (Member / Leader, …)
+  employee_position   String?
+  /// Tình trạng Lark: Đang hoạt động / Đã nghỉ
+  employee_status     String?
+  /// Tháng/ngày từ Lark (cột NGÀY)
+  employee_date       DateTime?
+
   search_histories    SearchHistory[]
   tracked_channels    TrackedChannel[]
   manager             User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
@@ -43,6 +56,7 @@ model User {
   @@index([roles])
   @@index([manager_id])
   @@index([team_leader_id])
+  @@index([employee_id])
   @@map("users")
 }
 
@@ -499,26 +513,6 @@ model LarkReport {
   @@index([name])
   @@index([team])
   @@map("lark_reports")
-}
-
-model LarkEmployee {
-  id            String    @id
-  employee_id   String?   @unique
-  name          String
-  image_url     String?
-  employee_data Json?
-  tag_code      String?
-  position      String?
-  team          String?
-  status        String?
-  date          DateTime?
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
-
-  @@index([name])
-  @@index([team])
-  @@index([status])
-  @@map("lark_employees")
 }
 
 model LarkKPI {

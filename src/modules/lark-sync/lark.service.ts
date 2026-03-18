@@ -130,21 +130,22 @@ export class LarkService {
                 }
             });
 
-            // Cleanup Logic for LarkEmployee
-            const employeeResult = await this.prisma.larkEmployee.deleteMany({
+            // Cleanup synthetic Lark-only users with invalid names
+            const employeeResult = await this.prisma.user.deleteMany({
                 where: {
+                    email: { endsWith: '@employee.vcb.internal' },
                     OR: [
-                        { name: { equals: 'Unknown' } },
-                        { name: { equals: '' } },
-                        { name: { equals: ' ' } }
-                    ]
-                }
+                        { full_name: { equals: 'Unknown' } },
+                        { full_name: { equals: '' } },
+                        { full_name: { equals: ' ' } },
+                    ],
+                },
             });
 
             this.logger.log(`Cleanup completed: 
                 - Removed ${kpiResult.count} invalid KPI records.
                 - Removed ${reportResult.count} invalid Report records.
-                - Removed ${employeeResult.count} invalid Employee records.`);
+                - Removed ${employeeResult.count} invalid Lark-placeholder user records.`);
         } catch (error) {
             this.logger.error('Failed to run data cleanup', error);
         }
@@ -258,7 +259,7 @@ export class LarkService {
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
         
-        // Lookup team - priority: User table > LarkPermission > LarkEmployee
+        // Lookup team - priority: User (Lark fields) > LarkPermission
         let team = '';
         
         // 1. FIRST: Try from User table (most reliable - admin sets this directly)
@@ -273,9 +274,11 @@ export class LarkService {
             if (userPerm?.team) team = userPerm.team;
         }
         
-        // 3. Last resort: Try from LarkEmployee by name
-        if (!team) {
-            const emp = await this.prisma.larkEmployee.findFirst({ where: { name } });
+        // 3. Last resort: User row synced from Lark (same full_name)
+        if (!team && name) {
+            const emp = await this.prisma.user.findFirst({
+                where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
+            });
             if (emp?.team) team = emp.team;
         }
         
@@ -832,32 +835,59 @@ export class LarkService {
                     continue;
                 }
 
-                await this.prisma.larkEmployee.upsert({
-                    where: { id: employeeData.id },
-                    update: {
-                        employee_id: employeeData.employee_id,
-                        name: employeeData.name,
-                        image_url: employeeData.image_url,
-                        employee_data: employeeData.employee_data,
-                        tag_code: employeeData.tag_code,
-                        position: employeeData.position,
-                        team: employeeData.team,
-                        status: employeeData.status,
-                        date: employeeData.date,
-                    },
-                    create: {
-                        id: employeeData.id,
-                        employee_id: employeeData.employee_id,
-                        name: employeeData.name,
-                        image_url: employeeData.image_url,
-                        employee_data: employeeData.employee_data,
-                        tag_code: employeeData.tag_code,
-                        position: employeeData.position,
-                        team: employeeData.team,
-                        status: employeeData.status,
-                        date: employeeData.date,
+                const syntheticEmail =
+                    `lark-${String(employeeData.id).replace(/[^a-zA-Z0-9]/g, '_')}@employee.vcb.internal`;
+
+                const byRecord = await this.prisma.user.findFirst({
+                    where: { lark_employee_record_id: employeeData.id },
+                });
+                const byEmpId = employeeData.employee_id
+                    ? await this.prisma.user.findFirst({
+                          where: { employee_id: employeeData.employee_id },
+                      })
+                    : null;
+                const byName = await this.prisma.user.findFirst({
+                    where: {
+                        full_name: { equals: employeeData.name, mode: 'insensitive' },
+                        NOT: { email: { endsWith: '@employee.vcb.internal' } },
                     },
                 });
+
+                const target = byRecord || byEmpId || byName;
+
+                const payload = {
+                    lark_employee_record_id: employeeData.id,
+                    employee_id: employeeData.employee_id || undefined,
+                    image_url: employeeData.image_url ?? undefined,
+                    employee_data: employeeData.employee_data ?? undefined,
+                    employee_position: employeeData.position ?? undefined,
+                    team: employeeData.team ?? undefined,
+                    employee_status: employeeData.status ?? undefined,
+                    employee_date: employeeData.date ?? undefined,
+                };
+
+                if (target) {
+                    await this.prisma.user.update({
+                        where: { id: target.id },
+                        data: {
+                            ...payload,
+                            ...(target.email.endsWith('@employee.vcb.internal')
+                                ? { full_name: employeeData.name }
+                                : {}),
+                        },
+                    });
+                } else {
+                    await this.prisma.user.create({
+                        data: {
+                            email: syntheticEmail,
+                            password_hash: null,
+                            full_name: employeeData.name,
+                            roles: ['MEMBER'],
+                            is_active: true,
+                            ...payload,
+                        },
+                    });
+                }
                 syncedCount++;
             }
 
@@ -922,16 +952,35 @@ export class LarkService {
         };
     }
 
-    // Get all employees from DB
+    // Get all employees from DB (merged into users)
     async getEmployeeData() {
-        return this.prisma.larkEmployee.findMany({
+        const rows = await this.prisma.user.findMany({
             where: {
-                status: {
-                    not: 'đã nghỉ'
-                }
+                lark_employee_record_id: { not: null },
+                OR: [
+                    { employee_status: null },
+                    {
+                        NOT: {
+                            employee_status: { contains: 'nghỉ', mode: 'insensitive' },
+                        },
+                    },
+                ],
             },
-            orderBy: { created_at: 'desc' }
+            orderBy: { updated_at: 'desc' },
         });
+        return rows.map((u) => ({
+            id: u.lark_employee_record_id,
+            employee_id: u.employee_id,
+            name: u.full_name,
+            image_url: u.image_url,
+            employee_data: u.employee_data,
+            team: u.team,
+            status: u.employee_status,
+            date: u.employee_date,
+            position: u.employee_position,
+            created_at: u.created_at,
+            updated_at: u.updated_at,
+        }));
     }
 
     // Fetch KPI records from Lark - Updated to use tblh9DeeqDBItrg7 as requested
@@ -1321,8 +1370,11 @@ export class LarkService {
                     }
                 }),
                 // 3. Fetch employees (Filtered if possible)
-                this.prisma.larkEmployee.findMany({
-                    where: dbTeamFilter ? { team: dbTeamFilter } : {}
+                this.prisma.user.findMany({
+                    where: {
+                        lark_employee_record_id: { not: null },
+                        ...(dbTeamFilter ? { team: dbTeamFilter } : {}),
+                    },
                 }),
                 // 4. Fetch permissions (Filtered if possible)
                 this.prisma.larkPermission.findMany({
@@ -1390,12 +1442,25 @@ export class LarkService {
             this.logger.debug(`[Optimization] Parallel fetch completed. Reports: ${reports.length}, KPIs: ${kpiData.length}`);
 
             // Restore Map helpers and region logic
-            const employeeMap = new Map();
-            employees.forEach(emp => {
-                if (emp.employee_id) employeeMap.set(emp.employee_id.trim(), emp);
-                if (emp.name) {
-                    const nameKey = emp.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
-                    if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, emp);
+            const employeeMap = new Map<string, any>();
+            employees.forEach((emp: any) => {
+                const row = {
+                    employee_id: emp.employee_id,
+                    name: emp.full_name,
+                    image_url: emp.image_url,
+                    status: emp.employee_status,
+                    position: emp.employee_position,
+                };
+                if (row.employee_id) employeeMap.set(String(row.employee_id).trim(), row);
+                if (row.name) {
+                    const nameKey = row.name
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/đ/g, 'd')
+                        .trim()
+                        .replace(/\s+/g, ' ');
+                    if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, row);
                 }
             });
 
@@ -1428,9 +1493,11 @@ export class LarkService {
                     
                     const normalizedOwner = h.owner.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     channelNameSet.add(normalizedOwner);
-                }
-                if (h.email) {
-                    channelEmailSet.add(h.email.toLowerCase().trim());
+
+                    // Channel records don't have email; infer email from permission table by owner name
+                    const perm = permMap.get(normalizedOwner);
+                    const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
+                    if (inferredEmail) channelEmailSet.add(inferredEmail);
                 }
                 const teamNorm = (h.team_traffic || '').toLowerCase().trim();
                 let isMatch = false;
@@ -1450,10 +1517,14 @@ export class LarkService {
             const trafficMapByEmail = new Map();
             const trafficMapByName = new Map();
             allTrafficInDb.forEach(t => {
-                if (t.email) trafficMapByEmail.set(t.email.toLowerCase().trim(), t);
                 if (t.name) {
                     const nameKey = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     trafficMapByName.set(nameKey, t);
+
+                    // Traffic records don't carry email; map via permission table by reporter name
+                    const perm = permMap.get(nameKey);
+                    const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
+                    if (inferredEmail) trafficMapByEmail.set(inferredEmail, t);
                 }
             });
 
@@ -2364,17 +2435,10 @@ export class LarkService {
                 });
 
                 if (targetUser) {
-                    // Check if employee is resigned
-                    const targetEmployee = await this.prisma.larkEmployee.findFirst({
-                        where: { name: { equals: targetUser.full_name, mode: 'insensitive' } }
-                    });
-
-                    if (targetEmployee) {
-                        const empStatus = (targetEmployee.status || '').toLowerCase().trim();
-                        if (empStatus === 'đã nghỉ' || empStatus === 'da nghi' || empStatus.includes('nghỉ')) {
-                            this.logger.warn(`Access denied: ${targetName} has resigned.`);
-                            return { history: [], teamStats: null };
-                        }
+                    const empStatus = (targetUser.employee_status || '').toLowerCase().trim();
+                    if (empStatus === 'đã nghỉ' || empStatus === 'da nghi' || empStatus.includes('nghỉ')) {
+                        this.logger.warn(`Access denied: ${targetName} has resigned.`);
+                        return { history: [], teamStats: null };
                     }
 
                     const isSameTeam = targetUser.team === requesterTeam;
@@ -2474,20 +2538,29 @@ export class LarkService {
             const monthFormats = [`T${targetMonthNum}`, `Tháng ${targetMonthNum}`, `${targetMonthNum}`, targetMonthNum < 10 ? `0${targetMonthNum}` : `${targetMonthNum}`];
 
 
-            const [todayReport, employee, userChannelCount] = await Promise.all([
+            const [todayReport, employeeUser, userChannelCount] = await Promise.all([
                 this.prisma.larkReport.findFirst({
                     where: {
                         name: { equals: userName.trim(), mode: 'insensitive' },
                         date: { gte: startOfToday, lte: endOfToday }
                     }
                 }),
-                this.prisma.larkEmployee.findFirst({
-                    where: { name: { equals: userName.trim(), mode: 'insensitive' } }
+                this.prisma.user.findFirst({
+                    where: {
+                        full_name: { equals: userName.trim(), mode: 'insensitive' },
+                        lark_employee_record_id: { not: null },
+                    },
                 }),
                 this.prisma.channel.count({
                     where: { owner: { equals: userName.trim(), mode: 'insensitive' } }
                 })
             ]);
+            const employee = employeeUser
+                ? {
+                      image_url: employeeUser.image_url,
+                      position: employeeUser.employee_position,
+                  }
+                : null;
 
             const currentMonthKpi = allTeamKpis
                 .filter(k => k.name?.toLowerCase().trim().replace(/\s+/g, ' ') === userName.toLowerCase().trim().replace(/\s+/g, ' '))

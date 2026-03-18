@@ -1,0 +1,38 @@
+-- Khớp bảng lark_traffic với Prisma model LarkTraffic (idempotent)
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "date" TIMESTAMP(3);
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "employee" JSONB;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "team" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "month" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_fb" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_ig" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_lemon8" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_thread" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_tiktok" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_yt" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_zalo" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "total_traffic" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "is_confirmed" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "email" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "name" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_files" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "traffic_twitter" BIGINT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_fb" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_ig" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_tiktok" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_yt" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_thread" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_lemon8" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_zalo" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "evidence_twitter" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_fb" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_ig" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_tiktok" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_yt" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_thread" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_lemon8" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_zalo" TEXT;
+ALTER TABLE "lark_traffic" ADD COLUMN IF NOT EXISTS "channel_twitter" TEXT;
+
+CREATE INDEX IF NOT EXISTS "lark_traffic_month_idx" ON "lark_traffic"("month");
+CREATE INDEX IF NOT EXISTS "lark_traffic_team_idx" ON "lark_traffic"("team");
+CREATE INDEX IF NOT EXISTS "lark_traffic_email_idx" ON "lark_traffic"("email");
