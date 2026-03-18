@@ -2043,17 +2043,18 @@ export class LarkService {
                 if (!r.name || r.name.toLowerCase() === 'unknown') return;
 
                 const videoDone = Number(r.done || 0);
+                const completedMonth = Number(r.completed_month || 0);
                 const region = getRegionInternal(r.team || '');
 
                 // Use Monthly stats for the BIG KPI cards to show MTD progress as requested
                 aggregates.totalVideoTarget += Number(r.kpi_month || 0);
-                aggregates.totalVideoCompleted += videoDone;
+                aggregates.totalVideoCompleted += completedMonth;
                 aggregates.totalTrafficCompleted += Number(r.traffic_range || 0);
                 aggregates.totalRevenueCompleted += Number(r.revenue_range || 0);
                 aggregates.totalTrafficTarget += Number(r.trafficTarget || 0);
                 aggregates.totalRevenueTarget += Number(r.revenueTarget || 0);
 
-                taskVideosByGroup[region] += videoDone;
+                taskVideosByGroup[region] += completedMonth;
             });
 
             // Count reports for today separately
@@ -2068,7 +2069,7 @@ export class LarkService {
                 .sort((a, b) => Number(b.traffic_range || 0) - Number(a.traffic_range || 0))
                 .slice(0, 10)
                 .map((kpi, index) => {
-                    const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
                     const trimmedEmpId = kpi.employee_id?.trim();
                     const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
@@ -2085,7 +2086,7 @@ export class LarkService {
                 .sort((a, b) => Number(b.revenue_range || 0) - Number(a.revenue_range || 0))
                 .slice(0, 10)
                 .map((kpi, index) => {
-                    const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                    const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
                     const trimmedEmpId = kpi.employee_id?.trim();
                     const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
@@ -2105,7 +2106,7 @@ export class LarkService {
             // Map to unique people globally for correct aggregation
             const globalKpis = new Map();
             allKpiForMonth.forEach(k => {
-                const key = k.employee_id?.trim() || k.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+                const key = k.employee_id?.trim() || k.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
                 if (!globalKpis.has(key) || (k.completed_month || 0) > (globalKpis.get(key).completed_month || 0)) {
                     globalKpis.set(key, k);
                 }
