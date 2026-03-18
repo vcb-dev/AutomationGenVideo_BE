@@ -78,8 +78,8 @@ export class AuthService {
       if (!(user as any).google_id) {
         await this.usersService.update(user.id, {
           google_id: googleUser.googleId,
-          avatar: googleUser.picture,
-        });
+          image_url: googleUser.picture,
+        } as any);
         user = await this.usersService.findByEmail(googleUser.email); // Refresh
       }
       return user;
@@ -115,7 +115,7 @@ export class AuthService {
     // Update with Google-specific fields
     await this.usersService.update(newUser.id, {
       google_id: googleUser.googleId,
-      avatar: googleUser.picture,
+      image_url: googleUser.picture,
       password_hash: null, // Ensure it is null for Google users
     } as any);
 
