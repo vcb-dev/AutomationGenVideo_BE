@@ -8,6 +8,10 @@ import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
 import * as bcrypt from "bcrypt";
 
+function isBcryptPasswordHash(stored: string): boolean {
+  return typeof stored === "string" && /^\$2[aby]\$\d{2}\$/.test(stored);
+}
+
 export interface GoogleUser {
   email: string;
   firstName: string;
@@ -60,13 +64,26 @@ export class AuthService {
       return null;
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    let isPasswordValid = false;
+    if (isBcryptPasswordHash(user.password_hash)) {
+      isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    } else {
+      // Legacy: mật khẩu lưu plain text trong DB → cho đăng nhập và chuyển sang bcrypt
+      if (password === user.password_hash) {
+        isPasswordValid = true;
+        try {
+          await this.usersService.rehashPasswordFromPlain(user.id, password);
+        } catch {
+          /* vẫn cho login; lần sau có thể cần sửa DB tay */
+        }
+      }
+    }
 
     if (!isPasswordValid) {
       return null;
     }
 
-    return user;
+    return this.usersService.findByEmail(email);
   }
 
   async validateGoogleUser(googleUser: GoogleUser) {

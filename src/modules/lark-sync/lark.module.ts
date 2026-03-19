@@ -7,13 +7,15 @@ import { LarkController } from './lark.controller';
 import { LarkService } from './lark.service';
 import { LarkSyncService } from './lark-sync.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+import { ChannelEnrichmentModule } from '../channel-enrichment/channel-enrichment.module';
 
 @Module({
     imports: [
         HttpModule,
         ConfigModule,
         ScheduleModule,
-        PrismaModule
+        PrismaModule,
+        ChannelEnrichmentModule,
     ],
     controllers: [LarkController],
     providers: [LarkService, LarkSyncService],

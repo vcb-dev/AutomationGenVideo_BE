@@ -1,12 +1,18 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateTrackedChannelDto, UpdateTrackedChannelDto } from './dto/tracked-channel.dto';
 import { ManagerDashboardDto, PlatformStatsDto, PlatformTrendDto, TrendDataDto } from './dto/manager-dashboard.dto';
 import { Platform } from '@prisma/client';
+import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
 
 @Injectable()
 export class TrackedChannelsService {
-  constructor(private prisma: PrismaService) { }
+  private readonly logger = new Logger(TrackedChannelsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private readonly channelStatsEnrichment: ChannelStatsEnrichmentService,
+  ) {}
 
   async create(userId: string, createDto: CreateTrackedChannelDto) {
     // Use upsert to handle both creation and update of stats
@@ -44,6 +50,21 @@ export class TrackedChannelsService {
         engagement_rate: createDto.engagement_rate || 0,
       } as any,
     });
+
+    const likesNum = Number(result.total_likes);
+    const looksEmpty =
+      (createDto.total_followers == null || createDto.total_followers === 0) &&
+      likesNum === 0 &&
+      (!createDto.total_videos || createDto.total_videos === 0) &&
+      (!createDto.total_views || Number(createDto.total_views) === 0);
+    if (looksEmpty) {
+      void this.channelStatsEnrichment
+        .enrichTrackedChannel(userId, createDto.platform, createDto.username)
+        .then((ok) => {
+          if (ok) this.logger.log(`[create] Đã cập nhật số liệu Apify: ${createDto.platform}/${createDto.username}`);
+        })
+        .catch((e) => this.logger.warn(`[create] enrich: ${e?.message || e}`));
+    }
 
     return {
       ...result,
@@ -120,6 +141,27 @@ export class TrackedChannelsService {
       total_likes: Number(channel.total_likes),
       total_views: Number(channel.total_views),
     };
+  }
+
+  /**
+   * Làm mới follower / like / view qua AI Service (Apify) — mọi nền tảng.
+   */
+  async enrichChannelById(id: string, userId: string) {
+    const channel = await this.findOne(id, userId);
+    const ok = await this.channelStatsEnrichment.enrichTrackedChannel(
+      userId,
+      channel.platform as Platform,
+      channel.username,
+    );
+    if (!ok) {
+      return {
+        success: false,
+        message:
+          'Không lấy được số liệu (Apify). Kiểm tra AI service, APIFY token, username/link kênh.',
+      };
+    }
+    const fresh = await this.findOne(id, userId);
+    return { success: true, channel: fresh };
   }
 
   async checkChannel(id: string, userId: string) {

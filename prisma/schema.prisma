@@ -88,6 +88,10 @@ model TrackedChannel {
   updated_at          DateTime    @updatedAt
   initial_video_count Int         @default(0)
   posts_count         Int?
+  /// Id bản ghi huyk_channels (Lark) — mỗi dòng Lark tối đa 1 tracked (NULL = nhập tay)
+  lark_channel_id     String?     @unique
+  /// manual | lark
+  added_via           String      @default("manual")
   user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   video_posts         VideoPost[]
 
@@ -95,6 +99,7 @@ model TrackedChannel {
   @@index([user_id])
   @@index([platform])
   @@index([is_active])
+  @@index([added_via])
   @@map("tracked_channels")
 }
 
