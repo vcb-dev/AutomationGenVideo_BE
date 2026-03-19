@@ -259,6 +259,15 @@ export class LarkController {
         }
     }
 
+    @Post('import-tracked-from-channels')
+    @ApiOperation({
+        summary: 'Import tracked_channels từ bảng Channel (DB) cho mọi user khớp email/owner',
+    })
+    async importTrackedFromChannels() {
+        const r = await this.larkService.importTrackedChannelsFromChannelTable();
+        return { message: 'Import completed', ...r };
+    }
+
     @Post('reset-channel')
     @ApiOperation({ summary: 'Clear and re-sync Channel data' })
     async resetChannelData() {
