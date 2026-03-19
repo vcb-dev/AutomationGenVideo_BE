@@ -5,7 +5,19 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
+import { resolveTrackedUsername } from './channel-to-tracked.util';
+import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
+
+/** Chuẩn hóa cột trạng thái kênh Lark — chỉ "Đang hoạt động" (sau chuẩn hóa) được coi là active. */
+function normalizeLarkChannelActivityStatus(status: string | null | undefined): string {
+    if (!status || typeof status !== 'string') return '';
+    return status.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isLarkChannelActiveStatus(status: string | null | undefined): boolean {
+    return normalizeLarkChannelActivityStatus(status) === 'đang hoạt động';
+}
 
 @Injectable()
 export class LarkService {
@@ -34,6 +46,7 @@ export class LarkService {
         private readonly httpService: HttpService,
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
+        private readonly channelStatsEnrichment: ChannelStatsEnrichmentService,
     ) {
         // Load credentials from environment
         this.APP_ID = this.configService.get<string>('LARK_APP_ID');
@@ -478,7 +491,13 @@ export class LarkService {
                     platform: extractString(fields['Nền tảng']) || '',
                     channel_id: extractString(fields['ID kênh hiện tại']) || '',
                     link_channel: extractString(fields['Link kênh']) || '',
-                    status: extractString(fields['Trạng thái hoạt động']) || '',
+                    status:
+                        extractString(
+                            fields['Trạng thái hoạt động'] ??
+                                fields['status'] ??
+                                fields['Trạng thái'] ??
+                                fields['Trạng Thái'],
+                        ) || '',
                     team_traffic: extractString(fields['Team Traffic']) || '',
                     owner: extractString(fields['NV traffic xây kênh']) || '',
                     email: extractEmail(fields['NV traffic xây kênh']) || null,
@@ -491,14 +510,286 @@ export class LarkService {
                 });
             }
             this.logger.log(`Successfully synced ${records.length} records to Channel.`);
+            try {
+                const imp = await this.importTrackedChannelsFromChannelTable();
+                this.logger.log(
+                    `[Lark] tracked_channels import: imported=${imp.imported} no_user=${imp.skipped_no_user} no_parse=${imp.skipped_no_identity} skip_inactive=${imp.skipped_inactive} deactivated=${imp.deactivated_inactive_lark}`,
+                );
+            } catch (ie: any) {
+                this.logger.warn(`[Lark] import tracked after channel sync: ${ie?.message}`);
+            }
         } catch (error) {
             this.logger.error('Failed to sync Channel data', error);
         }
     }
 
+    /** Chuẩn hóa tên để so khớp owner Channel ↔ full_name User / Họ tên bảng Permission */
+    private normalizeOwnerName(s: string | null | undefined): string {
+        return (s || '')
+            .normalize('NFC')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+    }
+
+    /**
+     * Đọc huyk_channels (đã sync từ Lark) → tạo/cập nhật tracked_channels theo email hoặc owner khớp user.
+     */
+    async importTrackedChannelsFromChannelTable(opts?: {
+        onlyUserId?: string;
+        prioritizePlatform?: string;
+    }): Promise<{
+        imported: number;
+        skipped_no_user: number;
+        skipped_no_identity: number;
+        skipped_inactive: number;
+        deactivated_inactive_lark: number;
+        errors: string[];
+    }> {
+        const stats = {
+            imported: 0,
+            skipped_no_user: 0,
+            skipped_no_identity: 0,
+            skipped_inactive: 0,
+            deactivated_inactive_lark: 0,
+            errors: [] as string[],
+        };
+
+        let me: { email: string; full_name: string } | null = null;
+        if (opts?.onlyUserId) {
+            const u = await this.prisma.user.findUnique({ where: { id: opts.onlyUserId } });
+            if (!u?.email) {
+                stats.errors.push('User không tồn tại hoặc không có email');
+                return stats;
+            }
+            me = { email: u.email.toLowerCase(), full_name: (u.full_name || '').trim() };
+        }
+
+        /** Tên hiển thị trên Lark Permission của chính user (email đăng nhập) — thường trùng cột owner Channel khi email Channel null */
+        let myPermissionDisplayNames = new Set<string>();
+        if (me) {
+            const fnN = this.normalizeOwnerName(me.full_name);
+            if (fnN) myPermissionDisplayNames.add(fnN);
+            const permRow = await this.prisma.larkPermission.findFirst({
+                where: { email: { equals: me.email, mode: 'insensitive' } },
+                select: { name: true },
+            });
+            const pn = this.normalizeOwnerName(permRow?.name ?? '');
+            if (pn) myPermissionDisplayNames.add(pn);
+        }
+
+        // Lấy các dòng có khả năng active (hẹp DB), rồi validate chặt === "Đang hoạt động" (tránh contains kiểu "Không Đang hoạt động")
+        const baseWhere = {
+            AND: [
+                { status: { not: null } },
+                { NOT: { status: '' } },
+                { status: { contains: 'ạt động', mode: 'insensitive' as const } },
+            ],
+        };
+        let rows = await this.prisma.channel.findMany({ where: baseWhere });
+        const beforeActive = rows.length;
+        rows = rows.filter((row) => isLarkChannelActiveStatus(row.status));
+        stats.skipped_inactive = beforeActive - rows.length;
+        if (me) {
+            rows = rows.filter((row) => {
+                const r = row as typeof row & { email?: string | null };
+                const em = r.email?.trim().toLowerCase();
+                if (em && em === me!.email) return true;
+                const ownerN = this.normalizeOwnerName(r.owner);
+                if (!em && ownerN) {
+                    for (const alias of myPermissionDisplayNames) {
+                        if (alias && ownerN === alias) return true;
+                    }
+                }
+                return false;
+            });
+        }
+
+        const permList = await this.prisma.larkPermission.findMany({
+            where: { email: { not: null }, name: { not: null } },
+            select: { email: true, name: true },
+        });
+        const ownerNormToEmails = new Map<string, string[]>();
+        for (const p of permList) {
+            const key = this.normalizeOwnerName(p.name);
+            const em = p.email?.trim();
+            if (!key || !em) continue;
+            if (!ownerNormToEmails.has(key)) ownerNormToEmails.set(key, []);
+            ownerNormToEmails.get(key)!.push(em);
+        }
+
+        const enrichKeys = new Set<string>();
+        const enrichQueue: { userId: string; platform: import('@prisma/client').Platform; username: string }[] = [];
+
+        for (const row of rows) {
+            try {
+                const r = row as typeof row & { email?: string | null };
+                const identity = resolveTrackedUsername(row);
+                if (!identity) {
+                    stats.skipped_no_identity++;
+                    continue;
+                }
+
+                let user = null as Awaited<ReturnType<typeof this.prisma.user.findFirst>> | null;
+                if (r.email?.trim()) {
+                    user = await this.prisma.user.findFirst({
+                        where: {
+                            email: { equals: r.email.trim(), mode: 'insensitive' },
+                            is_active: true,
+                        },
+                    });
+                }
+                if (!user && r.owner?.trim()) {
+                    user = await this.prisma.user.findFirst({
+                        where: {
+                            full_name: { equals: r.owner.trim(), mode: 'insensitive' },
+                            is_active: true,
+                        },
+                    });
+                }
+                if (!user && r.owner?.trim()) {
+                    const emails = ownerNormToEmails.get(this.normalizeOwnerName(r.owner));
+                    if (emails?.length) {
+                        for (const em of emails) {
+                            user = await this.prisma.user.findFirst({
+                                where: {
+                                    email: { equals: em, mode: 'insensitive' },
+                                    is_active: true,
+                                },
+                            });
+                            if (user) break;
+                        }
+                    }
+                }
+                if (!user) {
+                    stats.skipped_no_user++;
+                    continue;
+                }
+
+                const existingTc = await this.prisma.trackedChannel.findUnique({
+                    where: {
+                        user_id_platform_username: {
+                            user_id: user.id,
+                            platform: identity.platform,
+                            username: identity.username,
+                        },
+                    },
+                    select: { total_followers: true, total_likes: true },
+                });
+                const needsApifyEnrich =
+                    !existingTc ||
+                    ((existingTc.total_followers == null || existingTc.total_followers === 0) &&
+                        Number(existingTc.total_likes) === 0);
+
+                await this.prisma.$transaction(async (tx) => {
+                    await (tx.trackedChannel as any).deleteMany({ where: { lark_channel_id: row.id } });
+                    await tx.trackedChannel.upsert({
+                        where: {
+                            user_id_platform_username: {
+                                user_id: user!.id,
+                                platform: identity.platform,
+                                username: identity.username,
+                            },
+                        },
+                        create: {
+                            user_id: user!.id,
+                            platform: identity.platform,
+                            username: identity.username,
+                            display_name: row.name || null,
+                            lark_channel_id: row.id,
+                            added_via: 'lark',
+                            is_active: true,
+                            total_likes: BigInt(0),
+                            total_views: BigInt(0),
+                            total_videos: 0,
+                            engagement_rate: 0,
+                            initial_video_count: 0,
+                        } as any,
+                        update: {
+                            lark_channel_id: row.id,
+                            added_via: 'lark',
+                            display_name: row.name || undefined,
+                            is_active: true,
+                        } as any,
+                    });
+                });
+                stats.imported++;
+                if (needsApifyEnrich) {
+                    const ek = `${user!.id}|${identity.platform}|${identity.username}`;
+                    if (!enrichKeys.has(ek)) {
+                        enrichKeys.add(ek);
+                        enrichQueue.push({
+                            userId: user!.id,
+                            platform: identity.platform,
+                            username: identity.username,
+                        });
+                    }
+                }
+            } catch (e: any) {
+                stats.errors.push(`${row.id}: ${e?.message || e}`);
+            }
+        }
+
+        if (enrichQueue.length > 0) {
+            const pri = (opts?.prioritizePlatform || '').toUpperCase().trim();
+            const validPri = ['FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'DOUYIN', 'XIAOHONGSHU'].includes(pri)
+                ? pri
+                : null;
+            if (validPri) {
+                enrichQueue.sort((a, b) => {
+                    const af = a.platform === validPri ? 0 : 1;
+                    const bf = b.platform === validPri ? 0 : 1;
+                    return af - bf;
+                });
+                this.logger.log(`[Lark] Ưu tiên Apify nền tảng: ${validPri}`);
+            }
+            this.logger.log(
+                `[Lark] Đang lấy số liệu Apify cho ${enrichQueue.length} kênh (mọi nền tảng), vui lòng đợi…`,
+            );
+            try {
+                const { ok, failed } = await this.channelStatsEnrichment.enrichBatch(enrichQueue, {
+                    concurrency: 2,
+                });
+                this.logger.log(`[Lark] Làm giàu số liệu xong: thành công=${ok}, lỗi/bỏ qua=${failed}`);
+            } catch (e: any) {
+                this.logger.warn(`[Lark] Làm giàu số liệu hàng loạt lỗi: ${e?.message || e}`);
+            }
+        }
+
+        const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true } });
+        const inactiveLarkIds = allCh.filter((ch) => !isLarkChannelActiveStatus(ch.status)).map((ch) => ch.id);
+        if (inactiveLarkIds.length > 0) {
+            try {
+                // Dùng raw SQL: client Prisma cũ có thể chưa có field lark_channel_id sau generate
+                const n = await this.prisma.$executeRaw`
+                    UPDATE "tracked_channels"
+                    SET "is_active" = false, "updated_at" = NOW()
+                    WHERE "lark_channel_id" IN (${Prisma.join(inactiveLarkIds)})
+                      AND "added_via" = 'lark'
+                      AND "is_active" = true
+                `;
+                stats.deactivated_inactive_lark = Number(n);
+            } catch (e: any) {
+                this.logger.warn(
+                    `[Lark] deactivate inactive lark tracked_channels skipped: ${e?.message || e}. Chạy migration + npx prisma generate nếu cột lark_channel_id chưa có.`,
+                );
+            }
+        }
+
+        return stats;
+    }
+
+    async importTrackedChannelsForUser(userId: string, prioritizePlatform?: string) {
+        return this.importTrackedChannelsFromChannelTable({ onlyUserId: userId, prioritizePlatform });
+    }
+
     async getChannelData(owner?: string, team?: string, email?: string) {
         const where: any = {
-            status: { contains: 'Đang hoạt động', mode: 'insensitive' }
+            AND: [
+                { status: { not: null } },
+                { NOT: { status: '' } },
+                { status: { contains: 'ạt động', mode: 'insensitive' } },
+            ],
         };
 
         if (email) {
@@ -510,10 +801,11 @@ export class LarkService {
             ];
         }
 
-        return this.prisma.channel.findMany({
+        const list = await this.prisma.channel.findMany({
             where,
-            orderBy: { name: 'asc' }
+            orderBy: { name: 'asc' },
         });
+        return list.filter((ch) => isLarkChannelActiveStatus(ch.status));
     }
 
     async clearChannels() {

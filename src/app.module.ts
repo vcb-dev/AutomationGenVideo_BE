@@ -9,6 +9,7 @@ import { PrismaModule } from "./common/prisma/prisma.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
+import { ChannelEnrichmentModule } from "./modules/channel-enrichment/channel-enrichment.module";
 import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
 import { VideosModule } from "./modules/videos/videos.module";
@@ -37,6 +38,7 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
     AuthModule,
     UsersModule,
     AiIntegrationModule,
+    ChannelEnrichmentModule,
     CollectionModule,
     TrackedChannelsModule,
     VideosModule,
