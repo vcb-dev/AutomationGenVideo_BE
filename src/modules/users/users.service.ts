@@ -150,6 +150,14 @@ export class UsersService {
     });
   }
 
+  /** Ghi đè password_hash bằng bcrypt (dùng sau khi login legacy plain-text). */
+  async rehashPasswordFromPlain(userId: string, plainPassword: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password_hash: await bcrypt.hash(plainPassword, 10) },
+    });
+  }
+
   async update(id: string, updateUserDto: UpdateUserDto) {
     const user = await this.prisma.user.findUnique({ where: { id } });
 
