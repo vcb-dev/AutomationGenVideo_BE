@@ -235,36 +235,61 @@ export class LarkService {
 
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
+        const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
         
-        // Time constraint: 17:00 - 18:00 (5 PM - 6 PM)
-        const nowServer = new Date();
-        const hour = nowServer.getHours();
+        // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
         
         // Check if user is Admin/Manager to bypass constraint
-        const userRec = await this.prisma.user.findFirst({ where: { email } });
+        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
         const roles = userRec?.roles || [];
         const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-        
-        if (!isAdmin && (hour < 17 || hour >= 18)) {
-            throw new Error('Giờ báo cáo Traffic quy định từ 17:00 đến 18:00 hàng ngày. Vui lòng quay lại báo cáo trong khung giờ này.');
-        }
 
-        // 0. Check if already reported today (only for non-admins)
+        // 0. Validate and check date (only for non-admins)
         if (!isAdmin) {
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
+            // Use precise Vietnam timezone bounds
+            const getVietnamBounds = (dateInput?: string | Date) => {
+                let y = 0, m = 0, d = 0;
+                if (typeof dateInput === 'string' && dateInput.length === 10) {
+                    const parts = dateInput.split('-');
+                    y = parseInt(parts[0], 10);
+                    m = parseInt(parts[1], 10) - 1;
+                    d = parseInt(parts[2], 10);
+                } else {
+                    const dateObj = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput || new Date());
+                    y = dateObj.getFullYear();
+                    m = dateObj.getMonth();
+                    d = dateObj.getDate();
+                }
+                return {
+                    start: new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0)),
+                    end: new Date(Date.UTC(y, m, d, 16, 59, 59, 999))
+                };
+            };
+
+            // Block future dates: get today in Vietnam time (UTC+7)
+            const nowUtc = new Date();
+            const vnNow = new Date(nowUtc.getTime() + 7 * 60 * 60 * 1000);
+            const todayVN = `${vnNow.getUTCFullYear()}-${String(vnNow.getUTCMonth() + 1).padStart(2, '0')}-${String(vnNow.getUTCDate()).padStart(2, '0')}`;
+
+            if (reportDate && reportDate > todayVN) {
+                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
+            }
+            
+            // Check for the date they actually specified, or today
+            const bounds = getVietnamBounds(reportDate || new Date());
             
             const alreadyReported = await (this.prisma.larkTraffic as any).findFirst({
                 where: {
-                    email: email,
+                    email: { equals: normalizedSubmitterEmail, mode: 'insensitive' },
                     date: {
-                        gte: todayStart
+                        gte: bounds.start,
+                        lte: bounds.end
                     }
                 }
             });
             
             if (alreadyReported) {
-                throw new Error('Bạn đã gửi báo cáo Traffic ngày hôm nay rồi.');
+                throw new Error('Bạn đã gửi báo cáo Traffic cho ngày này rồi.');
             }
         }
 
@@ -276,7 +301,7 @@ export class LarkService {
         let team = '';
         
         // 1. FIRST: Try from User table (most reliable - admin sets this directly)
-        const userRecord = await this.prisma.user.findFirst({ where: { email } });
+        const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
         if (userRecord?.team) {
             team = userRecord.team;
         }
@@ -1169,16 +1194,7 @@ export class LarkService {
                         },
                     });
                 } else {
-                    await this.prisma.user.create({
-                        data: {
-                            email: syntheticEmail,
-                            password_hash: null,
-                            full_name: employeeData.name,
-                            roles: ['MEMBER'],
-                            is_active: true,
-                            ...payload,
-                        },
-                    });
+                    this.logger.debug(`Skipping synthetic email creation for employee: ${employeeData.name}`);
                 }
                 syncedCount++;
             }
@@ -1568,27 +1584,41 @@ export class LarkService {
             const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
 
             // Fetch reports with optional filters
+            const getVietnamBounds = (dateInput?: string | Date) => {
+                let y = 0, m = 0, d = 0;
+                if (typeof dateInput === 'string' && dateInput.length === 10) {
+                    const parts = dateInput.split('-');
+                    y = parseInt(parts[0], 10);
+                    m = parseInt(parts[1], 10) - 1;
+                    d = parseInt(parts[2], 10);
+                } else {
+                    const dateObj = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput || new Date());
+                    // Fallback to JS local parsing (might inherit server timezone, but okay)
+                    y = dateObj.getFullYear();
+                    m = dateObj.getMonth();
+                    d = dateObj.getDate();
+                }
+                return {
+                    start: new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0)),
+                    end: new Date(Date.UTC(y, m, d, 16, 59, 59, 999))
+                };
+            };
+
             const whereClause: any = {};
             let startOfDay: Date;
             let endOfDay: Date;
 
             if (filters?.startDate && filters?.endDate) {
-                startOfDay = new Date(filters.startDate);
-                startOfDay.setHours(0, 0, 0, 0);
-                endOfDay = new Date(filters.endDate);
-                endOfDay.setHours(23, 59, 59, 999);
+                startOfDay = getVietnamBounds(filters.startDate).start;
+                endOfDay = getVietnamBounds(filters.endDate).end;
             } else if (filters?.date) {
-                const d = new Date(filters.date);
-                startOfDay = new Date(d);
-                startOfDay.setHours(0, 0, 0, 0);
-                endOfDay = new Date(d);
-                endOfDay.setHours(23, 59, 59, 999);
+                const bounds = getVietnamBounds(filters.date);
+                startOfDay = bounds.start;
+                endOfDay = bounds.end;
             } else {
-                const d = new Date();
-                startOfDay = new Date(d);
-                startOfDay.setHours(0, 0, 0, 0);
-                endOfDay = new Date(d);
-                endOfDay.setHours(23, 59, 59, 999);
+                const bounds = getVietnamBounds();
+                startOfDay = bounds.start;
+                endOfDay = bounds.end;
             }
 
             whereClause.date = {
@@ -2023,8 +2053,9 @@ export class LarkService {
                 }
                 
                 if (emailKey) {
+                    // Always index by email (including when nameKey exists) so permission-email fallback works
                     if (!reportsMap.has(emailKey)) {
-                        reportsMap.set(emailKey, nameKey ? reportsMap.get(nameKey) : { ...r });
+                        reportsMap.set(emailKey, nameKey ? (reportsMap.get(nameKey) || { ...r }) : { ...r });
                     }
                 }
 
@@ -2064,7 +2095,13 @@ export class LarkService {
                 }
 
                 const emailKey = kpi.email?.toLowerCase().trim();
-                const report = (nameKey ? reportsMap.get(nameKey) : null) || (emailKey ? reportsMap.get(emailKey) : null);
+                // Lookup permission early to use permission email as fallback for report matching
+                const personPerm = permMap.get(nameKey);
+                const permEmailKey = personPerm?.email ? personPerm.email.toLowerCase().trim() : null;
+                // Match report by: kpi name → kpi email → permission email (covers Google-login users)
+                const report = (nameKey ? reportsMap.get(nameKey) : null)
+                    || (emailKey ? reportsMap.get(emailKey) : null)
+                    || (permEmailKey ? reportsMap.get(permEmailKey) : null);
 
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
                 const trimmedEmpId = kpi.employee_id?.trim();
@@ -2105,7 +2142,7 @@ export class LarkService {
                         teamFilterNormalized.includes(effectiveTeamNormalized);
                 }
 
-                const personPerm = permMap.get(nameKey);
+                // personPerm already resolved above
                 const isSelf = filters?.requesterEmail && personPerm?.email &&
                     personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
 
@@ -2538,23 +2575,36 @@ export class LarkService {
     }
 
     async getUserReportDetails(email: string, dateStr: string) {
-        const date = new Date(dateStr);
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
+        // Parse "YYYY-MM-DD" exactly, offsetting -7 hours (Vietnam time is UTC+7).
+        // For '2026-03-20' Local VN (00:00:00), it's '2026-03-19T17:00:00.000Z' in UTC.
+        // Doing this strictly in UTC ignores the server's locale, preventing bugs.
+        let y = 0, m = 0, d = 0;
+        if (dateStr.includes('T')) {
+            const dateObj = new Date(dateStr);
+            y = dateObj.getFullYear();
+            m = dateObj.getMonth();
+            d = dateObj.getDate();
+        } else {
+            const parts = dateStr.split('-');
+            y = parseInt(parts[0], 10);
+            m = parseInt(parts[1], 10) - 1; // 0-indexed month
+            d = parseInt(parts[2], 10);
+        }
 
-        // Find user name for fallback matching
+        const startOfDay = new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0));
+        const endOfDay = new Date(Date.UTC(y, m, d, 16, 59, 59, 999));
+
         const user = await this.prisma.user.findUnique({
             where: { email }
         });
         const fullName = user?.full_name?.trim();
 
+        const normalizedEmail = email.trim();
         const [report, traffic] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {
                     OR: [
-                        { email: email },
+                        { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
                         ...(fullName ? [{ name: { equals: fullName, mode: 'insensitive' as any } }] : [])
                     ],
                     date: { gte: startOfDay, lte: endOfDay }
@@ -2564,10 +2614,8 @@ export class LarkService {
             this.prisma.larkTraffic.findFirst({
                 where: {
                     OR: [
-                        { email: email },
+                        { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
                         ...(fullName ? [{ name: { equals: fullName, mode: 'insensitive' as any } }] : []),
-                        // Also try with trailing space if needed, or just rely on mode: insensitive for basic cases
-                        // but sometimes Lark has weird spaces
                         ...(fullName ? [{ name: { contains: fullName, mode: 'insensitive' as any } }] : [])
                     ],
                     date: { gte: startOfDay, lte: endOfDay }
