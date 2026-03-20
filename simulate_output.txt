@@ -1,4 +1,0 @@
-﻿Found 2 reports for March
-Report ID: local_1e471e84405f, Key: "Sß╗æ video edit sß╗¡ dß╗Ñng >50% source tß╗▒ quay?", Value: "3332", Parsed: 3332, Final: 3332
-Report ID: local_fb039d676303, Key: "Sß╗æ video edit sß╗¡ dß╗Ñng >50% source tß╗▒ quay?", Value: "Kh├┤ng ß║í", Parsed: NaN, Final: 0
-Total Video Count: 3332
