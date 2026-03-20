@@ -56,26 +56,31 @@ export function extractStatsFromUserVideosResponse(
     const finalLikes = pageLikes > 0 ? pageLikes : metaSum;
     const avatarUrl =
       (profile.avatar_url as string) ||
+      (profile.profilePicUrlHD as string) ||
+      (profile.profilePicUrlHd as string) ||
       (profile.profile_pic_url as string) ||
       (profile.profilePicUrl as string) ||
       '';
     const displayName =
       (profile.display_name as string) ||
+      (profile.fullName as string) ||
       (profile.fullname as string) ||
       (profile.name as string) ||
       (profile.username as string) ||
       fallbackUsername;
     const results = data.results as unknown[] | undefined;
+    const resultsLen = Array.isArray(results) ? results.length : 0;
+    const rawTotalVideos = parseNumber(profile.total_videos ?? profile.media_count);
+    const rawPostsCount = parseNumber(profile.posts_count ?? profile.postsCount);
     return {
       display_name: displayName,
       avatar_url: avatarUrl || undefined,
       total_followers: followerCount > 0 ? followerCount : null,
       total_likes: finalLikes,
       total_views: parseNumber(profile.total_views),
-      total_videos:
-        parseNumber(profile.total_videos ?? profile.media_count ?? profile.posts_count) ||
-        (Array.isArray(results) ? results.length : 0),
-      posts_count: parseNumber(profile.posts_count) || undefined,
+      // Dùng total_videos từ profile nếu > 0, nếu = 0 thì fallback sang posts_count hoặc số kết quả fetch
+      total_videos: rawTotalVideos > 0 ? rawTotalVideos : (rawPostsCount > 0 ? rawPostsCount : resultsLen),
+      posts_count: rawPostsCount > 0 ? rawPostsCount : (resultsLen > 0 ? resultsLen : undefined),
       engagement_rate: parseFloat(String(profile.engagement_rate || 0)) || 0,
     };
   }

@@ -235,13 +235,16 @@ export class AiIntegrationService {
    */
   async analyzeFacebookCompetitor(
     url: string,
-    maxPosts = 30,
+    maxPosts = 200,
     forceMethod: 'auto' | 'graph' | 'apify' = 'apify',
     language = 'vi',
+    startDate?: string,
+    endDate?: string,
+    forceRefresh = false,
   ): Promise<any> {
     const endpoint = `${this.aiServiceUrl}/api/facebook/competitor-insights/`;
     this.logger.log(
-      `Calling AI Service competitor insights: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}, lang=${language}`,
+      `Calling AI Service competitor insights: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}, lang=${language}, start=${startDate}, end=${endDate}, force=${forceRefresh}`,
     );
 
     try {
@@ -254,9 +257,12 @@ export class AiIntegrationService {
               max_posts: maxPosts,
               force_method: forceMethod,
               language,
+              start_date: startDate || undefined,
+              end_date: endDate || undefined,
+              force_refresh: forceRefresh,
             },
             {
-              timeout: 600000, // 10 minutes upper bound, thực tế Gemini trả lời nhanh hơn nhiều
+              timeout: 600000,
             },
           )
           .pipe(
@@ -286,12 +292,15 @@ export class AiIntegrationService {
    */
   async facebookChannelMetrics(
     url: string,
-    maxPosts = 80,
+    maxPosts = 200,
     forceMethod: 'auto' | 'graph' | 'apify' = 'apify',
+    startDate?: string,
+    endDate?: string,
+    forceRefresh = false,
   ): Promise<any> {
     const endpoint = `${this.aiServiceUrl}/api/facebook/channel-metrics/`;
     this.logger.log(
-      `Calling AI Service channel metrics: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}`,
+      `Calling AI Service channel metrics: ${endpoint} url=${url}, max_posts=${maxPosts}, method=${forceMethod}, start=${startDate}, end=${endDate}, force=${forceRefresh}`,
     );
 
     try {
@@ -303,9 +312,12 @@ export class AiIntegrationService {
               url,
               max_posts: maxPosts,
               force_method: forceMethod,
+              start_date: startDate || undefined,
+              end_date: endDate || undefined,
+              force_refresh: forceRefresh,
             },
             {
-              timeout: 600000, // 10 minutes upper bound
+              timeout: 600000,
             },
           )
           .pipe(
@@ -332,10 +344,10 @@ export class AiIntegrationService {
   /**
    * Generic channel insights (Gemini) for all platforms.
    */
-  async channelInsights(platform: string, usernameOrUrl: string, maxPosts = 30, language = 'vi'): Promise<any> {
+  async channelInsights(platform: string, usernameOrUrl: string, maxPosts = 200, language = 'vi', startDate?: string, endDate?: string, forceRefresh = false): Promise<any> {
     const endpoint = `${this.aiServiceUrl}/api/channel/insights/`;
     this.logger.log(
-      `Calling AI Service generic insights: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}, lang=${language}`,
+      `Calling AI Service generic insights: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}, lang=${language}, start=${startDate}, end=${endDate}, force=${forceRefresh}`,
     );
 
     try {
@@ -348,6 +360,9 @@ export class AiIntegrationService {
               username: usernameOrUrl,
               max_posts: maxPosts,
               language,
+              start_date: startDate || undefined,
+              end_date: endDate || undefined,
+              force_refresh: forceRefresh,
             },
             { timeout: 600000 },
           )
@@ -371,10 +386,10 @@ export class AiIntegrationService {
   /**
    * Generic channel metrics for all platforms (no Gemini).
    */
-  async channelMetrics(platform: string, usernameOrUrl: string, maxPosts = 80): Promise<any> {
+  async channelMetrics(platform: string, usernameOrUrl: string, maxPosts = 200, startDate?: string, endDate?: string, forceRefresh = false): Promise<any> {
     const endpoint = `${this.aiServiceUrl}/api/channel/metrics/`;
     this.logger.log(
-      `Calling AI Service generic metrics: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}`,
+      `Calling AI Service generic metrics: ${endpoint} platform=${platform}, user=${usernameOrUrl}, max_posts=${maxPosts}, start=${startDate}, end=${endDate}, force=${forceRefresh}`,
     );
 
     try {
@@ -386,6 +401,9 @@ export class AiIntegrationService {
               platform,
               username: usernameOrUrl,
               max_posts: maxPosts,
+              start_date: startDate || undefined,
+              end_date: endDate || undefined,
+              force_refresh: forceRefresh,
             },
             { timeout: 600000 },
           )

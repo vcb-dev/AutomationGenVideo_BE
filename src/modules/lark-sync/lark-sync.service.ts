@@ -1,17 +1,51 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
-export class LarkSyncService {
+export class LarkSyncService implements OnApplicationBootstrap {
     private readonly logger = new Logger(LarkSyncService.name);
 
     constructor(
         private readonly prisma: PrismaService,
         private readonly larkService: LarkService,
     ) { }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Tự động sync ngay khi server khởi động
+    // ──────────────────────────────────────────────────────────────────────────
+    async onApplicationBootstrap() {
+        this.logger.log('🚀 Server started — triggering initial Lark sync...');
+        // Delay 5s để chắc chắn DB/Prisma đã sẵn sàng
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        try {
+            const [kpi, emp] = await Promise.all([
+                this.larkService.syncKPIData(),
+                this.larkService.syncEmployeeData(),
+            ]);
+            this.logger.log(`✅ Bootstrap KPI sync: ${kpi?.synced ?? 0} records`);
+            this.logger.log(`✅ Bootstrap Employee sync: ${emp?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap KPI/Employee sync failed: ${err?.message}`);
+        }
+        try {
+            await this.larkService.syncPermissionData();
+            this.logger.log('✅ Bootstrap Permission sync completed');
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
+        }
+        // NOTE: syncChannelData() bị bỏ khỏi bootstrap vì nó gọi Apify enrichment
+        // cho từng kênh → tốn quota. Channel sẽ sync qua cron hàng giờ.
+        try {
+            await this.syncFromLark();
+            this.logger.log('✅ Bootstrap HR sync completed');
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap HR sync failed: ${err?.message}`);
+        }
+        this.logger.log('🎉 Initial Lark sync on startup finished!');
+    }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Tự động chạy mỗi 3 tiếng (0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00)
