@@ -30,7 +30,7 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
-        limit: 10,
+        limit: 120, // Tăng giới hạn từ 10 lên 120 Req/Phút/IP cho 70 users
       },
     ]),
     ScheduleModule.forRoot(),

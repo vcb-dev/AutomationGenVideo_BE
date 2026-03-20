@@ -1,6 +1,8 @@
 import { NestFactory } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+import helmet from 'helmet';
+import * as compression from 'compression';
 import { AppModule } from "./app.module";
 
 // Fix BigInt serialization for JSON
@@ -10,6 +12,10 @@ import { AppModule } from "./app.module";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Security and Optimization
+  app.use(helmet());
+  app.use(compression());
 
   // Global validation pipe
   app.useGlobalPipes(
