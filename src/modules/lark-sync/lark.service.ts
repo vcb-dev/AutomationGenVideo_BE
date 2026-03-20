@@ -744,16 +744,16 @@ export class LarkService {
                 this.logger.log(`[Lark] Ưu tiên Apify nền tảng: ${validPri}`);
             }
             this.logger.log(
-                `[Lark] Đang lấy số liệu Apify cho ${enrichQueue.length} kênh (mọi nền tảng), vui lòng đợi…`,
+                `[Lark] Đã đẩy ${enrichQueue.length} kênh vào hàng đợi làm giàu số liệu (chạy ngầm).`,
             );
-            try {
-                const { ok, failed } = await this.channelStatsEnrichment.enrichBatch(enrichQueue, {
-                    concurrency: 2,
-                });
+            // FIRE AND FORGET - KHÔNG AWAIT ĐỂ KHÔNG CHẶN API
+            this.channelStatsEnrichment.enrichBatch(enrichQueue, {
+                concurrency: 2,
+            }).then(({ ok, failed }) => {
                 this.logger.log(`[Lark] Làm giàu số liệu xong: thành công=${ok}, lỗi/bỏ qua=${failed}`);
-            } catch (e: any) {
-                this.logger.warn(`[Lark] Làm giàu số liệu hàng loạt lỗi: ${e?.message || e}`);
-            }
+            }).catch(e => {
+                this.logger.warn(`[Lark] Làm giàu số liệu hàng loạt lỗi (background): ${e?.message || e}`);
+            });
         }
 
         const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true } });
