@@ -2225,51 +2225,66 @@ export class LarkService {
                     effectiveStatus = 'CHƯA BÁO CÁO';
                 }
 
-                return {
-                    id: kpi.id,
-                    employee_id: trimmedEmpId,
-                    personKey: personKey,
-                    name: kpi.name,
-                    position: position,
-                    role: personPerm?.role || null,
-                    email: personEmail || null,
-                    team: effectiveTeam,
-                    avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
-                    tag: kpi.tag || kpi.name || null,
-                    status: effectiveStatus,
-                    date: report?.date || reportKpi?.report_date || null,
-                    checklist,
-                    answers: answersData,
-                    videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
-                    // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
-                    // Force daily goal to always show the PER-DAY target, not monthly total
-                    dailyGoal: (reportKpi?.kpi_day ?? (kpi.kpi_day || 0)),
-                    done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                    kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
-                    kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
-                    completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                    completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
-                    // Stable monthly traffic/revenue for the Summary Cards:
-                    traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
-                    revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
-                    task_progress: reportKpi ? {
-                        task_auto: reportKpi.task_auto || 0,
-                        task_new: reportKpi.task_new || 0,
-                        kpi_status: reportKpi.kpi_status || 'N/A'
-                    } : {
-                        task_auto: kpi.task_auto || 0,
-                        task_new: kpi.task_new || 0,
-                        kpi_status: kpi.kpii_status || 'N/A'
-                    },
-                    traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
-                    revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
-                    trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
-                    revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
-                    monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
-                    channelCount: channelMap.get(nameKey) || 0,
-                    isAuthorizedForReport,
-                    isMatchForRanking
-                };
+                    // Lookup daily traffic for this person
+                    const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
+
+                    return {
+                        id: kpi.id,
+                        employee_id: trimmedEmpId,
+                        personKey: personKey,
+                        name: kpi.name,
+                        position: position,
+                        role: personPerm?.role || null,
+                        email: personEmail || null,
+                        team: effectiveTeam,
+                        avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                        tag: kpi.tag || kpi.name || null,
+                        status: effectiveStatus,
+                        date: report?.date || reportKpi?.report_date || null,
+                        checklist,
+                        answers: answersData,
+                        videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
+                        // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
+                        // Force daily goal to always show the PER-DAY target, not monthly total
+                        dailyGoal: (reportKpi?.kpi_day ?? (kpi.kpi_day || 0)),
+                        done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                        kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
+                        kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
+                        completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                        completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
+                        // Stable monthly traffic/revenue for the Summary Cards:
+                        traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
+                        revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
+                        task_progress: reportKpi ? {
+                            task_auto: reportKpi.task_auto || 0,
+                            task_new: reportKpi.task_new || 0,
+                            kpi_status: reportKpi.kpi_status || 'N/A'
+                        } : {
+                            task_auto: kpi.task_auto || 0,
+                            task_new: kpi.task_new || 0,
+                            kpi_status: kpi.kpii_status || 'N/A'
+                        },
+                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
+                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
+                        trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
+                        revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
+                        monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
+                        channelCount: channelMap.get(nameKey) || 0,
+                        isAuthorizedForReport,
+                        isMatchForRanking,
+                        // Daily traffic per platform
+                        trafficToday: personTraffic ? {
+                            fb: Number(personTraffic.traffic_fb || 0),
+                            ig: Number(personTraffic.traffic_ig || 0),
+                            tiktok: Number(personTraffic.traffic_tiktok || 0),
+                            yt: Number(personTraffic.traffic_yt || 0),
+                            thread: Number(personTraffic.traffic_thread || 0),
+                            lemon8: Number(personTraffic.traffic_lemon8 || 0),
+                            zalo: Number(personTraffic.traffic_zalo || 0),
+                            twitter: Number(personTraffic.traffic_twitter || 0),
+                            total: Number(personTraffic.total_traffic || 0),
+                        } : null,
+                    };
             });
 
             // --- NEW: Group by Person to aggregate stats across months if viewing range ---
