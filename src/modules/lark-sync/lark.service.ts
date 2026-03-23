@@ -274,100 +274,88 @@ export class LarkService {
             if (reportDate && reportDate > todayVN) {
                 throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
             }
-            
         }
 
-
-        const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
+        const trafficDetails = (payload as any).trafficDetails;
+        const breakdown = trafficDetails?.breakdown || {};
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
         
-        // Lookup team - priority: User (Lark fields) > LarkPermission
+        // Lookup team
         let team = '';
-        
-        // 1. FIRST: Try from User table (most reliable - admin sets this directly)
         const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        if (userRecord?.team) {
-            team = userRecord.team;
-        }
-        
-        // 2. Fallback: Try from LarkPermission
+        if (userRecord?.team) team = userRecord.team;
         if (!team) {
             const userPerm = await this.getPermissionByEmail(email);
             if (userPerm?.team) team = userPerm.team;
         }
-        
-        // 3. Last resort: User row synced from Lark (same full_name)
         if (!team && name) {
             const emp = await this.prisma.user.findFirst({
                 where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
             });
             if (emp?.team) team = emp.team;
         }
-        
-        this.logger.debug(`Team resolved for ${email}: "${team}"`);
 
-        const cleanBi = (v: any) => v ? parseInt(v) : 0;
-        
-        const fbLevel = cleanBi(traffic.fb);
-        const igLevel = cleanBi(traffic.ig);
-        const threadLevel = cleanBi(traffic.thread);
-        const tiktokLevel = cleanBi(traffic.tiktok);
-        const lemon8Level = cleanBi(traffic.lemon8);
-        const ytLevel = cleanBi(traffic.yt);
-        const zaloLevel = cleanBi(traffic.zalo);
-        const twitterLevel = cleanBi(traffic.twitter);
-        
-        const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel + twitterLevel;
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+        const recordsToCreate = [];
 
-        // Local only saving
-        const localRecordId = `local_trf_${Date.now()}`;
-        try {
-            await this.prisma.larkTraffic.create({
-                data: {
-                    id: localRecordId,
-                    email: email,
-                    name: name,
-                    date: now,
-                    employee: name,
-                    team: team,
-                    month: monthString,
-                    traffic_fb: BigInt(fbLevel),
-                    traffic_ig: BigInt(igLevel),
-                    traffic_lemon8: BigInt(lemon8Level),
-                    traffic_thread: BigInt(threadLevel),
-                    traffic_tiktok: BigInt(tiktokLevel),
-                    traffic_yt: BigInt(ytLevel),
-                    traffic_zalo: BigInt(zaloLevel),
-                    traffic_twitter: BigInt(twitterLevel),
-                    total_traffic: BigInt(total),
-                    is_confirmed: 'Pending',
-                    evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
-                    evidence_fb: platformEvidences?.fb ? JSON.stringify(platformEvidences.fb) : null,
-                    evidence_ig: platformEvidences?.ig ? JSON.stringify(platformEvidences.ig) : null,
-                    evidence_tiktok: platformEvidences?.tiktok ? JSON.stringify(platformEvidences.tiktok) : null,
-                    evidence_yt: platformEvidences?.yt ? JSON.stringify(platformEvidences.yt) : null,
-                    evidence_thread: platformEvidences?.thread ? JSON.stringify(platformEvidences.thread) : null,
-                    evidence_lemon8: platformEvidences?.lemon8 ? JSON.stringify(platformEvidences.lemon8) : null,
-                    evidence_zalo: platformEvidences?.zalo ? JSON.stringify(platformEvidences.zalo) : null,
-                    evidence_twitter: platformEvidences?.twitter ? JSON.stringify(platformEvidences.twitter) : null,
-                    channel_fb: channels?.fb || null,
-                    channel_ig: channels?.ig || null,
-                    channel_tiktok: channels?.tiktok || null,
-                    channel_yt: channels?.yt || null,
-                    channel_thread: channels?.thread || null,
-                    channel_lemon8: channels?.lemon8 || null,
-                    channel_zalo: channels?.zalo || null,
-                    channel_twitter: channels?.twitter || null,
-                    details: (payload as any).trafficDetails || null,
-                } as any
-
-
+        // 1. Process breakdown-based submissions
+        platformKeys.forEach(pKey => {
+            const platformEntries = breakdown[pKey] || [];
+            platformEntries.forEach((entry: any) => {
+                const val = parseInt(entry.value || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_trf_${pKey}_${Math.random().toString(36).slice(2, 7)}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_traffic: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`traffic_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = entry.channel || null;
+                    if (entry.evidences && entry.evidences.length > 0) {
+                        data[`evidence_${pKey}`] = JSON.stringify(entry.evidences.map((ev: any) => ev.token));
+                    }
+                    recordsToCreate.push(data);
+                }
             });
-            return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
+        });
+
+        // 2. Fallback for legacy submissions (if no breakdown entries were created but traffic object has values)
+        if (recordsToCreate.length === 0) {
+            platformKeys.forEach(pKey => {
+                const val = parseInt(traffic[pKey as keyof typeof traffic] || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_legacy_${pKey}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_traffic: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`traffic_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = (channels as any)?.[pKey] || null;
+                    const evidence = (platformEvidences as any)?.[pKey];
+                    if (evidence && Array.isArray(evidence) && evidence.length > 0) {
+                        data[`evidence_${pKey}`] = JSON.stringify(evidence);
+                    }
+                    recordsToCreate.push(data);
+                }
+            });
+        }
+
+        try {
+            // Save all rows
+            for (const data of recordsToCreate) {
+                await this.prisma.larkTraffic.create({ data });
+            }
+
+            return { 
+                message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`, 
+                recordIds: recordsToCreate.map(r => r.id) 
+            };
         } catch (dbError) {
-            this.logger.error('Error saving local traffic report:', dbError);
-            throw new Error(`Could not save local traffic report: ${dbError.message}`);
+            this.logger.error('Error saving multi-row traffic report:', dbError);
+            throw new Error(`Could not save traffic report: ${dbError.message}`);
         }
     }
 
@@ -1829,40 +1817,29 @@ export class LarkService {
 
                 const mergeTraffic = (existing: any, current: any) => {
                     const res = { ...existing };
+                    if (!res.details) res.details = [];
                     const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
-                    
                     res.total_traffic = (res.total_traffic || BigInt(0)) + (current.total_traffic || BigInt(0));
                     platforms.forEach(p => {
-                        const trafficKey = `traffic_${p}`;
-                        const channelKey = `channel_${p}`;
-                        res[trafficKey] = (res[trafficKey] || BigInt(0)) + (current[trafficKey] || BigInt(0));
-                        if (current[channelKey]) {
-                            res[channelKey] = res[channelKey] ? `${res[channelKey]}, ${current[channelKey]}` : current[channelKey];
+                        const tk = `traffic_${p}`, ck = `channel_${p}`, ek = `evidence_${p}`;
+                        const val = Number(current[tk] || 0);
+                        res[tk] = (res[tk] || BigInt(0)) + (current[tk] || BigInt(0));
+                        if (current[ck]) res[ck] = res[ck] ? `${res[ck]}, ${current[ck]}` : current[ck];
+                        if (val > 0) {
+                            let ev = [];
+                            try { if (current[ek]) ev = JSON.parse(current[ek]); } catch (e) {}
+                            res.details.push({ platform: p, channel: current[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
                         }
                     });
-
-                    if (current.details) {
-                        const existingDetails = Array.isArray(res.details) ? res.details : [];
-                        const currentDetails = Array.isArray(current.details) ? current.details : [];
-                        res.details = [...existingDetails, ...currentDetails];
-                    }
-
                     return res;
-
                 };
 
-                if (trafficMapByName.has(nameKey)) {
-                    trafficMapByName.set(nameKey, mergeTraffic(trafficMapByName.get(nameKey), t));
-                } else {
-                    trafficMapByName.set(nameKey, { ...t });
-                }
+                const merged = trafficMapByName.has(nameKey) ? mergeTraffic(trafficMapByName.get(nameKey), t) : mergeTraffic({ total_traffic: BigInt(0) }, t);
+                trafficMapByName.set(nameKey, merged);
 
                 if (inferredEmail) {
-                    if (trafficMapByEmail.has(inferredEmail)) {
-                        trafficMapByEmail.set(inferredEmail, mergeTraffic(trafficMapByEmail.get(inferredEmail), t));
-                    } else {
-                        trafficMapByEmail.set(inferredEmail, { ...t });
-                    }
+                    const mergedMail = trafficMapByEmail.has(inferredEmail) ? mergeTraffic(trafficMapByEmail.get(inferredEmail), t) : mergeTraffic({ total_traffic: BigInt(0) }, t);
+                    trafficMapByEmail.set(inferredEmail, mergedMail);
                 }
             });
 
@@ -2662,53 +2639,64 @@ export class LarkService {
             })
         ]);
 
-        let traffic: any = trafficRecords.length > 0 ? { ...trafficRecords[0] } : null;
-        if (trafficRecords.length > 1) {
-            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
-            for (let i = 1; i < trafficRecords.length; i++) {
-                const rec = trafficRecords[i];
-                traffic.total_traffic = (traffic.total_traffic || BigInt(0)) + (rec.total_traffic || BigInt(0));
-                platforms.forEach(p => {
-                    const trafficKey = `traffic_${p}`;
-                    const channelKey = `channel_${p}`;
-                    const evidenceKey = `evidence_${p}`;
-                    
-                    traffic[trafficKey] = (traffic[trafficKey] || BigInt(0)) + (rec[trafficKey] || BigInt(0));
-                    
-                    if (rec[channelKey]) {
-                        traffic[channelKey] = traffic[channelKey] ? `${traffic[channelKey]}, ${rec[channelKey]}` : rec[channelKey];
-                    }
+        let traffic: any = null;
+        let details: any[] = [];
+        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
 
-                    if (rec[evidenceKey]) {
-                        try {
-                            const currentEvidence = traffic[evidenceKey] ? JSON.parse(traffic[evidenceKey]) : [];
-                            const newEvidence = JSON.parse(rec[evidenceKey]);
-                            if (Array.isArray(newEvidence)) {
-                                traffic[evidenceKey] = JSON.stringify([...currentEvidence, ...newEvidence]);
-                            }
-                        } catch (e) {}
+        if (trafficRecords.length > 0) {
+            traffic = { ...trafficRecords[0] };
+            traffic.total_traffic = Number(traffic.total_traffic || 0);
+            platforms.forEach(p => {
+                const tk = `traffic_${p}`;
+                traffic[tk] = Number(traffic[tk] || 0);
+            });
+
+            const buildDetails = (rec: any) => {
+                platforms.forEach(p => {
+                    const tk = `traffic_${p}`;
+                    const ck = `channel_${p}`;
+                    const ek = `evidence_${p}`;
+                    const val = Number(rec[tk] || 0);
+                    if (val > 0) {
+                        let ev = [];
+                        try { if (rec[ek]) ev = JSON.parse(rec[ek]); } catch (e) {}
+                        details.push({ platform: p, channel: rec[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
                     }
                 });
+            };
 
-                if (rec.details) {
-                    try {
-                        const current = Array.isArray(traffic.details) ? traffic.details : [];
-                        const additions = Array.isArray(rec.details) ? rec.details : [];
-                        traffic.details = [...current, ...additions];
-                    } catch (e) {}
-                }
+            buildDetails(trafficRecords[0]);
 
-                if (rec.evidence_files) {
-
-                    try {
-                        const currentFiles = traffic.evidence_files ? JSON.parse(traffic.evidence_files) : [];
-                        const newFiles = JSON.parse(rec.evidence_files);
-                        if (Array.isArray(newFiles)) {
-                            traffic.evidence_files = JSON.stringify([...currentFiles, ...newFiles]);
+            if (trafficRecords.length > 1) {
+                for (let i = 1; i < trafficRecords.length; i++) {
+                    const rec = trafficRecords[i];
+                    traffic.total_traffic += Number(rec.total_traffic || 0);
+                    platforms.forEach(p => {
+                        const tk = `traffic_${p}`;
+                        const ck = `channel_${p}`;
+                        const ek = `evidence_${p}`;
+                        traffic[tk] = (traffic[tk] || 0) + Number(rec[tk] || 0);
+                        if (rec[ck]) traffic[ck] = traffic[ck] ? `${traffic[ck]}, ${rec[ck]}` : rec[ck];
+                        if (rec[ek]) {
+                            try {
+                                const curr = traffic[ek] ? JSON.parse(traffic[ek]) : [];
+                                const newE = JSON.parse(rec[ek]);
+                                if (Array.isArray(newE)) traffic[ek] = JSON.stringify([...curr, ...newE]);
+                            } catch (e) {}
                         }
-                    } catch (e) {}
+                    });
+
+                    if (rec.evidence_files) {
+                        try {
+                            const currF = traffic.evidence_files ? JSON.parse(traffic.evidence_files) : [];
+                            const newF = JSON.parse(rec.evidence_files);
+                            if (Array.isArray(newF)) traffic.evidence_files = JSON.stringify([...currF, ...newF]);
+                        } catch (e) {}
+                    }
+                    buildDetails(rec);
                 }
             }
+            traffic.details = details;
         }
 
         // Process traffic evidence URLs to use proxy
