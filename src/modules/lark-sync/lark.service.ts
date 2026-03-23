@@ -1688,7 +1688,6 @@ export class LarkService {
                 // 3. Fetch employees (Filtered if possible)
                 this.prisma.user.findMany({
                     where: {
-                        lark_employee_record_id: { not: null },
                         ...(dbTeamFilter ? { team: dbTeamFilter } : {}),
                     },
                 }),
@@ -1763,11 +1762,14 @@ export class LarkService {
                 const row = {
                     employee_id: emp.employee_id,
                     name: emp.full_name,
+                    email: emp.email,
+                    team: emp.team,
                     image_url: emp.image_url,
-                    status: emp.employee_status,
-                    position: emp.employee_position,
+                    status: emp.employee_status || emp.status,
+                    position: emp.employee_position || (emp.roles?.includes('LEADER') ? 'Leader' : 'Member'),
                 };
                 if (row.employee_id) employeeMap.set(String(row.employee_id).trim(), row);
+                if (emp.email) employeeMap.set(emp.email.toLowerCase().trim(), row);
                 if (row.name) {
                     const nameKey = row.name
                         .toLowerCase()
@@ -2070,6 +2072,7 @@ export class LarkService {
                             id: `report_${r.id}`,
                             employee_id: (nameKey && nameToPersonKey.get(nameKey)) ? nameToPersonKey.get(nameKey) : null,
                             name: r.name || r.email,
+                            email: r.email,
                             team: r.team || 'Khác',
                             kpi_day: 0,
                             kpi_month: 0,
@@ -2106,7 +2109,11 @@ export class LarkService {
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
                 const trimmedEmpId = kpi.employee_id?.trim();
                 const personKey = trimmedEmpId || nameKey;
-                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
+                const emailLookupKey = kpi.email ? kpi.email.toLowerCase().trim() : null;
+                const employee = 
+                    (emailLookupKey ? employeeMap.get(emailLookupKey) : null) || 
+                    employeeMap.get(nameKey) || 
+                    (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
                 // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
                 const empStatus = (employee?.status || '').toLowerCase().trim();
@@ -2125,7 +2132,7 @@ export class LarkService {
 
                 const position = employee?.position || null;
 
-                const effectiveTeam = report?.team || kpi.team || 'Khác';
+                const effectiveTeam = report?.team || kpi.team || employee?.team || 'Khác';
                 const effectiveTeamNormalized = effectiveTeam.toLowerCase().trim();
 
                 // Relaxed team matching with support for special group filters
@@ -2143,8 +2150,9 @@ export class LarkService {
                 }
 
                 // personPerm already resolved above
-                const isSelf = filters?.requesterEmail && personPerm?.email &&
-                    personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
+                const personEmailForSelf = report?.email || personPerm?.email || kpi.email;
+                const isSelf = filters?.requesterEmail && personEmailForSelf &&
+                    personEmailForSelf.toLowerCase().trim() === filters.requesterEmail.toLowerCase().trim();
 
                 // 2. Logic cho Báo cáo (Reports) & Summary:
                 // - Đã cập nhật theo yêu cầu: Mọi role (Admin, Manager, Leader, Member) đều có thể xem tất cả theo bộ lọc
@@ -2206,23 +2214,27 @@ export class LarkService {
                 const personEmail = report?.email || reportKpi?.email || personPerm?.email;
                 const normalizedEmail = personEmail?.toLowerCase().trim();
                 const needsTraffic = (normalizedEmail && channelEmailSet.has(normalizedEmail)) || channelNameSet.has(nameKey);
-                const hasTraffic = (normalizedEmail && trafficMapByEmail.has(normalizedEmail)) || trafficMapByName.has(nameKey);
+                const trafficObj = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey);
+                const hasTraffic = !!trafficObj;
                 
                 let effectiveStatus = 'CHƯA BÁO CÁO';
                 const baseReported = !!(report || reportKpi);
                 
                 if (baseReported) {
                     if (needsTraffic) {
-                        // If they build channels, they MUST also report traffic to be marked as reported
-                        effectiveStatus = hasTraffic ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO';
+                        effectiveStatus = hasTraffic ? 'ĐÃ BÁO CÁO ĐỦ' : 'CHƯA BÁO CÁO TRAFFIC';
                     } else {
-                        effectiveStatus = 'ĐÚNG HẠN';
+                        effectiveStatus = 'ĐÃ BÁO CÁO ĐỦ';
                     }
-                } else if (hasTraffic && needsTraffic) {
-                    // Even if no work report, if they reported traffic and that's their main task, maybe mark something?
-                    // User requested that if they HAVEN'T reported traffic, it's "CHƯA BÁO CÁO".
-                    // If they ONLY reported traffic, we'll keep it as "CHƯA BÁO CÁO" which is safe since they likely need to do the checklist too.
+                } else if (hasTraffic) {
+                    effectiveStatus = 'CHƯA BÁO CÁO MEMBER';
+                } else {
                     effectiveStatus = 'CHƯA BÁO CÁO';
+                }
+
+                let effectiveDate = report?.created_at || report?.date || reportKpi?.created_at || reportKpi?.report_date || null;
+                if (hasTraffic && trafficObj) {
+                    effectiveDate = trafficObj.created_at || trafficObj.date || effectiveDate;
                 }
 
                 return {
@@ -2237,7 +2249,7 @@ export class LarkService {
                     avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
                     tag: kpi.tag || kpi.name || null,
                     status: effectiveStatus,
-                    date: report?.date || reportKpi?.report_date || null,
+                    date: effectiveDate,
                     checklist,
                     answers: answersData,
                     videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
@@ -2594,12 +2606,12 @@ export class LarkService {
         const startOfDay = new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0));
         const endOfDay = new Date(Date.UTC(y, m, d, 16, 59, 59, 999));
 
-        const user = await this.prisma.user.findUnique({
-            where: { email }
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = await this.prisma.user.findFirst({
+            where: { email: { equals: normalizedEmail, mode: 'insensitive' } }
         });
         const fullName = user?.full_name?.trim();
 
-        const normalizedEmail = email.trim();
         const [report, traffic] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {

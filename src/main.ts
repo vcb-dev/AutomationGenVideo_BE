@@ -14,7 +14,9 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Security and Optimization
-  app.use(helmet());
+  app.use(helmet({
+    crossOriginResourcePolicy: false,
+  }));
   app.use(compression());
 
   // Global validation pipe

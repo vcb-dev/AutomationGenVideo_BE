@@ -88,7 +88,8 @@ export class AuthService {
 
   async validateGoogleUser(googleUser: GoogleUser) {
     // Check if user exists by email
-    let user = await this.usersService.findByEmail(googleUser.email);
+    const emailLowerCase = googleUser.email.toLowerCase();
+    let user = await this.usersService.findByEmail(emailLowerCase);
 
     if (user) {
       // If user exists but no google_id, link it
@@ -97,7 +98,7 @@ export class AuthService {
           google_id: googleUser.googleId,
           image_url: googleUser.picture,
         } as any);
-        user = await this.usersService.findByEmail(googleUser.email); // Refresh
+        user = await this.usersService.findByEmail(emailLowerCase); // Refresh
       }
       return user;
     }
@@ -109,14 +110,15 @@ export class AuthService {
 
   async completeGoogleRegistration(googleUser: GoogleUser, role: string) {
     // Check if user already exists
-    const existingUser = await this.usersService.findByEmail(googleUser.email);
+    const emailLowerCase = googleUser.email.toLowerCase();
+    const existingUser = await this.usersService.findByEmail(emailLowerCase);
     if (existingUser) {
       throw new UnauthorizedException("User already exists");
     }
 
     // Prepare user data - always assign MEMBER role for new users
     const userData: any = {
-      email: googleUser.email,
+      email: emailLowerCase,
       full_name: `${googleUser.firstName} ${googleUser.lastName}`.trim(),
       password: "", // Will be set to null by UsersService
       roles: ["MEMBER"],
