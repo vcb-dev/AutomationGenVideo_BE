@@ -236,9 +236,9 @@ export class LarkService {
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
-        
+
         // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
-        
+
         // Check if user is Admin/Manager to bypass constraint
         const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
         const roles = userRec?.roles || [];
@@ -280,7 +280,7 @@ export class LarkService {
         const breakdown = trafficDetails?.breakdown || {};
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
-        
+
         // Lookup team
         let team = '';
         const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
@@ -349,9 +349,9 @@ export class LarkService {
                 await this.prisma.larkTraffic.create({ data });
             }
 
-            return { 
-                message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`, 
-                recordIds: recordsToCreate.map(r => r.id) 
+            return {
+                message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
+                recordIds: recordsToCreate.map(r => r.id)
             };
         } catch (dbError) {
             this.logger.error('Error saving multi-row traffic report:', dbError);
@@ -495,9 +495,9 @@ export class LarkService {
                     status:
                         extractString(
                             fields['Trạng thái hoạt động'] ??
-                                fields['status'] ??
-                                fields['Trạng thái'] ??
-                                fields['Trạng Thái'],
+                            fields['status'] ??
+                            fields['Trạng thái'] ??
+                            fields['Trạng Thái'],
                         ) || '',
                     team_traffic: extractString(fields['Team Traffic']) || '',
                     owner: extractString(fields['NV traffic xây kênh']) || '',
@@ -1136,8 +1136,8 @@ export class LarkService {
                 });
                 const byEmpId = employeeData.employee_id
                     ? await this.prisma.user.findFirst({
-                          where: { employee_id: employeeData.employee_id },
-                      })
+                        where: { employee_id: employeeData.employee_id },
+                    })
                     : null;
                 const byName = await this.prisma.user.findFirst({
                     where: {
@@ -1664,7 +1664,6 @@ export class LarkService {
                 // 3. Fetch employees (Filtered if possible)
                 this.prisma.user.findMany({
                     where: {
-                        lark_employee_record_id: { not: null },
                         ...(dbTeamFilter ? { team: dbTeamFilter } : {}),
                     },
                 }),
@@ -1675,7 +1674,7 @@ export class LarkService {
                 }),
                 // 5. Fetch channels
                 this.prisma.channel.findMany({
-                    where: { 
+                    where: {
                         status: 'Đang hoạt động',
                         ...(dbTeamFilter ? { team_traffic: dbTeamFilter } : {})
                     }
@@ -1739,11 +1738,14 @@ export class LarkService {
                 const row = {
                     employee_id: emp.employee_id,
                     name: emp.full_name,
+                    email: emp.email,
+                    team: emp.team,
                     image_url: emp.image_url,
-                    status: emp.employee_status,
-                    position: emp.employee_position,
+                    status: emp.employee_status || emp.status,
+                    position: emp.employee_position || (emp.roles?.includes('LEADER') ? 'Leader' : 'Member'),
                 };
                 if (row.employee_id) employeeMap.set(String(row.employee_id).trim(), row);
+                if (emp.email) employeeMap.set(emp.email.toLowerCase().trim(), row);
                 if (row.name) {
                     const nameKey = row.name
                         .toLowerCase()
@@ -1782,7 +1784,7 @@ export class LarkService {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
-                    
+
                     const normalizedOwner = h.owner.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     channelNameSet.add(normalizedOwner);
 
@@ -1827,7 +1829,7 @@ export class LarkService {
                         if (current[ck]) res[ck] = res[ck] ? `${res[ck]}, ${current[ck]}` : current[ck];
                         if (val > 0) {
                             let ev = [];
-                            try { if (current[ek]) ev = JSON.parse(current[ek]); } catch (e) {}
+                            try { if (current[ek]) ev = JSON.parse(current[ek]); } catch (e) { }
                             res.details.push({ platform: p, channel: current[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
                         }
                     });
@@ -1871,7 +1873,7 @@ export class LarkService {
 
                 const mergeUpdate = (existing: any, current: any) => {
                     const res = { ...existing };
-                    
+
                     // Prioritize current record if it has the actual target date we are looking at
                     // Otherwise, use Math.max to avoid overwriting progress with 0
                     const currentRD = current.report_date ? new Date(current.report_date).toDateString() : null;
@@ -1891,12 +1893,12 @@ export class LarkService {
                     res.kpi_day = Math.max(Number(res.kpi_day) || 0, Number(current.kpi_day) || 0);
                     res.task_auto = (Number(res.task_auto) || 0) + (Number(current.task_auto) || 0);
                     res.task_new = (Number(res.task_new) || 0) + (Number(current.task_new) || 0);
-                    
+
                     if (currentRD === targetRD || !res.kpi_status || res.kpi_status === 'N/A') {
                         res.kpi_status = current.kpi_status;
                         res.team = current.team || existing.team;
                     }
-                    
+
                     return res;
                 };
 
@@ -1959,7 +1961,7 @@ export class LarkService {
                 kpiYear = matchedMonth.year;
 
                 const personKey = trimmedEmpId || nameKey || kpi.id;
-                
+
                 // --- FIX: Use column 'month' (T1, T2...) for aggregation keys ---
                 const mStrNormalized = (kpi.month || '').trim().toUpperCase();
                 const personMonthKey = `${personKey}_T${kpiMonth}_${kpiYear}`;
@@ -1994,26 +1996,26 @@ export class LarkService {
                     // For monthly fields, always keep the max/latest
                     existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
                     existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
-                    
+
                     if (currentRD === targetRD) {
                         existing.kpi_day = Number(kpi.kpi_day) || 0;
                         (existing as any).hasExactDayKpi = true;
                     } else if (!(existing as any).hasExactDayKpi) {
                         existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
                     }
-                    
+
                     // Handle BigInt for traffic/revenue
                     const currentTraffic = BigInt(kpi.traffic_month || 0);
                     const currentRevenue = BigInt(kpi.revenue_month || 0);
                     const existingTraffic = BigInt(existing.traffic_month || 0);
                     const existingRevenue = BigInt(existing.revenue_month || 0);
-                    
+
                     if (currentTraffic > existingTraffic) {
                         existing.traffic_month = kpi.traffic_month;
                         if (kpi.report_date) existing.report_date = kpi.report_date;
                     }
                     if (currentRevenue > existingRevenue) existing.revenue_month = kpi.revenue_month;
-                    
+
                     // Keep latest target strings
                     if (kpi.target_traffic_month) existing.target_traffic_month = kpi.target_traffic_month;
                     if (kpi.target_revenue_month) existing.target_revenue_month = kpi.target_revenue_month;
@@ -2050,7 +2052,7 @@ export class LarkService {
                         reportsMap.set(nameKey, { ...r });
                     }
                 }
-                
+
                 if (emailKey) {
                     // Always index by email (including when nameKey exists) so permission-email fallback works
                     if (!reportsMap.has(emailKey)) {
@@ -2069,6 +2071,7 @@ export class LarkService {
                             id: `report_${r.id}`,
                             employee_id: (nameKey && nameToPersonKey.get(nameKey)) ? nameToPersonKey.get(nameKey) : null,
                             name: r.name || r.email,
+                            email: r.email,
                             team: r.team || 'Khác',
                             kpi_day: 0,
                             kpi_month: 0,
@@ -2105,7 +2108,11 @@ export class LarkService {
                 // EFFECTIVE TEAM: Use today's report team FIRST, else fallback to KPI record
                 const trimmedEmpId = kpi.employee_id?.trim();
                 const personKey = trimmedEmpId || nameKey;
-                const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
+                const emailLookupKey = kpi.email ? kpi.email.toLowerCase().trim() : null;
+                const employee =
+                    (emailLookupKey ? employeeMap.get(emailLookupKey) : null) ||
+                    employeeMap.get(nameKey) ||
+                    (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
                 // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
                 const empStatus = (employee?.status || '').toLowerCase().trim();
@@ -2124,7 +2131,7 @@ export class LarkService {
 
                 const position = employee?.position || null;
 
-                const effectiveTeam = report?.team || kpi.team || 'Khác';
+                const effectiveTeam = report?.team || kpi.team || employee?.team || 'Khác';
                 const effectiveTeamNormalized = effectiveTeam.toLowerCase().trim();
 
                 // Relaxed team matching with support for special group filters
@@ -2142,8 +2149,9 @@ export class LarkService {
                 }
 
                 // personPerm already resolved above
-                const isSelf = filters?.requesterEmail && personPerm?.email &&
-                    personPerm.email.toLowerCase() === filters.requesterEmail.toLowerCase();
+                const personEmailForSelf = report?.email || personPerm?.email || kpi.email;
+                const isSelf = filters?.requesterEmail && personEmailForSelf &&
+                    personEmailForSelf.toLowerCase().trim() === filters.requesterEmail.toLowerCase().trim();
 
                 // 2. Logic cho Báo cáo (Reports) & Summary:
                 // - Đã cập nhật theo yêu cầu: Mọi role (Admin, Manager, Leader, Member) đều có thể xem tất cả theo bộ lọc
@@ -2205,86 +2213,90 @@ export class LarkService {
                 const personEmail = report?.email || reportKpi?.email || personPerm?.email;
                 const normalizedEmail = personEmail?.toLowerCase().trim();
                 const needsTraffic = (normalizedEmail && channelEmailSet.has(normalizedEmail)) || channelNameSet.has(nameKey);
-                const hasTraffic = (normalizedEmail && trafficMapByEmail.has(normalizedEmail)) || trafficMapByName.has(nameKey);
-                
+                const trafficObj = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey);
+                const hasTraffic = !!trafficObj;
+
                 let effectiveStatus = 'CHƯA BÁO CÁO';
                 const baseReported = !!(report || reportKpi);
-                
+
                 if (baseReported) {
                     if (needsTraffic) {
-                        // If they build channels, they MUST also report traffic to be marked as reported
-                        effectiveStatus = hasTraffic ? 'ĐÚNG HẠN' : 'CHƯA BÁO CÁO';
+                        effectiveStatus = hasTraffic ? 'ĐÃ BÁO CÁO ĐỦ' : 'CHƯA BÁO CÁO TRAFFIC';
                     } else {
-                        effectiveStatus = 'ĐÚNG HẠN';
+                        effectiveStatus = 'ĐÃ BÁO CÁO ĐỦ';
                     }
-                } else if (hasTraffic && needsTraffic) {
-                    // Even if no work report, if they reported traffic and that's their main task, maybe mark something?
-                    // User requested that if they HAVEN'T reported traffic, it's "CHƯA BÁO CÁO".
-                    // If they ONLY reported traffic, we'll keep it as "CHƯA BÁO CÁO" which is safe since they likely need to do the checklist too.
+                } else if (hasTraffic) {
+                    effectiveStatus = 'CHƯA BÁO CÁO MEMBER';
+                } else {
                     effectiveStatus = 'CHƯA BÁO CÁO';
                 }
 
-                    // Lookup daily traffic for this person
-                    const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
+                let effectiveDate = report?.created_at || report?.date || reportKpi?.created_at || reportKpi?.report_date || null;
+                if (hasTraffic && trafficObj) {
+                    effectiveDate = trafficObj.created_at || trafficObj.date || effectiveDate;
+                }
 
-                    return {
-                        id: kpi.id,
-                        employee_id: trimmedEmpId,
-                        personKey: personKey,
-                        name: kpi.name,
-                        position: position,
-                        role: personPerm?.role || null,
-                        email: personEmail || null,
-                        team: effectiveTeam,
-                        avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
-                        tag: kpi.tag || kpi.name || null,
-                        status: effectiveStatus,
-                        date: report?.date || reportKpi?.report_date || null,
-                        checklist,
-                        answers: answersData,
-                        videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
-                        // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
-                        // Force daily goal to always show the PER-DAY target, not monthly total
-                        dailyGoal: (reportKpi?.kpi_day ?? (kpi.kpi_day || 0)),
-                        done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                        kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
-                        kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
-                        completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
-                        completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
-                        // Stable monthly traffic/revenue for the Summary Cards:
-                        traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
-                        revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
-                        task_progress: reportKpi ? {
-                            task_auto: reportKpi.task_auto || 0,
-                            task_new: reportKpi.task_new || 0,
-                            kpi_status: reportKpi.kpi_status || 'N/A'
-                        } : {
-                            task_auto: kpi.task_auto || 0,
-                            task_new: kpi.task_new || 0,
-                            kpi_status: kpi.kpii_status || 'N/A'
-                        },
-                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
-                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
-                        trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
-                        revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
-                        monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
-                        channelCount: channelMap.get(nameKey) || 0,
-                        isAuthorizedForReport,
-                        isMatchForRanking,
-                        // Daily traffic per platform
-                        trafficToday: personTraffic ? {
-                            fb: Number(personTraffic.traffic_fb || 0),
-                            ig: Number(personTraffic.traffic_ig || 0),
-                            tiktok: Number(personTraffic.traffic_tiktok || 0),
-                            yt: Number(personTraffic.traffic_yt || 0),
-                            thread: Number(personTraffic.traffic_thread || 0),
-                            lemon8: Number(personTraffic.traffic_lemon8 || 0),
-                            zalo: Number(personTraffic.traffic_zalo || 0),
-                            twitter: Number(personTraffic.traffic_twitter || 0),
-                            total: Number(personTraffic.total_traffic || 0),
-                            details: personTraffic.details || []
-                        } : null,
-                    };
+                // Lookup daily traffic for this person
+                const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
+
+                return {
+                    id: kpi.id,
+                    employee_id: trimmedEmpId,
+                    personKey: personKey,
+                    name: kpi.name,
+                    position: position,
+                    role: personPerm?.role || null,
+                    email: personEmail || null,
+                    team: effectiveTeam,
+                    avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                    tag: kpi.tag || kpi.name || null,
+                    status: effectiveStatus,
+                    date: effectiveDate,
+                    checklist,
+                    answers: answersData,
+                    videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
+                    // If range view (month), Goal Label is "TỔNG MỤC TIÊU", so we show monthly goal
+                    // Force daily goal to always show the PER-DAY target, not monthly total
+                    dailyGoal: (reportKpi?.kpi_day ?? (kpi.kpi_day || 0)),
+                    done: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                    kpi_day: reportKpi?.kpi_day ?? (kpi.kpi_day || 0),
+                    kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
+                    completed_day: reportKpi ? Number(reportKpi.completed_day) : (kpi.completed_day || 0),
+                    completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
+                    // Stable monthly traffic/revenue for the Summary Cards:
+                    traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
+                    revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
+                    task_progress: reportKpi ? {
+                        task_auto: reportKpi.task_auto || 0,
+                        task_new: reportKpi.task_new || 0,
+                        kpi_status: reportKpi.kpi_status || 'N/A'
+                    } : {
+                        task_auto: kpi.task_auto || 0,
+                        task_new: kpi.task_new || 0,
+                        kpi_status: kpi.kpii_status || 'N/A'
+                    },
+                    traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
+                    revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
+                    trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
+                    revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
+                    monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
+                    channelCount: channelMap.get(nameKey) || 0,
+                    isAuthorizedForReport,
+                    isMatchForRanking,
+                    // Daily traffic per platform
+                    trafficToday: personTraffic ? {
+                        fb: Number(personTraffic.traffic_fb || 0),
+                        ig: Number(personTraffic.traffic_ig || 0),
+                        tiktok: Number(personTraffic.traffic_tiktok || 0),
+                        yt: Number(personTraffic.traffic_yt || 0),
+                        thread: Number(personTraffic.traffic_thread || 0),
+                        lemon8: Number(personTraffic.traffic_lemon8 || 0),
+                        zalo: Number(personTraffic.traffic_zalo || 0),
+                        twitter: Number(personTraffic.traffic_twitter || 0),
+                        total: Number(personTraffic.total_traffic || 0),
+                        details: personTraffic.details || []
+                    } : null,
+                };
             });
 
             // --- NEW: Group by Person to aggregate stats across months if viewing range ---
@@ -2320,7 +2332,7 @@ export class LarkService {
                         existing.kpi_day = Math.max(existing.kpi_day, r.kpi_day);
                         existing.dailyGoal = (r.dailyGoal > 0) ? r.dailyGoal : existing.dailyGoal;
                     }
-                    
+
                     existing.kpi_month = Math.max(existing.kpi_month, r.kpi_month);
                     existing.trafficTarget = Math.max(existing.trafficTarget, r.trafficTarget);
                     existing.revenueTarget = Math.max(existing.revenueTarget, r.revenueTarget);
@@ -2506,7 +2518,7 @@ export class LarkService {
             // Use task-based volumes for the group contributions to match the summary cards
             groupTotals.global.videos = taskVideosByGroup.global;
             groupTotals.vn.videos = taskVideosByGroup.vn;
-            
+
             // Still sum traffic and revenue from individual results
             allValidResults.forEach(r => {
                 const t = Number(r.traffic_range || 0);
@@ -2609,12 +2621,12 @@ export class LarkService {
         const startOfDay = new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0));
         const endOfDay = new Date(Date.UTC(y, m, d, 16, 59, 59, 999));
 
-        const user = await this.prisma.user.findUnique({
-            where: { email }
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = await this.prisma.user.findFirst({
+            where: { email: { equals: normalizedEmail, mode: 'insensitive' } }
         });
         const fullName = user?.full_name?.trim();
 
-        const normalizedEmail = email.trim();
         const [report, trafficRecords] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {
@@ -2659,7 +2671,7 @@ export class LarkService {
                     const val = Number(rec[tk] || 0);
                     if (val > 0) {
                         let ev = [];
-                        try { if (rec[ek]) ev = JSON.parse(rec[ek]); } catch (e) {}
+                        try { if (rec[ek]) ev = JSON.parse(rec[ek]); } catch (e) { }
                         details.push({ platform: p, channel: rec[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
                     }
                 });
@@ -2682,7 +2694,7 @@ export class LarkService {
                                 const curr = traffic[ek] ? JSON.parse(traffic[ek]) : [];
                                 const newE = JSON.parse(rec[ek]);
                                 if (Array.isArray(newE)) traffic[ek] = JSON.stringify([...curr, ...newE]);
-                            } catch (e) {}
+                            } catch (e) { }
                         }
                     });
 
@@ -2691,7 +2703,7 @@ export class LarkService {
                             const currF = traffic.evidence_files ? JSON.parse(traffic.evidence_files) : [];
                             const newF = JSON.parse(rec.evidence_files);
                             if (Array.isArray(newF)) traffic.evidence_files = JSON.stringify([...currF, ...newF]);
-                        } catch (e) {}
+                        } catch (e) { }
                     }
                     buildDetails(rec);
                 }
@@ -2799,7 +2811,7 @@ export class LarkService {
             for (const record of records) {
                 const fields = record.fields;
                 const dateNow = new Date();
-                
+
                 // Field name mapping with fallbacks
                 const email = fields['Email'] || null;
                 const name = fields['Họ Tên'] || fields['HoTen'] || fields['Name'] || null;
@@ -2809,7 +2821,7 @@ export class LarkService {
                 const team = fields['Team'] || fields['Phòng ban'] || null;
                 const status = fields['Trạng thái'] || fields['Trang Thai'] || fields['Status'] || null;
                 const permissions = fields['Permissions'] || fields['Quyền'] ? JSON.stringify(fields['Permissions'] || fields['Quyền']) : null;
-                
+
                 await this.prisma.$executeRawUnsafe(`
                     INSERT INTO "lark_permissions" ("id", "email", "name", "pin_code", "employee", "role", "team", "status", "permissions", "created_at", "updated_at")
                     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $10)
@@ -2972,7 +2984,7 @@ export class LarkService {
             const endOfToday = new Date(today.setHours(23, 59, 59, 999));
 
             let targetMonthNum = new Date().getMonth() + 1;
-            
+
             const getKpisForMonth = async (mNum: number) => {
                 const formats = [`T${mNum}`, `Tháng ${mNum}`, `tháng ${mNum}`, `${mNum}`, mNum < 10 ? `0${mNum}` : `${mNum}`];
                 return await this.prisma.larkKPI.findMany({
@@ -2991,7 +3003,7 @@ export class LarkService {
                     where: { month: { not: null } },
                     orderBy: { created_at: 'desc' }
                 });
-                
+
                 if (latestKpi && latestKpi.month) {
                     const mDigits = latestKpi.month.match(/\d+/);
                     if (mDigits) {
@@ -3025,9 +3037,9 @@ export class LarkService {
             ]);
             const employee = employeeUser
                 ? {
-                      image_url: employeeUser.image_url,
-                      position: employeeUser.employee_position,
-                  }
+                    image_url: employeeUser.image_url,
+                    position: employeeUser.employee_position,
+                }
                 : null;
 
             const currentMonthKpi = allTeamKpis
@@ -3990,7 +4002,7 @@ export class LarkService {
                 existing.videoCount = Math.max(existing.videoCount, videosVal);
                 existing.traffic = Math.max(existing.traffic, trafficVal);
                 existing.revenue = Math.max(existing.revenue, revenueVal);
-                
+
                 // If the selected range is just one day, we prefer that day's completed_day
                 const targetDStr = start.toDateString();
                 const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
@@ -4002,9 +4014,9 @@ export class LarkService {
                 const user = email ? userMapByEmail.get(email) : null;
                 const targetDStr = start.toDateString();
                 const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
-                
+
                 // Use completed_day if single day selected, else completed_month
-                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr) 
+                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr)
                     ? (Number(kpi.completed_day) || 0)
                     : videosVal;
 

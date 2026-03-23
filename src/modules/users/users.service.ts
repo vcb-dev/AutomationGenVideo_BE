@@ -36,9 +36,12 @@ export class UsersService {
   ) { }
 
   async create(createUserDto: CreateUserDto) {
+    if (createUserDto.email) {
+      createUserDto.email = createUserDto.email.toLowerCase();
+    }
     // Check if email already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: createUserDto.email },
+    const existingUser = await this.prisma.user.findFirst({
+      where: { email: { equals: createUserDto.email, mode: 'insensitive' } },
     });
 
     if (existingUser) {
@@ -145,8 +148,8 @@ export class UsersService {
   }
 
   async findByEmail(email: string) {
-    return this.prisma.user.findUnique({
-      where: { email },
+    return this.prisma.user.findFirst({
+      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
     });
   }
 
@@ -159,6 +162,9 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
+    if (updateUserDto.email) {
+      updateUserDto.email = updateUserDto.email.toLowerCase();
+    }
     const user = await this.prisma.user.findUnique({ where: { id } });
 
     if (!user) {
@@ -167,8 +173,8 @@ export class UsersService {
 
     // If updating email, check for conflicts
     if (updateUserDto.email && updateUserDto.email !== user.email) {
-      const existingUser = await this.prisma.user.findUnique({
-        where: { email: updateUserDto.email },
+      const existingUser = await this.prisma.user.findFirst({
+        where: { email: { equals: updateUserDto.email, mode: 'insensitive' } },
       });
 
       if (existingUser) {
