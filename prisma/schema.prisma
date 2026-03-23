@@ -598,11 +598,13 @@ model LarkTraffic {
   channel_zalo    String?
   channel_twitter String?
 
+  details         Json?
   @@index([month])
   @@index([team])
   @@index([email])
   @@map("lark_traffic")
 }
+
 
 model ReportOutstanding {
   id              String   @id
