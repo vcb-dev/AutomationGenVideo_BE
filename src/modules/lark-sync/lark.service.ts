@@ -2305,6 +2305,7 @@ export class LarkService {
                             zalo: Number(personTraffic.traffic_zalo || 0),
                             twitter: Number(personTraffic.traffic_twitter || 0),
                             total: Number(personTraffic.total_traffic || 0),
+                            details: personTraffic.details || []
                         } : null,
                     };
             });
