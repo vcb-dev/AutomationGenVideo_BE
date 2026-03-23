@@ -275,23 +275,8 @@ export class LarkService {
                 throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
             }
             
-            // Check for the date they actually specified, or today
-            const bounds = getVietnamBounds(reportDate || new Date());
-            
-            const alreadyReported = await (this.prisma.larkTraffic as any).findFirst({
-                where: {
-                    email: { equals: normalizedSubmitterEmail, mode: 'insensitive' },
-                    date: {
-                        gte: bounds.start,
-                        lte: bounds.end
-                    }
-                }
-            });
-            
-            if (alreadyReported) {
-                throw new Error('Bạn đã gửi báo cáo Traffic cho ngày này rồi.');
-            }
         }
+
 
         const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
         const now = reportDate ? new Date(reportDate) : new Date();
@@ -374,7 +359,10 @@ export class LarkService {
                     channel_lemon8: channels?.lemon8 || null,
                     channel_zalo: channels?.zalo || null,
                     channel_twitter: channels?.twitter || null,
+                    details: (payload as any).trafficDetails || null,
                 } as any
+
+
             });
             return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
         } catch (dbError) {
@@ -1833,14 +1821,48 @@ export class LarkService {
             const trafficMapByEmail = new Map();
             const trafficMapByName = new Map();
             allTrafficInDb.forEach(t => {
-                if (t.name) {
-                    const nameKey = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
-                    trafficMapByName.set(nameKey, t);
+                const nameKey = t.name ? t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
+                if (!nameKey) return;
 
-                    // Traffic records don't carry email; map via permission table by reporter name
-                    const perm = permMap.get(nameKey);
-                    const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
-                    if (inferredEmail) trafficMapByEmail.set(inferredEmail, t);
+                const perm = permMap.get(nameKey);
+                const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
+
+                const mergeTraffic = (existing: any, current: any) => {
+                    const res = { ...existing };
+                    const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+                    
+                    res.total_traffic = (res.total_traffic || BigInt(0)) + (current.total_traffic || BigInt(0));
+                    platforms.forEach(p => {
+                        const trafficKey = `traffic_${p}`;
+                        const channelKey = `channel_${p}`;
+                        res[trafficKey] = (res[trafficKey] || BigInt(0)) + (current[trafficKey] || BigInt(0));
+                        if (current[channelKey]) {
+                            res[channelKey] = res[channelKey] ? `${res[channelKey]}, ${current[channelKey]}` : current[channelKey];
+                        }
+                    });
+
+                    if (current.details) {
+                        const existingDetails = Array.isArray(res.details) ? res.details : [];
+                        const currentDetails = Array.isArray(current.details) ? current.details : [];
+                        res.details = [...existingDetails, ...currentDetails];
+                    }
+
+                    return res;
+
+                };
+
+                if (trafficMapByName.has(nameKey)) {
+                    trafficMapByName.set(nameKey, mergeTraffic(trafficMapByName.get(nameKey), t));
+                } else {
+                    trafficMapByName.set(nameKey, { ...t });
+                }
+
+                if (inferredEmail) {
+                    if (trafficMapByEmail.has(inferredEmail)) {
+                        trafficMapByEmail.set(inferredEmail, mergeTraffic(trafficMapByEmail.get(inferredEmail), t));
+                    } else {
+                        trafficMapByEmail.set(inferredEmail, { ...t });
+                    }
                 }
             });
 
@@ -2615,7 +2637,7 @@ export class LarkService {
         const fullName = user?.full_name?.trim();
 
         const normalizedEmail = email.trim();
-        const [report, traffic] = await Promise.all([
+        const [report, trafficRecords] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {
                     OR: [
@@ -2626,7 +2648,7 @@ export class LarkService {
                 },
                 orderBy: { created_at: 'desc' }
             }),
-            this.prisma.larkTraffic.findFirst({
+            this.prisma.larkTraffic.findMany({
                 where: {
                     OR: [
                         { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
@@ -2635,9 +2657,58 @@ export class LarkService {
                     ],
                     date: { gte: startOfDay, lte: endOfDay }
                 },
-                orderBy: { created_at: 'desc' }
+                orderBy: { created_at: 'asc' }
             })
         ]);
+
+        let traffic: any = trafficRecords.length > 0 ? { ...trafficRecords[0] } : null;
+        if (trafficRecords.length > 1) {
+            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+            for (let i = 1; i < trafficRecords.length; i++) {
+                const rec = trafficRecords[i];
+                traffic.total_traffic = (traffic.total_traffic || BigInt(0)) + (rec.total_traffic || BigInt(0));
+                platforms.forEach(p => {
+                    const trafficKey = `traffic_${p}`;
+                    const channelKey = `channel_${p}`;
+                    const evidenceKey = `evidence_${p}`;
+                    
+                    traffic[trafficKey] = (traffic[trafficKey] || BigInt(0)) + (rec[trafficKey] || BigInt(0));
+                    
+                    if (rec[channelKey]) {
+                        traffic[channelKey] = traffic[channelKey] ? `${traffic[channelKey]}, ${rec[channelKey]}` : rec[channelKey];
+                    }
+
+                    if (rec[evidenceKey]) {
+                        try {
+                            const currentEvidence = traffic[evidenceKey] ? JSON.parse(traffic[evidenceKey]) : [];
+                            const newEvidence = JSON.parse(rec[evidenceKey]);
+                            if (Array.isArray(newEvidence)) {
+                                traffic[evidenceKey] = JSON.stringify([...currentEvidence, ...newEvidence]);
+                            }
+                        } catch (e) {}
+                    }
+                });
+
+                if (rec.details) {
+                    try {
+                        const current = Array.isArray(traffic.details) ? traffic.details : [];
+                        const additions = Array.isArray(rec.details) ? rec.details : [];
+                        traffic.details = [...current, ...additions];
+                    } catch (e) {}
+                }
+
+                if (rec.evidence_files) {
+
+                    try {
+                        const currentFiles = traffic.evidence_files ? JSON.parse(traffic.evidence_files) : [];
+                        const newFiles = JSON.parse(rec.evidence_files);
+                        if (Array.isArray(newFiles)) {
+                            traffic.evidence_files = JSON.stringify([...currentFiles, ...newFiles]);
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
 
         // Process traffic evidence URLs to use proxy
         if (traffic) {
@@ -2667,6 +2738,7 @@ export class LarkService {
         }
 
         return { report, traffic };
+
     }
 
     private convertDriveUrl(url: string | null | undefined): string | null {
