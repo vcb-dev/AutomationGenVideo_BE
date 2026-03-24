@@ -1,9 +1,13 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-async function run() {
-    const deleted = await prisma.larkReport.deleteMany({});
-    console.log('Successfully cleared', deleted.count, 'rows in larkReport.');
-    await prisma.$disconnect();
+async function main() {
+  await prisma.larkReport.deleteMany({});
+  console.log('Cleared lark_reports');
+  await prisma.$queryRawUnsafe('DELETE FROM report_outstanding;');
+  console.log('Cleared report_outstanding');
 }
-run().catch(console.error);
+
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());

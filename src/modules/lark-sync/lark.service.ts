@@ -8,6 +8,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma, UserRole } from '@prisma/client';
 import { resolveTrackedUsername } from './channel-to-tracked.util';
 import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
+import { CacheService } from '../../common/cache/cache.service';
 
 /** Chuẩn hóa cột trạng thái kênh Lark — chỉ "Đang hoạt động" (sau chuẩn hóa) được coi là active. */
 function normalizeLarkChannelActivityStatus(status: string | null | undefined): string {
@@ -47,6 +48,7 @@ export class LarkService {
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
         private readonly channelStatsEnrichment: ChannelStatsEnrichmentService,
+        private readonly cacheService: CacheService,
     ) {
         // Load credentials from environment
         this.APP_ID = this.configService.get<string>('LARK_APP_ID');
@@ -376,6 +378,8 @@ export class LarkService {
                     channel_twitter: channels?.twitter || null,
                 } as any
             });
+            // Invalidate dashboard cache so the new submission is immediately reflected
+            this.cacheService.invalidate('activity:');
             return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
         } catch (dbError) {
             this.logger.error('Error saving local traffic report:', dbError);
@@ -1544,41 +1548,78 @@ export class LarkService {
         });
     }
 
+    // Clear cache immediately after a report submission to prevent stale UI
+    invalidateActivityCache() {
+        this.cacheService.invalidate('activity:');
+    }
+
     // Get combined user activity reports (LarkReport + LarkKPI)
     async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string; timeType?: string }) {
-        try {
-            // Fetch requester's role and team from LarkPermission
-            let requesterRole = 'Member';
-            let requesterTeam = null;
+        // ─── PERF: Shared cache key (không include email) ────────────────────────────
+        // Trước đây: mỗi user có cache riêng → 70 users = 70 queries nặng song song.
+        // Sau: dataset (nặng) được cache CHUNG cho tất cả users cùng filter.
+        // Role/team lookup (nhẹ) được cache riêng per-user với TTL dài hơn.
+        const sharedCacheKey = `activity:data:${filters?.startDate || filters?.date || ''}:${filters?.endDate || ''}:${filters?.team || 'All'}:${filters?.timeType || ''}`;
+        const roleCacheKey = `activity:role:${filters?.requesterEmail || ''}`;
+        // ────────────────────────────────────────────────────────────────────────────
 
-            if (filters?.requesterEmail) {
+        // Step 1: Resolve role/team for this user (cached 10 phút, query nhẹ)
+        let requesterRole = 'Member';
+        let requesterTeam = null;
+        if (filters?.requesterEmail) {
+            const roleData = await this.cacheService.get(roleCacheKey, 10 * 60 * 1000, async () => {
                 const results = await this.prisma.$queryRawUnsafe<any[]>(
                     'SELECT * FROM "lark_permissions" WHERE "email" ILIKE $1 LIMIT 1',
                     filters.requesterEmail
                 );
                 const permission = results.length > 0 ? results[0] : null;
-                if (permission) {
-                    requesterRole = (permission.role || 'Member').toLowerCase();
-                    requesterTeam = permission.team;
-                }
+                let role = (permission?.role || 'Member').toLowerCase();
+                let team = permission?.team || null;
 
-                // FALLBACK: If not found in LarkPermission or team/role is missing, check System User table
-                if (requesterRole === 'member' || !requesterTeam) {
+                if (role === 'member' || !team) {
                     const sysUser = await this.prisma.user.findFirst({
-                        where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } }
+                        where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } },
+                        select: { roles: true, team: true }
                     });
                     if (sysUser) {
-                        // If System says Leader but Lark says Member/null, trust System
-                        if (sysUser.roles.some(r => r === UserRole.MANAGER || r === UserRole.ADMIN || r === UserRole.MEMBER) && requesterRole === 'member') {
-                            requesterRole = sysUser.roles.includes(UserRole.ADMIN) ? 'admin' :
-                                sysUser.roles.includes(UserRole.MANAGER) ? 'manager' : 'member';
+                        if (sysUser.roles.some(r => r === UserRole.MANAGER || r === UserRole.ADMIN) && role === 'member') {
+                            role = sysUser.roles.includes(UserRole.ADMIN) ? 'admin' :
+                                sysUser.roles.includes(UserRole.MANAGER) ? 'manager' : role;
                         }
-                        if (!requesterTeam && sysUser.team) {
-                            requesterTeam = sysUser.team;
-                        }
+                        if (!team && sysUser.team) team = sysUser.team;
                     }
                 }
-            }
+                return { role, team };
+            });
+            requesterRole = roleData.role;
+            requesterTeam = roleData.team;
+        }
+
+        // Step 2: Fetch shared dataset (cached 2 phút, query nặng – CHUNG cho tất cả users)
+        const sharedData = await this.cacheService.get(sharedCacheKey, 2 * 60 * 1000, async () => {
+        // ─── PERF: Memoized name normalizer ─────────────────────────────────────────
+        // normalize('NFD') + replace chain là operation nặng (O(n) string scan).
+        // Với 70+ nhân viên × nhiều vòng lặp = hàng chục nghìn lần gọi.
+        // Cache kết quả vào Map để mỗi tên chỉ normalize 1 lần duy nhất.
+        const _normCache = new Map<string, string>();
+        const normName = (raw: string | null | undefined): string => {
+            if (!raw) return '';
+            const cached = _normCache.get(raw);
+            if (cached !== undefined) return cached;
+            const result = raw
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/đ/g, 'd')
+                .trim()
+                .replace(/\s+/g, ' ');
+            _normCache.set(raw, result);
+            return result;
+        };
+        // ────────────────────────────────────────────────────────────────────────────
+        try {
+            // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
+            // Không cần fetch lại trong shared dataset cache.
 
             // --- MODIFIED: Removed team enforcement for Members/Leaders to allow full transparency in rankings ---
             const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
@@ -1660,7 +1701,7 @@ export class LarkService {
             const isRangeFilter = filters?.team === 'All Global' || filters?.team === 'All VN';
             const dbTeamFilter = filters?.team && filters.team !== 'All' && !isRangeFilter ? filters.team : null;
 
-            const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb] = await Promise.all([
+            const [reports, allKpiInDb, employees, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb, reportOutstandings] = await Promise.all([
                 // 1. Fetch reports with filters
                 this.prisma.larkReport.findMany({
                     where: {
@@ -1725,7 +1766,18 @@ export class LarkService {
                     where: {
                         date: { gte: startOfDay, lte: endOfDay }
                     }
-                })
+                }),
+                // 9. PERF: Outstanding reports - chạy song song thay vì serial sau khi xử lý JS
+                this.prisma.$queryRawUnsafe(`
+                    SELECT * FROM "report_outstanding"
+                    WHERE "content" NOT ILIKE '%không có%' 
+                      AND "content" NOT ILIKE '%khong co%' 
+                      AND "content" IS NOT NULL 
+                      AND "content" != '' 
+                      AND "content" != '-'
+                    ORDER BY "date" DESC, "created_at" DESC
+                    LIMIT 200
+                `),
             ]);
 
             // Filter KPIs that match ANY month in range (Secondary JS filter for safety with complex digits)
@@ -1771,13 +1823,8 @@ export class LarkService {
                 if (row.employee_id) employeeMap.set(String(row.employee_id).trim(), row);
                 if (emp.email) employeeMap.set(emp.email.toLowerCase().trim(), row);
                 if (row.name) {
-                    const nameKey = row.name
-                        .toLowerCase()
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/đ/g, 'd')
-                        .trim()
-                        .replace(/\s+/g, ' ');
+                    // Dùng normName() closure đã memoize thay vì gọi chain trực tiếp
+                    const nameKey = normName(row.name);
                     if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, row);
                 }
             });
@@ -2284,6 +2331,74 @@ export class LarkService {
                 };
             });
 
+            // --- Bổ sung báo cáo của user không có KPI (như test account Google) ---
+            reports.forEach(report => {
+                const rEmailKey = report.email ? report.email.toLowerCase().trim() : '';
+                const rNameKey = report.name ? report.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : '';
+                if (!rEmailKey && !rNameKey) return;
+
+                const isAlreadyIncluded = allResults.some(r => {
+                    if (!r) return false;
+                    const e = r.email ? r.email.toLowerCase().trim() : '';
+                    const n = r.name ? r.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : '';
+                    return (rEmailKey && e === rEmailKey) || (rNameKey && n === rNameKey);
+                });
+
+                if (!isAlreadyIncluded) {
+                    let checklist = { fb: false, ig: false, caption: false, tiktok: false, youtube: false, lark: false };
+                    let answersData = report.answers;
+                    if (typeof answersData === 'string') {
+                        try { answersData = JSON.parse(answersData); } catch (e) { }
+                    }
+                    if (answersData && typeof answersData === 'object') {
+                        checklist.fb = answersData['Bạn đã đăng video lên FB chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên FB chưa?'] === true || false;
+                        checklist.ig = answersData['Bạn đã đăng video lên IG chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên IG chưa?'] === true || false;
+                        checklist.tiktok = answersData['Bạn đã đăng video lên Tiktok chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên Tiktok chưa?'] === true || false;
+                        checklist.youtube = answersData['Bạn đã đăng video lên Youtube chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên Youtube chưa?'] === true || false;
+                        checklist.lark = answersData['Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || answersData['Báo cáo Lark - Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || false;
+                        checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true;
+                    }
+
+                    const isSelf = filters?.requesterEmail && rEmailKey && rEmailKey === filters.requesterEmail.toLowerCase().trim();
+                    const isAuthorizedForReport = true;
+
+                    allResults.push({
+                        id: report.id,
+                        employee_id: null,
+                        personKey: rNameKey || rEmailKey || report.id,
+                        name: report.name,
+                        position: report.role || 'Member',
+                        role: report.role || 'Member',
+                        email: report.email,
+                        team: report.team || 'Khác',
+                        avatar: null,
+                        tag: report.name,
+                        status: 'Đã báo cáo',
+                        date: report.date || report.created_at,
+                        checklist,
+                        answers: answersData,
+                        videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
+                        dailyGoal: 0,
+                        done: 0,
+                        kpi_day: 0,
+                        kpi_month: 0,
+                        completed_day: 0,
+                        completed_month: 0,
+                        traffic_range: 0,
+                        revenue_range: 0,
+                        task_progress: { task_auto: 0, task_new: 0, kpi_status: 'N/A' },
+                        traffic_month: 0,
+                        revenue_month: 0,
+                        trafficTarget: 0,
+                        revenueTarget: 0,
+                        monthlyProgress: 0,
+                        channelCount: 0,
+                        isAuthorizedForReport: true, 
+                        isMatchForRanking: true,
+                    });
+                }
+            });
+
             // --- NEW: Group by Person to aggregate stats across months if viewing range ---
             const groupedResults = new Map();
             allResults.filter(r => r !== null).forEach(r => {
@@ -2550,40 +2665,38 @@ export class LarkService {
             // Syncing is already handled by summing allValidResults directly into aggregates above.
             // Keeping globalTotals synced for groupContributions calculation below.
 
-            // Fetch outstanding reports (Ideas, Difficulties, Wins) excluding placeholders
-            const reportOutstandings = await this.prisma.$queryRawUnsafe(`
-                SELECT * FROM "report_outstanding"
-                WHERE "content" NOT ILIKE '%không có%' 
-                  AND "content" NOT ILIKE '%khong co%' 
-                  AND "content" IS NOT NULL 
-                  AND "content" != '' 
-                  AND "content" != '-'
-                ORDER BY "date" DESC, "created_at" DESC
-                LIMIT 200
-            `);
-
+            // reportOutstandings đã được fetch song song trong Promise.all phía trên
+            // (xóa bỏ serial await cũ để tránh redeclare và tiết kiệm 50-200ms thời gian chờ)
             return {
                 reports: combinedResults,
                 summary: aggregates,
                 teamContributions,
-                groupContributions, // New field Added
+                groupContributions,
                 reportOutstandings,
                 rankings: {
                     traffic: trafficRanking,
                     revenue: revenueRanking
                 },
-                userRole: requesterRole,
-                userTeam: requesterTeam,
                 meta: {
                     kpiTotalInDb: allKpiInDb.length,
                     kpiFilteredForMonth: kpiData.length,
                     kpiMonthFallback: kpiMonthFallback
                 }
+                // NOTE: userRole/userTeam KHÔNG được lưu trong shared cache
+                // vì mỗi user có role/team khác nhau. Chúng được merge bên ngoài.
             };
         } catch (error) {
             this.logger.error('Failed to get user activity reports', error);
             throw error;
         }
+        }); // end sharedData cacheService.get
+
+        // Merge per-user role/team vào shared data trước khi trả về client
+        return {
+            ...sharedData,
+            userRole: requesterRole,
+            userTeam: requesterTeam,
+        };
     }
 
     async getUserReportDetails(email: string, dateStr: string) {
@@ -2771,6 +2884,10 @@ export class LarkService {
     async getPersonalHistory(requesterEmail: string, targetName?: string) {
         if (!requesterEmail) return { history: [], teamStats: null };
 
+        // Cache 5 phút: dữ liệu lịch sử cá nhân ít thay đổi trong ngày
+        // Key include targetName để admin xem người khác không bị nhầm cache
+        const cacheKey = `history:${requesterEmail}:${targetName || ''}`;
+        return this.cacheService.get(cacheKey, 5 * 60 * 1000, async () => {
         try {
             // Find requester info
             const results = await this.prisma.$queryRawUnsafe<any[]>(
@@ -3218,12 +3335,12 @@ export class LarkService {
 
             return { history, teamStats, companyStats, userActivity, members: membersList };
         } catch (error) {
-            const fs = require('fs');
-            fs.appendFileSync('lark-error.log', `[${new Date().toISOString()}] Error in getPersonalHistory for ${requesterEmail}: ${error.message}\n${error.stack}\n\n`);
             this.logger.error(`Error in getPersonalHistory for ${requesterEmail}: ${error.message}`, error.stack);
             throw error;
         }
+        }); // end cacheService.get
     }
+
 
     private async fetchAllRecords(baseId: string, tableId: string) {
         const token = await this.getAccessToken();
