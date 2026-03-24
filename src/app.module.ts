@@ -29,8 +29,17 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
     }),
     ThrottlerModule.forRoot([
       {
+        // Long window: 600 req/min/IP – đủ cho 50 users × 12 req/min (bao gồm auto-refresh 60s)
+        // Trước đây 120 req/min dễ bị throttle khi 50 users cùng mạng LAN (same IP/NAT)
+        name: 'long',
         ttl: 60000,
-        limit: 120, // Tăng giới hạn từ 10 lên 120 Req/Phút/IP cho 70 users
+        limit: 600,
+      },
+      {
+        // Short window: chống burst attack – tối đa 30 req/5s/IP
+        name: 'short',
+        ttl: 5000,
+        limit: 30,
       },
     ]),
     ScheduleModule.forRoot(),

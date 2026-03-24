@@ -1,6 +1,6 @@
 
 
-import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, Header } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
@@ -137,6 +137,7 @@ export class LarkController {
     }
 
     @Get('user-activity')
+    @Header('Cache-Control', 'private, max-age=30, stale-while-revalidate=60')
     @ApiOperation({ summary: 'Get combined user activity reports (LarkReport + LarkKPI)' })
     @ApiResponse({ status: 200, description: 'Returns combined user activity data with avatars from KPI.' })
     async getUserActivityReports(
@@ -152,10 +153,18 @@ export class LarkController {
         if (startDate) filters['startDate'] = startDate;
         if (endDate) filters['endDate'] = endDate;
         if (team) filters['team'] = team;
-        if (requesterEmail) filters['requesterEmail'] = requesterEmail;
+        // Normalize email – Google login có thể gửi uppercase
+        if (requesterEmail) filters['requesterEmail'] = requesterEmail.toLowerCase().trim();
         if (timeType) filters['timeType'] = timeType;
 
         return this.larkService.getUserActivityReports(filters);
+    }
+
+    @Post('clear-activity-cache')
+    @ApiOperation({ summary: 'Clear the user activity cache explicitly after submission' })
+    clearActivityCache() {
+        this.larkService.invalidateActivityCache();
+        return { message: 'Activity data cache cleared successfully' };
     }
 
     @Get('user-report-details')
@@ -168,12 +177,14 @@ export class LarkController {
     }
 
     @Get('personal-history')
+    @Header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120')
     @ApiOperation({ summary: 'Get historical KPI data for a specific user' })
     async getPersonalHistory(
         @Query('email') email: string,
         @Query('name') name?: string
     ) {
-        return this.larkService.getPersonalHistory(email, name);
+        // Normalize email trước khi query
+        return this.larkService.getPersonalHistory(email?.toLowerCase().trim(), name);
     }
 
     @Get('media/:mediaId')
@@ -281,13 +292,14 @@ export class LarkController {
     }
 
     @Get('channel')
+    @Header('Cache-Control', 'private, max-age=120, stale-while-revalidate=300')
     @ApiOperation({ summary: 'Get Channel data from Database' })
     async getChannel(
         @Query('owner') owner?: string,
         @Query('team') team?: string,
         @Query('email') email?: string,
     ) {
-        return this.larkService.getChannelData(owner, team, email);
+        return this.larkService.getChannelData(owner, team, email?.toLowerCase().trim());
     }
 
     @Post('sync-hr')
