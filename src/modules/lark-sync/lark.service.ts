@@ -238,9 +238,9 @@ export class LarkService {
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
-        
+
         // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
-        
+
         // Check if user is Admin/Manager to bypass constraint
         const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
         const roles = userRec?.roles || [];
@@ -276,114 +276,88 @@ export class LarkService {
             if (reportDate && reportDate > todayVN) {
                 throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
             }
-            
-            // Check for the date they actually specified, or today
-            const bounds = getVietnamBounds(reportDate || new Date());
-            
-            const alreadyReported = await (this.prisma.larkTraffic as any).findFirst({
-                where: {
-                    email: { equals: normalizedSubmitterEmail, mode: 'insensitive' },
-                    date: {
-                        gte: bounds.start,
-                        lte: bounds.end
-                    }
-                }
-            });
-            
-            if (alreadyReported) {
-                throw new Error('Bạn đã gửi báo cáo Traffic cho ngày này rồi.');
-            }
         }
 
-        const fileTokens = Object.values(platformEvidences || {}).flat() as string[];
+        const trafficDetails = (payload as any).trafficDetails;
+        const breakdown = trafficDetails?.breakdown || {};
         const now = reportDate ? new Date(reportDate) : new Date();
         const monthString = 'T' + (now.getMonth() + 1).toString();
-        
-        // Lookup team - priority: User (Lark fields) > LarkPermission
+
+        // Lookup team
         let team = '';
-        
-        // 1. FIRST: Try from User table (most reliable - admin sets this directly)
         const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        if (userRecord?.team) {
-            team = userRecord.team;
-        }
-        
-        // 2. Fallback: Try from LarkPermission
+        if (userRecord?.team) team = userRecord.team;
         if (!team) {
             const userPerm = await this.getPermissionByEmail(email);
             if (userPerm?.team) team = userPerm.team;
         }
-        
-        // 3. Last resort: User row synced from Lark (same full_name)
         if (!team && name) {
             const emp = await this.prisma.user.findFirst({
                 where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
             });
             if (emp?.team) team = emp.team;
         }
-        
-        this.logger.debug(`Team resolved for ${email}: "${team}"`);
 
-        const cleanBi = (v: any) => v ? parseInt(v) : 0;
-        
-        const fbLevel = cleanBi(traffic.fb);
-        const igLevel = cleanBi(traffic.ig);
-        const threadLevel = cleanBi(traffic.thread);
-        const tiktokLevel = cleanBi(traffic.tiktok);
-        const lemon8Level = cleanBi(traffic.lemon8);
-        const ytLevel = cleanBi(traffic.yt);
-        const zaloLevel = cleanBi(traffic.zalo);
-        const twitterLevel = cleanBi(traffic.twitter);
-        
-        const total = fbLevel + igLevel + threadLevel + tiktokLevel + lemon8Level + ytLevel + zaloLevel + twitterLevel;
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+        const recordsToCreate = [];
 
-        // Local only saving
-        const localRecordId = `local_trf_${Date.now()}`;
-        try {
-            await this.prisma.larkTraffic.create({
-                data: {
-                    id: localRecordId,
-                    email: email,
-                    name: name,
-                    date: now,
-                    employee: name,
-                    team: team,
-                    month: monthString,
-                    traffic_fb: BigInt(fbLevel),
-                    traffic_ig: BigInt(igLevel),
-                    traffic_lemon8: BigInt(lemon8Level),
-                    traffic_thread: BigInt(threadLevel),
-                    traffic_tiktok: BigInt(tiktokLevel),
-                    traffic_yt: BigInt(ytLevel),
-                    traffic_zalo: BigInt(zaloLevel),
-                    traffic_twitter: BigInt(twitterLevel),
-                    total_traffic: BigInt(total),
-                    is_confirmed: 'Pending',
-                    evidence_files: fileTokens && fileTokens.length > 0 ? JSON.stringify(fileTokens) : null,
-                    evidence_fb: platformEvidences?.fb ? JSON.stringify(platformEvidences.fb) : null,
-                    evidence_ig: platformEvidences?.ig ? JSON.stringify(platformEvidences.ig) : null,
-                    evidence_tiktok: platformEvidences?.tiktok ? JSON.stringify(platformEvidences.tiktok) : null,
-                    evidence_yt: platformEvidences?.yt ? JSON.stringify(platformEvidences.yt) : null,
-                    evidence_thread: platformEvidences?.thread ? JSON.stringify(platformEvidences.thread) : null,
-                    evidence_lemon8: platformEvidences?.lemon8 ? JSON.stringify(platformEvidences.lemon8) : null,
-                    evidence_zalo: platformEvidences?.zalo ? JSON.stringify(platformEvidences.zalo) : null,
-                    evidence_twitter: platformEvidences?.twitter ? JSON.stringify(platformEvidences.twitter) : null,
-                    channel_fb: channels?.fb || null,
-                    channel_ig: channels?.ig || null,
-                    channel_tiktok: channels?.tiktok || null,
-                    channel_yt: channels?.yt || null,
-                    channel_thread: channels?.thread || null,
-                    channel_lemon8: channels?.lemon8 || null,
-                    channel_zalo: channels?.zalo || null,
-                    channel_twitter: channels?.twitter || null,
-                } as any
+        // 1. Process breakdown-based submissions
+        platformKeys.forEach(pKey => {
+            const platformEntries = breakdown[pKey] || [];
+            platformEntries.forEach((entry: any) => {
+                const val = parseInt(entry.value || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_trf_${pKey}_${Math.random().toString(36).slice(2, 7)}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_traffic: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`traffic_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = entry.channel || null;
+                    if (entry.evidences && entry.evidences.length > 0) {
+                        data[`evidence_${pKey}`] = JSON.stringify(entry.evidences.map((ev: any) => ev.token));
+                    }
+                    recordsToCreate.push(data);
+                }
             });
-            // Invalidate dashboard cache so the new submission is immediately reflected
-            this.cacheService.invalidate('activity:');
-            return { message: 'Traffic report submitted successfully (Local)', recordId: localRecordId };
+        });
+
+        // 2. Fallback for legacy submissions (if no breakdown entries were created but traffic object has values)
+        if (recordsToCreate.length === 0) {
+            platformKeys.forEach(pKey => {
+                const val = parseInt(traffic[pKey as keyof typeof traffic] || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_legacy_${pKey}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_traffic: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`traffic_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = (channels as any)?.[pKey] || null;
+                    const evidence = (platformEvidences as any)?.[pKey];
+                    if (evidence && Array.isArray(evidence) && evidence.length > 0) {
+                        data[`evidence_${pKey}`] = JSON.stringify(evidence);
+                    }
+                    recordsToCreate.push(data);
+                }
+            });
+        }
+
+        try {
+            // Save all rows
+            for (const data of recordsToCreate) {
+                await this.prisma.larkTraffic.create({ data });
+            }
+
+            return {
+                message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
+                recordIds: recordsToCreate.map(r => r.id)
+            };
         } catch (dbError) {
-            this.logger.error('Error saving local traffic report:', dbError);
-            throw new Error(`Could not save local traffic report: ${dbError.message}`);
+            this.logger.error('Error saving multi-row traffic report:', dbError);
+            throw new Error(`Could not save traffic report: ${dbError.message}`);
         }
     }
 
@@ -523,9 +497,9 @@ export class LarkService {
                     status:
                         extractString(
                             fields['Trạng thái hoạt động'] ??
-                                fields['status'] ??
-                                fields['Trạng thái'] ??
-                                fields['Trạng Thái'],
+                            fields['status'] ??
+                            fields['Trạng thái'] ??
+                            fields['Trạng Thái'],
                         ) || '',
                     team_traffic: extractString(fields['Team Traffic']) || '',
                     owner: extractString(fields['NV traffic xây kênh']) || '',
@@ -1164,8 +1138,8 @@ export class LarkService {
                 });
                 const byEmpId = employeeData.employee_id
                     ? await this.prisma.user.findFirst({
-                          where: { employee_id: employeeData.employee_id },
-                      })
+                        where: { employee_id: employeeData.employee_id },
+                    })
                     : null;
                 const byName = await this.prisma.user.findFirst({
                     where: {
@@ -1739,7 +1713,7 @@ export class LarkService {
                 }),
                 // 5. Fetch channels
                 this.prisma.channel.findMany({
-                    where: { 
+                    where: {
                         status: 'Đang hoạt động',
                         ...(dbTeamFilter ? { team_traffic: dbTeamFilter } : {})
                     }
@@ -1855,7 +1829,7 @@ export class LarkService {
                 if (h.owner) {
                     const ownerKey = h.owner.toLowerCase().trim().replace(/\s+/g, ' ');
                     channelMap.set(ownerKey, (channelMap.get(ownerKey) || 0) + 1);
-                    
+
                     const normalizedOwner = h.owner.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                     channelNameSet.add(normalizedOwner);
 
@@ -1882,14 +1856,37 @@ export class LarkService {
             const trafficMapByEmail = new Map();
             const trafficMapByName = new Map();
             allTrafficInDb.forEach(t => {
-                if (t.name) {
-                    const nameKey = t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
-                    trafficMapByName.set(nameKey, t);
+                const nameKey = t.name ? t.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
+                if (!nameKey) return;
 
-                    // Traffic records don't carry email; map via permission table by reporter name
-                    const perm = permMap.get(nameKey);
-                    const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
-                    if (inferredEmail) trafficMapByEmail.set(inferredEmail, t);
+                const perm = permMap.get(nameKey);
+                const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
+
+                const mergeTraffic = (existing: any, current: any) => {
+                    const res = { ...existing };
+                    if (!res.details) res.details = [];
+                    const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+                    res.total_traffic = (res.total_traffic || BigInt(0)) + (current.total_traffic || BigInt(0));
+                    platforms.forEach(p => {
+                        const tk = `traffic_${p}`, ck = `channel_${p}`, ek = `evidence_${p}`;
+                        const val = Number(current[tk] || 0);
+                        res[tk] = (res[tk] || BigInt(0)) + (current[tk] || BigInt(0));
+                        if (current[ck]) res[ck] = res[ck] ? `${res[ck]}, ${current[ck]}` : current[ck];
+                        if (val > 0) {
+                            let ev = [];
+                            try { if (current[ek]) ev = JSON.parse(current[ek]); } catch (e) { }
+                            res.details.push({ platform: p, channel: current[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
+                        }
+                    });
+                    return res;
+                };
+
+                const merged = trafficMapByName.has(nameKey) ? mergeTraffic(trafficMapByName.get(nameKey), t) : mergeTraffic({ total_traffic: BigInt(0) }, t);
+                trafficMapByName.set(nameKey, merged);
+
+                if (inferredEmail) {
+                    const mergedMail = trafficMapByEmail.has(inferredEmail) ? mergeTraffic(trafficMapByEmail.get(inferredEmail), t) : mergeTraffic({ total_traffic: BigInt(0) }, t);
+                    trafficMapByEmail.set(inferredEmail, mergedMail);
                 }
             });
 
@@ -1921,7 +1918,7 @@ export class LarkService {
 
                 const mergeUpdate = (existing: any, current: any) => {
                     const res = { ...existing };
-                    
+
                     // Prioritize current record if it has the actual target date we are looking at
                     // Otherwise, use Math.max to avoid overwriting progress with 0
                     const currentRD = current.report_date ? new Date(current.report_date).toDateString() : null;
@@ -1941,12 +1938,12 @@ export class LarkService {
                     res.kpi_day = Math.max(Number(res.kpi_day) || 0, Number(current.kpi_day) || 0);
                     res.task_auto = (Number(res.task_auto) || 0) + (Number(current.task_auto) || 0);
                     res.task_new = (Number(res.task_new) || 0) + (Number(current.task_new) || 0);
-                    
+
                     if (currentRD === targetRD || !res.kpi_status || res.kpi_status === 'N/A') {
                         res.kpi_status = current.kpi_status;
                         res.team = current.team || existing.team;
                     }
-                    
+
                     return res;
                 };
 
@@ -2009,7 +2006,7 @@ export class LarkService {
                 kpiYear = matchedMonth.year;
 
                 const personKey = trimmedEmpId || nameKey || kpi.id;
-                
+
                 // --- FIX: Use column 'month' (T1, T2...) for aggregation keys ---
                 const mStrNormalized = (kpi.month || '').trim().toUpperCase();
                 const personMonthKey = `${personKey}_T${kpiMonth}_${kpiYear}`;
@@ -2044,26 +2041,26 @@ export class LarkService {
                     // For monthly fields, always keep the max/latest
                     existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
                     existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
-                    
+
                     if (currentRD === targetRD) {
                         existing.kpi_day = Number(kpi.kpi_day) || 0;
                         (existing as any).hasExactDayKpi = true;
                     } else if (!(existing as any).hasExactDayKpi) {
                         existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
                     }
-                    
+
                     // Handle BigInt for traffic/revenue
                     const currentTraffic = BigInt(kpi.traffic_month || 0);
                     const currentRevenue = BigInt(kpi.revenue_month || 0);
                     const existingTraffic = BigInt(existing.traffic_month || 0);
                     const existingRevenue = BigInt(existing.revenue_month || 0);
-                    
+
                     if (currentTraffic > existingTraffic) {
                         existing.traffic_month = kpi.traffic_month;
                         if (kpi.report_date) existing.report_date = kpi.report_date;
                     }
                     if (currentRevenue > existingRevenue) existing.revenue_month = kpi.revenue_month;
-                    
+
                     // Keep latest target strings
                     if (kpi.target_traffic_month) existing.target_traffic_month = kpi.target_traffic_month;
                     if (kpi.target_revenue_month) existing.target_revenue_month = kpi.target_revenue_month;
@@ -2100,7 +2097,7 @@ export class LarkService {
                         reportsMap.set(nameKey, { ...r });
                     }
                 }
-                
+
                 if (emailKey) {
                     // Always index by email (including when nameKey exists) so permission-email fallback works
                     if (!reportsMap.has(emailKey)) {
@@ -2157,9 +2154,9 @@ export class LarkService {
                 const trimmedEmpId = kpi.employee_id?.trim();
                 const personKey = trimmedEmpId || nameKey;
                 const emailLookupKey = kpi.email ? kpi.email.toLowerCase().trim() : null;
-                const employee = 
-                    (emailLookupKey ? employeeMap.get(emailLookupKey) : null) || 
-                    employeeMap.get(nameKey) || 
+                const employee =
+                    (emailLookupKey ? employeeMap.get(emailLookupKey) : null) ||
+                    employeeMap.get(nameKey) ||
                     (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
 
                 // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
@@ -2263,10 +2260,10 @@ export class LarkService {
                 const needsTraffic = (normalizedEmail && channelEmailSet.has(normalizedEmail)) || channelNameSet.has(nameKey);
                 const trafficObj = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey);
                 const hasTraffic = !!trafficObj;
-                
+
                 let effectiveStatus = 'CHƯA BÁO CÁO';
                 const baseReported = !!(report || reportKpi);
-                
+
                 if (baseReported) {
                     if (needsTraffic) {
                         effectiveStatus = hasTraffic ? 'ĐÃ BÁO CÁO ĐỦ' : 'CHƯA BÁO CÁO TRAFFIC';
@@ -2283,6 +2280,9 @@ export class LarkService {
                 if (hasTraffic && trafficObj) {
                     effectiveDate = trafficObj.created_at || trafficObj.date || effectiveDate;
                 }
+
+                // Lookup daily traffic for this person
+                const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
 
                 return {
                     id: kpi.id,
@@ -2327,7 +2327,20 @@ export class LarkService {
                     monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
                     channelCount: channelMap.get(nameKey) || 0,
                     isAuthorizedForReport,
-                    isMatchForRanking
+                    isMatchForRanking,
+                    // Daily traffic per platform
+                    trafficToday: personTraffic ? {
+                        fb: Number(personTraffic.traffic_fb || 0),
+                        ig: Number(personTraffic.traffic_ig || 0),
+                        tiktok: Number(personTraffic.traffic_tiktok || 0),
+                        yt: Number(personTraffic.traffic_yt || 0),
+                        thread: Number(personTraffic.traffic_thread || 0),
+                        lemon8: Number(personTraffic.traffic_lemon8 || 0),
+                        zalo: Number(personTraffic.traffic_zalo || 0),
+                        twitter: Number(personTraffic.traffic_twitter || 0),
+                        total: Number(personTraffic.total_traffic || 0),
+                        details: personTraffic.details || []
+                    } : null,
                 };
             });
 
@@ -2362,6 +2375,12 @@ export class LarkService {
                     const isSelf = filters?.requesterEmail && rEmailKey && rEmailKey === filters.requesterEmail.toLowerCase().trim();
                     const isAuthorizedForReport = true;
 
+                    // Daily traffic per platform for cards (same shape as KPI branch)
+                    const personTraffic =
+                        (rEmailKey ? trafficMapByEmail.get(rEmailKey) : null) ||
+                        (rNameKey ? trafficMapByName.get(rNameKey) : null) ||
+                        null;
+
                     allResults.push({
                         id: report.id,
                         employee_id: null,
@@ -2395,6 +2414,20 @@ export class LarkService {
                         channelCount: 0,
                         isAuthorizedForReport: true, 
                         isMatchForRanking: true,
+                        trafficToday: personTraffic
+                            ? {
+                                fb: Number(personTraffic.traffic_fb || 0),
+                                ig: Number(personTraffic.traffic_ig || 0),
+                                tiktok: Number(personTraffic.traffic_tiktok || 0),
+                                yt: Number(personTraffic.traffic_yt || 0),
+                                thread: Number(personTraffic.traffic_thread || 0),
+                                lemon8: Number(personTraffic.traffic_lemon8 || 0),
+                                zalo: Number(personTraffic.traffic_zalo || 0),
+                                twitter: Number(personTraffic.traffic_twitter || 0),
+                                total: Number(personTraffic.total_traffic || 0),
+                                details: personTraffic.details || [],
+                            }
+                            : null,
                     });
                 }
             });
@@ -2432,7 +2465,7 @@ export class LarkService {
                         existing.kpi_day = Math.max(existing.kpi_day, r.kpi_day);
                         existing.dailyGoal = (r.dailyGoal > 0) ? r.dailyGoal : existing.dailyGoal;
                     }
-                    
+
                     existing.kpi_month = Math.max(existing.kpi_month, r.kpi_month);
                     existing.trafficTarget = Math.max(existing.trafficTarget, r.trafficTarget);
                     existing.revenueTarget = Math.max(existing.revenueTarget, r.revenueTarget);
@@ -2618,7 +2651,7 @@ export class LarkService {
             // Use task-based volumes for the group contributions to match the summary cards
             groupTotals.global.videos = taskVideosByGroup.global;
             groupTotals.vn.videos = taskVideosByGroup.vn;
-            
+
             // Still sum traffic and revenue from individual results
             allValidResults.forEach(r => {
                 const t = Number(r.traffic_range || 0);
@@ -2725,7 +2758,7 @@ export class LarkService {
         });
         const fullName = user?.full_name?.trim();
 
-        const [report, traffic] = await Promise.all([
+        const [report, trafficRecords] = await Promise.all([
             this.prisma.larkReport.findFirst({
                 where: {
                     OR: [
@@ -2736,7 +2769,7 @@ export class LarkService {
                 },
                 orderBy: { created_at: 'desc' }
             }),
-            this.prisma.larkTraffic.findFirst({
+            this.prisma.larkTraffic.findMany({
                 where: {
                     OR: [
                         { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
@@ -2745,9 +2778,69 @@ export class LarkService {
                     ],
                     date: { gte: startOfDay, lte: endOfDay }
                 },
-                orderBy: { created_at: 'desc' }
+                orderBy: { created_at: 'asc' }
             })
         ]);
+
+        let traffic: any = null;
+        let details: any[] = [];
+        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+
+        if (trafficRecords.length > 0) {
+            traffic = { ...trafficRecords[0] };
+            traffic.total_traffic = Number(traffic.total_traffic || 0);
+            platforms.forEach(p => {
+                const tk = `traffic_${p}`;
+                traffic[tk] = Number(traffic[tk] || 0);
+            });
+
+            const buildDetails = (rec: any) => {
+                platforms.forEach(p => {
+                    const tk = `traffic_${p}`;
+                    const ck = `channel_${p}`;
+                    const ek = `evidence_${p}`;
+                    const val = Number(rec[tk] || 0);
+                    if (val > 0) {
+                        let ev = [];
+                        try { if (rec[ek]) ev = JSON.parse(rec[ek]); } catch (e) { }
+                        details.push({ platform: p, channel: rec[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
+                    }
+                });
+            };
+
+            buildDetails(trafficRecords[0]);
+
+            if (trafficRecords.length > 1) {
+                for (let i = 1; i < trafficRecords.length; i++) {
+                    const rec = trafficRecords[i];
+                    traffic.total_traffic += Number(rec.total_traffic || 0);
+                    platforms.forEach(p => {
+                        const tk = `traffic_${p}`;
+                        const ck = `channel_${p}`;
+                        const ek = `evidence_${p}`;
+                        traffic[tk] = (traffic[tk] || 0) + Number(rec[tk] || 0);
+                        if (rec[ck]) traffic[ck] = traffic[ck] ? `${traffic[ck]}, ${rec[ck]}` : rec[ck];
+                        if (rec[ek]) {
+                            try {
+                                const curr = traffic[ek] ? JSON.parse(traffic[ek]) : [];
+                                const newE = JSON.parse(rec[ek]);
+                                if (Array.isArray(newE)) traffic[ek] = JSON.stringify([...curr, ...newE]);
+                            } catch (e) { }
+                        }
+                    });
+
+                    if (rec.evidence_files) {
+                        try {
+                            const currF = traffic.evidence_files ? JSON.parse(traffic.evidence_files) : [];
+                            const newF = JSON.parse(rec.evidence_files);
+                            if (Array.isArray(newF)) traffic.evidence_files = JSON.stringify([...currF, ...newF]);
+                        } catch (e) { }
+                    }
+                    buildDetails(rec);
+                }
+            }
+            traffic.details = details;
+        }
 
         // Process traffic evidence URLs to use proxy
         if (traffic) {
@@ -2777,6 +2870,7 @@ export class LarkService {
         }
 
         return { report, traffic };
+
     }
 
     private convertDriveUrl(url: string | null | undefined): string | null {
@@ -2848,7 +2942,7 @@ export class LarkService {
             for (const record of records) {
                 const fields = record.fields;
                 const dateNow = new Date();
-                
+
                 // Field name mapping with fallbacks
                 const email = fields['Email'] || null;
                 const name = fields['Họ Tên'] || fields['HoTen'] || fields['Name'] || null;
@@ -2858,7 +2952,7 @@ export class LarkService {
                 const team = fields['Team'] || fields['Phòng ban'] || null;
                 const status = fields['Trạng thái'] || fields['Trang Thai'] || fields['Status'] || null;
                 const permissions = fields['Permissions'] || fields['Quyền'] ? JSON.stringify(fields['Permissions'] || fields['Quyền']) : null;
-                
+
                 await this.prisma.$executeRawUnsafe(`
                     INSERT INTO "lark_permissions" ("id", "email", "name", "pin_code", "employee", "role", "team", "status", "permissions", "created_at", "updated_at")
                     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $10)
@@ -3025,7 +3119,7 @@ export class LarkService {
             const endOfToday = new Date(today.setHours(23, 59, 59, 999));
 
             let targetMonthNum = new Date().getMonth() + 1;
-            
+
             const getKpisForMonth = async (mNum: number) => {
                 const formats = [`T${mNum}`, `Tháng ${mNum}`, `tháng ${mNum}`, `${mNum}`, mNum < 10 ? `0${mNum}` : `${mNum}`];
                 return await this.prisma.larkKPI.findMany({
@@ -3044,7 +3138,7 @@ export class LarkService {
                     where: { month: { not: null } },
                     orderBy: { created_at: 'desc' }
                 });
-                
+
                 if (latestKpi && latestKpi.month) {
                     const mDigits = latestKpi.month.match(/\d+/);
                     if (mDigits) {
@@ -3078,9 +3172,9 @@ export class LarkService {
             ]);
             const employee = employeeUser
                 ? {
-                      image_url: employeeUser.image_url,
-                      position: employeeUser.employee_position,
-                  }
+                    image_url: employeeUser.image_url,
+                    position: employeeUser.employee_position,
+                }
                 : null;
 
             const currentMonthKpi = allTeamKpis
@@ -4043,7 +4137,7 @@ export class LarkService {
                 existing.videoCount = Math.max(existing.videoCount, videosVal);
                 existing.traffic = Math.max(existing.traffic, trafficVal);
                 existing.revenue = Math.max(existing.revenue, revenueVal);
-                
+
                 // If the selected range is just one day, we prefer that day's completed_day
                 const targetDStr = start.toDateString();
                 const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
@@ -4055,9 +4149,9 @@ export class LarkService {
                 const user = email ? userMapByEmail.get(email) : null;
                 const targetDStr = start.toDateString();
                 const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
-                
+
                 // Use completed_day if single day selected, else completed_month
-                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr) 
+                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr)
                     ? (Number(kpi.completed_day) || 0)
                     : videosVal;
 

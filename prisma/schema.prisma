@@ -604,6 +604,7 @@ model LarkTraffic {
   @@map("lark_traffic")
 }
 
+
 model ReportOutstanding {
   id              String   @id
   name            String?
