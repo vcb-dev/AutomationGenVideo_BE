@@ -1,5 +1,5 @@
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -21,7 +21,7 @@ function isLarkChannelActiveStatus(status: string | null | undefined): boolean {
 }
 
 @Injectable()
-export class LarkService {
+export class LarkService implements OnModuleInit {
     private readonly logger = new Logger(LarkService.name);
     private accessToken: string;
     private tokenExpiresAt: number;
@@ -64,6 +64,11 @@ export class LarkService {
         this.LIST_TASK_TABLE_ID = this.configService.get<string>('LARK_LIST_TASK_TABLE_ID') || 'tblUubDhUoJ9TV7m';
         this.OUTSTANDING_TABLE_ID = this.configService.get<string>('LARK_OUTSTANDING_TABLE_ID') || 'tbluurIuf2qDCdFr';
         this.TRAFFIC_TABLE_ID = this.configService.get<string>('LARK_TRAFFIC_TABLE_ID') || 'tblsybBYaPKfsqQK';
+    }
+
+    async onModuleInit() {
+        this.logger.log('LarkService initialized, invalidating activity reports cache...');
+        this.invalidateActivityCache();
     }
 
     async getAccessToken(): Promise<string> {
@@ -115,6 +120,12 @@ export class LarkService {
         } catch (error) {
             this.logger.error('Scheduled Lark data sync failed', error);
         }
+    }
+
+    @Cron('0 */5 * * * *', { name: 'lark-activity-cache-flush', timeZone: 'Asia/Ho_Chi_Minh' })
+    async handleCacheFlushCron() {
+        this.logger.log('Scheduled activity cache flush (Every 5 minutes)...');
+        this.invalidateActivityCache();
     }
 
     // Cron job runs at 12:00 AM every night to clean up invalid data
@@ -1569,8 +1580,8 @@ export class LarkService {
             requesterTeam = roleData.team;
         }
 
-        // Step 2: Fetch shared dataset (cached 2 phút, query nặng – CHUNG cho tất cả users)
-        const sharedData = await this.cacheService.get(sharedCacheKey, 2 * 60 * 1000, async () => {
+        // Step 2: Fetch shared dataset (cached 1 phút, query nặng – CHUNG cho tất cả users)
+        const sharedData = await this.cacheService.get(sharedCacheKey, 1 * 60 * 1000, async () => {
         // ─── PERF: Memoized name normalizer ─────────────────────────────────────────
         // normalize('NFD') + replace chain là operation nặng (O(n) string scan).
         // Với 70+ nhân viên × nhiều vòng lặp = hàng chục nghìn lần gọi.
