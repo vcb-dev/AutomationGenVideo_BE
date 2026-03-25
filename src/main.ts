@@ -15,7 +15,7 @@ async function bootstrap() {
 
   // Security and Optimization
   app.use(helmet({
-    crossOriginResourcePolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
   }));
   app.use(compression());
 

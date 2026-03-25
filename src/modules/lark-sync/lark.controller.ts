@@ -193,8 +193,11 @@ export class LarkController {
         try {
             const { data, contentType } = await this.larkService.getMedia(mediaId, extra);
             res.setHeader('Content-Type', contentType);
-            // Cache for 1 day
-            res.setHeader('Cache-Control', 'public, max-age=86400');
+            // Cache for 1 hour but force revalidation
+            res.setHeader('Cache-Control', 'public, max-age=3600, no-cache, must-revalidate');
+            // Fix Explicitly allow cross-origin resource embedding (CORP)
+            res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+            res.setHeader('Access-Control-Allow-Origin', '*');
             return res.send(Buffer.from(data));
         } catch (error) {
             return res.status(404).send('Media not found');
