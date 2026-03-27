@@ -28,65 +28,72 @@ export function resolveTrackedUsername(row: ChannelRowLike): { platform: Platfor
   const platform = platformFromLarkString(row.platform || undefined);
   if (!platform) return null;
 
-  const idRaw = (row.channel_id || '').trim().replace(/^@/, '');
-  if (idRaw && /^[\w._-]+$/.test(idRaw) && idRaw.length <= 128) {
-    return { platform, username: idRaw.toLowerCase() };
+  // 1) Cố gắng trích xuất username từ link_channel CHUẨN (ưu tiên)
+  const link = (row.link_channel || '').trim();
+  if (link) {
+    let urlStr = link;
+    if (!/^https?:\/\//i.test(urlStr)) urlStr = `https://${urlStr}`;
+
+    try {
+      const url = new URL(urlStr);
+      let extracted = '';
+
+      if (platform === 'FACEBOOK' && (urlStr.includes('facebook.com') || urlStr.includes('fb.com'))) {
+        if (url.pathname.includes('profile.php')) {
+          // Lấy numeric ID, URL đầy đủ sẽ được tra từ Channel.link_channel lúc scrape
+          const id = url.searchParams.get('id');
+          if (id) extracted = id;
+        } else if (url.pathname.includes('/groups/')) {
+          const parts = url.pathname.split('/groups/');
+          if (parts[1]) extracted = parts[1].split('/')[0];
+        } else {
+          const parts = url.pathname.split('/').filter(Boolean);
+          if (parts[0]) extracted = parts[0];
+        }
+      } 
+      else if (platform === 'INSTAGRAM' && urlStr.includes('instagram.com')) {
+        const parts = url.pathname.split('/').filter((p) => p && p.toLowerCase() !== 'p' && p.toLowerCase() !== 'reel' && p.toLowerCase() !== 'reels');
+        if (parts[0]) extracted = parts[0];
+      } 
+      else if (platform === 'TIKTOK' && urlStr.includes('tiktok.com')) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        const at = parts.find((p) => p.startsWith('@'));
+        if (at) extracted = at.replace(/^@/, '');
+        else if (parts[0]) extracted = parts[0]; // fallback
+      }
+      else if (platform === 'DOUYIN') {
+        const path = url.pathname.replace(/\/+$/, '') || '/';
+        const seg = path.split('/').filter(Boolean);
+        const idx = seg.indexOf('user');
+        if (idx >= 0 && seg[idx + 1]) extracted = seg[idx + 1];
+      }
+      else if (platform === 'XIAOHONGSHU') {
+        const path = url.pathname.replace(/\/+$/, '') || '/';
+        const seg = path.split('/').filter(Boolean);
+        const m = path.match(/profile\/([a-zA-Z0-9]+)/i);
+        if (m) extracted = m[1];
+        else if (seg[0] === 'user' && seg[1]) extracted = seg[1];
+      }
+
+      if (extracted) {
+        // Xóa trailing slash, xóa @
+        extracted = extracted.replace(/\/$/, '').replace(/^@/, '');
+        if (extracted) {
+          return { platform, username: extracted.toLowerCase() };
+        }
+      }
+    } catch {
+      /* Invalid URL format, fallback below */
+    }
   }
 
-  const link = (row.link_channel || '').trim();
-  if (!link) return null;
-
-  let urlStr = link;
-  if (!/^https?:\/\//i.test(urlStr)) urlStr = `https://${urlStr}`;
-
-  try {
-    const url = new URL(urlStr);
-    const path = url.pathname.replace(/\/+$/, '') || '/';
-    const seg = path.split('/').filter(Boolean);
-
-    if (platform === 'TIKTOK') {
-      const at = seg.find((s) => s.startsWith('@'));
-      if (at) return { platform, username: at.replace(/^@/, '').toLowerCase() };
-      const m = path.match(/@([\w.]+)/);
-      if (m) return { platform, username: m[1].toLowerCase() };
+  // 2) Fallback: Dùng channel_id từ Lark (nếu link_channel trống hoặc không trích được)
+  const idRaw = (row.channel_id || '').trim().replace(/^@/, '').replace(/\/$/, '');
+  if (idRaw) {
+    // Basic username validation (prevent full messy sentences instead of IDs)
+    if (/^[A-Za-z0-9_.\-]+$/.test(idRaw) && idRaw.length <= 128) {
+      return { platform, username: idRaw.toLowerCase() };
     }
-
-    if (platform === 'INSTAGRAM') {
-      const skip = new Set(['p', 'reel', 'reels', 'stories', 'explore', 'tv']);
-      if (seg[0] && !skip.has(seg[0].toLowerCase())) {
-        return { platform, username: seg[0].replace(/^@/, '').toLowerCase() };
-      }
-    }
-
-    if (platform === 'FACEBOOK') {
-      const idParam = url.searchParams.get('id');
-      if (seg[0] === 'profile.php' && idParam) {
-        return { platform, username: idParam };
-      }
-      const skip = new Set(['watch', 'groups', 'share', 'reel', 'reels', 'stories', 'pages']);
-      if (seg[0] && !skip.has(seg[0].toLowerCase())) {
-        const u = seg[0].split('?')[0].toLowerCase();
-        if (u && u !== 'people') return { platform, username: u };
-      }
-    }
-
-    if (platform === 'DOUYIN') {
-      const idx = seg.indexOf('user');
-      if (idx >= 0 && seg[idx + 1]) return { platform, username: seg[idx + 1] };
-    }
-
-    if (platform === 'XIAOHONGSHU') {
-      const m = path.match(/profile\/([a-zA-Z0-9]+)/i);
-      if (m) return { platform, username: m[1] };
-      if (seg[0] === 'user' && seg[1]) return { platform, username: seg[1] };
-    }
-
-    const last = seg[seg.length - 1]?.replace(/^@/, '');
-    if (last && /^[\w._-]+$/.test(last) && last.length <= 128) {
-      return { platform, username: last.toLowerCase() };
-    }
-  } catch {
-    /* invalid URL */
   }
 
   return null;

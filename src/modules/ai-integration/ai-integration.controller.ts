@@ -45,7 +45,8 @@ export class AiIntegrationController {
       userVideosDto.until_date,
       userVideosDto.start_date,
       userVideosDto.end_date,
-      userVideosDto.force_refresh || false, // NEW: Pass force_refresh
+      userVideosDto.force_refresh || false,
+      (userVideosDto as any).channel_url || undefined, // URL đầy đủ từ link_channel
     );
   }
 
