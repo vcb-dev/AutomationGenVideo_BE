@@ -114,6 +114,14 @@ export class TrackedChannelsController {
     return this.trackedChannelsService.getChannelHashtagStats(channelId, true);
   }
 
+  @Post('enrich-stale')
+  @ApiOperation({
+    summary: 'Tự động làm mới các kênh chưa có data (last_synced_at = null), tối đa 3 kênh/lần',
+  })
+  enrichStale(@Request() req: { user: { id: string } }) {
+    return this.trackedChannelsService.enrichStaleChannels(req.user.id);
+  }
+
   @Post(':id/enrich-apify')
   @ApiOperation({
     summary: 'Làm mới số liệu kênh (followers, likes…) qua Apify — Facebook, Instagram, TikTok, Douyin, Xiaohongshu',

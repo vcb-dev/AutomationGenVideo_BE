@@ -498,22 +498,23 @@ export class LarkService implements OnModuleInit {
             for (const record of records) {
                 const fields = record.fields;
 
-                // Mapping based on new table structure
+                // Mapping based on new table structure (Fallbacks cho các cột có đuôi A?)
                 const data = {
                     id: record.record_id,
-                    name: extractString(fields['Tên kênh hiện tại']) || 'N/A',
-                    platform: extractString(fields['Nền tảng']) || '',
-                    channel_id: extractString(fields['ID kênh hiện tại']) || '',
-                    link_channel: extractString(fields['Link kênh']) || '',
+                    name: extractString(fields['Tên kênh A?']) || extractString(fields['Tên kênh hiện tại']) || extractString(fields['Cột 2 A?']) || extractString(fields['name']) || 'N/A',
+                    platform: extractString(fields['Nền tảng A?']) || extractString(fields['Nền tảng']) || '',
+                    channel_id: extractString(fields['channel_id A?']) || extractString(fields['ID kênh hiện tại']) || extractString(fields['channel_id']) || '',
+                    link_channel: extractString(fields['link_channel A?']) || extractString(fields['Link kênh']) || extractString(fields['link_channel']) || '',
                     status:
                         extractString(
+                            fields['Trạng thái A?'] ??
                             fields['Trạng thái hoạt động'] ??
                             fields['status'] ??
                             fields['Trạng thái'] ??
                             fields['Trạng Thái'],
                         ) || '',
                     team_traffic: extractString(fields['Team Traffic']) || '',
-                    owner: extractString(fields['NV traffic xây kênh']) || '',
+                    owner: extractString(fields['owner A?']) || extractString(fields['NV traffic xây kênh']) || '',
                     email: extractEmail(fields['NV traffic xây kênh']) || null,
                 };
 
@@ -688,15 +689,41 @@ export class LarkService implements OnModuleInit {
                             username: identity.username,
                         },
                     },
-                    select: { total_followers: true, total_likes: true },
+                    select: { total_followers: true, total_likes: true, total_videos: true, last_synced_at: true },
                 });
-                const needsApifyEnrich =
-                    !existingTc ||
+
+                // Chỉ cần enrich khi:
+                // 1. Kênh hoàn toàn mới (chưa tồn tại trong DB)
+                // 2. Chưa bao giờ được sync (last_synced_at = null) VÀ chưa có số liệu gì
+                // KHÔNG enrich nếu kênh đã từng sync (dù bị block → followers=0),
+                // tránh gọi Apify lại mỗi lần user login/reload
+                const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 giờ
+                const isNeverSynced = !existingTc || existingTc.last_synced_at == null;
+                const hasNoData = !existingTc ||
                     ((existingTc.total_followers == null || existingTc.total_followers === 0) &&
-                        Number(existingTc.total_likes) === 0);
+                        Number(existingTc.total_likes) === 0 &&
+                        (existingTc.total_videos == null || existingTc.total_videos === 0));
+                const isStaleWithNoData = hasNoData &&
+                    existingTc?.last_synced_at != null &&
+                    (Date.now() - new Date(existingTc.last_synced_at).getTime()) > STALE_THRESHOLD_MS;
+
+                const needsApifyEnrich = isNeverSynced ? hasNoData : isStaleWithNoData;
 
                 await this.prisma.$transaction(async (tx) => {
-                    await (tx.trackedChannel as any).deleteMany({ where: { lark_channel_id: row.id } });
+                    // CỰC KỲ QUAN TRỌNG: KHÔNG ĐƯỢC DETELE NẾU USERNAME KHÔNG ĐỔI
+                    // Chỉ xóa các bản ghi cũ của lark_channel_id này nếu username/platform bị đổi
+                    await (tx.trackedChannel as any).deleteMany({ 
+                        where: { 
+                            lark_channel_id: row.id,
+                            NOT: {
+                                AND: [
+                                    { platform: identity.platform },
+                                    { username: identity.username }
+                                ]
+                            }
+                        } 
+                    });
+
                     await tx.trackedChannel.upsert({
                         where: {
                             user_id_platform_username: {
@@ -718,6 +745,9 @@ export class LarkService implements OnModuleInit {
                             total_videos: 0,
                             engagement_rate: 0,
                             initial_video_count: 0,
+                            // Kế thừa data từ existingTc nếu channel bị đổi ID Lark nhưng vẫn giữ username (để không mất số)
+                            total_followers: existingTc?.total_followers || null,
+                            last_synced_at: existingTc?.last_synced_at || null,
                         } as any,
                         update: {
                             lark_channel_id: row.id,
@@ -827,26 +857,52 @@ export class LarkService implements OnModuleInit {
     }
 
     async fetchLarkRecordsGeneric(baseId: string, tableId: string) {
-        const token = await this.getAccessToken();
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
 
         let allRecords = [];
         let pageToken = '';
         let hasMore = true;
+        const MAX_RETRIES = 3;
 
         try {
             while (hasMore) {
+                // Luôn lấy token mới trước mỗi request để tránh token hết hạn giữa chừng
+                const token = await this.getAccessToken();
                 this.logger.debug(`Fetching: ${url} (Token: ${token.substring(0, 10)}...)`);
-                const response = await firstValueFrom(
-                    this.httpService.get(url, {
-                        headers: { Authorization: `Bearer ${token}` },
-                        params: {
-                            text_field_as_key: true,
-                            page_size: 100,
-                            page_token: pageToken || undefined
-                        },
-                    }),
-                );
+
+                let response: any;
+                let retries = 0;
+                while (retries < MAX_RETRIES) {
+                    try {
+                        response = await firstValueFrom(
+                            this.httpService.get(url, {
+                                headers: { Authorization: `Bearer ${token}` },
+                                params: {
+                                    text_field_as_key: true,
+                                    page_size: 100,
+                                    // Chỉ gửi page_token khi có giá trị — tránh gửi empty string gây lỗi
+                                    ...(pageToken ? { page_token: pageToken } : {}),
+                                },
+                            }),
+                        );
+                        break; // Thành công → thoát retry loop
+                    } catch (reqErr: any) {
+                        const statusCode = reqErr?.response?.status;
+                        retries++;
+                        if (statusCode === 400 && retries < MAX_RETRIES) {
+                            // page_token có thể đã hết hạn (Lark TTL ngắn với bảng lớn)
+                            // Reset → fetch lại từ đầu để tránh mất dữ liệu
+                            this.logger.warn(
+                                `[LarkFetch] 400 Bad Request khi fetch table ${tableId} (page_token hết hạn?). Retry ${retries}/${MAX_RETRIES} — reset từ trang đầu...`
+                            );
+                            allRecords = [];
+                            pageToken = '';
+                            await new Promise(r => setTimeout(r, 1000 * retries));
+                        } else {
+                            throw reqErr;
+                        }
+                    }
+                }
 
                 if (response.data.code !== 0) {
                     throw new Error(`Lark API Error: ${response.data.msg}`);
@@ -857,8 +913,9 @@ export class LarkService implements OnModuleInit {
                     allRecords = allRecords.concat(data.items);
                 }
 
-                hasMore = data.has_more;
-                pageToken = data.page_token;
+                hasMore = !!data.has_more;
+                // Đảm bảo pageToken không bị undefined (trang cuối thường không trả page_token)
+                pageToken = data.page_token || '';
             }
 
             return allRecords;

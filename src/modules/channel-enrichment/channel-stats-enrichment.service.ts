@@ -72,8 +72,10 @@ export function extractStatsFromUserVideosResponse(
     const resultsLen = Array.isArray(results) ? results.length : 0;
     const rawTotalVideos = parseNumber(profile.total_videos ?? profile.media_count);
     const rawPostsCount = parseNumber(profile.posts_count ?? profile.postsCount);
+    const finalDisplayName = displayName === fallbackUsername ? undefined : displayName;
+
     return {
-      display_name: displayName,
+      display_name: finalDisplayName,
       avatar_url: avatarUrl || undefined,
       total_followers: followerCount > 0 ? followerCount : null,
       total_likes: finalLikes,
@@ -104,8 +106,10 @@ export function extractStatsFromUserVideosResponse(
     const views = results.reduce((s, r) => s + parseNumber(r.views_count), 0);
     const comments = results.reduce((s, r) => s + parseNumber(r.comments_count), 0);
     const engagement_rate = views > 0 ? Math.round(((likes + comments) / views) * 10000) / 100 : 0;
+    const finalAuthorName = authorName === fallbackUsername ? undefined : authorName;
+
     return {
-      display_name: authorName,
+      display_name: finalAuthorName,
       avatar_url: avatar || undefined,
       total_followers: followers > 0 ? followers : null,
       total_likes: likes,
@@ -136,6 +140,24 @@ export class ChannelStatsEnrichmentService {
     if (!aiPlat || !username?.trim()) return false;
 
     try {
+      // Tra cứu link_channel từ bảng Channel (huyk_channels) qua lark_channel_id
+      // để AI service dùng URL đúng (VD: profile.php?id=... thay vì /61580182263005)
+      let channelUrl: string | undefined;
+      const tc = await this.prisma.trackedChannel.findFirst({
+        where: { user_id: userId, platform, username: username.trim(), is_active: true },
+        select: { lark_channel_id: true },
+      });
+      if (tc?.lark_channel_id) {
+        const ch = await (this.prisma as any).channel.findUnique({
+          where: { id: tc.lark_channel_id },
+          select: { link_channel: true },
+        });
+        if (ch?.link_channel?.trim()) {
+          channelUrl = ch.link_channel.trim();
+          this.logger.log(`[enrich] Sử dụng link_channel: ${channelUrl} cho ${platform}/${username}`);
+        }
+      }
+
       const data = (await this.ai.getUserVideos(
         aiPlat,
         username.trim(),
@@ -143,7 +165,8 @@ export class ChannelStatsEnrichmentService {
         undefined,
         undefined,
         undefined,
-        false,
+        true, // forceRefresh = true (Bắt buộc crawl mới qua Apify, không dùng DB cache cũ)
+        channelUrl, // URL đầy đủ từ link_channel
       )) as Record<string, unknown>;
 
       const patch = extractStatsFromUserVideosResponse(data, username);
@@ -151,6 +174,7 @@ export class ChannelStatsEnrichmentService {
         this.logger.debug(`[enrich] no profile/results for ${platform}/${username}`);
         return false;
       }
+      this.logger.debug(`[enrich] patch for ${username}: ${JSON.stringify(patch)}`);
 
       const n = await this.prisma.trackedChannel.updateMany({
         where: {
@@ -174,7 +198,7 @@ export class ChannelStatsEnrichmentService {
 
       return n.count > 0;
     } catch (e: any) {
-      this.logger.warn(`[enrich] ${platform}/${username}: ${e?.message || e}`);
+      this.logger.error(`[enrich] ${platform}/${username} Exception: ${e.message}`, e.stack);
       return false;
     }
   }

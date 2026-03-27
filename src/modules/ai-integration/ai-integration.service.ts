@@ -164,7 +164,9 @@ export class AiIntegrationService {
 
     endDate?: string,
 
-    forceRefresh: boolean = false // NEW: Add force_refresh parameter
+    forceRefresh: boolean = false,
+
+    channelUrl?: string, // URL đầy đủ từ link_channel (VD: https://www.facebook.com/profile.php?id=...)
 
   ): Promise<any> {
 
@@ -192,7 +194,9 @@ export class AiIntegrationService {
 
           end_date: endDate,
 
-          force_refresh: forceRefresh, // NEW: Send force_refresh to Django
+          force_refresh: forceRefresh,
+
+          ...(channelUrl ? { channel_url: channelUrl } : {}), // URL đầy đủ từ link_channel (Facebook profile.php?id=...)
 
         }, {
 

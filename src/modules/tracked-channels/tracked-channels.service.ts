@@ -164,6 +164,49 @@ export class TrackedChannelsService {
     return { success: true, channel: fresh };
   }
 
+  /**
+   * Tự động enrich các kênh của user chưa từng được sync (last_synced_at = null).
+   * Giới hạn 3 kênh/lần để tiết kiệm Apify quota.
+   */
+  async enrichStaleChannels(userId: string): Promise<{ enriched: number; skipped: number; total_stale: number }> {
+    const staleChannels = await this.prisma.trackedChannel.findMany({
+      where: {
+        user_id: userId,
+        is_active: true,
+        last_synced_at: null, // Chưa từng sync thành công
+      },
+      take: 3, // Tối đa 3 kênh/lần
+      orderBy: { created_at: 'asc' },
+    });
+
+    this.logger.log(`[enrichStale] Found ${staleChannels.length} stale channels for user ${userId}`);
+
+    let enriched = 0;
+    for (const ch of staleChannels) {
+      try {
+        const ok = await this.channelStatsEnrichment.enrichTrackedChannel(
+          userId,
+          ch.platform as Platform,
+          ch.username,
+        );
+        if (ok) {
+          enriched++;
+          this.logger.log(`[enrichStale] ✅ Enriched: ${ch.platform}/${ch.username}`);
+        } else {
+          this.logger.warn(`[enrichStale] ⚠️ Failed: ${ch.platform}/${ch.username}`);
+        }
+      } catch (e: any) {
+        this.logger.warn(`[enrichStale] ❌ Error ${ch.platform}/${ch.username}: ${e?.message}`);
+      }
+    }
+
+    return {
+      enriched,
+      skipped: staleChannels.length - enriched,
+      total_stale: staleChannels.length,
+    };
+  }
+
   async checkChannel(id: string, userId: string) {
     const channel = await this.findOne(id, userId); // Check ownership & get details
 
