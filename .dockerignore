@@ -11,4 +11,15 @@ lint-output.json
 prisma/migrations/*.sql.bak
 test/
 *.spec.ts
-storage/
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+*.sql
+*.json
+!package*.json
+!nest-cli.json
+!tsconfig.json
+!*.prisma
+!.env.example

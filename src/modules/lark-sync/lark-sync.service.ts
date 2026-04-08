@@ -7,6 +7,7 @@ import * as bcrypt from 'bcrypt';
 @Injectable()
 export class LarkSyncService implements OnApplicationBootstrap {
     private readonly logger = new Logger(LarkSyncService.name);
+    private syncLock = false;
 
     constructor(
         private readonly prisma: PrismaService,
@@ -17,18 +18,32 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // Tự động sync ngay khi server khởi động
     // ──────────────────────────────────────────────────────────────────────────
     async onApplicationBootstrap() {
-        this.logger.log('🚀 Server started — triggering initial Lark sync...');
-        // Delay 5s để chắc chắn DB/Prisma đã sẵn sàng
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Delay 2 phút trước khi chạy Lark sync — nhường DB connections cho user login
+        // vào giờ cao điểm sáng (60-70 người cùng login).
+        const DELAY_MS = 2 * 60 * 1000;
+        this.logger.log(`🚀 Server started — deferring Lark sync by ${DELAY_MS / 1000}s to prioritize user traffic...`);
+        setTimeout(() => this.runBootstrapSync(), DELAY_MS);
+    }
+
+    private async runBootstrapSync() {
+        this.logger.log('🔄 Starting deferred bootstrap Lark sync...');
         try {
-            const [kpi, emp] = await Promise.all([
-                this.larkService.syncKPIData(),
-                this.larkService.syncEmployeeData(),
-            ]);
+            const kpi = await this.larkService.syncKPIData();
             this.logger.log(`✅ Bootstrap KPI sync: ${kpi?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap KPI sync failed: ${err?.message}`);
+        }
+        try {
+            const kpiDd = await this.larkService.syncKPIDoDaData();
+            this.logger.log(`✅ Bootstrap KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message}`);
+        }
+        try {
+            const emp = await this.larkService.syncEmployeeData();
             this.logger.log(`✅ Bootstrap Employee sync: ${emp?.synced ?? 0} records`);
         } catch (err) {
-            this.logger.error(`❌ Bootstrap KPI/Employee sync failed: ${err?.message}`);
+            this.logger.error(`❌ Bootstrap Employee sync failed: ${err?.message}`);
         }
         try {
             await this.larkService.syncPermissionData();
@@ -36,23 +51,32 @@ export class LarkSyncService implements OnApplicationBootstrap {
         } catch (err) {
             this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
         }
-        // NOTE: syncChannelData() bị bỏ khỏi bootstrap vì nó gọi Apify enrichment
-        // cho từng kênh → tốn quota. Channel sẽ sync qua cron hàng giờ.
         try {
             await this.syncFromLark();
             this.logger.log('✅ Bootstrap HR sync completed');
         } catch (err) {
             this.logger.error(`❌ Bootstrap HR sync failed: ${err?.message}`);
         }
-        this.logger.log('🎉 Initial Lark sync on startup finished!');
+        try {
+            const doda = await this.larkService.syncDoDaChannelData();
+            this.logger.log(`✅ Bootstrap Do Da channel sync: ${doda?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message}`);
+        }
+        this.logger.log('🎉 Deferred Lark sync finished!');
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Tự động chạy mỗi 3 tiếng (0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00)
+    // HR Lark sync — mỗi giờ
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 */3 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 * * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledSync() {
-        this.logger.log('⏰ Scheduled Lark HR sync triggered (every 3 hours)');
+        if (this.syncLock) {
+            this.logger.warn('⏭️ HR sync skipped — another sync is in progress');
+            return;
+        }
+        this.syncLock = true;
+        this.logger.log('⏰ Scheduled Lark HR sync triggered (hourly)');
         try {
             const result = await this.syncFromLark();
             this.logger.log(
@@ -60,20 +84,33 @@ export class LarkSyncService implements OnApplicationBootstrap {
             );
         } catch (err) {
             this.logger.error(`❌ Scheduled Lark sync failed: ${err.message}`);
+        } finally {
+            this.syncLock = false;
         }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Sync KPI + Employee + Reports mỗi 2 tiếng
+    // KPI + Employee + Reports — mỗi giờ (tuần tự để giảm áp lực DB)
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 */2 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 * * * *', { name: 'lark-sequential-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledDataSync() {
-        this.logger.log('⏰ Scheduled Lark data sync triggered (KPI + Employee + Reports)');
+        if (this.syncLock) {
+            this.logger.warn('⏭️ Data sync skipped — another sync is in progress');
+            return;
+        }
+        this.syncLock = true;
+        this.logger.log('⏰ Scheduled Lark data sync triggered (hourly — KPI + Employee + Reports)');
         try {
             const kpi = await this.larkService.syncKPIData();
             this.logger.log(`✅ KPI sync: ${kpi?.synced ?? 0} records`);
         } catch (err) {
             this.logger.error(`❌ KPI sync failed: ${err.message}`);
+        }
+        try {
+            const kpiDd = await this.larkService.syncKPIDoDaData();
+            this.logger.log(`✅ KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
+        } catch (err) {
+            this.logger.error(`❌ KPI Đồ Da sync failed: ${err.message}`);
         }
         try {
             const emp = await this.larkService.syncEmployeeData();
@@ -93,6 +130,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
         } catch (err) {
             this.logger.error(`❌ Permission sync failed: ${err.message}`);
         }
+        this.syncLock = false;
     }
 
     async syncFromLark(): Promise<{

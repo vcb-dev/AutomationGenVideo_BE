@@ -149,11 +149,14 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Generic channel insights (Gemini) for all platforms' })
   async channelInsights(@Body() body: any) {
     const { platform, username, url, max_posts, language, start_date, end_date, force_refresh } = body || {};
-    const user = username || url;
+    const user = (username || url || '').toString().trim();
+    
     if (!platform || !user) {
-      throw new HttpException('platform and username/url are required', HttpStatus.BAD_REQUEST);
+      console.error(`[AiIntegrationController] Missing params in channelInsights: platform=${JSON.stringify(platform)}, username=${JSON.stringify(username)}, url=${JSON.stringify(url)}, body=${JSON.stringify(body)}`);
+      throw new HttpException(`platform and username/url are required. Received: platform=${platform || 'empty'}, username=${username || 'empty'}, url=${url || 'empty'}`, HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.channelInsights(platform, user, max_posts ?? 200, language || 'vi', start_date, end_date, force_refresh === true || force_refresh === 'true');
+    console.log(`[AiIntegrationController] channelInsights OK: platform=${platform}, user=${user}`);
+    return this.aiService.channelInsights(platform.toLowerCase(), user, max_posts ?? 200, language || 'vi', start_date, end_date, force_refresh === true || force_refresh === 'true');
   }
 
   @Post('channel/metrics')
@@ -161,11 +164,14 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Generic channel metrics (no Gemini) for all platforms' })
   async channelMetrics(@Body() body: any) {
     const { platform, username, url, max_posts, start_date, end_date, force_refresh } = body || {};
-    const user = username || url;
+    const user = (username || url || '').toString().trim();
+
     if (!platform || !user) {
-      throw new HttpException('platform and username/url are required', HttpStatus.BAD_REQUEST);
+      console.error(`[AiIntegrationController] Missing params in channelMetrics: platform=${JSON.stringify(platform)}, username=${JSON.stringify(username)}, url=${JSON.stringify(url)}, body=${JSON.stringify(body)}`);
+      throw new HttpException(`platform and username/url are required. Received: platform=${platform || 'empty'}, username=${username || 'empty'}, url=${url || 'empty'}`, HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.channelMetrics(platform, user, max_posts ?? 200, start_date, end_date, force_refresh === true || force_refresh === 'true');
+    console.log(`[AiIntegrationController] channelMetrics OK: platform=${platform}, user=${user}`);
+    return this.aiService.channelMetrics(platform.toLowerCase(), user, max_posts ?? 200, start_date, end_date, force_refresh === true || force_refresh === 'true');
   }
 
   @Get('search/history')

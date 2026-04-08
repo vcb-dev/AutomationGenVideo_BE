@@ -11,13 +11,17 @@ import { AppModule } from "./app.module";
 };
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: process.env.NODE_ENV === 'production'
+      ? ['error', 'warn', 'log']
+      : ['error', 'warn', 'log', 'debug'],
+  });
 
   // Security and Optimization
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
   }));
-  app.use(compression());
+  app.use(compression({ level: 6, threshold: 1024 }));
 
   // Global validation pipe
   app.useGlobalPipes(
@@ -42,9 +46,12 @@ async function bootstrap() {
   });
 
   // CORS configuration
+  // Browser does not allow `Access-Control-Allow-Origin: *` together with credentials=true.
+  // Keep wildcard open, but disable credentials in that case.
+  const corsOrigin = process.env.CORS_ORIGIN || "*";
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || "*",
-    credentials: true,
+    origin: corsOrigin,
+    credentials: corsOrigin !== "*",
   });
 
   // Swagger documentation
@@ -62,11 +69,20 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup("api", app, document);
 
+  // Graceful shutdown support
+  app.enableShutdownHooks();
+
   const port = process.env.PORT || 3000;
   await app.listen(port);
 
-  console.log(`🚀 Application is running on: http://localhost:${port}`);
-  console.log(`📚 Swagger documentation: http://localhost:${port}/api`);
+  const httpServer = app.getHttpAdapter().getInstance();
+  httpServer.keepAliveTimeout  = 65_000;
+  httpServer.headersTimeout    = 66_000;
+  httpServer.maxHeadersCount   = 100;
+  httpServer.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+
+  console.log(`Application is running on: http://localhost:${port}`);
+  console.log(`Swagger documentation: http://localhost:${port}/api`);
 }
 
 bootstrap();

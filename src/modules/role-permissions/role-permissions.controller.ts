@@ -6,6 +6,7 @@ import {
     UseGuards,
     Request,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { RolePermissionsService } from './role-permissions.service';
 import { UpdateRolePermissionDto } from './dto/update-role-permission.dto';
@@ -16,6 +17,7 @@ import { UserRole } from '@prisma/client';
 
 @ApiTags('role-permissions')
 @Controller('role-permissions')
+@SkipThrottle()
 @ApiBearerAuth()
 export class RolePermissionsController {
     constructor(private readonly service: RolePermissionsService) { }
@@ -40,8 +42,12 @@ export class RolePermissionsController {
     @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get allowed tabs for current user' })
     async getMyTabs(@Request() req) {
-        const user = await this.service.getUserPermissions(req.user.id);
-        if (!user) return [];
-        return this.service.getPermissionsForUser(user.roles, user.custom_permissions);
+        // Use roles/custom_permissions already on the JWT-validated user object
+        // to avoid an extra DB round-trip on every page navigation.
+        const jwtUser = req.user;
+        if (!jwtUser) return [];
+        const roles = jwtUser.roles ?? [];
+        const custom = jwtUser.custom_permissions ?? [];
+        return this.service.getPermissionsForUser(roles, custom);
     }
 }

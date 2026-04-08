@@ -21,7 +21,10 @@
     "prisma:generate": "prisma generate",
     "prisma:generate:fresh": "node -e \"try{require('fs').rmSync('node_modules/.prisma/client',{recursive:true,force:true})}catch(e){}\" && prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "sync:channel:to-server": "ts-node scripts/sync-channel-to-server.ts",
+    "sync:larkkpi:to-server": "ts-node scripts/sync-larkkpi-to-server.ts",
+    "sync:larkkpi-doda:to-server": "ts-node scripts/sync-larkkpi-doda-to-server.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
