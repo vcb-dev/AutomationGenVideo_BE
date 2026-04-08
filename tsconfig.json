@@ -23,5 +23,7 @@
       "@modules/*": ["src/modules/*"],
       "@config/*": ["src/config/*"]
     }
-  }
+  },
+  "include": ["src/**/*", "prisma/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
 }
