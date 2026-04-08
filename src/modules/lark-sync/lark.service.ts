@@ -2943,16 +2943,29 @@ export class LarkService implements OnModuleInit {
 
     private convertDriveUrl(url: string | null | undefined): string | null {
         if (!url) return null;
+
+        // If it's just a token (20-50 chars, no special URL chars)
+        if (url.length >= 20 && url.length <= 60 && !url.includes('/') && !url.includes('.') && !url.includes(':')) {
+            const port = this.configService.get<string>('PORT') || '3000';
+            return `http://localhost:${port}/api/lark/media/${url}`;
+        }
+
         if (url.includes('drive.google.com')) {
-            const match = url.match(/\/d\/([^/]+)/);
+            const match = url.match(/\/d\/([^/]+)/) || url.match(/id=([^&]+)/);
             if (match && match[1]) {
                 // Return proxy-compatible URL for frontend or direct uc link
                 return `https://drive.google.com/uc?export=view&id=${match[1]}`;
             }
         }
 
-        // Handle Lark media URLs to use our proxy
-        if (url.includes('open.larksuite.com/open-apis/drive/v1/medias/')) {
+        // Handle Lark / Feishu media URLs — proxy through our backend to bypass CORP/CORS
+        const isLarkMediaUrl = (
+            url.includes('open.larksuite.com/open-apis/drive/v1/medias/') ||
+            url.includes('open.feishu.cn/open-apis/drive/v1/medias/') ||
+            url.includes('larksuite.com/open-apis/drive') ||
+            url.includes('feishu.cn/open-apis/drive')
+        );
+        if (isLarkMediaUrl) {
             const tokenMatch = url.match(/medias\/([^/?]+)/);
             const extraMatch = url.match(/extra=([^&]+)/);
             if (tokenMatch && tokenMatch[1]) {
@@ -2964,6 +2977,17 @@ export class LarkService implements OnModuleInit {
                 }
                 return proxyUrl;
             }
+        }
+
+        // Handle Lark/Feishu attachment URLs that contain file tokens in path or query
+        if (
+            url.includes('feishucdn.com') ||
+            url.includes('feishu.cn') ||
+            url.includes('lf-cdn.com') ||
+            url.includes('larksuite.com')
+        ) {
+            // Already a CDN URL — return as-is (will be allowed by capture proxy whitelist)
+            return url;
         }
 
         return url;
@@ -2991,7 +3015,7 @@ export class LarkService implements OnModuleInit {
                 contentType: response.headers['content-type'] || 'image/png',
             };
         } catch (error) {
-            this.logger.error(`Failed to fetch media ${mediaId} from Lark`, error);
+            this.logger.error(`[LarkMedia] Failed to fetch media ${mediaId} from Lark: ${error.message}`, error.response?.data?.toString());
             throw error;
         }
     }
@@ -3885,8 +3909,9 @@ export class LarkService implements OnModuleInit {
         if (!rk || !rk.image_url) return null;
         if (typeof rk.image_url === 'string') return rk.image_url;
         if (Array.isArray(rk.image_url) && rk.image_url.length > 0) {
-            // Lark attachments often have a 'url' or 'attachment_id' or 'file_token'
-            return rk.image_url[0].url || rk.image_url[0].file_token || null;
+            const item = rk.image_url[0];
+            // If we have a URL, use it; if we only have a token, return it (convertDriveUrl will handle it)
+            return item.url || item.file_token || item.attachment_id || null;
         }
         return null;
     }
