@@ -10,6 +10,7 @@ import {
   Request,
   Query,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { TrackedChannelsService } from './tracked-channels.service';
 import { CreateTrackedChannelDto, UpdateTrackedChannelDto } from './dto/tracked-channel.dto';
@@ -21,6 +22,7 @@ import { LarkService } from '../lark-sync/lark.service';
 
 @ApiTags('Tracked Channels')
 @ApiBearerAuth()
+@SkipThrottle()
 @UseGuards(JwtAuthGuard)
 @Controller('tracked-channels')
 export class TrackedChannelsController {
@@ -54,14 +56,14 @@ export class TrackedChannelsController {
 
   @Get()
   @ApiOperation({ summary: 'Get all tracked channels for current user' })
-  findAll(@Request() req, @Query('platform') platform?: string) {
-    return this.trackedChannelsService.findAllByUser(req.user.id, platform);
+  findAll(@Request() req, @Query('platform') platform?: string, @Query('team') team?: string) {
+    return this.trackedChannelsService.findAllByUser(req.user.id, platform, team);
   }
 
   @Get('my-channels')
-  @ApiOperation({ summary: 'Get my tracked channels, optionally filtered by platform' })
-  getMyChannels(@Request() req, @Query('platform') platform?: string) {
-    return this.trackedChannelsService.getMyChannels(req.user.id, platform);
+  @ApiOperation({ summary: 'Get my tracked channels, optionally filtered by platform and/or team' })
+  getMyChannels(@Request() req, @Query('platform') platform?: string, @Query('team') team?: string) {
+    return this.trackedChannelsService.getMyChannels(req.user.id, platform, team);
   }
 
   @Get('by-username/:platform/:username')

@@ -1,7 +1,8 @@
 
 
-import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, Header } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, Header, HttpCode, HttpStatus, Logger } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { LarkSyncService } from './lark-sync.service';
@@ -9,7 +10,10 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Lark Report')
 @Controller('lark')
+@SkipThrottle()
 export class LarkController {
+    private readonly logger = new Logger(LarkController.name);
+
     constructor(
         private readonly larkService: LarkService,
         private readonly larkSyncService: LarkSyncService,
@@ -23,15 +27,15 @@ export class LarkController {
     }
 
     @Post('sync')
-    @ApiOperation({ summary: 'Manually trigger sync from Lark to DB' })
+    @HttpCode(HttpStatus.ACCEPTED)
+    @ApiOperation({ summary: 'Manually trigger sync from Lark to DB (non-blocking)' })
     async syncData() {
-        try {
-            await this.larkService.syncReportData();
-            await this.larkService.syncPermissionData();
-            return { message: 'Sync completed successfully' };
-        } catch (error) {
-            return { message: 'Sync failed', error: error.message };
-        }
+        // Fire-and-forget — return immediately so clients are not left waiting 10-60s
+        Promise.resolve()
+            .then(() => this.larkService.syncReportData())
+            .then(() => this.larkService.syncPermissionData())
+            .catch(e => this.logger.error('Background sync failed', e));
+        return { message: 'Sync queued', status: 'accepted' };
     }
 
     @Get('inspect')
@@ -52,16 +56,15 @@ export class LarkController {
     }
 
     @Post('reset-and-sync')
-    @ApiOperation({ summary: 'Clear old data and sync from new Lark table' })
+    @HttpCode(HttpStatus.ACCEPTED)
+    @ApiOperation({ summary: 'Clear old data and sync from new Lark table (non-blocking)' })
     async resetAndSync() {
-        try {
-            await this.larkService.clearAllReports();
-            await this.larkService.syncReportData();
-            await this.larkService.syncPermissionData();
-            return { message: 'Reset and sync completed successfully' };
-        } catch (error) {
-            return { message: 'Reset and sync failed', error: error.message };
-        }
+        Promise.resolve()
+            .then(() => this.larkService.clearAllReports())
+            .then(() => this.larkService.syncReportData())
+            .then(() => this.larkService.syncPermissionData())
+            .catch(e => this.logger.error('Background reset-and-sync failed', e));
+        return { message: 'Reset and sync queued', status: 'accepted' };
     }
 
     @Get('inspect-employee')
@@ -118,6 +121,33 @@ export class LarkController {
         }
     }
 
+    @Get('inspect-kpi-do-da')
+    @ApiOperation({ summary: 'Inspect KPI Đồ Da Lark table structure' })
+    async inspectKPITableDoDa() {
+        return this.larkService.inspectKPITableDoDa();
+    }
+
+    @Get('kpi-do-da')
+    @ApiOperation({ summary: 'Get KPI Đồ Da data from Database' })
+    @ApiResponse({ status: 200, description: 'Returns list of KPI Đồ Da from PostgreSQL (lark_kpi_do_da).' })
+    async getKPIDoDa() {
+        return this.larkService.getKPIDoDaData();
+    }
+
+    @Post('sync-kpi-do-da')
+    @ApiOperation({ summary: 'Manually trigger KPI Đồ Da sync from Lark to DB' })
+    async syncKPIDoDaData() {
+        try {
+            const result = await this.larkService.syncKPIDoDaData();
+            return {
+                message: 'KPI Đồ Da sync completed successfully',
+                ...result,
+            };
+        } catch (error) {
+            return { message: 'KPI Đồ Da sync failed', error: error.message };
+        }
+    }
+
 
     @Post('cleanup-kpi')
     @ApiOperation({ summary: 'Manually trigger cleanup of invalid KPI records' })
@@ -134,6 +164,12 @@ export class LarkController {
     @ApiOperation({ summary: 'List all tables in the Lark Base' })
     async listTables() {
         return this.larkService.listTables();
+    }
+
+    @Get('db-targets')
+    @ApiOperation({ summary: 'Debug: show sanitized DB targets (no secrets)' })
+    dbTargets() {
+        return this.larkService.getDbTargetsDebugInfo();
     }
 
     @Get('user-activity')
@@ -153,7 +189,6 @@ export class LarkController {
         if (startDate) filters['startDate'] = startDate;
         if (endDate) filters['endDate'] = endDate;
         if (team) filters['team'] = team;
-        // Normalize email – Google login có thể gửi uppercase
         if (requesterEmail) filters['requesterEmail'] = requesterEmail.toLowerCase().trim();
         if (timeType) filters['timeType'] = timeType;
 
@@ -183,24 +218,34 @@ export class LarkController {
         @Query('email') email: string,
         @Query('name') name?: string
     ) {
-        // Normalize email trước khi query
         return this.larkService.getPersonalHistory(email?.toLowerCase().trim(), name);
     }
 
     @Get('media/:mediaId')
     @ApiOperation({ summary: 'Proxy Lark media download' })
     async getMedia(@Param('mediaId') mediaId: string, @Query('extra') extra: string, @Res() res: Response) {
+        // Ensure browser can read the response even on failures.
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+
         try {
             const { data, contentType } = await this.larkService.getMedia(mediaId, extra);
             res.setHeader('Content-Type', contentType);
             // Cache for 1 hour but force revalidation
             res.setHeader('Cache-Control', 'public, max-age=3600, no-cache, must-revalidate');
-            // Fix Explicitly allow cross-origin resource embedding (CORP)
-            res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-            res.setHeader('Access-Control-Allow-Origin', '*');
             return res.send(Buffer.from(data));
         } catch (error) {
-            return res.status(404).send('Media not found');
+            const status =
+                Number(error?.response?.status) ||
+                Number(error?.status) ||
+                500;
+            const detail =
+                (typeof error?.response?.data === 'string' && error.response.data) ||
+                error?.response?.data?.msg ||
+                error?.message ||
+                'Failed to fetch media';
+
+            return res.status(status).send(detail);
         }
     }
 
@@ -283,11 +328,12 @@ export class LarkController {
     }
 
     @Post('reset-channel')
-    @ApiOperation({ summary: 'Clear and re-sync Channel data' })
+    @ApiOperation({ summary: 'Clear and re-sync Channel data (main + Do Da)' })
     async resetChannelData() {
         try {
             await this.larkService.clearChannels();
             await this.larkService.syncChannelData();
+            await this.larkService.syncDoDaChannelData();
             return { message: 'Channel reset and sync completed successfully' };
         } catch (error) {
             return { message: 'Channel reset failed', error: error.message };
@@ -305,11 +351,34 @@ export class LarkController {
         return this.larkService.getChannelData(owner, team, email?.toLowerCase().trim());
     }
 
+    @Post('enrich-channel-emails')
+    @ApiOperation({ summary: 'Cross-reference Channel.owner with Users.full_name to fill email' })
+    async enrichChannelEmails() {
+        try {
+            const updated = await this.larkService.enrichChannelEmailsFromUsers();
+            return { message: `Email enrichment completed: ${updated} channels updated`, updated };
+        } catch (error) {
+            return { message: 'Email enrichment failed', error: error.message };
+        }
+    }
+
+    @Post('sync-doda-channel')
+    @ApiOperation({ summary: 'Sync Do Da team channels from Lark into Channel table' })
+    async syncDoDaChannel() {
+        try {
+            const result = await this.larkService.syncDoDaChannelData();
+            return { message: 'Do Da channel sync completed', ...result };
+        } catch (error) {
+            return { message: 'Do Da channel sync failed', error: error.message };
+        }
+    }
+
     @Post('sync-hr')
-    @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts)' })
+    @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts + Permission/Team)' })
     async syncHRData() {
         try {
             const result = await this.larkSyncService.syncFromLark();
+            await this.larkService.syncPermissionData();
             return { message: 'HR sync completed successfully', data: result };
         } catch (error) {
             return { message: 'HR sync failed', error: error.message };
@@ -329,6 +398,7 @@ export class LarkController {
     }
 
     @Get('dashboard-analytics')
+    @Header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120')
     @ApiOperation({ summary: 'Get aggregated dashboard analytics for video production' })
     async getDashboardAnalytics(
         @Query('startDate') startDate?: string,

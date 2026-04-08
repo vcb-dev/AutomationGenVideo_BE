@@ -6,6 +6,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
+import { CacheService } from "../../common/cache/cache.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
@@ -33,7 +34,11 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private larkService: LarkService,
+    private cacheService: CacheService,
   ) { }
+
+  private userCacheKey(id: string) { return `user:id:${id}`; }
+  private userEmailCacheKey(email: string) { return `user:email:${email.toLowerCase()}`; }
 
   async create(createUserDto: CreateUserDto) {
     if (createUserDto.email) {
@@ -148,9 +153,12 @@ export class UsersService {
   }
 
   async findByEmail(email: string) {
-    return this.prisma.user.findFirst({
-      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
-    });
+    const key = this.userEmailCacheKey(email);
+    return this.cacheService.get(key, 30_000, () =>
+      this.prisma.user.findFirst({
+        where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
+      }),
+    );
   }
 
   /** Ghi đè password_hash bằng bcrypt (dùng sau khi login legacy plain-text). */
@@ -324,6 +332,13 @@ export class UsersService {
         );
     }
 
+    // Invalidate caches so JWT validation gets fresh data
+    this.cacheService.invalidate(this.userCacheKey(id));
+    this.cacheService.invalidate(this.userEmailCacheKey(updatedUser.email ?? ''));
+    if (user.email !== updatedUser.email) {
+      this.cacheService.invalidate(this.userEmailCacheKey(user.email ?? ''));
+    }
+
     return updatedUser;
   }
 
@@ -335,6 +350,10 @@ export class UsersService {
     }
 
     await this.prisma.user.delete({ where: { id } });
+
+    this.cacheService.invalidate(this.userCacheKey(id));
+    this.cacheService.invalidate(this.userEmailCacheKey(user.email ?? ''));
+    this.cacheService.invalidate(`jwt:user:${id}`);
 
     return { message: "User deleted successfully" };
   }

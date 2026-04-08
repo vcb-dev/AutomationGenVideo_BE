@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { Request, Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
+import { SkipThrottle } from "@nestjs/throttler";
 import {
   ApiTags,
   ApiOperation,
@@ -28,6 +29,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 @ApiTags("auth")
 @Controller("auth")
+@SkipThrottle()
 @UseInterceptors(ClassSerializerInterceptor)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}

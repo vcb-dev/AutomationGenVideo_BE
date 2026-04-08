@@ -1,6 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 
+const POOL_SIZE = parseInt(process.env.DB_POOL_SIZE || '50', 10);
+
 @Injectable()
 export class PrismaService
   extends PrismaClient
@@ -12,14 +14,12 @@ export class PrismaService
     super({
       datasources: {
         db: {
-          // connection_limit: số connections tối đa trong pool.
-          // Với 50-100 users đồng thời và ~8 parallel queries/request,
-          // cần pool đủ lớn để không xếp hàng. 20 là cân bằng tốt.
-          // pool_timeout: thời gian chờ lấy connection từ pool (giây).
+          // 50 connections: 100 users × ~0.3 avg concurrent queries + Lark background sync.
+          // pool_timeout 30s: generous queue wait so requests don't fail under burst.
           url: process.env.DATABASE_URL + (
             process.env.DATABASE_URL?.includes('?') ?
-            '&connection_limit=20&pool_timeout=20&connect_timeout=10' :
-            '?connection_limit=20&pool_timeout=20&connect_timeout=10'
+            `&connection_limit=${POOL_SIZE}&pool_timeout=30&connect_timeout=10` :
+            `?connection_limit=${POOL_SIZE}&pool_timeout=30&connect_timeout=10`
           ),
         }
       },
@@ -31,7 +31,7 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
-    this.logger.log('Prisma connected (pool: 20 connections)');
+    this.logger.log(`Prisma connected (pool: ${POOL_SIZE} connections)`);
   }
 
   async onModuleDestroy() {

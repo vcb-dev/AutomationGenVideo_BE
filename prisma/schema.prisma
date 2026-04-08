@@ -1,62 +1,54 @@
 generator client {
   provider   = "prisma-client-js"
-  /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
   engineType = "binary"
 }
-
-// generator erd {
-//   provider = "prisma-erd-generator"
-//   output   = "../ERD.svg"
-// }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
+/// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
 model User {
-  id                  String           @id @default(uuid())
-  email               String           @unique
-  password_hash       String?
-  full_name           String
-  google_id           String?          @unique
-  roles               UserRole[]       @default([])
-  team                String?
-  lark_permissions    Json?
-  manager_id          String?
-  team_leader_id      String?
-  is_active           Boolean          @default(true)
-  custom_permissions  String[]         @default([])
-  created_at          DateTime         @default(now())
-  updated_at          DateTime         @updatedAt
-  last_app_update_at  DateTime?        @default(now())
-
+  id                      String           @id @default(uuid())
+  email                   String           @unique
+  password_hash           String?
+  full_name               String
+  google_id               String?          @unique
+  manager_id              String?
+  is_active               Boolean          @default(true)
+  created_at              DateTime         @default(now())
+  updated_at              DateTime         @updatedAt
+  custom_permissions      String[]         @default([])
+  lark_permissions        Json?
+  last_app_update_at      DateTime?        @default(now())
+  roles                   UserRole[]       @default([])
+  team                    String?
+  team_leader_id          String?
   /// Bitable record id — đồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
-  lark_employee_record_id String?      @unique
-  employee_id         String?          @unique
-  image_url           String?
-  employee_data       Json?
+  lark_employee_record_id String?          @unique
+  employee_id             String?          @unique
+  image_url               String?
+  employee_data           Json?
   /// Chức vụ từ Lark (Member / Leader, …)
-  employee_position   String?
+  employee_position       String?
   /// Tình trạng Lark: Đang hoạt động / Đã nghỉ
-  employee_status     String?
+  employee_status         String?
   /// Tháng/ngày từ Lark (cột NGÀY)
-  employee_date       DateTime?
-
-  search_histories    SearchHistory[]
-  tracked_channels    TrackedChannel[]
-  manager             User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
-  editors             User[]           @relation("ManagerEditors")
-  team_leader         User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
-  team_members        User[]           @relation("TeamLeaderMembers")
-  reviewed_duplicates VideoDuplicate[] @relation("ReviewedDuplicates")
-  videos              Video[]
+  employee_date           DateTime?
+  search_histories        SearchHistory[]
+  tracked_channels        TrackedChannel[]
+  manager                 User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
+  editors                 User[]           @relation("ManagerEditors")
+  team_leader             User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
+  team_members            User[]           @relation("TeamLeaderMembers")
+  reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
+  videos                  Video[]
 
   @@index([email])
   @@index([roles])
   @@index([manager_id])
   @@index([team_leader_id])
-  @@index([employee_id])
   @@map("users")
 }
 
@@ -100,6 +92,8 @@ model TrackedChannel {
   @@index([platform])
   @@index([is_active])
   @@index([added_via])
+  @@index([user_id, is_active])
+  @@index([user_id, platform, is_active])
   @@map("tracked_channels")
 }
 
@@ -514,9 +508,9 @@ model LarkReport {
   role       String?
 
   @@index([date])
+  @@index([date, team])
   @@index([email])
   @@index([name])
-  @@index([team])
   @@map("lark_reports")
 }
 
@@ -554,33 +548,77 @@ model LarkKPI {
   updated_at           DateTime  @updatedAt
 
   @@index([month])
+  @@index([report_date, team])
+  @@index([state, month, team])
   @@index([team])
   @@index([name])
   @@index([employee_id])
   @@map("lark_kpi")
 }
 
+/// KPI Bitable Đồ Da (wiki metatops — bảng riêng, cấu trúc tương thích mapRecordToKPI)
+model LarkKpiDoDa {
+  id                   String    @id
+  employee_id          String?
+  name                 String?
+  tag                  String?
+  team                 String?
+  image_url            String?
+  kpi_day              Int?
+  kpi_month            Int?
+  kpii_status          String?
+  kpi_day_percent      String?
+  completed_day        Int?
+  completed_month      Int?
+  task_new             Int?
+  task_new_month       Int?
+  task_auto            Int?
+  task_auto_month      Int?
+  task_creative        Int?
+  content_win_new      Int?
+  revenue_month        BigInt?
+  traffic_month        BigInt?
+  target_revenue_month String?
+  target_traffic_month String?
+  kpi_progress_month   Float?
+  employee_status      String?
+  state                String?
+  employee_data        Json?
+  report_date          DateTime?
+  month                String?
+  link_image           String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@index([month])
+  @@index([report_date, team])
+  @@index([team])
+  @@index([name])
+  @@index([employee_id])
+  @@map("lark_kpi_do_da")
+}
+
 model LarkTraffic {
-  id              String    @id
-  date            DateTime?
-  employee        Json?
-  team            String?
-  month           String?
-  traffic_fb      BigInt?
-  traffic_ig      BigInt?
-  traffic_lemon8  BigInt?
-  traffic_thread  BigInt?
-  traffic_tiktok  BigInt?
-  traffic_yt      BigInt?
-  traffic_zalo    BigInt?
-  total_traffic   BigInt?
-  is_confirmed    String?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
-  email           String?
-  name            String?
-  evidence_files  String?
-  traffic_twitter BigInt?
+  id               String    @id
+  date             DateTime?
+  employee         Json?
+  team             String?
+  month            String?
+  traffic_fb       BigInt?
+  traffic_ig       BigInt?
+  traffic_lemon8   BigInt?
+  traffic_thread   BigInt?
+  traffic_tiktok   BigInt?
+  traffic_yt       BigInt?
+  traffic_zalo     BigInt?
+  total_traffic    BigInt?
+  is_confirmed     String?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+  name             String?
+  evidence_files   String?
+  traffic_twitter  BigInt?
+  email            String?
   evidence_fb      String?
   evidence_ig      String?
   evidence_tiktok  String?
@@ -589,21 +627,22 @@ model LarkTraffic {
   evidence_lemon8  String?
   evidence_zalo    String?
   evidence_twitter String?
-  channel_fb      String?
-  channel_ig      String?
-  channel_tiktok  String?
-  channel_yt      String?
-  channel_thread  String?
-  channel_lemon8  String?
-  channel_zalo    String?
-  channel_twitter String?
+  channel_fb       String?
+  channel_ig       String?
+  channel_tiktok   String?
+  channel_yt       String?
+  channel_thread   String?
+  channel_lemon8   String?
+  channel_zalo     String?
+  channel_twitter  String?
 
+  @@index([date])
+  @@index([date, team])
   @@index([month])
   @@index([team])
   @@index([email])
   @@map("lark_traffic")
 }
-
 
 model ReportOutstanding {
   id              String   @id
@@ -621,6 +660,7 @@ model ReportOutstanding {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
+  @@index([date, created_at])
   @@map("report_outstanding")
 }
 
@@ -633,13 +673,15 @@ model Channel {
   status       String?
   team_traffic String?
   owner        String?
-  email        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
+  email        String?
 
   @@index([owner])
   @@index([email])
   @@index([team_traffic])
+  @@index([email, status])
+  @@index([platform, status])
   @@map("huyk_channels")
 }
 
@@ -658,7 +700,6 @@ model LarkPermission {
 
   @@index([email])
   @@index([name])
-  @@index([team])
   @@map("lark_permissions")
 }
 
@@ -897,9 +938,9 @@ model LarkReportKPI {
   updated_at      DateTime  @updatedAt
 
   @@index([report_date])
+  @@index([report_date, team])
   @@index([email])
   @@index([name])
-  @@index([team])
   @@map("lark_report_kpi")
 }
 
@@ -935,6 +976,25 @@ model LarkListTask {
   @@map("lark_list_tasks")
 }
 
+model video_management_channelanalysis {
+  id         BigInt   @id @default(autoincrement())
+  created_at DateTime @db.Timestamptz(6)
+  updated_at DateTime @db.Timestamptz(6)
+  platform   String   @db.VarChar(20)
+  username   String   @db.VarChar(255)
+  max_posts  Int
+  insights   Json
+  metrics    Json
+
+  @@unique([platform, username], map: "video_management_channel_platform_username_bb55e90a_uniq")
+  @@index([platform, username], map: "video_manag_platfor_426825_idx")
+  @@index([created_at], map: "video_management_channelanalysis_created_at_70c78ae7")
+  @@index([platform], map: "video_management_channelanalysis_platform_e38a218a")
+  @@index([platform], map: "video_management_channelanalysis_platform_e38a218a_like")
+  @@index([username], map: "video_management_channelanalysis_username_22fc03be")
+  @@index([username], map: "video_management_channelanalysis_username_22fc03be_like")
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -948,6 +1008,7 @@ enum Platform {
   FACEBOOK
   DOUYIN
   XIAOHONGSHU
+  YOUTUBE
 }
 
 enum DuplicateStatus {
