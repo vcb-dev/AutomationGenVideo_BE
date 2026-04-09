@@ -31,7 +31,7 @@ import { UserRole } from "@prisma/client";
 
 @ApiTags("users")
 @Controller("users")
-@SkipThrottle()
+@SkipThrottle({ long: true, short: true })
 @UseInterceptors(ClassSerializerInterceptor)
 export class UsersController {
   constructor(private readonly usersService: UsersService) { }

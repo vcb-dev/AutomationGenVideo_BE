@@ -22,7 +22,7 @@ import { LarkService } from '../lark-sync/lark.service';
 
 @ApiTags('Tracked Channels')
 @ApiBearerAuth()
-@SkipThrottle()
+@SkipThrottle({ long: true, short: true })
 @UseGuards(JwtAuthGuard)
 @Controller('tracked-channels')
 export class TrackedChannelsController {
