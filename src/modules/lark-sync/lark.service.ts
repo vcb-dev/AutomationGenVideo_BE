@@ -26,6 +26,8 @@ export class LarkService implements OnModuleInit {
     private readonly logger = new Logger(LarkService.name);
     private accessToken: string;
     private tokenExpiresAt: number;
+    private readonly activitySharedCacheTtlMs: number;
+    private readonly activityRoleCacheTtlMs: number;
 
     // Lark API credentials
     private readonly APP_ID: string;
@@ -72,6 +74,15 @@ export class LarkService implements OnModuleInit {
             this.configService.get<string>('LARK_KPI_DODA_BASE_ID') || 'Livew1AE0i2vo5kF3YXlCPNWg8f';
         this.KPI_DODA_TABLE_ID =
             this.configService.get<string>('LARK_KPI_DODA_TABLE_ID') || 'tblI1NzUOszaehhQ';
+        // Keep activity data cached longer to cut repeated SQL load from frequent polling.
+        this.activitySharedCacheTtlMs = Math.max(
+            30_000,
+            Number(this.configService.get<string>('LARK_ACTIVITY_SHARED_CACHE_TTL_MS') || 5 * 60 * 1000),
+        );
+        this.activityRoleCacheTtlMs = Math.max(
+            60_000,
+            Number(this.configService.get<string>('LARK_ACTIVITY_ROLE_CACHE_TTL_MS') || 30 * 60 * 1000),
+        );
     }
 
     async onModuleInit() {
@@ -329,9 +340,9 @@ export class LarkService implements OnModuleInit {
         }, 3, 'getAccessToken');
     }
 
-    @Cron('0 * * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 0 13 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCron() {
-        this.logger.log('Starting scheduled Lark data sync (KPI, Employees) — hourly...');
+        this.logger.log('Starting scheduled Lark data sync (KPI, Employees) — daily at 13:00...');
         try {
             // Phase 1: KPI + list task (song song). Channel chạy sau Phase 3 để enrich email khớp bảng users mới nhất.
             await Promise.all([
@@ -356,16 +367,16 @@ export class LarkService implements OnModuleInit {
         }
     }
 
-    @Cron('0 0 * * * *', { name: 'lark-activity-cache-flush', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 10 13 * * *', { name: 'lark-activity-cache-flush', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCacheFlushCron() {
-        this.logger.log('Scheduled activity cache flush (hourly)...');
+        this.logger.log('Scheduled activity cache flush (daily at 13:10)...');
         this.invalidateActivityCache();
     }
 
-    // Cleanup invalid Lark rows — cùng nhịp đồng bộ hourly
-    @Cron('0 * * * *', { name: 'lark-data-cleanup', timeZone: 'Asia/Ho_Chi_Minh' })
+    // Cleanup invalid Lark rows — chạy sau sync chính để giảm tải DB giờ cao điểm
+    @Cron('0 20 13 * * *', { name: 'lark-data-cleanup', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCleanup() {
-        this.logger.log('Starting scheduled data cleanup for Lark tables (hourly)...');
+        this.logger.log('Starting scheduled data cleanup for Lark tables (daily at 13:20)...');
         try {
             // Cleanup Logic for LarkKPI
             const kpiResult = await this.prisma.larkKPI.deleteMany({
@@ -2479,11 +2490,11 @@ export class LarkService implements OnModuleInit {
         const roleCacheKey = `activity:role:${filters?.requesterEmail || ''}`;
         // ────────────────────────────────────────────────────────────────────────────
 
-        // Step 1: Resolve role/team for this user (cached 10 phút, query nhẹ)
+        // Step 1: Resolve role/team for this user (longer TTL, query nhẹ)
         let requesterRole = 'Member';
         let requesterTeam = null;
         if (filters?.requesterEmail) {
-            const roleData = await this.cacheService.get(roleCacheKey, 10 * 60 * 1000, async () => {
+            const roleData = await this.cacheService.get(roleCacheKey, this.activityRoleCacheTtlMs, async () => {
                 // Sử dụng duy nhất bảng users làm chuẩn role/team
                 const sysUser = await this.prisma.user.findFirst({
                     where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } },
@@ -2506,8 +2517,8 @@ export class LarkService implements OnModuleInit {
             requesterTeam = roleData.team;
         }
 
-        // Step 2: Fetch shared dataset (cached 2 phút — 100 users poll mỗi 90s, chỉ 1 query thật mỗi 2 phút)
-        const sharedData = await this.cacheService.get(sharedCacheKey, 2 * 60 * 1000, async () => {
+        // Step 2: Fetch shared dataset (configurable TTL to control SQL pressure)
+        const sharedData = await this.cacheService.get(sharedCacheKey, this.activitySharedCacheTtlMs, async () => {
             // ─── PERF: Memoized name normalizer ─────────────────────────────────────────
             // normalize('NFD') + replace chain là operation nặng (O(n) string scan).
             // Với 70+ nhân viên × nhiều vòng lặp = hàng chục nghìn lần gọi.
@@ -4445,45 +4456,50 @@ export class LarkService implements OnModuleInit {
         if (!url) return null;
         const trimmed = url.trim();
 
-        // Handle Google Drive links
+        // If it's just a token (no obvious URL chars), treat as Lark mediaId and proxy it.
+        if (
+            trimmed.length >= 20 &&
+            trimmed.length <= 60 &&
+            !trimmed.includes('/') &&
+            !trimmed.includes('.') &&
+            !trimmed.includes(':')
+        ) {
+            const port = this.configService.get<string>('PORT') || '3000';
+            const apiBase = this.configService.get<string>('API_BASE_URL') || `http://localhost:${port}/api`;
+            return `${apiBase}/lark/media/${encodeURIComponent(trimmed)}`;
+        }
+
+        // Handle Google Drive links (both /d/<id> and ?id=<id> forms)
         if (trimmed.includes('drive.google.com')) {
             const match = trimmed.match(/\/d\/([^/]+)/) || trimmed.match(/id=([^&]+)/);
             if (match && match[1]) {
-                // Use a more stable format or thumbnail for public viewing if possible
                 return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w400`;
             }
         }
 
-        // Handle Google user content URLs (e.g. lh3.googleusercontent.com from Lark employee profiles)
-        // These often have ?authuser=0 or ?authuser=N which requires Google auth → strip it
+        // Handle Google user content URLs (e.g. lh3.googleusercontent.com from employee profiles)
+        // These often have authuser/sz params that cause auth issues or odd sizing.
         if (trimmed.includes('googleusercontent.com')) {
             try {
                 const urlObj = new URL(trimmed);
                 urlObj.searchParams.delete('authuser');
                 urlObj.searchParams.delete('sz');
-                // Normalise size in the path to a reasonable width (=w200)
-                const cleaned = urlObj.toString().replace(/=[sw]\d+(-[sw]\d+)*(?=[?#]|$)/, '=w200');
-                return cleaned;
+                return urlObj.toString().replace(/=[sw]\d+(-[sw]\d+)*(?=[?#]|$)/, '=w200');
             } catch {
                 return trimmed;
             }
         }
 
-        // Handle direct Lark media tokens or full Lark URLs via proxy
+        // Handle Lark / Feishu media (token or URL) via our proxy.
         const parsedMediaRef = this.parseLarkMediaRef(trimmed);
         if (parsedMediaRef) {
-            // Derive the correct public API base URL:
-            // 1) Prefer explicit API_BASE_URL env var
-            // 2) Fall back to deriving from GOOGLE_CALLBACK_URL (already set in Cloud Run)
-            //    e.g. https://video-backend-xxx.run.app/auth/google/callback → https://video-backend-xxx.run.app/api
-            // 3) Last resort: localhost
+            // Prefer explicit API_BASE_URL; else derive from GOOGLE_CALLBACK_URL; else localhost.
             let apiBase = this.configService.get<string>('API_BASE_URL');
             if (!apiBase) {
                 const callbackUrl = this.configService.get<string>('GOOGLE_CALLBACK_URL') || '';
                 if (callbackUrl) {
                     try {
-                        const origin = new URL(callbackUrl).origin;
-                        apiBase = `${origin}/api`;
+                        apiBase = `${new URL(callbackUrl).origin}/api`;
                     } catch {
                         // ignore malformed URL
                     }
@@ -4493,6 +4509,7 @@ export class LarkService implements OnModuleInit {
                 const port = this.configService.get<string>('PORT') || '3000';
                 apiBase = `http://localhost:${port}/api`;
             }
+
             let proxyUrl = `${apiBase}/lark/media/${encodeURIComponent(parsedMediaRef.mediaId)}`;
             if (parsedMediaRef.extra) {
                 proxyUrl += `?extra=${encodeURIComponent(parsedMediaRef.extra)}`;
@@ -4500,7 +4517,17 @@ export class LarkService implements OnModuleInit {
             return proxyUrl;
         }
 
-        return url;
+        // Lark/Feishu attachment/CDN URLs — return as-is.
+        if (
+            trimmed.includes('feishucdn.com') ||
+            trimmed.includes('feishu.cn') ||
+            trimmed.includes('lf-cdn.com') ||
+            trimmed.includes('larksuite.com')
+        ) {
+            return trimmed;
+        }
+
+        return trimmed;
     }
 
     async getMedia(mediaId: string, extra?: string): Promise<{ data: any; contentType: string }> {
@@ -4528,25 +4555,14 @@ export class LarkService implements OnModuleInit {
             } catch (error) {
                 lastError = error;
                 const status = error?.response?.status;
-                const detail =
-                    (typeof error?.response?.data === 'string' && error.response.data) ||
-                    error?.response?.data?.msg ||
-                    error?.message ||
-                    'unknown error';
-
                 this.logger.warn(
-                    `[Lark media] download attempt failed status=${status || 'n/a'} mediaId=${candidate.mediaId} withExtra=${candidate.extra ? 'yes' : 'no'} detail=${detail}`,
+                    `[Lark media] download attempt failed status=${status || 'n/a'} mediaId=${candidate.mediaId} withExtra=${candidate.extra ? 'yes' : 'no'}`,
                 );
-
-                // Retry only for likely request-shape issues (400/404).
-                if (status && status !== 400 && status !== 404) {
-                    break;
-                }
             }
         }
 
-        this.logger.error(`Failed to fetch media ${mediaId} from Lark after ${candidates.length} attempt(s)`, lastError);
-        throw lastError || new Error('Failed to fetch media from Lark');
+        this.logger.error(`Failed to fetch media ${mediaId} from Lark`, lastError);
+        throw lastError;
     }
 
     private buildLarkMediaDownloadUrl(mediaId: string, extra?: string): string {
@@ -5728,8 +5744,7 @@ export class LarkService implements OnModuleInit {
         if (typeof rk.image_url === 'string') return rk.image_url;
         if (Array.isArray(rk.image_url) && rk.image_url.length > 0) {
             // Lark attachments often have a 'url' or 'attachment_id' or 'file_token'
-            const att = rk.image_url[0];
-            return att.file_token || att.url || att.attachment_id || null;
+            return rk.image_url[0].url || rk.image_url[0].file_token || rk.image_url[0].attachment_id || null;
         }
         return null;
     }

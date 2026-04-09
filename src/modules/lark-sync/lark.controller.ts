@@ -10,7 +10,7 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Lark Report')
 @Controller('lark')
-@SkipThrottle()
+@SkipThrottle({ long: true, short: true })
 export class LarkController {
     private readonly logger = new Logger(LarkController.name);
 
@@ -173,7 +173,7 @@ export class LarkController {
     }
 
     @Get('user-activity')
-    @Header('Cache-Control', 'private, max-age=30, stale-while-revalidate=60')
+    @Header('Cache-Control', 'private, max-age=120, stale-while-revalidate=300')
     @ApiOperation({ summary: 'Get combined user activity reports (LarkReport + LarkKPI)' })
     @ApiResponse({ status: 200, description: 'Returns combined user activity data with avatars from KPI.' })
     async getUserActivityReports(

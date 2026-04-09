@@ -67,16 +67,16 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // HR Lark sync — mỗi giờ
+    // HR Lark sync — mỗi ngày (chạy lệch phút để tuần tự với các cron khác)
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 * * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 30 13 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledSync() {
         if (this.syncLock) {
             this.logger.warn('⏭️ HR sync skipped — another sync is in progress');
             return;
         }
         this.syncLock = true;
-        this.logger.log('⏰ Scheduled Lark HR sync triggered (hourly)');
+        this.logger.log('⏰ Scheduled Lark HR sync triggered (daily at 13:30)');
         try {
             const result = await this.syncFromLark();
             this.logger.log(
@@ -90,16 +90,16 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // KPI + Employee + Reports — mỗi giờ (tuần tự để giảm áp lực DB)
+    // KPI + Employee + Reports — mỗi ngày (tuần tự để giảm áp lực DB)
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 * * * *', { name: 'lark-sequential-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 40 13 * * *', { name: 'lark-sequential-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledDataSync() {
         if (this.syncLock) {
             this.logger.warn('⏭️ Data sync skipped — another sync is in progress');
             return;
         }
         this.syncLock = true;
-        this.logger.log('⏰ Scheduled Lark data sync triggered (hourly — KPI + Employee + Reports)');
+        this.logger.log('⏰ Scheduled Lark data sync triggered (daily at 13:40 — KPI + Employee + Reports)');
         try {
             const kpi = await this.larkService.syncKPIData();
             this.logger.log(`✅ KPI sync: ${kpi?.synced ?? 0} records`);
