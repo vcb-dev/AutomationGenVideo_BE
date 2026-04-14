@@ -108,16 +108,18 @@ export class LarkController {
     }
 
     @Post('sync-kpi')
-    @ApiOperation({ summary: 'Manually trigger KPI sync from Lark to DB' })
+    @ApiOperation({ summary: 'Manually trigger KPI sync from Lark to DB (blocking)' })
     async syncKPIData() {
         try {
             const result = await this.larkService.syncKPIData();
+            this.logger.log(`[sync-kpi] completed: synced=${result?.synced ?? 0}, total=${result?.total ?? 0}`);
             return {
                 message: 'KPI sync completed successfully',
-                ...result
+                ...result,
             };
         } catch (error) {
-            return { message: 'KPI sync failed', error: error.message };
+            this.logger.error(`[sync-kpi] failed: ${error?.message || error}`, error?.stack);
+            return { message: 'KPI sync failed', error: error?.message || String(error) };
         }
     }
 
@@ -148,6 +150,18 @@ export class LarkController {
         }
     }
 
+
+    @Post('pull-kpi-from-server')
+    @ApiOperation({ summary: 'Pull lark_kpi snapshot từ SERVER_DATABASE_URL về local DB (server → local)' })
+    async pullKpiFromServer() {
+        try {
+            const result = await this.larkService.pullKpiFromServer();
+            return { message: `Pull completed: ${result.pulled} rows synced to local DB`, ...result };
+        } catch (error) {
+            this.logger.error(`[pull-kpi-from-server] failed: ${error?.message || error}`, error?.stack);
+            return { message: 'Pull KPI from server failed', error: error?.message || String(error) };
+        }
+    }
 
     @Post('cleanup-kpi')
     @ApiOperation({ summary: 'Manually trigger cleanup of invalid KPI records' })
