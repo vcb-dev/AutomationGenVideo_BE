@@ -23,6 +23,11 @@ async function bootstrap() {
   }));
   app.use(compression({ level: 6, threshold: 1024 }));
 
+  const expressInstance = app.getHttpAdapter().getInstance();
+  if (typeof expressInstance.set === "function") {
+    expressInstance.set("trust proxy", true);
+  }
+
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
@@ -75,11 +80,10 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
 
-  const httpServer = app.getHttpAdapter().getInstance();
-  httpServer.keepAliveTimeout  = 65_000;
-  httpServer.headersTimeout    = 66_000;
-  httpServer.maxHeadersCount   = 100;
-  httpServer.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+  expressInstance.keepAliveTimeout  = 65_000;
+  expressInstance.headersTimeout    = 66_000;
+  expressInstance.maxHeadersCount   = 100;
+  expressInstance.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
 
   console.log(`Application is running on: http://localhost:${port}`);
   console.log(`Swagger documentation: http://localhost:${port}/api`);

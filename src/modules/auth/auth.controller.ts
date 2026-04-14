@@ -29,7 +29,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 @ApiTags("auth")
 @Controller("auth")
-@SkipThrottle()
+@SkipThrottle({ long: true, short: true })
 @UseInterceptors(ClassSerializerInterceptor)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
