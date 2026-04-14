@@ -17,7 +17,7 @@ import { UserRole } from '@prisma/client';
 
 @ApiTags('role-permissions')
 @Controller('role-permissions')
-@SkipThrottle()
+@SkipThrottle({ long: true, short: true })
 @ApiBearerAuth()
 export class RolePermissionsController {
     constructor(private readonly service: RolePermissionsService) { }

@@ -102,8 +102,8 @@ export class CacheService implements OnModuleDestroy {
         }
     }
 
-    /** Evict expired mem entries every hour */
-    @Cron('0 0 * * * *')
+    /** Evict expired mem entries once daily at 12:50 (VN time). */
+    @Cron('0 50 12 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
     cleanup() {
         const now = Date.now();
         for (const [key, entry] of this.memStore.entries()) {

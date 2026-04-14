@@ -3,21 +3,57 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
+import { PrismaClient } from '@prisma/client';
 
 @Injectable()
 export class LarkSyncService implements OnApplicationBootstrap {
     private readonly logger = new Logger(LarkSyncService.name);
     private syncLock = false;
+    private remotePrismaClient: PrismaClient | null = null;
+    /**
+     * Legacy sync service used to run extra bootstrap + cron jobs that can overlap
+     * with LarkService cron. Default OFF to keep one single source-of-truth flow.
+     */
+    private readonly legacySyncEnabled =
+        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'false').toLowerCase() === 'true';
 
     constructor(
         private readonly prisma: PrismaService,
         private readonly larkService: LarkService,
     ) { }
 
+    private shouldWriteDirectToServer(): boolean {
+        const flag = String(process.env.LARK_SYNC_DIRECT_TO_SERVER ?? 'false').toLowerCase();
+        return !(flag === '0' || flag === 'false' || flag === 'no');
+    }
+
+    private getServerDbUrl(): string | null {
+        const v = String(process.env.SERVER_DATABASE_URL || '').trim();
+        return v || null;
+    }
+
+    private getUserPrisma() {
+        if (!this.shouldWriteDirectToServer()) return this.prisma.user;
+        const serverUrl = this.getServerDbUrl();
+        if (!serverUrl) return this.prisma.user;
+
+        if (!this.remotePrismaClient) {
+            this.remotePrismaClient = new PrismaClient({
+                datasources: { db: { url: serverUrl } },
+            });
+            this.logger.log('[LarkSync] Direct-to-server mode enabled for HR sync.');
+        }
+        return this.remotePrismaClient.user;
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // Tự động sync ngay khi server khởi động
     // ──────────────────────────────────────────────────────────────────────────
     async onApplicationBootstrap() {
+        if (!this.legacySyncEnabled) {
+            this.logger.log('Legacy bootstrap sync is disabled (LARK_ENABLE_LEGACY_SYNC_SERVICE=false).');
+            return;
+        }
         // Delay 2 phút trước khi chạy Lark sync — nhường DB connections cho user login
         // vào giờ cao điểm sáng (60-70 người cùng login).
         const DELAY_MS = 2 * 60 * 1000;
@@ -67,16 +103,17 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // HR Lark sync — mỗi giờ
+    // HR Lark sync — mỗi ngày (chạy lệch phút để tuần tự với các cron khác)
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 * * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 30 12 * * *', { name: 'lark-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledSync() {
+        if (!this.legacySyncEnabled) return;
         if (this.syncLock) {
             this.logger.warn('⏭️ HR sync skipped — another sync is in progress');
             return;
         }
         this.syncLock = true;
-        this.logger.log('⏰ Scheduled Lark HR sync triggered (hourly)');
+        this.logger.log('⏰ Scheduled Lark HR sync triggered (daily at 12:30)');
         try {
             const result = await this.syncFromLark();
             this.logger.log(
@@ -90,16 +127,17 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // KPI + Employee + Reports — mỗi giờ (tuần tự để giảm áp lực DB)
+    // KPI + Employee + Reports — mỗi ngày (tuần tự để giảm áp lực DB)
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 * * * *', { name: 'lark-sequential-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 40 12 * * *', { name: 'lark-sequential-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async scheduledDataSync() {
+        if (!this.legacySyncEnabled) return;
         if (this.syncLock) {
             this.logger.warn('⏭️ Data sync skipped — another sync is in progress');
             return;
         }
         this.syncLock = true;
-        this.logger.log('⏰ Scheduled Lark data sync triggered (hourly — KPI + Employee + Reports)');
+        this.logger.log('⏰ Scheduled Lark data sync triggered (daily at 12:40 — KPI + Employee + Reports)');
         try {
             const kpi = await this.larkService.syncKPIData();
             this.logger.log(`✅ KPI sync: ${kpi?.synced ?? 0} records`);
@@ -143,6 +181,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }> {
         this.logger.log('🔄 Starting Lark HR sync...');
         const records = await this.larkService.fetchHRRecords();
+        const userPrisma = this.getUserPrisma();
 
         const result = {
             total: records.length,
@@ -163,7 +202,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
 
                 const userRoles = this.larkService.mapToUserRoles(parsed.role, parsed.team, parsed.position);
 
-                const existingUser = await this.prisma.user.findUnique({
+                const existingUser = await userPrisma.findUnique({
                     where: { email: parsed.email },
                 });
 
@@ -181,7 +220,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
                         }
                     }
 
-                    await this.prisma.user.update({
+                    await userPrisma.update({
                         where: { email: parsed.email },
                         data: {
                             full_name: parsed.full_name,
@@ -194,7 +233,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
                     this.logger.log(`📝 Updated: ${parsed.email} → [${userRoles.join(', ')}]`);
                 } else {
                     const defaultPassword = await bcrypt.hash('VCB@2024', 10);
-                    await this.prisma.user.create({
+                    await userPrisma.create({
                         data: {
                             email: parsed.email,
                             password_hash: defaultPassword,
@@ -238,7 +277,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
             .filter((r) => r !== null)
             .map((r) => r!.email);
 
-        const dbUsers = await this.prisma.user.findMany({ select: { email: true } });
+        const dbUsers = await this.getUserPrisma().findMany({ select: { email: true } });
         const dbEmails = dbUsers.map((u) => u.email);
 
         return {
