@@ -23,8 +23,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "sync:channel:to-server": "ts-node scripts/sync-channel-to-server.ts",
+    "sync:users:to-server": "ts-node scripts/sync-users-to-server.ts",
     "sync:larkkpi:to-server": "ts-node scripts/sync-larkkpi-to-server.ts",
-    "sync:larkkpi-doda:to-server": "ts-node scripts/sync-larkkpi-doda-to-server.ts"
+    "sync:larkkpi-doda:to-server": "ts-node scripts/sync-larkkpi-doda-to-server.ts",
+    "sync:deploy-full": "ts-node scripts/deploy-sync.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
