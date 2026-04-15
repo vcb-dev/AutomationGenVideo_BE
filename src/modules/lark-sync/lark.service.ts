@@ -108,6 +108,27 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         return (this.prisma as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate }).larkKpiDoDa;
     }
 
+    /** Bảng KPI Đồ Da tách riêng theo Người edit + Ngày edit. */
+    private get prismaLarkKpiDoDaEditor() {
+        return (this.prisma as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+    }
+
+    /** Merge team strings while preserving all unique teams. */
+    private mergeTeamValues(...values: Array<string | null | undefined>): string | null {
+        const tokens: string[] = [];
+        for (const raw of values) {
+            if (!raw) continue;
+            for (const part of String(raw).split(',')) {
+                const clean = part.trim();
+                if (!clean) continue;
+                if (!tokens.some((t) => t.toLowerCase() === clean.toLowerCase())) {
+                    tokens.push(clean);
+                }
+            }
+        }
+        return tokens.length ? tokens.join(', ') : null;
+    }
+
     /**
      * Build YYYY-MM-DD key in Vietnam timezone.
      * Used for day-level comparisons to avoid UTC off-by-one issues.
@@ -136,6 +157,18 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         }).format(new Date());
         const currentYear = nowVN.slice(0, 4);
         return `${currentYear}-03-01`;
+    }
+
+    /** Min date riêng cho KPI Đồ Da (lark_kpi_do_da_editor). Default: April 1st current year. Override: LARK_KPI_DODA_MIN_DATE */
+    private getKpiDoDaMinDateKey(): string {
+        const envVal = String(this.configService.get<string>('LARK_KPI_DODA_MIN_DATE') || '').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(envVal)) return envVal;
+        const nowVN = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Ho_Chi_Minh',
+            year: 'numeric',
+        }).format(new Date());
+        const currentYear = nowVN.slice(0, 4);
+        return `${currentYear}-04-01`;
     }
 
     /**
@@ -311,6 +344,37 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         }
     }
 
+    private async mirrorLarkKpiDoDaEditorSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
+        const url = this.getRemoteMirrorDbUrl();
+        if (!url) return 0;
+        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const delegate = (remote as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+        if (!delegate) {
+            await remote.$disconnect().catch(() => undefined);
+            this.logger.warn('[KPI DoDa Editor] Remote Prisma has no larkKpiDoDaEditor delegate — skip mirror.');
+            return 0;
+        }
+        const maxRetries = this.getMirrorRetryCount();
+        const CHUNK = 400;
+        try {
+            await this.withRetry(
+                async () => {
+                    await delegate.deleteMany({});
+                    for (let i = 0; i < rows.length; i += CHUNK) {
+                        const chunk = rows.slice(i, i + CHUNK);
+                        if (chunk.length) await delegate.createMany({ data: chunk as any, skipDuplicates: true });
+                    }
+                },
+                maxRetries,
+                'mirrorLarkKpiDoDaEditorSnapshotToServer',
+            );
+            this.logger.log(`[KPI DoDa Editor] Mirrored ${rows.length} row(s) to remote DB.`);
+            return rows.length;
+        } finally {
+            await remote.$disconnect().catch(() => undefined);
+        }
+    }
+
     /**
      * Optional mirror Channel (non-DoDa) to remote DB to keep dashboard metrics consistent between local and server.
      * Controlled by env LARK_CHANNEL_MIRROR_TO_SERVER (default: true when remote DB url is provided).
@@ -383,22 +447,31 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async syncLocalSnapshotToServer(): Promise<{
         kpi: number;
         kpiDoDa: number;
+        kpiDoDaEditor: number;
     }> {
         const url = this.getServerSyncDbUrl();
         if (!url) {
             this.logger.log('[Local->Server] Skipped: SERVER_DATABASE_URL is not configured (or equals DATABASE_URL).');
-            return { kpi: 0, kpiDoDa: 0 };
+            return { kpi: 0, kpiDoDa: 0, kpiDoDaEditor: 0 };
         }
 
         const CHUNK = 400;
         const maxRetries = this.getMirrorRetryCount();
         const remote = new PrismaClient({ datasources: { db: { url } } });
         const remoteDoDa = (remote as unknown as { larkKpiDoDa?: Prisma.LarkKPIDelegate }).larkKpiDoDa;
+        const remoteDoDaEditor = (remote as unknown as { larkKpiDoDaEditor?: any }).larkKpiDoDaEditor;
 
         try {
-            const [kpis, kpiDoDaRows] = await Promise.all([
-                this.prisma.larkKPI.findMany(),
-                this.prismaLarkKpiDoDa.findMany(),
+            const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
+            const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
+            const kpiDateWindow = {
+                gte: new Date(`${KPI_MIN_DATE_KEY}T00:00:00.000Z`),
+                lte: new Date(`${KPI_MAX_DATE_KEY}T23:59:59.999Z`),
+            };
+            const [kpis, kpiDoDaRows, kpiDoDaEditorRows] = await Promise.all([
+                this.prisma.larkKPI.findMany({ where: { report_date: kpiDateWindow } }),
+                this.prismaLarkKpiDoDa.findMany({ where: { report_date: kpiDateWindow } }),
+                this.prismaLarkKpiDoDaEditor.findMany({ where: { report_date: kpiDateWindow } }),
             ]);
 
             await this.withRetry(
@@ -429,12 +502,38 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 this.logger.warn('[Local->Server] Remote Prisma has no larkKpiDoDa delegate - skipped lark_kpi_do_da.');
             }
 
+            if (remoteDoDaEditor) {
+                await this.withRetry(
+                    async () => {
+                        try {
+                            await remoteDoDaEditor.deleteMany({});
+                            for (let i = 0; i < kpiDoDaEditorRows.length; i += CHUNK) {
+                                const chunk = kpiDoDaEditorRows.slice(i, i + CHUNK);
+                                if (chunk.length) await remoteDoDaEditor.createMany({ data: chunk as any, skipDuplicates: true });
+                            }
+                        } catch (err: any) {
+                            const msg = String(err?.message || err || '');
+                            if (msg.includes('lark_kpi_do_da_editor') && msg.toLowerCase().includes('does not exist')) {
+                                this.logger.warn('[Local->Server] Remote DB missing table lark_kpi_do_da_editor - skipped mirror.');
+                                return;
+                            }
+                            throw err;
+                        }
+                    },
+                    maxRetries,
+                    'syncLocalKpiDoDaEditorToServer',
+                );
+            } else {
+                this.logger.warn('[Local->Server] Remote Prisma has no larkKpiDoDaEditor delegate - skipped lark_kpi_do_da_editor.');
+            }
+
             this.logger.log(
-                `[Local->Server] KPI snapshot pushed: lark_kpi=${kpis.length}, lark_kpi_do_da=${remoteDoDa ? kpiDoDaRows.length : 0}`,
+                `[Local->Server] KPI snapshot pushed: lark_kpi=${kpis.length}, lark_kpi_do_da=${remoteDoDa ? kpiDoDaRows.length : 0}, lark_kpi_do_da_editor=${remoteDoDaEditor ? kpiDoDaEditorRows.length : 0}, window=[${KPI_MIN_DATE_KEY}..${KPI_MAX_DATE_KEY}]`,
             );
             return {
                 kpi: kpis.length,
                 kpiDoDa: remoteDoDa ? kpiDoDaRows.length : 0,
+                kpiDoDaEditor: remoteDoDaEditor ? kpiDoDaEditorRows.length : 0,
             };
         } finally {
             await remote.$disconnect().catch(() => undefined);
@@ -524,56 +623,49 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         }, 3, 'getAccessToken');
     }
 
-    @Cron('0 0 12 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 0 8,10,12,14,16,18,20,22 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCron() {
-        this.logger.log('[Cron] Start full Lark sync: Lark -> local -> server');
+        this.logger.log('[Cron] Start full Lark sync: Lark -> local + Lark -> server');
         const startTime = Date.now();
 
-        // Phase 1: KPI main table (force local write first).
-        try {
-            await this.syncKPIData({ forceLocalWrite: true, skipRemoteMirror: true });
-            this.logger.log('[Cron] Phase 1 KPI completed (local).');
-        } catch (e: any) {
-            this.logger.error(`[Cron] Phase 1 KPI failed: ${e?.message || e}`, e?.stack);
-        }
-
-        // Phase 2+: run remaining local sync tasks in parallel.
-        const runBackgroundTask = async (name: string, task: () => Promise<any>) => {
+        // Mỗi task flush cache ngay khi xong → UI thấy data của task đó lập tức
+        const runTask = async (name: string, task: () => Promise<any>) => {
             try {
                 const start = Date.now();
                 await task();
                 this.logger.log(`[Cron] ${name} completed in ${Date.now() - start}ms`);
+                this.invalidateActivityCache(); // flush ngay sau khi task xong
             } catch (e: any) {
                 this.logger.error(`[Cron] ${name} failed: ${e?.message || e}`, e?.stack);
             }
         };
 
+        // Phase 1: KPI + KPI DoDa chạy SONG SONG (ghi 2 bảng khác nhau, không xung đột)
+        // Trước đây tuần tự: KPI mất ~50s xong mới chạy DoDa → DoDa trống suốt thời gian đó
         await Promise.allSettled([
-            runBackgroundTask('KPI DoDa', () => this.syncKPIDoDaData({ forceLocalWrite: true, skipRemoteMirror: true })),
-            runBackgroundTask('ListTask', () => this.syncListTaskData()),
-            runBackgroundTask('Permission', () => this.syncPermissionData()),
-            runBackgroundTask('Employee', () => this.syncEmployeeData()),
-            runBackgroundTask('Channel VCB', () => this.syncChannelData()),
-            runBackgroundTask('Channel DoDa', () => this.syncDoDaChannelData()),
+            runTask('KPI (local+server)', () => this.syncKPIData()),
+            runTask('KPI DoDa (local+server)', () => this.syncKPIDoDaData()),
         ]);
 
-        // Final step: push canonical local snapshot to server DB.
-        try {
-            await this.syncLocalSnapshotToServer();
-        } catch (pushErr: any) {
-            this.logger.error(`[Cron] Local->server snapshot failed: ${pushErr?.message || pushErr}`, pushErr?.stack);
-        }
+        // Phase 2: remaining sync tasks in parallel
+        await Promise.allSettled([
+            runTask('ListTask', () => this.syncListTaskData()),
+            runTask('Permission', () => this.syncPermissionData()),
+            runTask('Employee', () => this.syncEmployeeData()),
+            runTask('Channel VCB', () => this.syncChannelData()),
+            runTask('Channel DoDa', () => this.syncDoDaChannelData()),
+        ]);
 
         this.logger.log(`[Cron] Finished full sync flow in ${Date.now() - startTime}ms.`);
     }
-    @Cron('0 10 12 * * *', { name: 'lark-activity-cache-flush', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 10 8,10,12,14,16,18,20,22 * * *', { name: 'lark-activity-cache-flush', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCacheFlushCron() {
-        this.logger.log('Scheduled activity cache flush (daily at 12:10)...');
+        this.logger.log('Scheduled activity cache flush (post-sync)...');
         this.invalidateActivityCache();
     }
 
     // Cleanup invalid Lark rows — chạy sau sync chính để giảm tải DB giờ cao điểm
-    @Cron('0 20 12 * * *', { name: 'lark-data-cleanup', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 20 12 * * *', { name: 'lark-data-cleanup', timeZone: 'Asia/Ho_Chi_Minh' })  // cleanup chỉ cần 1 lần/ngày
     async handleCleanup() {
         this.logger.log('Starting scheduled data cleanup for Lark tables (daily at 12:20)...');
         try {
@@ -2124,7 +2216,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     image_url: employeeData.image_url ?? undefined,
                     employee_data: employeeData.employee_data ?? undefined,
                     employee_position: employeeData.position ?? undefined,
-                    team: employeeData.team ?? undefined,
+                    team: this.mergeTeamValues(target.team, employeeData.team) ?? undefined,
                     employee_status: employeeData.status ?? undefined,
                     employee_date: employeeData.date ?? undefined,
                 };
@@ -2163,6 +2255,32 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             if (typeof val === 'object') return val.name || val.text || null;
             return String(val);
         };
+        const extractTeamList = (val: any): string[] => {
+            if (!val) return [];
+            if (typeof val === 'string') {
+                return val
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+            }
+            if (Array.isArray(val)) {
+                return val
+                    .map((item) => {
+                        if (!item) return null;
+                        if (typeof item === 'string') return item;
+                        if (typeof item === 'object') return item.name || item.text || null;
+                        return String(item);
+                    })
+                    .filter((s): s is string => !!s)
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+            }
+            if (typeof val === 'object') {
+                const one = val.name || val.text || null;
+                return one ? [String(one).trim()] : [];
+            }
+            return [String(val).trim()].filter(Boolean);
+        };
 
         let name = extractString(fields['Tên'] || fields['Ten'] || fields['Họ tên'] || fields['Nhân viên']);
 
@@ -2188,6 +2306,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             tagCode = fields['MÃ TAG'][0].text || null;
         }
 
+        const teams = Array.from(new Set(extractTeamList(fields['Team'])));
         return {
             id: record.record_id,
             employee_id: fields['ID nhân viên'] || null,
@@ -2196,7 +2315,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             employee_data: fields['Nhân viên'] || null,
             tag_code: tagCode,
             position: fields['Chức vụ'] || null,
-            team: fields['Team'] || null,
+            team: teams.length ? teams.join(', ') : null,
             status: fields['Tình trạng'] || null,
             date: dateValue,
         };
@@ -2249,8 +2368,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 .toLowerCase()
                 .normalize('NFD')
                 .replace(/[\u0300-\u036f]/g, '')
+                .replace(/đ/g, 'd')
                 .trim();
-            return s === 'on' || s === 'dang hoat dong' || s === 'hoat dong' || s === 'active';
+            return s === 'on' || s === 'dang hoat dong' || s === 'hoat dong' || s === 'active' || s === 'leader';
         };
 
         try {
@@ -2264,7 +2384,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             // await targetLarkKPI.deleteMany({});
 
             let syncedCount = 0;
-            let skippedBeforeMinDate = 0;
+            let skippedOutsideDateWindow = 0;
             const rawSamples = [];
             const allKeys = new Set<string>();
 
@@ -2286,41 +2406,42 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                 const kpiData = this.mapRecordToKPI(record);
 
-                // Skip garbage: No name or just whitespace/Unknown
                 const cleanName = (kpiData.name || '').trim();
                 if (!cleanName || cleanName.toLowerCase() === 'unknown') continue;
 
-                // Skip records outside [KPI_MIN_DATE_KEY .. KPI_MAX_DATE_KEY] (Vietnam day).
-                if (kpiData.report_date) {
-                    const recordDate = kpiData.report_date instanceof Date
-                        ? kpiData.report_date
-                        : new Date(kpiData.report_date);
-                    if (!isNaN(recordDate.getTime())) {
-                        const dateKey = this.toVietnamDateKey(recordDate);
-                        if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) {
-                            skippedBeforeMinDate++;
-                            continue;
-                        }
-                    }
+                if (!kpiData.report_date) {
+                    skippedOutsideDateWindow++;
+                    continue;
+                }
+                const recordDate = kpiData.report_date instanceof Date
+                    ? kpiData.report_date
+                    : new Date(kpiData.report_date);
+                if (isNaN(recordDate.getTime())) {
+                    skippedOutsideDateWindow++;
+                    continue;
+                }
+                const dateKey = this.toVietnamDateKey(recordDate);
+                if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) {
+                    skippedOutsideDateWindow++;
+                    continue;
                 }
 
                 const nameKey = cleanName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                 const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
 
-                // Chuẩn hóa bằng bảng Users: NẾU tìm thấy trong Users, ghi đè Team và Status
                 const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
                 if (sysMatch) {
                     if (sysMatch.team) kpiData.team = sysMatch.team;
                     if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                 }
 
-                // Keep only active employees for KPI snapshot.
-                const statusForFilter = kpiData.employee_status || kpiData.state;
-                if (!isOnStatus(statusForFilter)) {
+                // LarkKPI (traffic teams): chỉ filter employee status khi match được user trong DB.
+                // KHÔNG dùng kpiData.state vì đó là trạng thái task (Hoàn thành/Đang làm),
+                // KHÔNG phải trạng thái nhân viên (ON/OFF/Đang hoạt động).
+                if (sysMatch?.employee_status && !isOnStatus(sysMatch.employee_status)) {
                     continue;
                 }
 
-                // Skip records that are useless (no name AND no team)
                 if (!kpiData.name && !kpiData.team) {
                     continue;
                 }
@@ -2359,7 +2480,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             }
 
             if (kpiRecordsToInsert.length > 0) {
-                const CHUNK = 2000; // Large chunk for createMany
+                const CHUNK = 2000;
                 this.logger.log(`[KPI] Transactionally replacing ${kpiRecordsToInsert.length} records...`);
 
                 const createQueries = [];
@@ -2392,12 +2513,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 }
             }
 
-            this.logger.log(`Successfully synced ${syncedCount} KPI records (skipped ${skippedBeforeMinDate} records outside [${KPI_MIN_DATE_KEY} .. ${KPI_MAX_DATE_KEY}]).`);
+            this.logger.log(`Successfully synced ${syncedCount} KPI records (skipped ${skippedOutsideDateWindow} records outside [${KPI_MIN_DATE_KEY} .. ${KPI_MAX_DATE_KEY}] or missing report_date).`);
             this.invalidateActivityCache();
             return {
                 synced: syncedCount,
                 total: records.length,
-                skippedBeforeMinDate,
+                skippedBeforeMinDate: skippedOutsideDateWindow,
                 samples: rawSamples,
                 allKeys: Array.from(allKeys),
                 mirroredRemote,
@@ -2417,7 +2538,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
      * vào bảng lark_kpi_do_da. Cấu trúc cột giống KPI chính — dùng chung mapRecordToKPI.
      */
     async syncKPIDoDaData(options?: { forceLocalWrite?: boolean; skipRemoteMirror?: boolean }) {
-        const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
+        const KPI_MIN_DATE_KEY = this.getKpiDoDaMinDateKey();
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
         const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
         const targetClient = directDbUrl ? new PrismaClient({ datasources: { db: { url: directDbUrl } } }) : null;
@@ -2425,18 +2546,25 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         const targetDoDa = targetClient
             ? (targetClient as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate | undefined }).larkKpiDoDa
             : this.prismaLarkKpiDoDa;
+        const targetDoDaEditor = targetClient
+            ? (targetClient as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor
+            : this.prismaLarkKpiDoDaEditor;
         if (!this.KPI_DODA_BASE_ID || !this.KPI_DODA_TABLE_ID) {
             this.logger.warn('[KPI DoDa] LARK_KPI_DODA_BASE_ID / LARK_KPI_DODA_TABLE_ID chưa cấu hình — bỏ qua sync.');
             return { synced: 0, total: 0, skippedBeforeMinDate: 0, samples: [], allKeys: [] };
         }
-        if (!targetDoDa) {
+        const isDoDaEditKpiTable = this.KPI_DODA_TABLE_ID === 'tblPIc4EQjd2wfAa';
+        if (!targetDoDa && !isDoDaEditKpiTable) {
             throw new Error('[KPI DoDa] Target Prisma has no larkKpiDoDa delegate.');
+        }
+        if (!targetDoDaEditor && isDoDaEditKpiTable) {
+            throw new Error('[KPI DoDa] Target Prisma has no larkKpiDoDaEditor delegate.');
         }
 
         try {
             const records = await this.fetchLarkRecordsGeneric(this.KPI_DODA_BASE_ID, this.KPI_DODA_TABLE_ID, 500);
             this.logger.log(
-                `[KPI DoDa] Fetched ${records.length} records (base=${this.KPI_DODA_BASE_ID}, table=${this.KPI_DODA_TABLE_ID}). Replacing lark_kpi_do_da...`,
+                `[KPI DoDa] Fetched ${records.length} records (base=${this.KPI_DODA_BASE_ID}, table=${this.KPI_DODA_TABLE_ID}). Replacing ${isDoDaEditKpiTable ? 'lark_kpi_do_da_editor' : 'lark_kpi_do_da'}...`,
             );
             if (!records || records.length === 0) {
                 throw new Error('KPI DoDa sync aborted: no records fetched from Lark, skip replacing local table.');
@@ -2446,124 +2574,299 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H1', location: 'lark.service.ts:syncKPIDoDaData:beforeDeleteMany', message: 'KPI DoDa about to deleteMany lark_kpi_do_da', data: { recordCount: records.length }, timestamp: Date.now() }) }).catch(() => { });
             // #endregion
 
-            await targetDoDa.deleteMany({});
-
             let syncedCount = 0;
             let skippedBeforeMinDate = 0;
             const rawSamples: any[] = [];
             const allKeys = new Set<string>();
 
             const sysUsers = await targetUsers.findMany({
-                select: { full_name: true, employee_id: true, email: true, team: true, employee_status: true },
+                select: { id: true, full_name: true, employee_id: true, email: true, team: true, employee_status: true },
             });
             const dbUsersMap = new Map<string, any>();
             sysUsers.forEach((u) => {
                 if (u.employee_id) dbUsersMap.set(String(u.employee_id).trim(), u);
                 if (u.email) dbUsersMap.set(String(u.email).toLowerCase().trim(), u);
-                if (u.full_name)
-                    dbUsersMap.set(
-                        u.full_name
-                            .toLowerCase()
-                            .normalize('NFD')
-                            .replace(/[\u0300-\u036f]/g, '')
-                            .replace(/đ/g, 'd')
-                            .trim()
-                            .replace(/\s+/g, ' '),
-                        u,
-                    );
-            });
-
-            const rows: any[] = [];
-            for (const record of records) {
-                Object.keys(record.fields).forEach((k) => allKeys.add(k));
-                if (rawSamples.length < 3) rawSamples.push(record);
-
-                const kpiData = this.mapRecordToKPI(record);
-                const cleanName = (kpiData.name || '').trim();
-                if (!cleanName || cleanName.toLowerCase() === 'unknown') continue;
-
-                // Skip records outside [KPI_MIN_DATE_KEY .. KPI_MAX_DATE_KEY] (Vietnam day).
-                if (kpiData.report_date) {
-                    const recordDate =
-                        kpiData.report_date instanceof Date ? kpiData.report_date : new Date(kpiData.report_date);
-                    if (!isNaN(recordDate.getTime())) {
-                        const dateKey = this.toVietnamDateKey(recordDate);
-                        if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) {
-                            skippedBeforeMinDate++;
-                            continue;
-                        }
+                if (u.full_name) {
+                    const normFull = u.full_name
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/đ/g, 'd')
+                        .trim()
+                        .replace(/\s+/g, ' ');
+                    dbUsersMap.set(normFull, u);
+                    // Also index by "first + last" token (e.g. "tran quy" for "Trần Minh Quý")
+                    // so short Lark names like "Tran Quy" can match full Vietnamese names.
+                    const tokens = normFull.split(' ').filter(Boolean);
+                    if (tokens.length >= 3) {
+                        const shortKey = `${tokens[0]} ${tokens[tokens.length - 1]}`;
+                        if (!dbUsersMap.has(shortKey)) dbUsersMap.set(shortKey, u);
                     }
                 }
+            });
 
-                const nameKey = cleanName
+            const normalizeNameKey = (name: string) =>
+                String(name || '')
                     .toLowerCase()
                     .normalize('NFD')
                     .replace(/[\u0300-\u036f]/g, '')
                     .replace(/đ/g, 'd')
                     .trim()
                     .replace(/\s+/g, ' ');
-                const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
-                const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
-                if (sysMatch) {
-                    if (sysMatch.team) kpiData.team = sysMatch.team;
-                    if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
+            const parseEditor = (value: any): { name: string | null; email: string | null; userId: string | null } => {
+                const empty = { name: null, email: null, userId: null };
+                if (!value) return null;
+                if (Array.isArray(value) && value.length > 0) {
+                    const first = value[0];
+                    if (first && typeof first === 'object') {
+                        return {
+                            name: first.name || first.en_name || first.text || null,
+                            email: first.email || null,
+                            userId: first.id || first.user_id || first.open_id || null,
+                        };
+                    }
+                    return { ...empty, name: typeof first === 'string' ? first : null };
+                }
+                if (typeof value === 'object') {
+                    return {
+                        name: value.name || value.en_name || value.text || null,
+                        email: value.email || null,
+                        userId: value.id || value.user_id || value.open_id || null,
+                    };
+                }
+                return { ...empty, name: typeof value === 'string' ? value : null };
+            };
+            const isDoneByStatus = (statusField: any, checkedField: any): boolean => {
+                // Accept either multi-select "Trạng thái=Đã hoàn thành" or checkbox "Đã edit".
+                if (checkedField === true || checkedField === 1 || String(checkedField).toLowerCase() === 'true') return true;
+                if (Array.isArray(statusField)) {
+                    return statusField.some((x: any) => {
+                        const name = String(x?.name || x?.text || x || '')
+                            .toLowerCase()
+                            .normalize('NFD')
+                            .replace(/[\u0300-\u036f]/g, '')
+                            .trim();
+                        return name.includes('da hoan thanh') || name.includes('hoan thanh');
+                    });
+                }
+                return false;
+            };
+
+            const rows: any[] = [];
+            const editorRows: any[] = [];
+            if (isDoDaEditKpiTable) {
+                const matchedDoDaUserIds = new Set<string>();
+                type Bucket = {
+                    name: string;
+                    dateKey: string;
+                    reportDate: Date;
+                    monthKey: string;
+                    total: number;
+                    done: number;
+                    team?: string | null;
+                    employee_id?: string | null;
+                    employee_status?: string | null;
+                };
+                const dayBuckets = new Map<string, Bucket>();
+                const monthTotals = new Map<string, { total: number; done: number }>();
+
+                for (const record of records) {
+                    const fields = record.fields || {};
+                    Object.keys(fields).forEach((k) => allKeys.add(k));
+                    if (rawSamples.length < 3) rawSamples.push(record);
+
+                    const rawDate = fields['Ngày edit'] || fields['Ngay edit'] || fields['Ngày đăng'];
+                    const reportDate = rawDate ? new Date(rawDate) : null;
+                    if (!reportDate || isNaN(reportDate.getTime())) {
+                        skippedBeforeMinDate++;
+                        continue;
+                    }
+                    const dateKey = this.toVietnamDateKey(reportDate);
+                    if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) {
+                        skippedBeforeMinDate++;
+                        continue;
+                    }
+
+                    const editor = parseEditor(fields['Người edit'] || fields['Nguoi edit']);
+                    const editorName = editor?.name ? String(editor.name).trim() : '';
+                    if (!editorName) continue;
+                    const nameKey = normalizeNameKey(editorName);
+                    const editorEmailKey = editor?.email ? String(editor.email).toLowerCase().trim() : null;
+                    const monthKey = dateKey.slice(0, 7);
+                    const done = isDoneByStatus(fields['Trạng thái'] || fields['Trang thai'], fields['Đã edit'] || fields['Da edit']);
+
+                    const sysMatch = (editorEmailKey ? dbUsersMap.get(editorEmailKey) : null) || dbUsersMap.get(nameKey);
+                    if (sysMatch?.id) matchedDoDaUserIds.add(String(sysMatch.id));
+                    // Dùng full_name từ users table nếu có để tránh 2 card riêng (e.g. "Tran Quy" vs "Trần Minh Quý")
+                    const canonicalName = sysMatch?.full_name || editorName;
+                    const canonicalNameKey = normalizeNameKey(canonicalName);
+                    // KPI Đồ Da table is team-specific.
+                    const resolvedTeam = 'Đồ Da';
+                    const teamKey = normalizeNameKey(resolvedTeam);
+                    const bucketKey = `${canonicalNameKey}|${teamKey}|${dateKey}`;
+                    const existing = dayBuckets.get(bucketKey);
+                    if (existing) {
+                        existing.total += 1;
+                        if (done) existing.done += 1;
+                    } else {
+                        dayBuckets.set(bucketKey, {
+                            name: canonicalName,
+                            dateKey,
+                            reportDate,
+                            monthKey,
+                            total: 1,
+                            done: done ? 1 : 0,
+                            team: resolvedTeam,
+                            employee_id: sysMatch?.employee_id || null,
+                            employee_status: sysMatch?.employee_status || 'ON',
+                        });
+                    }
+
+                    const monthTotalKey = `${canonicalNameKey}|${teamKey}|${monthKey}`;
+                    const monthAgg = monthTotals.get(monthTotalKey) || { total: 0, done: 0 };
+                    monthAgg.total += 1;
+                    if (done) monthAgg.done += 1;
+                    monthTotals.set(monthTotalKey, monthAgg);
                 }
 
-                if (!kpiData.name && !kpiData.team) continue;
-
-                rows.push({
-                    id: kpiData.id,
-                    employee_id: kpiData.employee_id,
-                    name: kpiData.name,
-                    tag: kpiData.tag,
-                    team: kpiData.team,
-                    image_url: kpiData.image_url,
-                    kpi_day: kpiData.kpi_day,
-                    kpi_month: kpiData.kpi_month,
-                    kpii_status: kpiData.kpii_status,
-                    kpi_day_percent: kpiData.kpi_day_percent,
-                    completed_day: kpiData.completed_day,
-                    completed_month: kpiData.completed_month,
-                    task_new: kpiData.task_new,
-                    task_new_month: kpiData.task_new_month,
-                    task_auto: kpiData.task_auto,
-                    task_auto_month: kpiData.task_auto_month,
-                    task_creative: kpiData.task_creative,
-                    content_win_new: kpiData.content_win_new,
-                    revenue_month: kpiData.revenue_month,
-                    traffic_month: kpiData.traffic_month,
-                    target_revenue_month: kpiData.target_revenue_month,
-                    target_traffic_month: kpiData.target_traffic_month,
-                    kpi_progress_month: kpiData.kpi_progress_month,
-                    employee_status: kpiData.employee_status,
-                    state: kpiData.state,
-                    employee_data: kpiData.employee_data,
-                    report_date: kpiData.report_date,
-                    month: kpiData.month,
-                    link_image: kpiData.link_image,
+                dayBuckets.forEach((bucket, key) => {
+                    const [nameBucketKey, teamBucketKey] = key.split('|');
+                    const monthAgg = monthTotals.get(`${nameBucketKey}|${teamBucketKey}|${bucket.monthKey}`) || { total: 0, done: 0 };
+                    editorRows.push({
+                        id: `doda-kpi-editor-${bucket.dateKey}-${nameBucketKey}-${teamBucketKey}`.slice(0, 191),
+                        editor_name: bucket.name,
+                        editor_name_key: nameBucketKey,
+                        team: bucket.team,
+                        report_date: bucket.reportDate,
+                        report_date_key: bucket.dateKey,
+                        month: `T${parseInt(bucket.monthKey.slice(5, 7), 10)}`,
+                        kpi_day: bucket.total,
+                        completed_day: bucket.done,
+                        kpi_month: monthAgg.total,
+                        completed_month: monthAgg.done,
+                        source_table_id: this.KPI_DODA_TABLE_ID,
+                    });
                 });
+
+                // Ensure multi-team members keep Do Da membership in users table.
+                if (matchedDoDaUserIds.size > 0) {
+                    const touchedUsers = await targetUsers.findMany({
+                        where: { id: { in: Array.from(matchedDoDaUserIds) } },
+                        select: { id: true, team: true },
+                    });
+                    for (const u of touchedUsers) {
+                        const mergedTeam = this.mergeTeamValues(u.team, 'Đồ Da');
+                        if (mergedTeam !== u.team) {
+                            await targetUsers.update({
+                                where: { id: u.id },
+                                data: { team: mergedTeam },
+                            });
+                        }
+                    }
+                }
+            } else {
+                for (const record of records) {
+                    Object.keys(record.fields).forEach((k) => allKeys.add(k));
+                    if (rawSamples.length < 3) rawSamples.push(record);
+
+                    const kpiData = this.mapRecordToKPI(record);
+                    const cleanName = (kpiData.name || '').trim();
+                    if (!cleanName || cleanName.toLowerCase() === 'unknown') continue;
+
+                    // Skip records outside [KPI_MIN_DATE_KEY .. KPI_MAX_DATE_KEY] (Vietnam day).
+                    if (kpiData.report_date) {
+                        const recordDate =
+                            kpiData.report_date instanceof Date ? kpiData.report_date : new Date(kpiData.report_date);
+                        if (!isNaN(recordDate.getTime())) {
+                            const dateKey = this.toVietnamDateKey(recordDate);
+                            if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) {
+                                skippedBeforeMinDate++;
+                                continue;
+                            }
+                        }
+                    }
+
+                    const nameKey = normalizeNameKey(cleanName);
+                    const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
+                    const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
+                    if (sysMatch) {
+                        if (sysMatch.team) kpiData.team = sysMatch.team;
+                        if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
+                    }
+
+                    if (!kpiData.name && !kpiData.team) continue;
+
+                    rows.push({
+                        id: kpiData.id,
+                        employee_id: kpiData.employee_id,
+                        name: kpiData.name,
+                        tag: kpiData.tag,
+                        team: kpiData.team,
+                        image_url: kpiData.image_url,
+                        kpi_day: kpiData.kpi_day,
+                        kpi_month: kpiData.kpi_month,
+                        kpii_status: kpiData.kpii_status,
+                        kpi_day_percent: kpiData.kpi_day_percent,
+                        completed_day: kpiData.completed_day,
+                        completed_month: kpiData.completed_month,
+                        task_new: kpiData.task_new,
+                        task_new_month: kpiData.task_new_month,
+                        task_auto: kpiData.task_auto,
+                        task_auto_month: kpiData.task_auto_month,
+                        task_creative: kpiData.task_creative,
+                        content_win_new: kpiData.content_win_new,
+                        revenue_month: kpiData.revenue_month,
+                        traffic_month: kpiData.traffic_month,
+                        target_revenue_month: kpiData.target_revenue_month,
+                        target_traffic_month: kpiData.target_traffic_month,
+                        kpi_progress_month: kpiData.kpi_progress_month,
+                        employee_status: kpiData.employee_status,
+                        state: kpiData.state,
+                        employee_data: kpiData.employee_data,
+                        report_date: kpiData.report_date,
+                        month: kpiData.month,
+                        link_image: kpiData.link_image,
+                    });
+                }
             }
 
-            if (rows.length > 0) {
-                const CHUNK = 500;
-                for (let i = 0; i < rows.length; i += CHUNK) {
-                    const chunk = rows.slice(i, i + CHUNK);
-                    await targetDoDa.createMany({ data: chunk, skipDuplicates: true });
+            if (isDoDaEditKpiTable) {
+                const editorDelegate = targetDoDaEditor as any;
+                await editorDelegate.deleteMany({});
+                if (editorRows.length > 0) {
+                    const CHUNK = 500;
+                    for (let i = 0; i < editorRows.length; i += CHUNK) {
+                        const chunk = editorRows.slice(i, i + CHUNK);
+                        await editorDelegate.createMany({ data: chunk, skipDuplicates: true });
+                    }
+                    syncedCount = editorRows.length;
                 }
-                syncedCount = rows.length;
+            } else {
+                const doDaDelegate = targetDoDa as Prisma.LarkKPIDelegate;
+                await doDaDelegate.deleteMany({});
+                if (rows.length > 0) {
+                    const CHUNK = 500;
+                    for (let i = 0; i < rows.length; i += CHUNK) {
+                        const chunk = rows.slice(i, i + CHUNK);
+                        await doDaDelegate.createMany({ data: chunk, skipDuplicates: true });
+                    }
+                    syncedCount = rows.length;
+                }
             }
 
             let mirroredRemote = 0;
             if (!targetClient && !options?.skipRemoteMirror) {
                 try {
-                    mirroredRemote = await this.mirrorLarkKpiDoDaSnapshotToServer(rows);
+                    mirroredRemote = isDoDaEditKpiTable
+                        ? await this.mirrorLarkKpiDoDaEditorSnapshotToServer(editorRows)
+                        : await this.mirrorLarkKpiDoDaSnapshotToServer(rows);
                 } catch (mirrorErr) {
-                    this.logger.error('[KPI DoDa] Mirror to SERVER_DATABASE_URL failed — local lark_kpi_do_da is already updated', mirrorErr);
+                    this.logger.error('[KPI DoDa] Mirror to SERVER_DATABASE_URL failed — local DoDa KPI table is already updated', mirrorErr);
                 }
             }
 
             this.logger.log(
-                `[KPI DoDa] Synced ${syncedCount} rows (skipped ${skippedBeforeMinDate} outside [${KPI_MIN_DATE_KEY} .. ${KPI_MAX_DATE_KEY}]).`,
+                `[KPI DoDa] Synced ${syncedCount} rows into ${isDoDaEditKpiTable ? 'lark_kpi_do_da_editor' : 'lark_kpi_do_da'} (skipped ${skippedBeforeMinDate} outside [${KPI_MIN_DATE_KEY} .. ${KPI_MAX_DATE_KEY}]).`,
             );
             this.invalidateActivityCache();
             // #region agent log
@@ -2822,6 +3125,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     }
 
     async getKPIDoDaData() {
+        const isDoDaEditorKpi = this.KPI_DODA_TABLE_ID === 'tblPIc4EQjd2wfAa';
+        if (isDoDaEditorKpi) {
+            return this.prismaLarkKpiDoDaEditor.findMany({
+                orderBy: [{ report_date: 'desc' }, { editor_name: 'asc' }],
+            });
+        }
         return this.prismaLarkKpiDoDa.findMany({
             orderBy: { report_date: 'desc' },
         });
@@ -3073,6 +3382,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         .replace(/đ/g, 'd')
                         .trim()
                         .replace(/[\s-]+/g, '');
+                const compactNameKey = (val: string | null | undefined) => normName(val || '').replace(/\s+/g, '');
+                const looseNameKey = (val: string | null | undefined) => normName(val || '').replace(/[^a-z0-9]/g, '');
+                const isDoDaTeamFilter = normalizeTeamKey(dbTeamFilter) === normalizeTeamKey('Đồ Da');
 
                 const teamFilterWhere = (dbTeamFilter && useDbTeamFilter) ? {
                     OR: [
@@ -3083,7 +3395,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     ],
                 } : {};
 
-                const [reports, allKpiInDb, leaderUsers, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb, reportOutstandings, totalKpiCount] = await Promise.all([
+                const [reports, allKpiInDbRaw, leaderUsers, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb, reportOutstandings, totalKpiCount] = await Promise.all([
                     // 1. Fetch reports with filters
                     this.prisma.larkReport.findMany({
                         where: {
@@ -3092,33 +3404,49 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         orderBy: { date: 'desc' },
                     }),
                     // 2. Fetch KPIs with filters
-                    this.prisma.larkKPI.findMany({
-                        where: {
-                            OR: [
-                                { month: { in: monthsInRange.flatMap(m => m.formats) } },
-                                {
-                                    AND: [
-                                        { month: null },
-                                        {
-                                            report_date: {
-                                                gte: monthsInRange[0]
-                                                    ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
-                                                    : larkKpiStartOfDay,
-                                                lte: monthsInRange.length > 0
-                                                    ? getVietnamMonthBounds(
-                                                        monthsInRange[monthsInRange.length - 1].year,
-                                                        monthsInRange[monthsInRange.length - 1].monthNum,
-                                                    ).end
-                                                    : larkKpiEndOfDay,
+                    isDoDaTeamFilter
+                        ? this.prismaLarkKpiDoDaEditor.findMany({
+                            where: {
+                                report_date: {
+                                    gte: monthsInRange[0]
+                                        ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
+                                        : larkKpiStartOfDay,
+                                    lte: monthsInRange.length > 0
+                                        ? getVietnamMonthBounds(
+                                            monthsInRange[monthsInRange.length - 1].year,
+                                            monthsInRange[monthsInRange.length - 1].monthNum,
+                                        ).end
+                                        : larkKpiEndOfDay,
+                                },
+                            },
+                        })
+                        : this.prisma.larkKPI.findMany({
+                            where: {
+                                OR: [
+                                    { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                                    {
+                                        AND: [
+                                            { month: null },
+                                            {
+                                                report_date: {
+                                                    gte: monthsInRange[0]
+                                                        ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
+                                                        : larkKpiStartOfDay,
+                                                    lte: monthsInRange.length > 0
+                                                        ? getVietnamMonthBounds(
+                                                            monthsInRange[monthsInRange.length - 1].year,
+                                                            monthsInRange[monthsInRange.length - 1].monthNum,
+                                                        ).end
+                                                        : larkKpiEndOfDay,
+                                                }
                                             }
-                                        }
-                                    ]
-                                }
-                            ],
-                            state: { not: 'off' },
-                            ...teamFilterWhere
-                        }
-                    }),
+                                        ]
+                                    }
+                                ],
+                                state: { not: 'off' },
+                                ...teamFilterWhere
+                            }
+                        }),
                     // 3. Fetch leader/admin/manager map from users for role authority.
                     this.prisma.user.findMany({
                         where: {
@@ -3183,6 +3511,30 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     // that simply hasn't been entered by the leader yet.
                     this.prisma.larkKPI.count({ where: { state: { not: 'off' } } }),
                 ]);
+                const allKpiInDb = isDoDaTeamFilter
+                    ? (allKpiInDbRaw as any[]).map((r: any) => ({
+                        id: r.id,
+                        name: r.editor_name,
+                        team: r.team || 'Đồ Da',
+                        month: r.month || null,
+                        report_date: r.report_date,
+                        kpi_day: r.kpi_day ?? 0,
+                        completed_day: r.completed_day ?? 0,
+                        kpi_month: r.kpi_month ?? 0,
+                        completed_month: r.completed_month ?? 0,
+                        kpi_day_percent: r.kpi_day && r.kpi_day > 0
+                            ? `${Math.round(((r.completed_day || 0) / r.kpi_day) * 100)}%`
+                            : '0%',
+                        kpii_status: (r.completed_day || 0) >= (r.kpi_day || 0) ? 'ĐẠT' : 'CHƯA ĐẠT',
+                        employee_status: 'ON',
+                        state: 'on',
+                        email: null,
+                        employee_id: null,
+                        image_url: null,
+                        link_image: null,
+                    }))
+                    : (allKpiInDbRaw as any[]);
+
                 const reportsUnfilteredCount = await this.prisma.larkReport.count({
                     where: whereClause,
                 });
@@ -3191,23 +3543,72 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 // Role: from users table. Team: from users table (authoritative over Lark).
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
-                    select: { email: true, full_name: true, team: true }
+                    select: { email: true, full_name: true, team: true, image_url: true }
                 });
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
+                const userAvatarByEmail = new Map<string, string>();
+                const userAvatarByName = new Map<string, string>();
+                const userAvatarByNameCompact = new Map<string, string>();
+                const userAvatarByNameLoose = new Map<string, string>();
+                const userEmailByName = new Map<string, string>();
+                const userEmailByNameCompact = new Map<string, string>();
                 for (const u of allUsersForTeam) {
+                    if (u.email && u.full_name) {
+                        const nk = normName(u.full_name);
+                        if (nk) userEmailByName.set(nk, u.email.toLowerCase().trim());
+                        const ck = compactNameKey(u.full_name);
+                        if (ck) userEmailByNameCompact.set(ck, u.email.toLowerCase().trim());
+                    }
+                    if (u.image_url && u.email) userAvatarByEmail.set(u.email.toLowerCase().trim(), u.image_url);
+                    if (u.image_url && u.full_name) {
+                        const nk = normName(u.full_name);
+                        if (nk) userAvatarByName.set(nk, u.image_url);
+                        const ck = compactNameKey(u.full_name);
+                        if (ck) userAvatarByNameCompact.set(ck, u.image_url);
+                        const lk = looseNameKey(u.full_name);
+                        if (lk) userAvatarByNameLoose.set(lk, u.image_url);
+                    }
                     const t = (u.team || '').trim();
                     if (!t) continue;
                     if (u.email) userTeamByEmail.set(u.email.toLowerCase().trim(), t);
                     if (u.full_name) { const nk = normName(u.full_name); if (nk) userTeamByName.set(nk, t); }
                 }
                 // Override team in allKpiInDb before building employeesMap & kpiData
-                for (const kpi of allKpiInDb as any[]) {
-                    const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
-                    const kpiName = normName((kpi as any).name || '');
-                    const ct = (kpiEmail ? userTeamByEmail.get(kpiEmail) : null)
-                        || (kpiName ? userTeamByName.get(kpiName) : null);
-                    if (ct) (kpi as any).team = ct;
+                if (!isDoDaTeamFilter) {
+                    for (const kpi of allKpiInDb as any[]) {
+                        const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
+                        const kpiName = normName((kpi as any).name || '');
+                        const ct = (kpiEmail ? userTeamByEmail.get(kpiEmail) : null)
+                            || (kpiName ? userTeamByName.get(kpiName) : null);
+                        if (ct) (kpi as any).team = ct;
+                    }
+                } else {
+                    // For DoDa filter, force avatar enrichment from users table.
+                    this.logger.debug(
+                        `[DoDa Avatar] userAvatar maps: byName=${userAvatarByName.size}, byCompact=${userAvatarByNameCompact.size}, byLoose=${userAvatarByNameLoose.size}`,
+                    );
+                    for (const kpi of allKpiInDb as any[]) {
+                        const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
+                        const kpiName = normName((kpi as any).name || '');
+                        const kpiNameCompact = compactNameKey((kpi as any).name || '');
+                        const kpiNameLoose = looseNameKey((kpi as any).name || '');
+                        const matchedEmail = (kpiEmail ? kpiEmail : null)
+                            || (kpiName ? userEmailByName.get(kpiName) : null)
+                            || (kpiNameCompact ? userEmailByNameCompact.get(kpiNameCompact) : null)
+                            || null;
+                        const avatar = (kpiEmail ? userAvatarByEmail.get(kpiEmail) : null)
+                            || (kpiName ? userAvatarByName.get(kpiName) : null)
+                            || (kpiNameCompact ? userAvatarByNameCompact.get(kpiNameCompact) : null)
+                            || (kpiNameLoose ? userAvatarByNameLoose.get(kpiNameLoose) : null);
+                        if (matchedEmail) {
+                            (kpi as any).email = matchedEmail;
+                        }
+                        if (avatar) {
+                            (kpi as any).image_url = avatar;
+                            if (!(kpi as any).link_image) (kpi as any).link_image = avatar;
+                        }
+                    }
                 }
 
                 // Build employee snapshot from larkKPI only.
@@ -3216,15 +3617,18 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     const employeeId = kpi.employee_id ? String(kpi.employee_id).trim() : null;
                     const name = kpi.name || null;
                     const email = this.extractEmailFromKpi(kpi);
+                    const nameKey = normName(name);
                     const key = employeeId || email || normName(name);
                     if (!key) continue;
                     if (employeesMap.has(key)) continue;
+                    const avatarFromUsers = (email ? userAvatarByEmail.get(email.toLowerCase().trim()) : null)
+                        || (nameKey ? userAvatarByName.get(nameKey) : null);
                     employeesMap.set(key, {
                         employee_id: employeeId,
                         full_name: name,
                         email,
                         team: kpi.team || null,
-                        image_url: kpi.image_url || kpi.link_image || null,
+                        image_url: avatarFromUsers || kpi.image_url || kpi.link_image || null,
                         employee_status: kpi.employee_status || kpi.state || null,
                         status: kpi.state || null,
                         roles: [],
@@ -4179,6 +4583,19 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     // Lookup daily traffic for this person
                     const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
 
+                    const resolvedAvatar =
+                        this.convertDriveUrl(employee?.image_url) ||
+                        this.convertDriveUrl(
+                            (emailLookupKey ? userAvatarByEmail.get(emailLookupKey) : null) ||
+                            (nameKey ? userAvatarByName.get(nameKey) : null) ||
+                            (compactNameKey(kpi.name || '') ? userAvatarByNameCompact.get(compactNameKey(kpi.name || '')) : null) ||
+                            (looseNameKey(kpi.name || '') ? userAvatarByNameLoose.get(looseNameKey(kpi.name || '')) : null),
+                        ) ||
+                        this.convertDriveUrl(this.rkReportAvatar(reportKpi)) ||
+                        this.convertDriveUrl(kpi.link_image) ||
+                        this.convertDriveUrl(kpi.image_url) ||
+                        null;
+
                     return {
                         id: kpi.id,
                         employee_id: trimmedEmpId,
@@ -4190,7 +4607,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         role: employee?.role || personEmp?.role || kpi._empRole || 'member',
                         email: personEmail || null,
                         team: effectiveTeam,
-                        avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(this.rkReportAvatar(reportKpi)) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                        avatar: resolvedAvatar,
+                        image_url: resolvedAvatar,
                         tag: kpi.tag || kpi.name || null,
                         status: effectiveStatus,
                         employee_status: employee?.status || personEmp?.status || kpi.employee_status || null,
@@ -4353,6 +4771,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             repStatusRaw.includes('khóa');
                         if (repIsResigned) return;
 
+                        const fallbackAvatar =
+                            this.convertDriveUrl(employee?.image_url) ||
+                            this.convertDriveUrl(
+                                (rEmailKey ? userAvatarByEmail.get(rEmailKey) : null) ||
+                                (rNameKey ? userAvatarByName.get(rNameKey) : null) ||
+                                (compactNameKey(report.name || '') ? userAvatarByNameCompact.get(compactNameKey(report.name || '')) : null) ||
+                                (looseNameKey(report.name || '') ? userAvatarByNameLoose.get(looseNameKey(report.name || '')) : null),
+                            ) ||
+                            null;
                         allResults.push({
                             id: report.id,
                             employee_id: employee?.employee_id || null, // fallback
@@ -4362,7 +4789,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             role: employee?.role || report.role || 'Member',
                             email: report.email,
                             team: displayTeamRep,
-                            avatar: this.convertDriveUrl(employee?.image_url) || null,
+                            avatar: fallbackAvatar,
+                            image_url: fallbackAvatar,
                             tag: report.name,
                             status: 'Đã báo cáo',
                             employee_status: employee?.status || repStatusRaw || null,
@@ -4499,6 +4927,33 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 });
 
                 const allValidResults = Array.from(groupedResults.values());
+
+                // ── DoDa avatar: lấy thẳng image_url từ bảng users, không qua pipeline KPI ──
+                if (isDoDaTeamFilter) {
+                    this.logger.log(`[DoDa-Avatar] lastmile: allValidResults=${allValidResults.length}, allUsersForTeam=${allUsersForTeam.length}`);
+                    // Build name→avatar map trực tiếp từ users (đã fetch ở trên với image_url)
+                    const dodaAvatarByName = new Map<string, string>();
+                    const dodaAvatarByEmail = new Map<string, string>();
+                    for (const u of allUsersForTeam as any[]) {
+                        const raw = String(u?.image_url || '').trim();
+                        if (!raw) continue;
+                        const nk = normName(String(u?.full_name || ''));
+                        if (nk) dodaAvatarByName.set(nk, raw);
+                        const ek = String(u?.email || '').toLowerCase().trim();
+                        if (ek) dodaAvatarByEmail.set(ek, raw);
+                    }
+                    // Gán avatar cho từng card — luôn ưu tiên users.image_url, bỏ qua giá trị cũ
+                    for (const r of allValidResults as any[]) {
+                        const nk = normName(String(r?.name || ''));
+                        const ek = String(r?.email || '').toLowerCase().trim();
+                        const raw =
+                            (ek ? dodaAvatarByEmail.get(ek) : null) ||
+                            (nk ? dodaAvatarByName.get(nk) : null) ||
+                            null;
+                        r.avatar = this.convertDriveUrl(raw) || r.avatar || null;
+                        if (r.avatar) (r as any).image_url = r.avatar;
+                    }
+                }
                 const preGroupNonZeroDaily = allResults.filter((r: any) => r !== null && (Number(r?.kpi_day || 0) > 0 || Number(r?.completed_day || 0) > 0)).length;
                 const postGroupNonZeroDaily = allValidResults.filter((r: any) => Number(r?.kpi_day || 0) > 0 || Number(r?.completed_day || 0) > 0).length;
                 // #region agent log
@@ -4608,7 +5063,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             rank: index + 1,
                             name: kpi.name,
                             position: employee?.position || null,
-                            avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                            avatar:
+                                this.convertDriveUrl(employee?.image_url) ||
+                                this.convertDriveUrl((kpi.email ? userAvatarByEmail.get(String(kpi.email).toLowerCase().trim()) : null) || (nameKey ? userAvatarByName.get(nameKey) : null)) ||
+                                this.convertDriveUrl(kpi.link_image) ||
+                                this.convertDriveUrl(kpi.image_url) ||
+                                null,
                             value: Number(kpi.traffic_range || 0).toLocaleString('vi-VN')
                         };
                     });
@@ -4625,7 +5085,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             rank: index + 1,
                             name: kpi.name,
                             position: employee?.position || null,
-                            avatar: this.convertDriveUrl(employee?.image_url) || this.convertDriveUrl(kpi.link_image) || this.convertDriveUrl(kpi.image_url) || null,
+                            avatar:
+                                this.convertDriveUrl(employee?.image_url) ||
+                                this.convertDriveUrl((kpi.email ? userAvatarByEmail.get(String(kpi.email).toLowerCase().trim()) : null) || (nameKey ? userAvatarByName.get(nameKey) : null)) ||
+                                this.convertDriveUrl(kpi.link_image) ||
+                                this.convertDriveUrl(kpi.image_url) ||
+                                null,
                             value: Number(kpi.revenue_range || 0).toLocaleString('vi-VN')
                         };
                     });
@@ -4934,7 +5399,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
     }
 
-    private convertDriveUrl(url: string | null | undefined): string | null {
+    convertDriveUrl(url: string | null | undefined): string | null {
         if (!url) return null;
         const trimmed = url.trim();
 
@@ -5285,17 +5750,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                 // Upsert vào users: update nếu email/name trùng, tạo mới nếu chưa có
                 try {
-                    let existingUser: { id: string; roles: string[]; email: string; lark_employee_record_id: string | null } | null = null;
+                    let existingUser: { id: string; roles: string[]; email: string; lark_employee_record_id: string | null; team: string | null } | null = null;
                     if (email) {
                         existingUser = await this.prisma.user.findFirst({
                             where: { email: { equals: email.trim(), mode: 'insensitive' } },
-                            select: { id: true, roles: true, email: true, lark_employee_record_id: true }
+                            select: { id: true, roles: true, email: true, lark_employee_record_id: true, team: true }
                         });
                     }
                     if (!existingUser && name) {
                         const byName = await this.prisma.user.findFirst({
                             where: { full_name: { equals: name.trim(), mode: 'insensitive' } },
-                            select: { id: true, roles: true, email: true, lark_employee_record_id: true }
+                            select: { id: true, roles: true, email: true, lark_employee_record_id: true, team: true }
                         });
                         // Only use the name-match if the incoming record has NO email (anonymous entry)
                         // OR the found user has no HR record yet (lark_employee_record_id is null).
@@ -5338,7 +5803,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         const updateData: any = {
                             full_name: fullName,
                             roles: isRoleDowngrade ? existingUser.roles : userRoles,
-                            team: team || null,
+                            team: this.mergeTeamValues(existingUser.team, team),
                             employee_status: status || null,
                             image_url: avatarUrl || null,
                             ...(empId ? { employee_id: empId } : {}),
@@ -5357,7 +5822,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                                 email: finalEmail,
                                 full_name: fullName,
                                 roles: userRoles as any,
-                                team: team || null,
+                                team: this.mergeTeamValues(team),
                                 employee_status: status || null,
                                 employee_id: empId || null,
                                 image_url: avatarUrl || null,

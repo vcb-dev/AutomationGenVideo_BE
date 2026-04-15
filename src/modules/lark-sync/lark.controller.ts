@@ -6,6 +6,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { LarkSyncService } from './lark-sync.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('Lark Report')
@@ -17,6 +18,7 @@ export class LarkController {
     constructor(
         private readonly larkService: LarkService,
         private readonly larkSyncService: LarkSyncService,
+        private readonly prisma: PrismaService,
     ) { }
 
     @Get('report')
@@ -131,7 +133,7 @@ export class LarkController {
 
     @Get('kpi-do-da')
     @ApiOperation({ summary: 'Get KPI Đồ Da data from Database' })
-    @ApiResponse({ status: 200, description: 'Returns list of KPI Đồ Da from PostgreSQL (lark_kpi_do_da).' })
+    @ApiResponse({ status: 200, description: 'Returns KPI Đồ Da rows from PostgreSQL (table depends on configured KPI Đồ Da source).' })
     async getKPIDoDa() {
         return this.larkService.getKPIDoDaData();
     }
@@ -206,7 +208,44 @@ export class LarkController {
         if (requesterEmail) filters['requesterEmail'] = requesterEmail.toLowerCase().trim();
         if (timeType) filters['timeType'] = timeType;
 
-        return this.larkService.getUserActivityReports(filters);
+        const result = await this.larkService.getUserActivityReports(filters);
+
+        // Enrich DoDa avatars from users.image_url (post-cache, guaranteed fresh)
+        const teamKey = (team || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\u0111/g, 'd').replace(/\s+/g, '');
+        if (teamKey === 'doda' && result?.reports?.length) {
+            const normName = (v: string) =>
+                String(v || '').toLowerCase().normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '').replace(/\u0111/g, 'd')
+                    .trim().replace(/\s+/g, ' ');
+
+            const users = await this.prisma.user.findMany({
+                where: { is_active: true, image_url: { not: null } },
+                select: { email: true, full_name: true, image_url: true },
+            });
+            const avByName = new Map<string, string>();
+            const avByEmail = new Map<string, string>();
+            for (const u of users) {
+                const nk = normName(u.full_name || '');
+                if (nk && u.image_url) avByName.set(nk, u.image_url);
+                if (u.email && u.image_url) avByEmail.set(u.email.toLowerCase().trim(), u.image_url);
+            }
+
+            for (const r of result.reports) {
+                const nk = normName(r.name || '');
+                const ek = String(r.email || '').toLowerCase().trim();
+                const raw = (ek ? avByEmail.get(ek) : null) || (nk ? avByName.get(nk) : null) || null;
+                if (raw) {
+                    const converted = this.larkService.convertDriveUrl(raw);
+                    if (converted) {
+                        r.avatar = converted;
+                        r.image_url = converted;
+                    }
+                }
+            }
+            this.logger.log(`[DoDa-Avatar] Enriched ${result.reports.length} reports with users.image_url`);
+        }
+
+        return result;
     }
 
     @Post('clear-activity-cache')
