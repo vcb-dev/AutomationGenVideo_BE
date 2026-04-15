@@ -19,11 +19,11 @@ export class PrismaService
           url: process.env.DATABASE_URL + (
             process.env.DATABASE_URL?.includes('?') ?
             `&connection_limit=${POOL_SIZE}&pool_timeout=30&connect_timeout=10` :
-            `?connection_limit=${POOL_SIZE}&pool_timeout=30&connect_timeout=10`
+            `?connection_limit=${POOL_SIZE}&pool_timeout=30&connect_timeout=10` 
           ),
         }
       },
-      log: process.env.NODE_ENV === 'development'
+      log: process.env.NODE_ENV === 'development' 
         ? [{ level: 'query', emit: 'event' }, { level: 'warn', emit: 'stdout' }]
         : [{ level: 'warn', emit: 'stdout' }],
     });

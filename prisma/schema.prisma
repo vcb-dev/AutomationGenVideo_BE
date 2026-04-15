@@ -598,6 +598,30 @@ model LarkKpiDoDa {
   @@map("lark_kpi_do_da")
 }
 
+/// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
+model LarkKpiDoDaEditor {
+  id              String   @id
+  editor_name     String
+  editor_name_key String?
+  team            String?
+  report_date     DateTime
+  report_date_key String
+  month           String?
+  kpi_day         Int      @default(0)
+  completed_day   Int      @default(0)
+  kpi_month       Int      @default(0)
+  completed_month Int      @default(0)
+  source_table_id String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([report_date])
+  @@index([report_date_key, team])
+  @@index([editor_name])
+  @@index([editor_name_key, month])
+  @@map("lark_kpi_do_da_editor")
+}
+
 model LarkTraffic {
   id               String    @id
   date             DateTime?
