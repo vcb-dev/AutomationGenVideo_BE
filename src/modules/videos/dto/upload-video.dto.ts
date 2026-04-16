@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsUUID } from 'class-validator';
+import { IsString, IsOptional, IsUUID, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UploadVideoDto {
@@ -37,6 +37,18 @@ export class CheckDuplicateResponseDto {
 
   @ApiProperty()
   needsReview: boolean;
+}
+
+export class ReviewVideoDto {
+  @ApiProperty({ enum: ['APPROVED', 'REJECTED'], description: 'Kết quả xét duyệt' })
+  @IsString()
+  @IsIn(['APPROVED', 'REJECTED'])
+  action: 'APPROVED' | 'REJECTED';
+
+  @ApiPropertyOptional({ description: 'Ghi chú khi từ chối' })
+  @IsOptional()
+  @IsString()
+  note?: string;
 }
 
 export class MarkAsPublishedDto {

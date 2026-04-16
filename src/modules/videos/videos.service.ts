@@ -398,6 +398,59 @@ export class VideosService {
   }
 
   /**
+   * Lấy danh sách task video từ LarkListTask để leader xét duyệt
+   * Lọc theo team của leader (user.team) hoặc team truyền vào
+   */
+  async getLarkTasksForReview(
+    leader: { team?: string; email?: string },
+    status?: string,
+    team?: string,
+  ) {
+    const targetTeam = team || leader.team;
+
+    const where: any = {};
+    if (targetTeam) where.team = targetTeam;
+    if (status && status !== 'ALL') where.status = status;
+
+    return this.prisma.larkListTask.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
+  /**
+   * Thống kê xét duyệt video từ LarkListTask theo team
+   */
+  async getLarkTaskReviewStats(
+    leader: { team?: string },
+    team?: string,
+  ) {
+    const targetTeam = team || leader.team;
+    const teamFilter = targetTeam ? { team: targetTeam } : {};
+
+    const [total, pending, approved, rejected] = await Promise.all([
+      this.prisma.larkListTask.count({ where: teamFilter }),
+      this.prisma.larkListTask.count({ where: { ...teamFilter, status: 'pending' } }),
+      this.prisma.larkListTask.count({ where: { ...teamFilter, status: 'approved' } }),
+      this.prisma.larkListTask.count({ where: { ...teamFilter, status: 'rejected' } }),
+    ]);
+
+    return { total, pending, approved, rejected };
+  }
+
+  /**
+   * Leader duyệt hoặc từ chối task video trong LarkListTask
+   */
+  async reviewLarkTask(taskId: string, action: 'APPROVED' | 'REJECTED') {
+    const statusValue = action === 'APPROVED' ? 'approved' : 'rejected';
+
+    return this.prisma.larkListTask.update({
+      where: { id: taskId },
+      data: { status: statusValue },
+    });
+  }
+
+  /**
    * Get videos for user
    */
   async getUserVideos(userId: string) {

@@ -3964,11 +3964,11 @@ export class LarkService implements OnModuleInit {
             if (Array.isArray(val) && val.length > 0) {
                 const first = val[0];
                 if (first && typeof first === 'object') return first.name || null;
-                if (typeof first === 'string' && !first.startsWith('opt')) return first;
+                if (typeof first === 'string') return first; // Return as is, we might map it later
                 return null;
             }
             if (typeof val === 'object') return val.name || null;
-            if (typeof val === 'string' && !val.startsWith('opt')) return val;
+            if (typeof val === 'string') return val;
             return null;
         };
 
@@ -4038,9 +4038,53 @@ export class LarkService implements OnModuleInit {
             const records = await this.fetchListTaskRecords();
             this.logger.log(`Fetched ${records.length} ListTask records from Lark. Syncing...`);
 
+            // Fetch users with teams to build a fallback map
+            const users = await this.prisma.user.findMany({
+                where: { team: { not: null } },
+                select: { email: true, team: true },
+            });
+            const userTeamMap = new Map<string, string>();
+            users.forEach(u => {
+                if (u.email) userTeamMap.set(u.email.toLowerCase(), u.team);
+            });
+
+            // Map Lark option IDs to Team names
+            const TEAM_ID_MAP = {
+                "optgmAjxPX": "Team K1",
+                "opth87zsh9": "Team K2",
+                "optLSu0E6l": "AFF 01",
+                "optonYfIIw": "AFF 02",
+                "optdYBBB79": "Global - JP1",
+                "opt7VPlNbt": "Global - Indo",
+                "optLOnq82e": "Team K0",
+                "optsAgErUN": "Team ADS",
+                "opteRGl6SB": "MEDIA CHUNG",
+                "optowWD7Fz": "DATA",
+                "optfnEgAuR": "Global Thái Lan",
+                "optLFMbFec": "Global Đài Loan",
+                "opt6i9kLZg": "Team K4",
+                "optpjHn4pm": "Team K3"
+            };
+
             let syncedCount = 0;
             for (const record of records) {
                 const data = this.mapRecordToListTask(record);
+
+                // Team Enrichment Logic
+                let finalTeam = data.team;
+                // 1. Map from ID if it matches our dictionary
+                if (finalTeam && TEAM_ID_MAP[finalTeam]) {
+                    finalTeam = TEAM_ID_MAP[finalTeam];
+                }
+                // 2. Fallback to user's team if email is available
+                if ((!finalTeam || finalTeam.startsWith('opt')) && data.employee_email) {
+                    const mapped = userTeamMap.get(data.employee_email.toLowerCase());
+                    if (mapped) finalTeam = mapped;
+                }
+                
+                // Apply enriched team
+                data.team = finalTeam;
+
                 await this.prisma.larkListTask.upsert({
                     where: { id: data.id },
                     update: data,
@@ -4049,7 +4093,7 @@ export class LarkService implements OnModuleInit {
                 syncedCount++;
             }
 
-            this.logger.log(`Successfully synced ${syncedCount} ListTask records.`);
+            this.logger.log(`Successfully synced ${syncedCount} ListTask records (with team enrichment).`);
             return { synced: syncedCount, total: records.length };
         } catch (error) {
             this.logger.error('Failed to sync ListTask data', error);

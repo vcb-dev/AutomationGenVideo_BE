@@ -2,7 +2,10 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
+  Param,
+  Query,
   UseInterceptors,
   UploadedFile,
   UseGuards,
@@ -11,9 +14,9 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { VideosService } from './videos.service';
-import { UploadVideoDto, MarkAsPublishedDto } from './dto/upload-video.dto';
+import { UploadVideoDto, MarkAsPublishedDto, ReviewVideoDto } from './dto/upload-video.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @ApiTags('videos')
@@ -97,6 +100,55 @@ export class VideosController {
       success: true,
       videos,
       count: videos.length,
+    };
+  }
+
+  @Get('review-list')
+  @ApiOperation({ summary: 'Lấy danh sách task video cần xét duyệt từ LarkListTask (dành cho Leader)' })
+  @ApiQuery({ name: 'status', required: false, description: 'pending | approved | rejected' })
+  @ApiQuery({ name: 'team', required: false })
+  async getReviewList(
+    @Request() req,
+    @Query('status') status?: string,
+    @Query('team') team?: string,
+  ) {
+    const tasks = await this.videosService.getLarkTasksForReview(req.user, status, team);
+
+    return {
+      success: true,
+      videos: tasks,
+      count: tasks.length,
+    };
+  }
+
+  @Get('review-stats')
+  @ApiOperation({ summary: 'Thống kê xét duyệt video của team từ LarkListTask (dành cho Leader)' })
+  @ApiQuery({ name: 'team', required: false })
+  async getReviewStats(
+    @Request() req,
+    @Query('team') team?: string,
+  ) {
+    const stats = await this.videosService.getLarkTaskReviewStats(req.user, team);
+
+    return {
+      success: true,
+      stats,
+    };
+  }
+
+  @Patch('lark-task/:id/review')
+  @ApiOperation({ summary: 'Duyệt hoặc từ chối task video trong LarkListTask (dành cho Leader)' })
+  async reviewLarkTask(
+    @Param('id') id: string,
+    @Body() dto: ReviewVideoDto,
+    @Request() req,
+  ) {
+    const task = await this.videosService.reviewLarkTask(id, dto.action);
+
+    return {
+      success: true,
+      task,
+      message: dto.action === 'APPROVED' ? 'Video đã được duyệt' : 'Video đã bị từ chối',
     };
   }
 }
