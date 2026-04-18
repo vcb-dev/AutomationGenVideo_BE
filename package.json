@@ -24,9 +24,11 @@
     "prisma:studio": "prisma studio",
     "sync:channel:to-server": "ts-node scripts/sync-channel-to-server.ts",
     "sync:users:to-server": "ts-node scripts/sync-users-to-server.ts",
-    "sync:larkkpi:to-server": "ts-node scripts/sync-larkkpi-to-server.ts",
+    "sync:larkkpi:force": "ts-node scripts/force-sync-kpi-to-remote.ts",
+    "sync:huyk-channel:force": "ts-node scripts/force-sync-huyk-channel-to-remote.ts",
     "sync:larkkpi-doda:to-server": "ts-node scripts/sync-larkkpi-doda-to-server.ts",
-    "sync:deploy-full": "ts-node scripts/deploy-sync.ts"
+    "sync:deploy-full": "ts-node scripts/deploy-sync.ts",
+    "sync:production": "ts-node -r tsconfig-paths/register scripts/force-sync-production.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -57,6 +59,7 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
+    "pg": "^8.20.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1"
   },

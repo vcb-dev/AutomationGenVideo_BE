@@ -20,6 +20,8 @@ import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
+import { VideoLibraryModule } from './modules/video-library/video-library.module';
+import { ApprovedContentModule } from './modules/approved-content/approved-content.module';
 
 @Module({
   imports: [
@@ -57,6 +59,8 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
     SearchRecommendationModule,
     LarkModule,
     RolePermissionsModule,
+    VideoLibraryModule,
+    ApprovedContentModule,
   ],
   controllers: [AppController],
   providers: [
