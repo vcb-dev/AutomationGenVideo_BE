@@ -159,7 +159,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         return `${currentYear}-03-01`;
     }
 
-    /** Min date riêng cho KPI Đồ Da (lark_kpi_do_da_editor). Default: April 1st current year. Override: LARK_KPI_DODA_MIN_DATE */
+    /** Min date riêng cho KPI Đồ Da (lark_kpi_do_da_editor). Default: March 1st current year. */
     private getKpiDoDaMinDateKey(): string {
         const envVal = String(this.configService.get<string>('LARK_KPI_DODA_MIN_DATE') || '').trim();
         if (/^\d{4}-\d{2}-\d{2}$/.test(envVal)) return envVal;
@@ -168,7 +168,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             year: 'numeric',
         }).format(new Date());
         const currentYear = nowVN.slice(0, 4);
-        return `${currentYear}-04-01`;
+        return `${currentYear}-03-01`;
     }
 
     /**
@@ -2283,6 +2283,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         };
 
         let name = extractString(fields['Tên'] || fields['Ten'] || fields['Họ tên'] || fields['Nhân viên']);
+        let email = extractString(fields['Email'] || fields['email']);
 
         // Extract image URL from Hình ảnh field
         let imageUrl = null;
@@ -2290,34 +2291,48 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             imageUrl = fields['Hình ảnh'][0].url || fields['Hình ảnh'][0].tmp_url || null;
         }
 
-        // Convert Excel serial date to JS Date if exists
-        let dateValue = null;
-        if (fields['NGÀY']) {
-            // Excel serial date: days since 1899-12-30
+        // report_date: Prefer 'Ngày báo cáo', then 'Ngày', then 'NGÀY'
+        let reportDate = null;
+        const rawReportDate = fields['Ngày báo cáo'] || fields['Ngày'] || fields['Ngay'];
+        if (rawReportDate) {
+            reportDate = new Date(rawReportDate);
+        } else if (fields['NGÀY']) {
             const excelEpoch = new Date(1899, 11, 30);
             const days = parseInt(fields['NGÀY']);
-            dateValue = new Date(excelEpoch.getTime() + days * 24 * 60 * 60 * 1000);
+            reportDate = new Date(excelEpoch.getTime() + days * 24 * 60 * 60 * 1000);
         }
 
-        // Extract tag code - field name is "MÃ TAG" (uppercase, no diacritic on A)
-        // Value is array: [{"type": "text", "text": "K101"}]
-        let tagCode = null;
-        if (fields['MÃ TAG'] && Array.isArray(fields['MÃ TAG']) && fields['MÃ TAG'].length > 0) {
-            tagCode = fields['MÃ TAG'][0].text || null;
-        }
+        const toNum = (val: any) => {
+            if (val === null || val === undefined) return 0;
+            if (typeof val === 'number') return val;
+            const parsed = parseFloat(String(val).replace(/[^0-9.-]+/g, ''));
+            return isNaN(parsed) ? 0 : parsed;
+        };
 
         const teams = Array.from(new Set(extractTeamList(fields['Team'])));
+
         return {
             id: record.record_id,
-            employee_id: fields['ID nhân viên'] || null,
+            employee_id: fields['ID nhân viên'] ? String(fields['ID nhân viên']).trim() : null,
             name: name || 'Unknown',
+            email: email,
             image_url: imageUrl,
             employee_data: fields['Nhân viên'] || null,
-            tag_code: tagCode,
             position: fields['Chức vụ'] || null,
             team: teams.length ? teams.join(', ') : null,
+            kpi_day: toNum(fields['KPI Ngày']),
+            completed_day: toNum(fields['Hoàn thành']),
+            kpi_month: toNum(fields['KPI THÁNG']),
+            completed_month: toNum(fields['Hoàn thành Tháng']),
+            traffic_month: toNum(fields['Traffic Tháng']),
+            revenue_month: toNum(fields['Doanh thu tháng']),
+            kpi_progress_month: toNum(fields['Tiến độ KPI tháng']),
+            target_traffic_month: toNum(fields['Mục tiêu Traffic tháng']),
+            target_revenue_month: toNum(fields['Mục tiêu doanh thu tháng']),
             status: fields['Tình trạng'] || null,
-            date: dateValue,
+            state: fields['Trạng thái'] || null,
+            date: reportDate,
+            month: fields['Tháng'] ? String(fields['Tháng']).trim() : null,
         };
     }
 
@@ -2431,7 +2446,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                 const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
                 if (sysMatch) {
-                    if (sysMatch.team) kpiData.team = sysMatch.team;
+                    // Role comes from Users table (handled in getUserActivityReports), 
+                    // but Team MUST come from Lark KPI source (requested by user).
+                    // We also fetch current employee_status to skip resigned users.
                     if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                 }
 
@@ -2790,7 +2807,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
                     const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
                     if (sysMatch) {
-                        if (sysMatch.team) kpiData.team = sysMatch.team;
+                        // Team strictly follows Lark source (unless it's null/empty, but usually it's set).
+                        // Role and user-specific attributes stay in Users table.
                         if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                     }
 
@@ -3443,6 +3461,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                                         ]
                                     }
                                 ],
+                                report_date: { gte: new Date('2026-03-01T00:00:00Z') },
                                 state: { not: 'off' },
                                 ...teamFilterWhere
                             }
@@ -3509,7 +3528,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     // Used for the "no data" banner — banner should only appear when the entire
                     // larkKPI table is empty (first-time setup), NOT when viewing a future date
                     // that simply hasn't been entered by the leader yet.
-                    this.prisma.larkKPI.count({ where: { state: { not: 'off' } } }),
+                    this.prisma.larkKPI.count({ where: { state: { not: 'off' }, report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
                 ]);
                 const allKpiInDb = isDoDaTeamFilter
                     ? (allKpiInDbRaw as any[]).map((r: any) => ({
@@ -3543,7 +3562,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 // Role: from users table. Team: from users table (authoritative over Lark).
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
-                    select: { email: true, full_name: true, team: true, image_url: true }
+                    select: { email: true, full_name: true, team: true, image_url: true, roles: true }
                 });
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
@@ -3574,16 +3593,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (u.email) userTeamByEmail.set(u.email.toLowerCase().trim(), t);
                     if (u.full_name) { const nk = normName(u.full_name); if (nk) userTeamByName.set(nk, t); }
                 }
-                // Override team in allKpiInDb before building employeesMap & kpiData
-                if (!isDoDaTeamFilter) {
-                    for (const kpi of allKpiInDb as any[]) {
-                        const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
-                        const kpiName = normName((kpi as any).name || '');
-                        const ct = (kpiEmail ? userTeamByEmail.get(kpiEmail) : null)
-                            || (kpiName ? userTeamByName.get(kpiName) : null);
-                        if (ct) (kpi as any).team = ct;
-                    }
-                } else {
+                if (isDoDaTeamFilter) {
                     // For DoDa filter, force avatar enrichment from users table.
                     this.logger.debug(
                         `[DoDa Avatar] userAvatar maps: byName=${userAvatarByName.size}, byCompact=${userAvatarByNameCompact.size}, byLoose=${userAvatarByNameLoose.size}`,
@@ -3611,30 +3621,38 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     }
                 }
 
-                // Build employee snapshot from larkKPI only.
+                // Build employee snapshot from Users table (Authoritative for Identity: Team, Role)
                 const employeesMap = new Map<string, any>();
-                for (const kpi of allKpiInDb as any[]) {
-                    const employeeId = kpi.employee_id ? String(kpi.employee_id).trim() : null;
-                    const name = kpi.name || null;
-                    const email = this.extractEmailFromKpi(kpi);
+                for (const u of allUsersForTeam) {
+                    const email = String(u.email || '').toLowerCase().trim();
+                    const name = u.full_name || '';
                     const nameKey = normName(name);
-                    const key = employeeId || email || normName(name);
+                    const key = email || nameKey;
                     if (!key) continue;
-                    if (employeesMap.has(key)) continue;
-                    const avatarFromUsers = (email ? userAvatarByEmail.get(email.toLowerCase().trim()) : null)
-                        || (nameKey ? userAvatarByName.get(nameKey) : null);
-                    employeesMap.set(key, {
-                        employee_id: employeeId,
-                        full_name: name,
-                        email,
-                        team: kpi.team || null,
-                        image_url: avatarFromUsers || kpi.image_url || kpi.link_image || null,
-                        employee_status: kpi.employee_status || kpi.state || null,
-                        status: kpi.state || null,
-                        roles: [],
-                        employee_position: null,
-                    });
+
+                    if (!employeesMap.has(key)) {
+                        // Resolve role directly from users.roles field (authoritative source)
+                        const userRoles = (u as any).roles as string[] || [];
+                        let resolvedRole = 'member';
+                        if (userRoles.includes('ADMIN')) resolvedRole = 'admin';
+                        else if (userRoles.includes('MANAGER')) resolvedRole = 'manager';
+                        else if (userRoles.includes('LEADER')) resolvedRole = 'leader';
+
+                        employeesMap.set(key, {
+                            employee_id: null,
+                            full_name: name,
+                            email: email || null,
+                            team: u.team || null,
+                            image_url: (u as any).image_url || null,
+                            employee_status: 'ON',
+                            status: 'on',
+                            roles: userRoles,
+                            role: resolvedRole,
+                            employee_position: null,
+                        });
+                    }
                 }
+
                 const leaderRoleByEmail = new Map<string, { role: string; team: string | null }>();
                 const leaderRoleByName = new Map<string, { role: string; team: string | null }>();
                 for (const u of leaderUsers as any[]) {
@@ -3649,6 +3667,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (emailKey) leaderRoleByEmail.set(emailKey, payload);
                     if (nameKey) leaderRoleByName.set(nameKey, payload);
                 }
+
                 for (const emp of employeesMap.values()) {
                     const eKey = String(emp.email || '').toLowerCase().trim();
                     const nKey = normName(emp.full_name);
@@ -3656,6 +3675,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (fromUsers) emp.role = fromUsers.role;
                 }
                 const employees = Array.from(employeesMap.values());
+                const emailKeyMatchMap = new Map<string, any>();
+                const nameKeyMatchMap = new Map<string, any>();
+                employees.forEach(emp => {
+                    if (emp.email) emailKeyMatchMap.set(emp.email.toLowerCase().trim(), emp);
+                    if (emp.full_name) nameKeyMatchMap.set(normName(emp.full_name), emp);
+                });
                 // #region agent log
                 fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H3', location: 'lark.service.ts:getUserActivityReports:afterFetch', message: 'Fetched base datasets', data: { reports: reports.length, kpisRaw: allKpiInDb.length, employees: employees.length, dailyReportKpis: dailyReportKpis.length, monthlyReportKpis: monthlyReportKpis.length, selectedTeam: filters?.team || 'All', useDbTeamFilter }, timestamp: Date.now() }) }).catch(() => { });
                 // #endregion
@@ -4003,99 +4028,90 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     return `${personKey}_${teamKeyNorm}_T${matchedMonth.monthNum}_${matchedMonth.year}`;
                 };
 
-                kpiData.forEach(kpi => {
-                    const nameKey = kpi.name ? kpi.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
-                    const teamKey = kpi.team?.toLowerCase().trim() || '';
-                    const trimmedEmpId = kpi.employee_id?.trim();
-                    const kpiEmailKey = (kpi as any).email ? String((kpi as any).email).toLowerCase().trim() : null;
-                    const employeeByName = nameKey ? employeeMap.get(nameKey) : null;
-                    const employeeEmailKey = employeeByName?.email ? String(employeeByName.email).toLowerCase().trim() : null;
+                // --- REVISED ARCHITECTURE: Trust LarkKPI for Team (Latest record is authoritative), Users for Role ---
+                // 1. Resolve the latest team for each person from the filtered kpiData
+                const latestTeamMap = new Map<string, string>();
+                const latestKpiDateMap = new Map<string, number>();
 
-                    // Determine the month/year for this KPI record to key it uniquely within a range
-                    let kpiMonth = 0;
-                    let kpiYear = 0;
+                kpiData.forEach(kpi => {
+                    const nameKey = kpi.name ? normName(kpi.name) : null;
+                    const emailKey = kpi.email?.toLowerCase().trim();
+                    const personKey = (emailKey || nameKey);
+                    if (!personKey) return;
+
+                    const reportDate = kpi.report_date ? new Date(kpi.report_date).getTime() : 0;
+                    if (!latestTeamMap.has(personKey) || reportDate >= (latestKpiDateMap.get(personKey) || 0)) {
+                        if (kpi.team) {
+                            latestTeamMap.set(personKey, kpi.team);
+                            latestKpiDateMap.set(personKey, reportDate);
+                        }
+                    }
+                });
+
+                // 2. Aggregate KPI Metrics grouping by the Latest Authoritative Team
+                kpiData.forEach(kpi => {
+                    const nameKey = kpi.name ? normName(kpi.name) : null;
+                    const emailKey = kpi.email?.toLowerCase().trim();
+                    const personKey = (emailKey || nameKey);
+                    if (!personKey) return;
+
+                    const authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+
+                    // Use the latest team found in the entire dataset for this person
+                    const reportedTeam = latestTeamMap.get(personKey) || kpi.team || 'Khác';
+                    const teamNorm = normalizeTeamKey(reportedTeam);
+                    const userRole = authoritativeUser?.role || 'member';
+
+                    // Match month
                     const mStr = (kpi.month || '').trim();
                     const matchedMonth = monthsInRange.find(mInfo => {
                         if (mInfo.formats.includes(mStr)) return true;
                         const mDigits = mStr.match(/\d+/g);
                         return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
                     }) || monthsInRange[0];
-                    kpiMonth = matchedMonth.monthNum;
-                    kpiYear = matchedMonth.year;
+                    const kpiMonth = matchedMonth.monthNum;
+                    const kpiYear = matchedMonth.year;
 
-                    // Identity key priority:
-                    // 1) users.email (authoritative, unique)
-                    // 2) kpi.email
-                    // 3) name+team (avoid cross-team merges when duplicate names exist)
-                    // 4) employee_id/raw id fallback
-                    const personKey =
-                        employeeEmailKey ||
-                        kpiEmailKey ||
-                        ((nameKey || 'unknown') + '|' + (teamKey || 'unknown')) ||
-                        trimmedEmpId ||
-                        kpi.id;
-
-                    // --- FIX: Use column 'month' (T1, T2...) for aggregation keys ---
-                    const mStrNormalized = (kpi.month || '').trim().toUpperCase();
-                    const teamKeyNorm = normalizeTeamKey(teamKey || 'khac');
-                    const personMonthKey = `${personKey}_${teamKeyNorm}_T${kpiMonth}_${kpiYear}`;
-
-                    if (nameKey && !nameToPersonKey.has(nameKey)) {
-                        // Keep first mapping to avoid unstable reassignment for duplicate names.
-                        nameToPersonKey.set(nameKey, personKey);
-                        if (teamKey) {
-                            kpiByNameTeam.set(`${nameKey}_${teamKey}`, kpi);
-                        }
-                        if (!kpiByName.has(nameKey) || kpi.link_image || kpi.image_url) {
-                            kpiByName.set(nameKey, kpi);
-                        }
-                    }
+                    const personMonthKey = `${personKey}_${teamNorm}_T${kpiMonth}_${kpiYear}`;
 
                     if (!kpisForAggregation.has(personMonthKey)) {
-                        kpisForAggregation.set(personMonthKey, { ...kpi });
-                    } else {
-                        const existing = kpisForAggregation.get(personMonthKey);
-                        // Use range comparison (Vietnam-time aware) instead of toDateString()
-                        // to determine whether a KPI record belongs to the selected day.
-                        const currentIsTarget = isBitableKpiRowForSelection(kpi.report_date);
-                        const existingIsTarget = isBitableKpiRowForSelection(existing.report_date);
-
-                        // If we have a record for the SPECIFIC day asked for, use it.
-                        // Otherwise keep the high-water mark (Math.max) for the month.
-                        if (currentIsTarget) {
-                            existing.completed_day = Number(kpi.completed_day) || 0;
-                            existing.report_date = kpi.report_date;
-                        } else if (!existingIsTarget) {
-                            existing.completed_day = Math.max(Number(existing.completed_day) || 0, Number(kpi.completed_day) || 0);
-                        }
-
-                        // For monthly fields, always keep the max/latest
-                        existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
-                        existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
-
-                        if (currentIsTarget) {
-                            existing.kpi_day = Number(kpi.kpi_day) || 0;
-                            (existing as any).hasExactDayKpi = true;
-                        } else if (!(existing as any).hasExactDayKpi) {
-                            existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
-                        }
-
-                        // Handle BigInt for traffic/revenue
-                        const currentTraffic = BigInt(kpi.traffic_month || 0);
-                        const currentRevenue = BigInt(kpi.revenue_month || 0);
-                        const existingTraffic = BigInt(existing.traffic_month || 0);
-                        const existingRevenue = BigInt(existing.revenue_month || 0);
-
-                        if (currentTraffic > existingTraffic) {
-                            existing.traffic_month = kpi.traffic_month;
-                            if (kpi.report_date) existing.report_date = kpi.report_date;
-                        }
-                        if (currentRevenue > existingRevenue) existing.revenue_month = kpi.revenue_month;
-
-                        // Keep latest target strings
-                        if (kpi.target_traffic_month) existing.target_traffic_month = kpi.target_traffic_month;
-                        if (kpi.target_revenue_month) existing.target_revenue_month = kpi.target_revenue_month;
+                        kpisForAggregation.set(personMonthKey, {
+                            ...kpi,
+                            team: reportedTeam,
+                            role: userRole,
+                            image_url: authoritativeUser?.image_url || kpi.image_url,
+                            status: authoritativeUser?.status || 'on',
+                            kpi_day: 0,
+                            kpi_month: 0,
+                            completed_day: 0,
+                            completed_month: 0,
+                            traffic_month: 0,
+                            revenue_month: 0
+                        });
                     }
+
+                    const existing = kpisForAggregation.get(personMonthKey);
+
+                    // Use report_date (the actual larkKPI field) — kpi.date does not exist on larkKPI rows
+                    const currentIsTarget = isBitableKpiRowForSelection(kpi.report_date);
+                    const existingIsTarget = isBitableKpiRowForSelection(existing.report_date);
+
+                    if (currentIsTarget) {
+                        existing.completed_day = Number(kpi.completed_day) || 0;
+                        existing.report_date = kpi.report_date;
+                        existing.kpi_day = Number(kpi.kpi_day) || 0;
+                        (existing as any).hasExactDayKpi = true;
+                    } else if (!existingIsTarget && !(existing as any).hasExactDayKpi) {
+                        existing.completed_day = Math.max(Number(existing.completed_day) || 0, Number(kpi.completed_day) || 0);
+                        existing.kpi_day = Math.max(Number(existing.kpi_day) || 0, Number(kpi.kpi_day) || 0);
+                    }
+
+                    existing.kpi_month = Math.max(Number(existing.kpi_month) || 0, Number(kpi.kpi_month) || 0);
+                    existing.completed_month = Math.max(Number(existing.completed_month) || 0, Number(kpi.completed_month) || 0);
+
+                    const cTraffic = BigInt(kpi.traffic_month || 0);
+                    const eTraffic = BigInt(existing.traffic_month || 0);
+                    if (cTraffic > eTraffic) existing.traffic_month = kpi.traffic_month;
                 });
 
                 // Single-day filter: "Mục tiêu ngày" / "Đã xong" từ lark_kpi có report_date = ngày hiệu suất D (UI).
@@ -4146,167 +4162,47 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     // #endregion
                 }
 
-                const aggregatedKpis = Array.from(kpisForAggregation.values()) as any[];
-                const missingExactDayButNonZero = aggregatedKpis.filter((k: any) => {
-                    const hasExact = !!(k as any).hasExactDayKpi;
-                    const completed = Number(k?.completed_day || 0);
-                    const dailyGoal = Number(k?.kpi_day || 0);
-                    return !hasExact && (completed > 0 || dailyGoal > 0);
-                });
-                const missingExactDayByDateButNonZero = aggregatedKpis.filter((k: any) => {
-                    const exactByDate = isBitableKpiRowForSelection(k?.report_date);
-                    const completed = Number(k?.completed_day || 0);
-                    const dailyGoal = Number(k?.kpi_day || 0);
-                    return !exactByDate && (completed > 0 || dailyGoal > 0);
-                });
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H9', location: 'lark.service.ts:getUserActivityReports:missingExactDayFallback', message: 'Count KPI cards using non-target-day fallback values', data: { selectedTeam: filters?.team || 'All', aggregatedKpiCount: aggregatedKpis.length, missingExactDayButNonZeroCount: missingExactDayButNonZero.length, missingExactDayByDateButNonZeroCount: missingExactDayByDateButNonZero.length }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+                // Reports are processed next to enrich the kpisForAggregation set initialize above.
 
-                // --- OPTIMIZATION: Reuse reports fetched at beginning instead of fetching again ---
-                const dailyReports = reports;
-
-                // Map reports by name for fast lookup
-                const reportsMap = new Map();
-                dailyReports.forEach(r => {
-                    let nameKey = r.name ? r.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
+                // --- OPTIMIZATION: Process Daily Reports and Map to Authoritative Users ---
+                reports.forEach(r => {
+                    const nameKey = r.name ? normName(r.name) : null;
                     const emailKey = r.email?.toLowerCase().trim();
+                    const authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
 
-                    if (nameKey) {
-                        const existing = reportsMap.get(nameKey);
-                        if (existing) {
-                            // Aggregate numeric answers
-                            if (existing.answers && r.answers) {
-                                const eAns = existing.answers as any;
-                                const rAns = r.answers as any;
-                                const videoKeyNew = Object.keys(rAns).find(k => k.toLowerCase().includes('50%'));
-                                const videoKeyOld = Object.keys(eAns).find(k => k.toLowerCase().includes('50%')) || videoKeyNew;
-                                if (videoKeyNew) {
-                                    // Sum up numeric values
-                                    const currentTotal = Number(eAns[videoKeyOld]) || 0;
-                                    const newVal = Number(rAns[videoKeyNew]) || 0;
-                                    eAns[videoKeyOld] = currentTotal + newVal;
-                                }
-                            }
-                        } else {
-                            // Clone to avoid mutation of findMany result
-                            reportsMap.set(nameKey, { ...r });
-                        }
-                    }
+                    const pKey = authoritativeUser
+                        ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
+                        : (emailKey || nameKey || `unknown_r_${r.id}`);
 
-                    if (emailKey) {
-                        // Always index by email (including when nameKey exists) so permission-email fallback works
-                        if (!reportsMap.has(emailKey)) {
-                            reportsMap.set(emailKey, nameKey ? (reportsMap.get(nameKey) || { ...r }) : { ...r });
-                        }
-                    }
+                    // Use latest team from LarkKPI if possible, otherwise fall back to report's own team
+                    const authoritativeTeam = latestTeamMap.get(pKey) || authoritativeUser?.team || r.team || 'Khác';
+                    const authoritativeTeamNorm = normalizeTeamKey(authoritativeTeam);
 
-                    if (nameKey || emailKey) {
-                        const reportTeamKey = (r.team || '').toLowerCase().trim();
-                        const personKey = emailKey || (nameKey ? (nameToPersonKey.get(nameKey) || `${nameKey}|${reportTeamKey || 'unknown'}`) : null);
-                        const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
-                        const reportMonthNum = vn.m;
-                        const reportYear = vn.y;
-                        const reportTeamNorm = normalizeTeamKey(reportTeamKey || 'khac');
-                        const personMonthKey = `${personKey}_${reportTeamNorm}_${reportMonthNum}_${reportYear}`;
+                    const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
+                    const personMonthKey = `${pKey}_${authoritativeTeamNorm}_T${vn.m}_${vn.y}`;
 
-                        if (!kpisForAggregation.has(personMonthKey)) {
-                            kpisForAggregation.set(personMonthKey, {
-                                id: `report_${r.id}`,
-                                employee_id: (nameKey && nameToPersonKey.get(nameKey)) ? nameToPersonKey.get(nameKey) : null,
-                                name: r.name || r.email,
-                                email: r.email,
-                                team: r.team || 'Khác',
-                                kpi_day: 0,
-                                kpi_month: 0,
-                                completed_day: 0,
-                                completed_month: 0,
-                                traffic_month: 0,
-                                revenue_month: 0,
-                                kpi_progress_month: 0
-                            });
-                        }
+                    if (!kpisForAggregation.has(personMonthKey)) {
+                        kpisForAggregation.set(personMonthKey, {
+                            id: `report_${r.id}`,
+                            employee_id: authoritativeUser?.employee_id || null,
+                            name: authoritativeUser?.full_name || r.name || r.email,
+                            email: authoritativeUser?.email || r.email,
+                            team: authoritativeTeam,
+                            kpi_day: 0,
+                            kpi_month: 0,
+                            completed_day: 0,
+                            completed_month: 0,
+                            traffic_month: 0,
+                            revenue_month: 0,
+                            kpi_progress_month: 0,
+                            role: authoritativeUser?.role || 'member',
+                            status: authoritativeUser?.status || 'on'
+                        });
                     }
                 });
 
-                // Team membership source-of-truth for performance cards: ONLY lark_kpi.
-                // Do not inject zero-KPI stubs from users table; this caused cross-team leakage
-                // and false 0/0 rows when filtering by team/day.
-                const useLarkKpiOnlyTeamMembership = false;
-                if (!useLarkKpiOnlyTeamMembership) {
-                    const existingKpiNameKeys = new Set<string>();
-                    kpisForAggregation.forEach(k => {
-                        const kName = normName(k.name);
-                        if (kName) existingKpiNameKeys.add(kName);
-                    });
-
-                    const kpiHistoryNames = new Set<string>();
-                    const kpiHistoryEmpIds = new Set<string>();
-                    allKpiInDb.forEach(k => {
-                        if (k.name) kpiHistoryNames.add(normName(k.name));
-                        if (k.employee_id) kpiHistoryEmpIds.add(String(k.employee_id).trim().toLowerCase());
-                    });
-                    const noKpiForPeriod = allKpiInDb.length === 0 && Number(totalKpiCount) > 0;
-
-                    employees.forEach((emp: any) => {
-                        const empNameKey = normName(emp.full_name);
-                        if (!empNameKey || empNameKey === 'unknown') return;
-
-                        const empStatus = (emp.employee_status || emp.status || '').toLowerCase().trim();
-                        if (empStatus.includes('nghỉ') || empStatus.includes('off') || empStatus.includes('khóa')) return;
-
-                        const empTeam = emp.team || '';
-                        if (dbTeamFilter) {
-                            const normDbFilter = normalizeTeamKey(dbTeamFilter);
-                            const empTeamList = empTeam.split(',').map((t: string) => t.trim().toLowerCase());
-                            const teamMatches = empTeamList.some((t: string) => normalizeTeamKey(t) === normDbFilter);
-                            if (!teamMatches) return;
-                        } else {
-                            // If NO team filter is selected, but we are building a dashboard, 
-                            // we should avoid dumping ALL users unless we really want them.
-                            // For now, if no filter, only show users who actually have KPIs.
-                            return;
-                        }
-
-                        const alreadyExistsInKpi = existingKpiNameKeys.has(empNameKey);
-
-                        if (!alreadyExistsInKpi) {
-                            const empIdNorm = String(emp.employee_id || '').trim().toLowerCase();
-                            const isHRConfirmed = !!emp.lark_employee_record_id;
-                            const hasKpiHistory = kpiHistoryNames.has(empNameKey) ||
-                                (empIdNorm && kpiHistoryEmpIds.has(empIdNorm));
-
-                            // If we are filtering by a specific team, we MUST include all active members of that team
-                            // regardless of whether they have KPI history in THIS specific period.
-                            const forceInclusion = !!dbTeamFilter;
-
-                            if (!isHRConfirmed && !hasKpiHistory && !noKpiForPeriod && !forceInclusion) return;
-
-                            // Create a stub record for users who don't have KPI data for the selected day
-                            const personKey = emp.email?.toLowerCase().trim() || `${empNameKey}|${normalizeTeamKey(emp.team || 'khac')}`;
-                            const vn = getVietnamParts(larkKpiStartOfDay);
-                            const stubKey = `${personKey}_${normalizeTeamKey(emp.team || 'khac')}_T${vn.m}_${vn.y}`;
-
-                            if (!kpisForAggregation.has(stubKey)) {
-                                kpisForAggregation.set(stubKey, {
-                                    id: `user_stub_${emp.id}`,
-                                    employee_id: emp.employee_id,
-                                    name: emp.full_name,
-                                    email: emp.email,
-                                    team: emp.team || 'Khác',
-                                    kpi_day: 0,
-                                    kpi_month: 0,
-                                    completed_day: 0,
-                                    completed_month: 0,
-                                    traffic_month: 0,
-                                    revenue_month: 0,
-                                    kpi_progress_month: 0,
-                                    is_stub: true
-                                });
-                            }
-                        }
-                    });
-                }
+                // Set final aggregation array
+                const aggregatedKpis = Array.from(kpisForAggregation.values());
 
                 const teamFilterRaw = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
                 const teamFilterNormalized = (teamFilterRaw === 'all global' || teamFilterRaw === 'all vn') ? teamFilterRaw : teamFilterRaw;
@@ -4320,6 +4216,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 const teamResolveStats = { byEmail: 0, byName: 0, byEmpId: 0, unresolved: 0 };
                 const teamMismatchSamples: any[] = [];
                 const resignedDropSamples: any[] = [];
+
+                // Map reports by name and email for fast lookup in final assembly
+                const reportsMap = new Map<string, any>();
+                reports.forEach(r => {
+                    const nk = r.name ? normName(r.name) : null;
+                    const ek = r.email?.toLowerCase().trim();
+                    if (nk && !reportsMap.has(nk)) reportsMap.set(nk, r);
+                    if (ek && !reportsMap.has(ek)) reportsMap.set(ek, r);
+                });
 
                 const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
                     const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
@@ -4344,6 +4249,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     const emailLookupKey = kpi.email ? kpi.email.toLowerCase().trim() : null;
                     const reportEmailLookupKey = report?.email ? String(report.email).toLowerCase().trim() : null;
                     const trustedEmailKey = emailLookupKey || reportEmailLookupKey;
+
                     // Lookup priority: email > name > employee_id.
                     // employee_id lookup is used ONLY as last resort and is validated by name to prevent
                     // cross-person collisions (multiple people can share the same employee_id channel ID).

@@ -28,7 +28,7 @@ export class AiIntegrationService {
 
   ) {
 
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8001');
+    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
 
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
 

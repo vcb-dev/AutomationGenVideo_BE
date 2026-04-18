@@ -1041,3 +1041,65 @@ enum DuplicateStatus {
   PENDING_REVIEW
   SUSPICIOUS
 }
+
+enum CollectionType {
+  TEAM
+  SHARED
+}
+
+model ApprovedContent {
+  id                   String   @id @default(uuid())
+  script               String   @db.Text
+  content_type         String   @db.VarChar(20)
+  content_type_display String   @db.VarChar(100)
+  word_count           Int      @default(0)
+
+  source_video_id      String?  @db.VarChar(255)
+  source_video_title   String   @default("")
+  source_video_desc    String   @default("") @db.Text
+  source_video_url     String   @default("") @db.VarChar(2000)
+
+  product_id           String?  @db.VarChar(100)
+  product_name         String?  @db.VarChar(255)
+  product_category     String?  @db.VarChar(255)
+  product_sku          String?  @db.VarChar(100)
+
+  approved_by_id       String
+  approved_by_name     String   @default("")
+  approved_by_role     UserRole
+
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  @@index([approved_by_id])
+  @@index([created_at(sort: Desc)])
+  @@map("approved_content")
+}
+
+model VideoLibrary {
+  id              String         @id @default(uuid())
+  video_id        String         @db.VarChar(255)
+  platform        String         @db.VarChar(20)
+  title           String         @default("")
+  description     String         @default("")
+  video_url       String         @db.VarChar(2000)
+  author_username String         @db.VarChar(255)
+  author_name     String         @db.VarChar(255)
+  thumbnail_url   String?        @db.VarChar(2000)
+  views_count     BigInt         @default(0)
+  likes_count     BigInt         @default(0)
+  comments_count  BigInt         @default(0)
+  shares_count    BigInt         @default(0)
+  collection_type CollectionType
+  added_by_id     String
+  added_by_name   String         @default("")
+  added_by_role   UserRole
+  notes           String?
+  sourcing_url    String?        @db.VarChar(4000)
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  @@unique([video_id, collection_type])
+  @@index([collection_type, created_at(sort: Desc)])
+  @@map("video_library")
+}
