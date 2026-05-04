@@ -51,6 +51,7 @@ model User {
   team_members        User[]           @relation("TeamLeaderMembers")
   reviewed_duplicates VideoDuplicate[] @relation("ReviewedDuplicates")
   videos              Video[]
+  social_accounts     SocialAccount[]
 
   @@index([email])
   @@index([roles])
@@ -955,4 +956,124 @@ enum DuplicateStatus {
   DUPLICATE
   PENDING_REVIEW
   SUSPICIOUS
+}
+
+// ─────────────────────────────────────────────
+//  SOCIAL PUBLISHING (tích hợp từ VCB-tool)
+// ─────────────────────────────────────────────
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  TIKTOK
+  THREADS
+  YOUTUBE
+  ZALO
+}
+
+enum SocialPostStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum SocialPostSource {
+  IMMEDIATE
+  SCHEDULED
+}
+
+/// Tài khoản mạng xã hội đã kết nối OAuth (token lưu dạng AES-256 encrypted)
+model SocialAccount {
+  id                      String         @id @default(uuid())
+  user_id                 String
+  platform                SocialPlatform
+  platform_id             String
+  name                    String
+  username                String?
+  avatar_url              String?
+  access_token_enc        String         @db.Text
+  refresh_token_enc       String?        @db.Text
+  token_expires_at        DateTime?
+  parent_id               String?
+  /// Dữ liệu bổ sung tuỳ platform: { pageId, pageToken, igUserId, channelId, … }
+  extra_data              Json?
+  is_active               Boolean        @default(true)
+  created_at              DateTime       @default(now())
+  updated_at              DateTime       @updatedAt
+  user                    User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  parent                  SocialAccount? @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children                SocialAccount[] @relation("AccountHierarchy")
+  posts                   SocialPost[]
+
+  @@unique([user_id, platform, platform_id])
+  @@index([user_id])
+  @@index([platform])
+  @@index([parent_id])
+  @@index([is_active])
+  @@map("social_accounts")
+}
+
+
+/// Bài đăng: immediate hoặc scheduled (unified model)
+model SocialPost {
+  id            String           @id @default(uuid())
+  user_id       String
+  account_id    String
+  platform      SocialPlatform
+  message       String           @db.Text
+  media_urls    String[]         @default([])
+  page_id       String?
+  privacy       String?          @default("PUBLIC")
+  status        SocialPostStatus @default(PENDING)
+  source        SocialPostSource @default(IMMEDIATE)
+  scheduled_at  DateTime?
+  executed_at   DateTime?
+  retry_count   Int              @default(0)
+  next_retry_at DateTime?
+  result        Json?
+  error_msg     String?
+  created_at    DateTime         @default(now())
+  updated_at    DateTime         @updatedAt
+  account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([account_id])
+  @@index([status])
+  @@index([source])
+  @@index([scheduled_at])
+  @@index([next_retry_at])
+  @@index([status, scheduled_at])
+  @@map("social_posts")
+}
+
+/// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
+model SocialOAuthState {
+  id            String   @id
+  user_id       String
+  platform      String
+  expires_at    DateTime
+  tiktok_verifier String?
+  zalo_verifier   String?
+  created_at    DateTime @default(now())
+
+  @@index([expires_at])
+  @@map("social_oauth_states")
+}
+
+/// Bài nháp
+model SocialDraft {
+  id          String   @id @default(uuid())
+  user_id     String
+  title       String?
+  message     String   @db.Text
+  media_urls  String[] @default([])
+  platform    SocialPlatform?
+  account_id  String?
+  page_id     String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([user_id])
+  @@map("social_drafts")
 }

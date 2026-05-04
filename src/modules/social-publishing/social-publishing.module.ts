@@ -1,0 +1,97 @@
+import { Module } from '@nestjs/common';
+import { MulterModule } from '@nestjs/platform-express';
+import { PrismaModule } from '../../common/prisma/prisma.module';
+import { UploadController } from './upload/upload.controller';
+import { MediaController } from './upload/media.controller';
+import { FromDriveController } from './upload/from-drive.controller';
+
+// Crypto
+import { CryptoService } from './crypto/crypto.service';
+
+// Accounts
+import { AccountsController } from './accounts/accounts.controller';
+import { AccountsService } from './accounts/accounts.service';
+
+// OAuth
+import { OAuthController } from './oauth/oauth.controller';
+import { OAuthService } from './oauth/oauth.service';
+import { FacebookOAuthStrategy } from './oauth/strategies/facebook.strategy';
+import { InstagramOAuthStrategy } from './oauth/strategies/instagram.strategy';
+import { TiktokOAuthStrategy } from './oauth/strategies/tiktok.strategy';
+import { ThreadsOAuthStrategy } from './oauth/strategies/threads.strategy';
+import { YoutubeOAuthStrategy } from './oauth/strategies/youtube.strategy';
+import { ZaloOAuthStrategy } from './oauth/strategies/zalo.strategy';
+
+// Publish
+import { PublishController } from './publish/publish.controller';
+import { PublishService } from './publish/publish.service';
+import { FacebookPublisher } from './publish/platforms/facebook.platform';
+import { InstagramPublisher } from './publish/platforms/instagram.platform';
+import { TiktokPublisher } from './publish/platforms/tiktok.platform';
+import { ThreadsPublisher } from './publish/platforms/threads.platform';
+import { YoutubePublisher } from './publish/platforms/youtube.platform';
+import { ZaloPublisher } from './publish/platforms/zalo.platform';
+
+// Schedule
+import { ScheduleController } from './schedule/schedule.controller';
+import { ScheduleService } from './schedule/schedule.service';
+
+// Queue
+import { QueueController } from './queue/queue.controller';
+import { QueueService } from './queue/queue.service';
+
+// History
+import { HistoryController } from './history/history.controller';
+import { HistoryService } from './history/history.service';
+
+// Drafts
+import { DraftsController } from './drafts/drafts.controller';
+import { DraftsService } from './drafts/drafts.service';
+
+@Module({
+  imports: [PrismaModule, MulterModule.register()],
+  controllers: [
+    UploadController,
+    MediaController,
+    FromDriveController,
+    AccountsController,
+    OAuthController,
+    PublishController,
+    ScheduleController,
+    QueueController,
+    HistoryController,
+    DraftsController,
+  ],
+  providers: [
+    // Core
+    CryptoService,
+    // Accounts
+    AccountsService,
+    // OAuth
+    OAuthService,
+    FacebookOAuthStrategy,
+    InstagramOAuthStrategy,
+    TiktokOAuthStrategy,
+    ThreadsOAuthStrategy,
+    YoutubeOAuthStrategy,
+    ZaloOAuthStrategy,
+    // Publish
+    PublishService,
+    FacebookPublisher,
+    InstagramPublisher,
+    TiktokPublisher,
+    ThreadsPublisher,
+    YoutubePublisher,
+    ZaloPublisher,
+    // Schedule
+    ScheduleService,
+    // Queue
+    QueueService,
+    // History
+    HistoryService,
+    // Drafts
+    DraftsService,
+  ],
+  exports: [AccountsService, PublishService],
+})
+export class SocialPublishingModule {}

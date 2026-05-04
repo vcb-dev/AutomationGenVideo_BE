@@ -16,35 +16,41 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // ──────────────────────────────────────────────────────────────────────────
     // Tự động sync ngay khi server khởi động
     // ──────────────────────────────────────────────────────────────────────────
-    async onApplicationBootstrap() {
-        this.logger.log('🚀 Server started — triggering initial Lark sync...');
-        // Delay 5s để chắc chắn DB/Prisma đã sẵn sàng
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        try {
-            const [kpi, emp] = await Promise.all([
-                this.larkService.syncKPIData(),
-                this.larkService.syncEmployeeData(),
-            ]);
-            this.logger.log(`✅ Bootstrap KPI sync: ${kpi?.synced ?? 0} records`);
-            this.logger.log(`✅ Bootstrap Employee sync: ${emp?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap KPI/Employee sync failed: ${err?.message}`);
-        }
-        try {
-            await this.larkService.syncPermissionData();
-            this.logger.log('✅ Bootstrap Permission sync completed');
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
-        }
-        // NOTE: syncChannelData() bị bỏ khỏi bootstrap vì nó gọi Apify enrichment
-        // cho từng kênh → tốn quota. Channel sẽ sync qua cron hàng giờ.
-        try {
-            await this.syncFromLark();
-            this.logger.log('✅ Bootstrap HR sync completed');
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap HR sync failed: ${err?.message}`);
-        }
-        this.logger.log('🎉 Initial Lark sync on startup finished!');
+    onApplicationBootstrap() {
+        this.logger.log('🚀 Server started — triggering initial Lark sync in background...');
+        
+        // Run sync in background without blocking server startup
+        (async () => {
+            // Delay 5s để chắc chắn DB/Prisma đã sẵn sàng
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            try {
+                const [kpi, emp] = await Promise.all([
+                    this.larkService.syncKPIData(),
+                    this.larkService.syncEmployeeData(),
+                ]);
+                this.logger.log(`✅ Bootstrap KPI sync: ${kpi?.synced ?? 0} records`);
+                this.logger.log(`✅ Bootstrap Employee sync: ${emp?.synced ?? 0} records`);
+            } catch (err) {
+                this.logger.error(`❌ Bootstrap KPI/Employee sync failed: ${err?.message}`);
+            }
+            try {
+                await this.larkService.syncPermissionData();
+                this.logger.log('✅ Bootstrap Permission sync completed');
+            } catch (err) {
+                this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
+            }
+            // NOTE: syncChannelData() bị bỏ khỏi bootstrap vì nó gọi Apify enrichment
+            // cho từng kênh → tốn quota. Channel sẽ sync qua cron hàng giờ.
+            try {
+                await this.syncFromLark();
+                this.logger.log('✅ Bootstrap HR sync completed');
+            } catch (err) {
+                this.logger.error(`❌ Bootstrap HR sync failed: ${err?.message}`);
+            }
+            this.logger.log('🎉 Initial Lark sync on startup finished!');
+        })().catch(err => {
+            this.logger.error(`❌ Background initial sync failed: ${err?.message}`);
+        });
     }
 
     // ──────────────────────────────────────────────────────────────────────────

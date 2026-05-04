@@ -1,0 +1,55 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import * as crypto from 'crypto';
+
+const DEFAULT_KEY = 'vcb-social-default-key-32chars!!';
+
+@Injectable()
+export class CryptoService implements OnModuleInit {
+  private readonly algorithm = 'aes-256-gcm';
+  private readonly logger = new Logger(CryptoService.name);
+
+  onModuleInit() {
+    const secret = process.env.SOCIAL_TOKEN_SECRET;
+    const isDefault = !secret || secret === DEFAULT_KEY;
+    if (isDefault) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(
+          '⛔ SOCIAL_TOKEN_SECRET chưa được đặt. Từ chối khởi động trong môi trường production. ' +
+          'Hãy đặt SOCIAL_TOKEN_SECRET trong .env với chuỗi ngẫu nhiên >= 32 ký tự.',
+        );
+      }
+      this.logger.warn(
+        '⚠️  SOCIAL_TOKEN_SECRET chưa được đặt hoặc đang dùng default key. ' +
+        'Hãy đặt SOCIAL_TOKEN_SECRET trong .env với chuỗi ngẫu nhiên >= 32 ký tự.',
+      );
+    }
+    if (!process.env.SOCIAL_TOKEN_SALT) {
+      this.logger.warn('⚠️  SOCIAL_TOKEN_SALT chưa được đặt — đang dùng salt mặc định. Hãy đặt SOCIAL_TOKEN_SALT trong .env.');
+    }
+  }
+
+  private get key(): Buffer {
+    const secret = process.env.SOCIAL_TOKEN_SECRET || process.env.JWT_SECRET || DEFAULT_KEY;
+    // SOCIAL_TOKEN_SALT nên được đặt trong .env — salt mặc định 'vcb-salt' vẫn dùng để backward-compat
+    const salt = process.env.SOCIAL_TOKEN_SALT || 'vcb-salt';
+    return crypto.scryptSync(secret, salt, 32);
+  }
+
+  encrypt(plaintext: string): string {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(this.algorithm, this.key, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+  }
+
+  decrypt(ciphertext: string): string {
+    const [ivHex, authTagHex, encryptedHex] = ciphertext.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const encrypted = Buffer.from(encryptedHex, 'hex');
+    const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
+    decipher.setAuthTag(authTag);
+    return decipher.update(encrypted) + decipher.final('utf8');
+  }
+}

@@ -1218,9 +1218,12 @@ export class LarkService implements OnModuleInit {
 
                 const target = byRecord || byEmpId || byName;
 
+                // Tránh unique constraint: nếu employee_id đã thuộc user khác thì không ghi đè
+                const employeeIdConflict = byEmpId && target && byEmpId.id !== target.id;
+
                 const payload = {
                     lark_employee_record_id: employeeData.id,
-                    employee_id: employeeData.employee_id || undefined,
+                    employee_id: employeeIdConflict ? undefined : (employeeData.employee_id || undefined),
                     image_url: employeeData.image_url ?? undefined,
                     employee_data: employeeData.employee_data ?? undefined,
                     employee_position: employeeData.position ?? undefined,
@@ -1228,6 +1231,12 @@ export class LarkService implements OnModuleInit {
                     employee_status: employeeData.status ?? undefined,
                     employee_date: employeeData.date ?? undefined,
                 };
+
+                if (employeeIdConflict) {
+                    this.logger.warn(
+                        `employee_id "${employeeData.employee_id}" đã thuộc user ${byEmpId.id}, bỏ qua ghi đè cho "${employeeData.name}"`,
+                    );
+                }
 
                 if (target) {
                     await this.prisma.user.update({
