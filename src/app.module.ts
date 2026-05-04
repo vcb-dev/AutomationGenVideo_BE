@@ -19,6 +19,7 @@ import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
+import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
     SearchRecommendationModule,
     LarkModule,
     RolePermissionsModule,
+    SocialPublishingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
