@@ -640,21 +640,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             }
         };
 
-        // Phase 1: KPI + KPI DoDa chạy SONG SONG (ghi 2 bảng khác nhau, không xung đột)
-        // Trước đây tuần tự: KPI mất ~50s xong mới chạy DoDa → DoDa trống suốt thời gian đó
-        await Promise.allSettled([
-            runTask('KPI (local+server)', () => this.syncKPIData()),
-            runTask('KPI DoDa (local+server)', () => this.syncKPIDoDaData()),
-        ]);
+        // Phase 1: Sequential KPI sync
+        await runTask('KPI (local+server)', () => this.syncKPIData());
+        await runTask('KPI DoDa (local+server)', () => this.syncKPIDoDaData());
 
-        // Phase 2: remaining sync tasks in parallel
-        await Promise.allSettled([
-            runTask('ListTask', () => this.syncListTaskData()),
-            runTask('Permission', () => this.syncPermissionData()),
-            runTask('Employee', () => this.syncEmployeeData()),
-            runTask('Channel VCB', () => this.syncChannelData()),
-            runTask('Channel DoDa', () => this.syncDoDaChannelData()),
-        ]);
+        // Phase 2: Sequential remaining sync tasks
+        await runTask('ListTask', () => this.syncListTaskData());
+        await runTask('Permission', () => this.syncPermissionData());
+        await runTask('Employee', () => this.syncEmployeeData());
+        await runTask('Channel VCB', () => this.syncChannelData());
+        await runTask('Channel DoDa', () => this.syncDoDaChannelData());
 
         this.logger.log(`[Cron] Finished full sync flow in ${Date.now() - startTime}ms.`);
     }
@@ -714,8 +709,62 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     }
 
     async syncReportData() {
-        this.logger.log('[LarkSync] syncReportData disabled - this table is now independent.');
-        return;
+        try {
+            const records = await this.fetchLarkRecordsGeneric(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, 500);
+            this.logger.log(`Fetched ${records.length} Report records from Lark (Table: ${this.REPORT_TABLE_ID}). Syncing to database...`);
+
+            if (!records || records.length === 0) {
+                this.logger.warn('No report records fetched from Lark.');
+                return { synced: 0 };
+            }
+
+            // Load users for role and team lookup
+            const sysUsers = await this.prisma.user.findMany({
+                select: { full_name: true, employee_id: true, email: true, team: true, roles: true }
+            });
+            const dbUsersMap = new Map<string, any>();
+            sysUsers.forEach(u => {
+                if (u.employee_id) dbUsersMap.set(String(u.employee_id).trim(), u);
+                if (u.email) dbUsersMap.set(String(u.email).toLowerCase().trim(), u);
+                if (u.full_name) dbUsersMap.set(u.full_name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' '), u);
+            });
+
+            let syncedCount = 0;
+            for (const record of records) {
+                const reportData = this.mapRecordToReport(record, dbUsersMap);
+
+                if (!reportData.name || reportData.name === 'Unknown') continue;
+
+                await this.prisma.larkReport.upsert({
+                    where: { id: reportData.id },
+                    update: {
+                        name: reportData.name,
+                        email: reportData.email,
+                        team: reportData.team,
+                        role: reportData.role,
+                        date: reportData.date,
+                        answers: reportData.answers,
+                        updated_at: new Date(),
+                    },
+                    create: {
+                        id: reportData.id,
+                        name: reportData.name,
+                        email: reportData.email,
+                        team: reportData.team,
+                        role: reportData.role,
+                        date: reportData.date,
+                        answers: reportData.answers,
+                    },
+                });
+                syncedCount++;
+            }
+
+            this.logger.log(`Synced ${syncedCount} report records.`);
+            return { synced: syncedCount };
+        } catch (error) {
+            this.logger.error('Failed to sync report data', error);
+            throw error;
+        }
     }
 
     async syncTrafficData() {
@@ -783,7 +832,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     }
 
     async submitTrafficReport(payload: any) {
-        const { email, name, traffic, channels, platformEvidences, reportDate } = payload;
+        const { email, name, traffic, channels, platformEvidences, reportDate, team: payloadTeam } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
         // Use precise Vietnam timezone bounds for a report day (UI day -> DB UTC window)
         const getVietnamBounds = (dateInput?: string | Date) => {
@@ -795,9 +844,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 d = parseInt(parts[2], 10);
             } else {
                 const dateObj = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput || new Date());
-                y = dateObj.getFullYear();
-                m = dateObj.getMonth();
-                d = dateObj.getDate();
+                const vnKey = this.toVietnamDateKey(dateObj);
+                const parts = vnKey.split('-');
+                y = parseInt(parts[0], 10);
+                m = parseInt(parts[1], 10) - 1;
+                d = parseInt(parts[2], 10);
             }
             return {
                 start: new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0)),
@@ -848,10 +899,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
         // 0. Validate and check date (only for non-admins)
         if (!isAdmin) {
-            // Block future dates: get today in Vietnam time (UTC+7)
-            const nowUtc = new Date();
-            const vnNow = new Date(nowUtc.getTime() + 7 * 60 * 60 * 1000);
-            const todayVN = `${vnNow.getUTCFullYear()}-${String(vnNow.getUTCMonth() + 1).padStart(2, '0')}-${String(vnNow.getUTCDate()).padStart(2, '0')}`;
+            // Use Intl-based helper to get current date string in VN
+            const todayVN = this.toVietnamDateKey(new Date());
 
             if (reportDate && reportDate > todayVN) {
                 throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
@@ -881,28 +930,37 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 orderBy: { created_at: 'desc' },
             });
             if (existingTraffic) {
-                return {
-                    message: 'Bạn đã báo cáo traffic cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
-                    alreadySubmitted: true,
-                    existingRecordDate: existingTraffic.created_at || existingTraffic.date,
-                    recordIds: [],
-                };
+                // For multi-team users: allow submitting for a different team on the same day
+                if (payloadTeam && String(payloadTeam).trim() && existingTraffic.team !== String(payloadTeam).trim()) {
+                    // Different team — allow submission to continue
+                } else {
+                    return {
+                        message: 'Bạn đã báo cáo traffic cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
+                        alreadySubmitted: true,
+                        existingRecordDate: existingTraffic.created_at || existingTraffic.date,
+                        recordIds: [],
+                    };
+                }
             }
         }
 
-        // Lookup team
+        // Lookup team — prefer the specific team sent by FE (multi-team users pick one)
         let team = '';
-        const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        if (userRecord?.team) team = userRecord.team;
-        if (!team) {
-            const userPerm = await this.getPermissionByEmail(email);
-            if (userPerm?.team) team = userPerm.team;
-        }
-        if (!team && name) {
-            const emp = await this.prisma.user.findFirst({
-                where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
-            });
-            if (emp?.team) team = emp.team;
+        if (payloadTeam && String(payloadTeam).trim()) {
+            team = String(payloadTeam).trim();
+        } else {
+            const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
+            if (userRecord?.team) team = userRecord.team;
+            if (!team) {
+                const userPerm = await this.getPermissionByEmail(email);
+                if (userPerm?.team) team = userPerm.team;
+            }
+            if (!team && name) {
+                const emp = await this.prisma.user.findFirst({
+                    where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
+                });
+                if (emp?.team) team = emp.team;
+            }
         }
 
         const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
@@ -969,6 +1027,126 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             this.logger.error('Error saving multi-row traffic report:', dbError);
             throw new Error(`Could not save traffic report: ${dbError.message}`);
         }
+    }
+
+    async submitChecklistReport(payload: any) {
+        console.log('--- submitChecklistReport RAW PAYLOAD ---');
+        console.log(JSON.stringify(payload, null, 2));
+
+        const metadataKeys = ['email', 'name', 'team', 'answers', 'reportDate', 'userEmail', 'userName', 'userTeam', 'userRoles', 'isLate'];
+        const finalAnswers: Record<string, any> = {};
+
+        // Collect everything not in metadataKeys into finalAnswers
+        Object.keys(payload || {}).forEach(key => {
+            if (!metadataKeys.includes(key)) {
+                finalAnswers[key] = payload[key];
+            }
+        });
+
+        // If there was an explicit answers object, merge it in
+        if (payload.answers && typeof payload.answers === 'object') {
+            Object.assign(finalAnswers, payload.answers);
+        }
+
+        console.log('Final Answers collected:', JSON.stringify(finalAnswers, null, 2));
+
+        const { email, name, team, reportDate, userEmail, userName, userTeam } = payload;
+
+        const normalizedEmail = (email || userEmail || '').trim().toLowerCase();
+        const dateObj = reportDate ? new Date(reportDate) : new Date();
+
+        // Check for existing user to get fallback values
+        const userRec = await this.prisma.user.findFirst({
+            where: { email: { equals: normalizedEmail, mode: 'insensitive' as any } }
+        });
+
+        // Consolidate final values
+        const finalName = String(name || userName || userRec?.full_name || 'Unknown');
+        const finalTeam = String(team || userTeam || userRec?.team || '');
+
+        console.log('>>> SUBMIT CHECKLIST DEBUG <<<');
+        console.log('Payload:', JSON.stringify(payload));
+        console.log('finalName:', finalName);
+        console.log('finalTeam:', finalTeam);
+
+        this.logger.debug(`[submitChecklistReport] Payload: ${JSON.stringify({ email, name, team, userEmail, userName, userTeam })}`);
+        this.logger.debug(`[submitChecklistReport] finalName: "${finalName}", finalTeam: "${finalTeam}"`);
+
+        // Use precise Vietnam timezone bounds for the report day
+        const getVietnamBounds = (dateInput?: string | Date) => {
+            let y = 0, m = 0, d = 0;
+            if (typeof dateInput === 'string' && dateInput.length === 10) {
+                const parts = dateInput.split('-');
+                y = parseInt(parts[0], 10);
+                m = parseInt(parts[1], 10) - 1;
+                d = parseInt(parts[2], 10);
+            } else {
+                const dObj = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput || new Date());
+                // Use Intl-based date key splitting to get VN parts accurately
+                const vnKey = this.toVietnamDateKey(dObj);
+                const parts = vnKey.split('-');
+                y = parseInt(parts[0], 10);
+                m = parseInt(parts[1], 10) - 1;
+                d = parseInt(parts[2], 10);
+            }
+            return {
+                start: new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0)),
+                end: new Date(Date.UTC(y, m, d, 16, 59, 59, 999))
+            };
+        };
+
+        const bounds = getVietnamBounds(reportDate || dateObj);
+
+        // Check for Admin/Manager to bypass constraints
+        const roles = userRec?.roles || [];
+        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
+
+        // Block future dates
+        if (!isAdmin) {
+            const todayVN = this.toVietnamDateKey(new Date());
+            if (reportDate && reportDate > todayVN) {
+                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
+            }
+        }
+
+        // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update hoặc bỏ qua
+        const existing = await this.prisma.larkReport.findFirst({
+            where: {
+                date: { gte: bounds.start, lte: bounds.end },
+                team: finalTeam ? { equals: finalTeam, mode: 'insensitive' as any } : undefined,
+                OR: [
+                    { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
+                    { name: { equals: finalName, mode: 'insensitive' as any } }
+                ]
+            },
+            orderBy: { created_at: 'desc' }
+        });
+
+        const reportId = existing?.id || `local_chk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+        const data = {
+            id: reportId,
+            name: finalName,
+            email: normalizedEmail,
+            team: finalTeam,
+            answers: finalAnswers || {},
+            date: dateObj,
+            updated_at: new Date(),
+        };
+
+        await this.prisma.larkReport.upsert({
+            where: { id: reportId },
+            create: { ...data, created_at: new Date() },
+            update: data
+        });
+
+        this.invalidateActivityCache();
+
+        return {
+            success: true,
+            message: existing ? 'Cập nhật báo cáo thành công' : 'Gửi báo cáo thành công',
+            id: reportId
+        };
     }
 
     async syncOutstandingData() {
@@ -1909,7 +2087,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     }
 
 
-    private mapRecordToReport(record: any) {
+    private mapRecordToReport(record: any, dbUsersMap: Map<string, any>) {
         const fields = record.fields;
 
         const extractString = (val: any): string | null => {
@@ -1924,6 +2102,29 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         };
 
         let name = extractString(fields['HoTen'] || fields['Họ tên'] || fields['Nhân viên']);
+        const email = fields['Email'] || null;
+
+        // Look up user from dbUsersMap
+        let user = null;
+        if (email) {
+            user = dbUsersMap.get(String(email).toLowerCase().trim());
+        }
+        if (!user && name) {
+            user = dbUsersMap.get(name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' '));
+        }
+
+        // Get role and team from user
+        let role = fields['Role'] || null;
+        let team = fields['Team'] || null;
+        if (user) {
+            team = user.team || team;
+            if (user.roles && user.roles.length > 0) {
+                if (user.roles.includes('LEADER')) role = 'Leader';
+                else if (user.roles.includes('MANAGER')) role = 'Manager';
+                else if (user.roles.includes('ADMIN')) role = 'Admin';
+                else role = 'Member';
+            }
+        }
 
         let dateValue = null;
         if (fields['Date']) {
@@ -1939,11 +2140,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
         return {
             id: record.record_id,
-            email: fields['Email'] || null,
+            email: email,
             name: name || 'Unknown',
             employee: fields['Nhân viên'] || null,
-            role: fields['Role'] || null,
-            team: fields['Team'] || null,
+            role: role,
+            team: team,
             date: dateValue,
             answers: fields['Answers'] || null,
         };
@@ -2447,7 +2648,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
                 if (sysMatch) {
                     // Role comes from Users table (handled in getUserActivityReports), 
-                    // but Team MUST come from Lark KPI source (requested by user).
+                    // and Team now also prioritizes Users table (requested by user).
+                    if (sysMatch.team) kpiData.team = sysMatch.team;
                     // We also fetch current employee_status to skip resigned users.
                     if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                 }
@@ -2733,7 +2935,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             monthKey,
                             total: 1,
                             done: done ? 1 : 0,
-                            team: resolvedTeam,
+                            team: sysMatch?.team || resolvedTeam,
                             employee_id: sysMatch?.employee_id || null,
                             employee_status: sysMatch?.employee_status || 'ON',
                         });
@@ -2955,12 +3157,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             if (!val) return null;
             if (typeof val === 'string') return val;
             if (Array.isArray(val) && val.length > 0) {
-                const first = val[0];
-                if (first && typeof first === 'object') {
-                    // Try all common Lark struct variants
-                    return first.name || first.text || first.primary_val || first.title || null;
-                }
-                return typeof first === 'string' ? first : null;
+                return val.map((item: any) => {
+                    if (item && typeof item === 'object') {
+                        return item.name || item.text || item.primary_val || item.title || '';
+                    }
+                    return String(item);
+                }).filter(Boolean).join(', ');
             }
             if (typeof val === 'object') {
                 return val.name || val.text || val.primary_val || val.title || null;
@@ -3227,6 +3429,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             };
             // ────────────────────────────────────────────────────────────────────────────
             try {
+                const teamFixStats = { total: 0, improved: 0, multiTeam: 0 };
+                const teamResolveStats = { byEmail: 0, byName: 0, byEmpId: 0, unresolved: 0 };
+                const teamMismatchSamples: any[] = [];
+                const resignedDropSamples: any[] = [];
+                const teamFilterNormalized = filters?.team ? filters.team.toLowerCase().trim() : null;
+
                 // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
                 // Không cần fetch lại trong shared dataset cache.
 
@@ -3404,165 +3612,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 const looseNameKey = (val: string | null | undefined) => normName(val || '').replace(/[^a-z0-9]/g, '');
                 const isDoDaTeamFilter = normalizeTeamKey(dbTeamFilter) === normalizeTeamKey('Đồ Da');
 
-                const teamFilterWhere = (dbTeamFilter && useDbTeamFilter) ? {
-                    OR: [
-                        { team: { equals: dbTeamFilter, mode: 'insensitive' as any } },
-                        { team: { startsWith: `${dbTeamFilter},`, mode: 'insensitive' as any } },
-                        { team: { endsWith: `, ${dbTeamFilter}`, mode: 'insensitive' as any } },
-                        { team: { contains: `, ${dbTeamFilter},`, mode: 'insensitive' as any } },
-                    ],
-                } : {};
-
-                const [reports, allKpiInDbRaw, leaderUsers, permissions, allChannelsInDb, dailyReportKpis, monthlyReportKpis, allTrafficInDb, reportOutstandings, totalKpiCount] = await Promise.all([
-                    // 1. Fetch reports with filters
-                    this.prisma.larkReport.findMany({
-                        where: {
-                            ...whereClause
-                        },
-                        orderBy: { date: 'desc' },
-                    }),
-                    // 2. Fetch KPIs with filters
-                    isDoDaTeamFilter
-                        ? this.prismaLarkKpiDoDaEditor.findMany({
-                            where: {
-                                report_date: {
-                                    gte: monthsInRange[0]
-                                        ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
-                                        : larkKpiStartOfDay,
-                                    lte: monthsInRange.length > 0
-                                        ? getVietnamMonthBounds(
-                                            monthsInRange[monthsInRange.length - 1].year,
-                                            monthsInRange[monthsInRange.length - 1].monthNum,
-                                        ).end
-                                        : larkKpiEndOfDay,
-                                },
-                            },
-                        })
-                        : this.prisma.larkKPI.findMany({
-                            where: {
-                                OR: [
-                                    { month: { in: monthsInRange.flatMap(m => m.formats) } },
-                                    {
-                                        AND: [
-                                            { month: null },
-                                            {
-                                                report_date: {
-                                                    gte: monthsInRange[0]
-                                                        ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
-                                                        : larkKpiStartOfDay,
-                                                    lte: monthsInRange.length > 0
-                                                        ? getVietnamMonthBounds(
-                                                            monthsInRange[monthsInRange.length - 1].year,
-                                                            monthsInRange[monthsInRange.length - 1].monthNum,
-                                                        ).end
-                                                        : larkKpiEndOfDay,
-                                                }
-                                            }
-                                        ]
-                                    }
-                                ],
-                                report_date: { gte: new Date('2026-03-01T00:00:00Z') },
-                                state: { not: 'off' },
-                                ...teamFilterWhere
-                            }
-                        }),
-                    // 3. Fetch leader/admin/manager map from users for role authority.
-                    this.prisma.user.findMany({
-                        where: {
-                            OR: [
-                                { roles: { has: UserRole.LEADER } as any },
-                                { roles: { has: UserRole.MANAGER } as any },
-                                { roles: { has: UserRole.ADMIN } as any },
-                            ],
-                        },
-                        select: { email: true, full_name: true, team: true, roles: true },
-                    }),
-                    // 4. Permissions (legacy placeholder)
-                    Promise.resolve([]),
-                    // 5. Fetch channels
-                    this.prisma.channel.findMany({
-                        where: {
-                            status: 'Đang hoạt động',
-                            ...(dbTeamFilter && useDbTeamFilter ? { team_traffic: { equals: dbTeamFilter, mode: 'insensitive' } } : {})
-                        }
-                    }),
-                    // 6. Daily Report KPIs
-                    (this.prisma as any).larkReportKPI.findMany({
-                        where: {
-                            report_date: { gte: memberReportStart, lte: memberReportEnd },
-                            ...(dbTeamFilter && useDbTeamFilter ? { team: dbTeamFilter } : {})
-                        }
-                    }),
-                    // 7. Monthly Report KPIs
-                    (this.prisma as any).larkReportKPI.findMany({
-                        where: {
-                            report_date: {
-                                gte: monthsInRange[0]
-                                    ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start
-                                    : larkKpiStartOfDay,
-                                lte: monthsInRange.length > 0
-                                    ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end
-                                    : larkKpiEndOfDay,
-                            },
-                            ...(dbTeamFilter && useDbTeamFilter ? { team: dbTeamFilter } : {})
-                        }
-                    }),
-                    // 8. Fetch Traffic reports for current day range
-                    this.prisma.larkTraffic.findMany({
-                        where: {
-                            date: { gte: memberReportStart, lte: memberReportEnd },
-                        },
-                    }),
-                    // 9. PERF: Outstanding reports - chạy song song thay vì serial sau khi xử lý JS
-                    this.prisma.$queryRawUnsafe(`
-                    SELECT * FROM "report_outstanding"
-                    WHERE "content" NOT ILIKE '%không có%' 
-                      AND "content" NOT ILIKE '%khong co%' 
-                      AND "content" IS NOT NULL 
-                      AND "content" != '' 
-                      AND "content" != '-'
-                    ORDER BY "date" DESC, "created_at" DESC
-                    LIMIT 200
-                `),
-                    // 10. Global count of ALL larkKPI records (regardless of month/date filter).
-                    // Used for the "no data" banner — banner should only appear when the entire
-                    // larkKPI table is empty (first-time setup), NOT when viewing a future date
-                    // that simply hasn't been entered by the leader yet.
-                    this.prisma.larkKPI.count({ where: { state: { not: 'off' }, report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
-                ]);
-                const allKpiInDb = isDoDaTeamFilter
-                    ? (allKpiInDbRaw as any[]).map((r: any) => ({
-                        id: r.id,
-                        name: r.editor_name,
-                        team: r.team || 'Đồ Da',
-                        month: r.month || null,
-                        report_date: r.report_date,
-                        kpi_day: r.kpi_day ?? 0,
-                        completed_day: r.completed_day ?? 0,
-                        kpi_month: r.kpi_month ?? 0,
-                        completed_month: r.completed_month ?? 0,
-                        kpi_day_percent: r.kpi_day && r.kpi_day > 0
-                            ? `${Math.round(((r.completed_day || 0) / r.kpi_day) * 100)}%`
-                            : '0%',
-                        kpii_status: (r.completed_day || 0) >= (r.kpi_day || 0) ? 'ĐẠT' : 'CHƯA ĐẠT',
-                        employee_status: 'ON',
-                        state: 'on',
-                        email: null,
-                        employee_id: null,
-                        image_url: null,
-                        link_image: null,
-                    }))
-                    : (allKpiInDbRaw as any[]);
-
-                const reportsUnfilteredCount = await this.prisma.larkReport.count({
-                    where: whereClause,
-                });
-
                 // Fetch users.team to override stale lark_kpi.team data.
                 // Role: from users table. Team: from users table (authoritative over Lark).
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
-                    select: { email: true, full_name: true, team: true, image_url: true, roles: true }
+                    select: { email: true, full_name: true, team: true, image_url: true, roles: true, employee_id: true }
                 });
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
@@ -3593,33 +3647,6 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (u.email) userTeamByEmail.set(u.email.toLowerCase().trim(), t);
                     if (u.full_name) { const nk = normName(u.full_name); if (nk) userTeamByName.set(nk, t); }
                 }
-                if (isDoDaTeamFilter) {
-                    // For DoDa filter, force avatar enrichment from users table.
-                    this.logger.debug(
-                        `[DoDa Avatar] userAvatar maps: byName=${userAvatarByName.size}, byCompact=${userAvatarByNameCompact.size}, byLoose=${userAvatarByNameLoose.size}`,
-                    );
-                    for (const kpi of allKpiInDb as any[]) {
-                        const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
-                        const kpiName = normName((kpi as any).name || '');
-                        const kpiNameCompact = compactNameKey((kpi as any).name || '');
-                        const kpiNameLoose = looseNameKey((kpi as any).name || '');
-                        const matchedEmail = (kpiEmail ? kpiEmail : null)
-                            || (kpiName ? userEmailByName.get(kpiName) : null)
-                            || (kpiNameCompact ? userEmailByNameCompact.get(kpiNameCompact) : null)
-                            || null;
-                        const avatar = (kpiEmail ? userAvatarByEmail.get(kpiEmail) : null)
-                            || (kpiName ? userAvatarByName.get(kpiName) : null)
-                            || (kpiNameCompact ? userAvatarByNameCompact.get(kpiNameCompact) : null)
-                            || (kpiNameLoose ? userAvatarByNameLoose.get(kpiNameLoose) : null);
-                        if (matchedEmail) {
-                            (kpi as any).email = matchedEmail;
-                        }
-                        if (avatar) {
-                            (kpi as any).image_url = avatar;
-                            if (!(kpi as any).link_image) (kpi as any).link_image = avatar;
-                        }
-                    }
-                }
 
                 // Build employee snapshot from Users table (Authoritative for Identity: Team, Role)
                 const employeesMap = new Map<string, any>();
@@ -3639,7 +3666,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         else if (userRoles.includes('LEADER')) resolvedRole = 'leader';
 
                         employeesMap.set(key, {
-                            employee_id: null,
+                            employee_id: u.employee_id || null,
                             full_name: name,
                             email: email || null,
                             team: u.team || null,
@@ -3652,6 +3679,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         });
                     }
                 }
+
+                const leaderUsers = await this.prisma.user.findMany({
+                    where: {
+                        OR: [
+                            { roles: { has: 'LEADER' } as any },
+                            { roles: { has: 'MANAGER' } as any },
+                            { roles: { has: 'ADMIN' } as any },
+                        ],
+                    },
+                    select: { email: true, full_name: true, team: true, roles: true },
+                });
 
                 const leaderRoleByEmail = new Map<string, { role: string; team: string | null }>();
                 const leaderRoleByName = new Map<string, { role: string; team: string | null }>();
@@ -3680,7 +3718,170 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 employees.forEach(emp => {
                     if (emp.email) emailKeyMatchMap.set(emp.email.toLowerCase().trim(), emp);
                     if (emp.full_name) nameKeyMatchMap.set(normName(emp.full_name), emp);
+                    
+                    // Also index by all names in employee_data (Lark aliases)
+                    const larkData = (emp as any).employee_data || [];
+                    if (Array.isArray(larkData)) {
+                        larkData.forEach((d: any) => {
+                            if (d.name) {
+                                nameKeyMatchMap.set(normName(d.name), emp);
+                                nameKeyMatchMap.set(compactNameKey(d.name), emp);
+                            }
+                            if (d.en_name) {
+                                nameKeyMatchMap.set(normName(d.en_name), emp);
+                                nameKeyMatchMap.set(compactNameKey(d.en_name), emp);
+                            }
+                            // Some people swap First/Last names in Lark
+                            const parts = String(d.name || '').split(' ');
+                            if (parts.length === 2) {
+                                const swapped = `${parts[1]} ${parts[0]}`;
+                                nameKeyMatchMap.set(normName(swapped), emp);
+                                nameKeyMatchMap.set(compactNameKey(swapped), emp);
+                            }
+                        });
+                    }
                 });
+
+                const teamFilterWhere = (dbTeamFilter && useDbTeamFilter) ? {
+                    OR: [
+                        { team: { equals: dbTeamFilter, mode: 'insensitive' as any } },
+                        { team: { startsWith: `${dbTeamFilter},`, mode: 'insensitive' as any } },
+                        { team: { endsWith: `, ${dbTeamFilter}`, mode: 'insensitive' as any } },
+                        { team: { contains: `, ${dbTeamFilter},`, mode: 'insensitive' as any } },
+                    ],
+                } : {};
+
+                // Sequential fetch: Only use 1 connection at a time for stability
+                const reports = await this.prisma.larkReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } });
+
+                const standardKpis = await this.prisma.larkKPI.findMany({
+                    where: {
+                        OR: [
+                            { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                            {
+                                month: null,
+                                report_date: {
+                                    gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
+                                    lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                                }
+                            },
+                        ],
+                        report_date: { gte: new Date('2026-03-01T00:00:00Z') },
+                        state: { not: 'off' },
+                    }
+                });
+
+                const dodaKpisRaw = await this.prismaLarkKpiDoDaEditor.findMany({
+                    where: {
+                        report_date: {
+                            gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
+                            lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                        },
+                    },
+                });
+
+                const dodaKpis = (dodaKpisRaw as any[]).map((r: any) => {
+                    const normEditorName = normName(r.editor_name || '');
+                    const authUser = nameKeyMatchMap.get(normEditorName);
+
+                    // If user is not in the official Users table OR is marked OFF, skip or mark as OFF
+                    const status = authUser?.employee_status || 'off';
+                    if (status.toLowerCase().trim() === 'off' || !authUser) {
+                        return null;
+                    }
+
+                    return {
+                        id: r.id,
+                        name: r.editor_name,
+                        team: r.team || 'Đồ Da',
+                        month: r.month || null,
+                        report_date: r.report_date,
+                        kpi_day: r.kpi_day ?? 0,
+                        completed_day: r.completed_day ?? 0,
+                        kpi_month: r.kpi_month ?? 0,
+                        completed_month: r.completed_month ?? 0,
+                        kpi_day_percent: r.kpi_day && r.kpi_day > 0
+                            ? `${Math.round(((r.completed_day || 0) / r.kpi_day) * 100)}%`
+                            : '0%',
+                        kpii_status: (r.completed_day || 0) >= (r.kpi_day || 0) ? 'ĐẠT' : 'CHƯA ĐẠT',
+                        employee_status: status.toUpperCase(),
+                        state: status.toLowerCase(),
+                        email: authUser?.email || null,
+                        employee_id: authUser?.employee_id || null,
+                        image_url: authUser?.image_url || null,
+                        link_image: null,
+                    };
+                }).filter(Boolean);
+
+                const allKpiInDbRaw: any[] = [...standardKpis, ...dodaKpis];
+
+
+
+                const allChannelsInDb = await this.prisma.channel.findMany({ where: { status: 'Đang hoạt động' } });
+                const permissions: any[] = [];
+
+                // Batch 2: KPIs and auxiliary data - also sequential
+                const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
+                    where: {
+                        report_date: { gte: memberReportStart, lte: memberReportEnd },
+                    }
+                });
+
+                const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
+                    where: {
+                        report_date: {
+                            gte: getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start,
+                            lte: getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end
+                        },
+                    }
+                });
+
+                const allTrafficInDb = await this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } });
+
+                const reportOutstandings = await this.prisma.$queryRawUnsafe(`
+                    SELECT * FROM "report_outstanding"
+                    WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%' 
+                      AND "content" IS NOT NULL AND "content" != '' AND "content" != '-'
+                    ORDER BY "date" DESC, "created_at" DESC LIMIT 200
+                `);
+
+                const totalKpiCount = await this.prisma.larkKPI.count({ where: { state: { not: 'off' }, report_date: { gte: new Date('2026-03-01T00:00:00Z') } } });
+
+
+                const allKpiInDb = allKpiInDbRaw;
+
+                const reportsUnfilteredCount = await this.prisma.larkReport.count({
+                    where: whereClause,
+                });
+
+                if (isDoDaTeamFilter) {
+                    // For DoDa filter, force avatar enrichment from users table.
+                    this.logger.debug(
+                        `[DoDa Avatar] userAvatar maps: byName=${userAvatarByName.size}, byCompact=${userAvatarByNameCompact.size}, byLoose=${userAvatarByNameLoose.size}`,
+                    );
+                    for (const kpi of allKpiInDb as any[]) {
+                        const kpiEmail = (this.extractEmailFromKpi(kpi) || '').toLowerCase().trim();
+                        const kpiName = normName((kpi as any).name || '');
+                        const kpiNameCompact = compactNameKey((kpi as any).name || '');
+                        const kpiNameLoose = looseNameKey((kpi as any).name || '');
+                        const matchedEmail = (kpiEmail ? kpiEmail : null)
+                            || (kpiName ? userEmailByName.get(kpiName) : null)
+                            || (kpiNameCompact ? userEmailByNameCompact.get(kpiNameCompact) : null)
+                            || null;
+                        const avatar = (kpiEmail ? userAvatarByEmail.get(kpiEmail) : null)
+                            || (kpiName ? userAvatarByName.get(kpiName) : null)
+                            || (kpiNameCompact ? userAvatarByNameCompact.get(kpiNameCompact) : null)
+                            || (kpiNameLoose ? userAvatarByNameLoose.get(kpiNameLoose) : null);
+                        if (matchedEmail) {
+                            (kpi as any).email = matchedEmail;
+                        }
+                        if (avatar) {
+                            (kpi as any).image_url = avatar;
+                            if (!(kpi as any).link_image) (kpi as any).link_image = avatar;
+                        }
+                    }
+                }
+
                 // #region agent log
                 fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H3', location: 'lark.service.ts:getUserActivityReports:afterFetch', message: 'Fetched base datasets', data: { reports: reports.length, kpisRaw: allKpiInDb.length, employees: employees.length, dailyReportKpis: dailyReportKpis.length, monthlyReportKpis: monthlyReportKpis.length, selectedTeam: filters?.team || 'All', useDbTeamFilter }, timestamp: Date.now() }) }).catch(() => { });
                 // #endregion
@@ -3990,77 +4191,79 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     }
                 });
 
-                // Create maps for quick KPI lookup
-                const kpiByNameTeam = new Map();
-                const kpiByName = new Map();
-
-                // Store unique KPI per person-month for aggregation
-                const kpisForAggregation = new Map();
+                // Build helper map for target day resolution
                 const nameToPersonKey = new Map();
 
                 /** Same key as kpiData.forEach — used to align single-day KPI with targetDayKpis only */
-                const resolvePersonMonthKeyForKpi = (kpi: any): string | null => {
-                    const nameKey = kpi.name ? kpi.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
-                    const teamKey = kpi.team?.toLowerCase().trim() || '';
-                    const teamKeyNorm = normalizeTeamKey(teamKey || 'khac');
-                    const trimmedEmpId = kpi.employee_id?.trim();
-                    const kpiEmailKey = (kpi as any).email ? String((kpi as any).email).toLowerCase().trim() : null;
-                    const employeeByName = nameKey ? employeeMap.get(nameKey) : null;
-                    const employeeEmailKey = employeeByName?.email ? String(employeeByName.email).toLowerCase().trim() : null;
-                    const mStr = (kpi.month || '').trim();
-                    const matchedMonth = monthsInRange.find(mInfo => {
-                        if (mInfo.formats.includes(mStr)) return true;
-                        const mDigits = mStr.match(/\d+/g);
-                        return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
-                    }) || monthsInRange[0];
-                    if (!matchedMonth) return null;
-                    const personKey =
-                        employeeEmailKey ||
-                        kpiEmailKey ||
-                        ((nameKey || 'unknown') + '|' + (teamKey || 'unknown')) ||
-                        trimmedEmpId ||
-                        kpi.id;
-                    // #region agent log
-                    if (selectedSingleDay && (String(kpi?.team || '').toLowerCase().includes('indo') || String(kpi?.team || '').toLowerCase().includes('global'))) {
-                        fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-date-debug-v1', hypothesisId: 'H-person-key', location: 'lark.service.ts:resolvePersonMonthKeyForKpi', message: 'Resolved person-month key source for single-day KPI mapping', data: { nameKey: nameKey || null, teamKey: teamKey || null, hasEmployeeEmailKey: !!employeeEmailKey, hasKpiEmailKey: !!kpiEmailKey, hasEmpId: !!trimmedEmpId, reportDate: kpi?.report_date || null, kpiDay: Number(kpi?.kpi_day || 0), completedDay: Number(kpi?.completed_day || 0) }, timestamp: Date.now() }) }).catch(() => { });
-                    }
-                    // #endregion
-                    return `${personKey}_${teamKeyNorm}_T${matchedMonth.monthNum}_${matchedMonth.year}`;
+                const getUnifiedPmk = (kpi: any, teamNorm: string, mInfo: any): string => {
+                    const nameKey = kpi.name ? normName(kpi.name) : null;
+                    const emailKey = kpi.email?.toLowerCase().trim();
+                    const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+
+                    const pKey = authUser
+                        ? (authUser.email?.toLowerCase().trim() || normName(authUser.full_name))
+                        : (emailKey || nameKey || `unknown_k_${kpi.id}`);
+
+                    return `${pKey}_${teamNorm}_T${mInfo.monthNum}_${mInfo.year}`;
                 };
 
-                // --- REVISED ARCHITECTURE: Trust LarkKPI for Team (Latest record is authoritative), Users for Role ---
-                // 1. Resolve the latest team for each person from the filtered kpiData
-                const latestTeamMap = new Map<string, string>();
-                const latestKpiDateMap = new Map<string, number>();
+                // --- 1. Seed kpisForAggregation with ALL employees matching team filter (to show full team in Checklist) ---
+                const kpisForAggregation = new Map<string, any>();
+                if (selectedSingleDay) {
+                    employees.forEach(emp => {
+                        const teamNormFilter = teamFilterNormalized ? normalizeTeamKey(teamFilterNormalized) : null;
+                        const userTeams = (emp.team || '').split(',').map(t => t.trim()).filter(Boolean);
 
-                kpiData.forEach(kpi => {
-                    const nameKey = kpi.name ? normName(kpi.name) : null;
-                    const emailKey = kpi.email?.toLowerCase().trim();
-                    const personKey = (emailKey || nameKey);
-                    if (!personKey) return;
-
-                    const reportDate = kpi.report_date ? new Date(kpi.report_date).getTime() : 0;
-                    if (!latestTeamMap.has(personKey) || reportDate >= (latestKpiDateMap.get(personKey) || 0)) {
-                        if (kpi.team) {
-                            latestTeamMap.set(personKey, kpi.team);
-                            latestKpiDateMap.set(personKey, reportDate);
+                        let isMatch = false;
+                        if (!teamNormFilter) {
+                            isMatch = true;
+                        } else if (teamNormFilter === 'allglobal') {
+                            isMatch = userTeams.some(t => getRegionInternal(t) === 'global');
+                        } else if (teamNormFilter === 'allvn') {
+                            isMatch = userTeams.some(t => getRegionInternal(t) === 'vn');
+                        } else {
+                            isMatch = userTeams.some(t => normalizeTeamKey(t) === teamNormFilter);
                         }
-                    }
-                });
 
-                // 2. Aggregate KPI Metrics grouping by the Latest Authoritative Team
+                        if (isMatch) {
+                            const pKey = emp.email?.toLowerCase().trim() || normName(emp.full_name);
+                            // Default to first matching team if multiple, or specific filtered team
+                            const displayTeam = teamNormFilter && !['allglobal', 'allvn'].includes(teamNormFilter)
+                                ? userTeams.find(t => normalizeTeamKey(t) === teamNormFilter) || userTeams[0]
+                                : userTeams[0];
+
+                            const teamNorm = normalizeTeamKey(displayTeam || 'Khác');
+                            const pmk = `${pKey}_${teamNorm}_T${monthsInRange[0].monthNum}_${monthsInRange[0].year}`;
+
+                            kpisForAggregation.set(pmk, {
+                                employee_id: emp.employee_id,
+                                name: emp.full_name,
+                                email: emp.email,
+                                team: displayTeam || 'Khác',
+                                role: emp.role || 'member',
+                                image_url: emp.image_url,
+                                status: emp.status || 'on',
+                                kpi_day: 0,
+                                kpi_month: 0,
+                                completed_day: 0,
+                                completed_month: 0,
+                                traffic_month: 0,
+                                revenue_month: 0,
+                                isAuthorizedForReport: true // Seeded from Users table -> always authorized for this team
+                            });
+                        }
+                    });
+                }
+
                 kpiData.forEach(kpi => {
                     const nameKey = kpi.name ? normName(kpi.name) : null;
                     const emailKey = kpi.email?.toLowerCase().trim();
-                    const personKey = (emailKey || nameKey);
-                    if (!personKey) return;
+                    const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+                    const pKey = authUser
+                        ? (authUser.email?.toLowerCase().trim() || normName(authUser.full_name))
+                        : (emailKey || nameKey || `unknown_k_${kpi.id}`);
 
-                    const authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
-
-                    // Use the latest team found in the entire dataset for this person
-                    const reportedTeam = latestTeamMap.get(personKey) || kpi.team || 'Khác';
-                    const teamNorm = normalizeTeamKey(reportedTeam);
-                    const userRole = authoritativeUser?.role || 'member';
+                    if (!pKey) return;
 
                     // Match month
                     const mStr = (kpi.month || '').trim();
@@ -4069,18 +4272,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         const mDigits = mStr.match(/\d+/g);
                         return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
                     }) || monthsInRange[0];
-                    const kpiMonth = matchedMonth.monthNum;
-                    const kpiYear = matchedMonth.year;
 
-                    const personMonthKey = `${personKey}_${teamNorm}_T${kpiMonth}_${kpiYear}`;
+                    const teamNorm = normalizeTeamKey(kpi.team || 'Khác');
+                    const pmk = `${pKey}_${teamNorm}_T${matchedMonth.monthNum}_${matchedMonth.year}`;
 
-                    if (!kpisForAggregation.has(personMonthKey)) {
-                        kpisForAggregation.set(personMonthKey, {
+                    if (!kpisForAggregation.has(pmk)) {
+                        kpisForAggregation.set(pmk, {
                             ...kpi,
-                            team: reportedTeam,
-                            role: userRole,
-                            image_url: authoritativeUser?.image_url || kpi.image_url,
-                            status: authoritativeUser?.status || 'on',
+                            role: authUser?.role || 'member',
+                            image_url: authUser?.image_url || kpi.image_url,
+                            status: authUser?.status || 'on',
                             kpi_day: 0,
                             kpi_month: 0,
                             completed_day: 0,
@@ -4090,16 +4291,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         });
                     }
 
-                    const existing = kpisForAggregation.get(personMonthKey);
-
-                    // Use report_date (the actual larkKPI field) — kpi.date does not exist on larkKPI rows
+                    const existing = kpisForAggregation.get(pmk);
                     const currentIsTarget = isBitableKpiRowForSelection(kpi.report_date);
                     const existingIsTarget = isBitableKpiRowForSelection(existing.report_date);
 
                     if (currentIsTarget) {
                         existing.completed_day = Number(kpi.completed_day) || 0;
                         existing.report_date = kpi.report_date;
-                        existing.kpi_day = Number(kpi.kpi_day) || 0;
+                        existing.kpi_day = (Number(kpi.kpi_day) > 0) ? Number(kpi.kpi_day) : existing.kpi_day;
                         (existing as any).hasExactDayKpi = true;
                     } else if (!existingIsTarget && !(existing as any).hasExactDayKpi) {
                         existing.completed_day = Math.max(Number(existing.completed_day) || 0, Number(kpi.completed_day) || 0);
@@ -4114,52 +4313,35 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (cTraffic > eTraffic) existing.traffic_month = kpi.traffic_month;
                 });
 
-                // Single-day filter: "Mục tiêu ngày" / "Đã xong" từ lark_kpi có report_date = ngày hiệu suất D (UI).
+                // Single-day filter: Update stats for the exact day
                 if (selectedSingleDay) {
                     const targetKpiByPersonMonth = new Map<string, any>();
                     for (const kpi of targetDayKpis) {
-                        const pmk = resolvePersonMonthKeyForKpi(kpi);
-                        if (!pmk) continue;
+                        // Match month
+                        const mStr = (kpi.month || '').trim();
+                        const matchedMonth = monthsInRange.find(mInfo => {
+                            if (mInfo.formats.includes(mStr)) return true;
+                            const mDigits = mStr.match(/\d+/g);
+                            return mDigits && mDigits.some(d => parseInt(d, 10) === mInfo.monthNum);
+                        }) || monthsInRange[0];
+
+                        const teamNorm = normalizeTeamKey(kpi.team || 'Khác');
+                        const pmk = getUnifiedPmk(kpi, teamNorm, matchedMonth);
+
                         const existing = targetKpiByPersonMonth.get(pmk);
-                        if (!existing) {
+                        if (!existing || (new Date(kpi.report_date || 0).getTime() >= new Date(existing.report_date || 0).getTime())) {
                             targetKpiByPersonMonth.set(pmk, { ...kpi });
-                        } else {
-                            const preferKpi =
-                                isBitableKpiRowForSelection(kpi.report_date) && !isBitableKpiRowForSelection(existing.report_date)
-                                    ? kpi
-                                    : new Date(kpi.report_date || 0).getTime() >= new Date(existing.report_date || 0).getTime()
-                                        ? kpi
-                                        : existing;
-                            targetKpiByPersonMonth.set(pmk, { ...preferKpi });
                         }
                     }
-                    // #region agent log
-                    fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-date-debug-v1', hypothesisId: 'H-singleday-override', location: 'lark.service.ts:getUserActivityReports:beforeSingleDayOverride', message: 'Single-day override inputs', data: { selectedSingleDay, targetDayKpisCount: targetDayKpis.length, targetMapCount: targetKpiByPersonMonth.size, aggregatedCount: kpisForAggregation.size, teamFilter: filters?.team || 'All' }, timestamp: Date.now() }) }).catch(() => { });
-                    // #endregion
+
                     kpisForAggregation.forEach((agg, pmk) => {
                         const td = targetKpiByPersonMonth.get(pmk);
                         if (td) {
-                            agg.kpi_day = Number(td.kpi_day) || 0;
+                            agg.kpi_day = (Number(td.kpi_day) > 0) ? Number(td.kpi_day) : agg.kpi_day;
                             agg.completed_day = Number(td.completed_day) || 0;
                             agg.report_date = td.report_date;
-                            (agg as any).hasExactDayKpi = true;
-                        } else {
-                            agg.kpi_day = 0;
-                            agg.completed_day = 0;
-                            (agg as any).hasExactDayKpi = false;
                         }
                     });
-                    // #region agent log
-                    {
-                        let zeroedCount = 0;
-                        let nonZeroCount = 0;
-                        kpisForAggregation.forEach((agg: any) => {
-                            if (!(agg as any).hasExactDayKpi) zeroedCount++;
-                            if (Number(agg?.kpi_day || 0) > 0 || Number(agg?.completed_day || 0) > 0) nonZeroCount++;
-                        });
-                        fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-date-debug-v1', hypothesisId: 'H-singleday-override', location: 'lark.service.ts:getUserActivityReports:afterSingleDayOverride', message: 'Single-day override outputs', data: { selectedSingleDay, aggregatedCount: kpisForAggregation.size, zeroedCount, nonZeroCount, teamFilter: filters?.team || 'All' }, timestamp: Date.now() }) }).catch(() => { });
-                    }
-                    // #endregion
                 }
 
                 // Reports are processed next to enrich the kpisForAggregation set initialize above.
@@ -4168,98 +4350,105 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 reports.forEach(r => {
                     const nameKey = r.name ? normName(r.name) : null;
                     const emailKey = r.email?.toLowerCase().trim();
-                    const authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+                    let authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+
+                    // --- EXPLICIT OVERRIDE: Merge "Chung Đỗ" into "Đỗ Đăng Chung" ---
+                    if (!authoritativeUser && (nameKey === 'chung do' || emailKey === 'dochung2741@gmail.com')) {
+                        authoritativeUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
+                    }
 
                     const pKey = authoritativeUser
                         ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
                         : (emailKey || nameKey || `unknown_r_${r.id}`);
 
-                    // Use latest team from LarkKPI if possible, otherwise fall back to report's own team
-                    const authoritativeTeam = latestTeamMap.get(pKey) || authoritativeUser?.team || r.team || 'Khác';
-                    const authoritativeTeamNorm = normalizeTeamKey(authoritativeTeam);
+                    // AUTHORITATIVE TEAM RESOLUTION: Priority Users Profile > Report Team
+                    // If user is in Users table, we prefer their profile team.
+                    const authoritativeTeam = (authoritativeUser?.team || '').trim() || r.team || 'Khác';
+                    const teams = authoritativeTeam.split(',').map(t => t.trim()).filter(Boolean);
 
                     const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
-                    const personMonthKey = `${pKey}_${authoritativeTeamNorm}_T${vn.m}_${vn.y}`;
 
-                    if (!kpisForAggregation.has(personMonthKey)) {
-                        kpisForAggregation.set(personMonthKey, {
-                            id: `report_${r.id}`,
-                            employee_id: authoritativeUser?.employee_id || null,
-                            name: authoritativeUser?.full_name || r.name || r.email,
-                            email: authoritativeUser?.email || r.email,
-                            team: authoritativeTeam,
-                            kpi_day: 0,
-                            kpi_month: 0,
-                            completed_day: 0,
-                            completed_month: 0,
-                            traffic_month: 0,
-                            revenue_month: 0,
-                            kpi_progress_month: 0,
-                            role: authoritativeUser?.role || 'member',
-                            status: authoritativeUser?.status || 'on'
-                        });
-                    }
+                    teams.forEach(team => {
+                        const teamNorm = normalizeTeamKey(team);
+                        const personMonthKey = `${pKey}_${teamNorm}_T${vn.m}_${vn.y}`;
+
+                        if (!kpisForAggregation.has(personMonthKey)) {
+                            kpisForAggregation.set(personMonthKey, {
+                                id: `report_${r.id}_${teamNorm}`,
+                                employee_id: authoritativeUser?.employee_id || null,
+                                name: authoritativeUser?.full_name || r.name || r.email,
+                                email: authoritativeUser?.email || r.email,
+                                team: team,
+                                kpi_day: 0,
+                                kpi_month: 0,
+                                completed_day: 0,
+                                completed_month: 0,
+                                traffic_month: 0,
+                                revenue_month: 0,
+                                kpi_progress_month: 0,
+                                role: authoritativeUser?.role || 'member',
+                                status: authoritativeUser?.status || 'on'
+                            });
+                        } else {
+                            // Update existing card with authoritative info if available
+                            const existing = kpisForAggregation.get(personMonthKey);
+                            if (authoritativeUser?.full_name) existing.name = authoritativeUser.full_name;
+                            if (authoritativeUser?.role) existing.role = authoritativeUser.role;
+                            if (authoritativeUser?.email) existing.email = authoritativeUser.email;
+                        }
+                    });
                 });
 
-                // Set final aggregation array
-                const aggregatedKpis = Array.from(kpisForAggregation.values());
-
-                const teamFilterRaw = filters?.team && filters.team !== 'All' ? filters.team.toLowerCase().trim() : null;
-                const teamFilterNormalized = (teamFilterRaw === 'all global' || teamFilterRaw === 'all vn') ? teamFilterRaw : teamFilterRaw;
-
-                const teamFixStats = {
-                    withEmployee: 0,
-                    orphanNoEmployee: 0,
-                    multiTeamFromUsers: 0,
-                    userTeamEmpty: 0,
-                };
-                const teamResolveStats = { byEmail: 0, byName: 0, byEmpId: 0, unresolved: 0 };
-                const teamMismatchSamples: any[] = [];
-                const resignedDropSamples: any[] = [];
-
-                // Map reports by name and email for fast lookup in final assembly
-                const reportsMap = new Map<string, any>();
+                const reportsByTeamMap = new Map<string, any>();
                 reports.forEach(r => {
-                    const nk = r.name ? normName(r.name) : null;
-                    const ek = r.email?.toLowerCase().trim();
-                    if (nk && !reportsMap.has(nk)) reportsMap.set(nk, r);
-                    if (ek && !reportsMap.has(ek)) reportsMap.set(ek, r);
+                    const rEmail = r.email?.toLowerCase().trim();
+                    const rName = r.name ? normName(r.name) : null;
+                    let authUser = (rEmail ? emailKeyMatchMap.get(rEmail) : null) || (rName ? nameKeyMatchMap.get(rName) : null);
+                    
+                    if (!authUser && (rName === 'chung do' || rEmail === 'dochung2741@gmail.com')) {
+                        authUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
+                    }
+                    
+                    const authoritativeTeamStr = (authUser?.team || '').trim() || r.team || 'Khác';
+                    const rTeams = authoritativeTeamStr.split(',').map(t => t.trim()).filter(Boolean);
+                    
+                    rTeams.forEach(t => {
+                        const rTeamNorm = normalizeTeamKey(t);
+                        if (rEmail) reportsByTeamMap.set(`${rEmail}_${rTeamNorm}`, r);
+                        if (rName) reportsByTeamMap.set(`${rName}_${rTeamNorm}`, r);
+                        // Also index by auth user's email/name if different
+                        if (authUser?.email) reportsByTeamMap.set(`${authUser.email.toLowerCase().trim()}_${rTeamNorm}`, r);
+                        if (authUser?.full_name) reportsByTeamMap.set(`${normName(authUser.full_name)}_${rTeamNorm}`, r);
+                    });
                 });
 
                 const allResults = Array.from(kpisForAggregation.values()).map(kpi => {
                     const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
 
-                    // Final guard: Skip records with no effective name in dashboard
-                    if (!nameKey || nameKey === 'unknown') {
-                        return null;
-                    }
+                    if (!nameKey || nameKey === 'unknown') return null;
 
                     const emailKey = kpi.email?.toLowerCase().trim();
-                    // Lookup user early to use user table email as fallback for report matching
-                    const personEmp = employeeMap.get(nameKey);
+                    const personEmp = employeeMap.get(nameKey) || (emailKey ? employeeMap.get(emailKey) : null);
                     const permEmailKey = personEmp?.email ? personEmp.email.toLowerCase().trim() : null;
-                    // Match report by: kpi name → kpi email → user table email (covers Google-login users)
-                    const report = (nameKey ? reportsMap.get(nameKey) : null)
-                        || (emailKey ? reportsMap.get(emailKey) : null)
-                        || (permEmailKey ? reportsMap.get(permEmailKey) : null);
+                    const teamNormForReport = normalizeTeamKey(kpi.team || 'Khác');
+                    const emailLookupKey = emailKey || permEmailKey;
 
-                    // EFFECTIVE TEAM: users table (employee) is authoritative, then fall back to KPI/report
+                    // Match report with comma-separated team support
+                    const report = (emailLookupKey ? reportsByTeamMap.get(`${emailLookupKey}_${teamNormForReport}`) : null) ||
+                        (nameKey ? reportsByTeamMap.get(`${nameKey}_${teamNormForReport}`) : null);
+
+                    // AUTHORITATIVE USER RESOLUTION
                     const trimmedEmpId = kpi.employee_id?.trim();
-                    const personKey = kpi.personKey || nameKey || trimmedEmpId;
-                    const emailLookupKey = kpi.email ? kpi.email.toLowerCase().trim() : null;
                     const reportEmailLookupKey = report?.email ? String(report.email).toLowerCase().trim() : null;
                     const trustedEmailKey = emailLookupKey || reportEmailLookupKey;
 
-                    // Lookup priority: email > name > employee_id.
-                    // employee_id lookup is used ONLY as last resort and is validated by name to prevent
-                    // cross-person collisions (multiple people can share the same employee_id channel ID).
                     const empByEmpId = trimmedEmpId ? employeeMap.get(trimmedEmpId) : null;
                     const empIdNameKey = empByEmpId ? normName(empByEmpId.name || '') : null;
                     const employee =
                         (trustedEmailKey ? employeeMap.get(trustedEmailKey) : null) ||
                         employeeMap.get(nameKey) ||
-                        // Only use the employee_id hit if it belongs to the same person by name
                         (empByEmpId && empIdNameKey === nameKey ? empByEmpId : null);
+
                     const resolvedByEmail = !!(trustedEmailKey && employeeMap.get(trustedEmailKey));
                     const resolvedByName = !resolvedByEmail && !!employeeMap.get(nameKey);
                     const resolvedByEmpId = !resolvedByEmail && !resolvedByName && !!(empByEmpId && empIdNameKey === nameKey);
@@ -4268,151 +4457,79 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     else if (resolvedByEmpId) teamResolveStats.byEmpId++;
                     else teamResolveStats.unresolved++;
 
-                    // Hỗ trợ lọc nhân viên đã nghỉ - nếu status là "đã nghỉ" thì không hiển thị
-                    // Dùng fullStatusMap để check trạng thái HIỆN TẠI của user (ghi đè dữ liệu KPI cũ)
-                    // Prioritize stable identifiers (email/employee_id) before name to avoid duplicate-name collisions.
+                    // RESIGNED FILTERING
                     const employeeStatusDirect = String(employee?.status || '').toLowerCase().trim();
                     const currentStatus = employeeStatusDirect ||
                         fullStatusMap.get(emailLookupKey || '') ||
-                        // Only use KPI employee_id status fallback when we failed to resolve a user row.
                         (!employee ? fullStatusMap.get(trimmedEmpId || '') : '') ||
                         fullStatusMap.get(nameKey) ||
                         '';
                     const kpiEmpStatus = (kpi.employee_status || '').toLowerCase().trim();
                     const kpiState = (kpi.state || '').toLowerCase().trim();
 
-                    // Strict OFF filtering: hide when either Users status OR KPI status/state indicates resigned/OFF.
-                    const isResignedFromUsers = employeeStatusDirect.includes('nghỉ') ||
-                        employeeStatusDirect.includes('off') ||
-                        employeeStatusDirect.includes('khóa');
-                    const isResignedFromFallback = currentStatus.includes('nghỉ') ||
-                        currentStatus.includes('off') ||
-                        currentStatus.includes('khóa');
-                    const isResignedFromKpi = kpiEmpStatus.includes('nghỉ') ||
-                        kpiEmpStatus.includes('off') ||
-                        kpiState === 'off';
-                    const isResigned = isResignedFromUsers || isResignedFromFallback || isResignedFromKpi;
+                    const isResigned = employeeStatusDirect.includes('nghỉ') || employeeStatusDirect.includes('off') || employeeStatusDirect.includes('khóa') ||
+                        currentStatus.includes('nghỉ') || currentStatus.includes('off') || currentStatus.includes('khóa') ||
+                        kpiEmpStatus.includes('nghỉ') || kpiEmpStatus.includes('off') || kpiState === 'off';
 
-                    if (isResigned) {
-                        if (resignedDropSamples.length < 10) {
-                            resignedDropSamples.push({
-                                name: kpi.name,
-                                email: emailLookupKey || null,
-                                team: kpi.team || null,
-                                employeeStatusDirect: employeeStatusDirect || null,
-                                currentStatus,
-                                kpiEmpStatus,
-                                kpiState,
-                                kpiEmployeeId: trimmedEmpId || null,
-                            });
-                        }
-                        return null;
-                    }
+                    if (isResigned) return null;
 
-                    const position = employee?.position || null;
+                    // AUTHORITATIVE TEAM SELECTION (Priority Users Profile > LarkKPI)
+                    const userTeamStr = (employee?.team || '').trim();
+                    const kpiTeamStr = String(kpi.team || report?.team || 'Khác');
 
-                    // Team: use lark_kpi.team directly (Lark is authoritative for team)
-                    const kpiTeams = String(kpi.team || report?.team || 'Kh�c')
+                    // If user is in Users table, use ONLY their team from profile.
+                    // Fallback to KPI team only if they don't exist in Users table.
+                    const authoritativeTeamStr = userTeamStr || kpiTeamStr;
+                    const teamPool = authoritativeTeamStr
                         .split(',')
                         .map((t: string) => t.trim())
                         .filter(Boolean);
-                    const teamPool = kpiTeams;
-                    if (employee) {
-                        teamFixStats.withEmployee++;
-                        if (teamPool.length > 1) teamFixStats.multiTeamFromUsers++;
-                        if (teamPool.length === 0) teamFixStats.userTeamEmpty++;
-                    } else {
-                        teamFixStats.orphanNoEmployee++;
-                    }
 
-                    const orphanTeam = kpi.team || report?.team || 'Khác';
-                    let effectiveTeam: string;
+                    const orphanTeam = userTeamStr || kpiTeamStr || 'Khác';
+                    let effectiveTeam: string = orphanTeam;
+
                     if (teamPool.length > 0) {
-                        if (
-                            teamFilterNormalized &&
-                            teamFilterNormalized !== 'all global' &&
-                            teamFilterNormalized !== 'all vn'
-                        ) {
+                        if (teamFilterNormalized && teamFilterNormalized !== 'all global' && teamFilterNormalized !== 'all vn') {
                             const normFilter = normalizeTeamKey(teamFilterNormalized);
-                            const hit = teamPool.find(
-                                t =>
-                                    normalizeTeamKey(t.toLowerCase()) === normFilter ||
-                                    t.toLowerCase().trim() === teamFilterNormalized,
-                            );
+                            const hit = teamPool.find(t => normalizeTeamKey(t) === normFilter);
                             effectiveTeam = hit || teamPool[0];
                         } else {
                             effectiveTeam = teamPool[0];
                         }
-                    } else {
-                        effectiveTeam = orphanTeam;
-                    }
-                    if (
-                        teamFilterNormalized &&
-                        teamFilterNormalized !== 'all global' &&
-                        teamFilterNormalized !== 'all vn' &&
-                        teamMismatchSamples.length < 20
-                    ) {
-                        const normFilter = normalizeTeamKey(teamFilterNormalized);
-                        const poolForDebug = teamPool.length > 0 ? teamPool : [effectiveTeam];
-                        const matchByPool = poolForDebug.some(t => normalizeTeamKey(String(t).toLowerCase()) === normFilter);
-                        if (!matchByPool && (kpi.team || report?.team || '').toLowerCase().includes(teamFilterNormalized)) {
-                            teamMismatchSamples.push({
-                                name: kpi.name,
-                                email: emailLookupKey || null,
-                                kpiTeam: kpi.team || null,
-                                userTeam: employee?.team || null,
-                                resolvedBy: resolvedByEmail ? 'email' : resolvedByName ? 'name' : resolvedByEmpId ? 'employee_id' : 'none',
-                                duplicateNameCount: duplicateNameCounts.get(nameKey) || 0,
-                            });
-                        }
                     }
 
+                    // TEAM FILTER MATCHING
                     let isMatchForRanking = false;
+                    const poolForMatch = teamPool.length > 0 ? teamPool : [effectiveTeam];
+
                     if (!teamFilterNormalized) {
                         isMatchForRanking = true;
                     } else if (teamFilterNormalized === 'all global') {
-                        const pool = teamPool.length > 0 ? teamPool : [effectiveTeam];
-                        isMatchForRanking = pool.some(t => getRegionInternal(t.toLowerCase()) === 'global');
+                        isMatchForRanking = poolForMatch.some(t => getRegionInternal(t.toLowerCase()) === 'global');
                     } else if (teamFilterNormalized === 'all vn') {
-                        const pool = teamPool.length > 0 ? teamPool : [effectiveTeam];
-                        isMatchForRanking = pool.some(t => getRegionInternal(t.toLowerCase()) === 'vn');
+                        isMatchForRanking = poolForMatch.some(t => getRegionInternal(t.toLowerCase()) === 'vn');
                     } else {
                         const normFilter = normalizeTeamKey(teamFilterNormalized);
-                        const pool = teamPool.length > 0 ? teamPool : [effectiveTeam];
-                        isMatchForRanking = pool.some(t => {
+                        isMatchForRanking = poolForMatch.some(t => {
                             const nt = normalizeTeamKey(t.toLowerCase());
                             return nt === normFilter || t.toLowerCase().trim() === teamFilterNormalized;
                         });
                     }
 
-                    // Dùng employee đã resolve
                     const personEmailForSelf = report?.email || personEmp?.email || kpi.email;
                     const isSelf = filters?.requesterEmail && personEmailForSelf &&
                         personEmailForSelf.toLowerCase().trim() === filters.requesterEmail.toLowerCase().trim();
 
-                    // 2. Logic cho Báo cáo (Reports) & Summary:
-                    // Keep "self override" only when no explicit team filter is selected.
-                    // When a team is selected, showing self from another team causes cross-team leakage.
                     const hasExplicitTeamFilter = !!teamFilterNormalized;
-                    const isAuthorizedForReport = hasExplicitTeamFilter
-                        ? isMatchForRanking
-                        : (isMatchForRanking || isSelf);
+                    // For single day (Checklist), we show everyone seeded from the users table
+                    const isAuthorized = selectedSingleDay ? (kpi.isAuthorizedForReport || isMatchForRanking) : (hasExplicitTeamFilter ? isMatchForRanking : (isMatchForRanking || isSelf));
 
-                    // Nếu không khớp cả 2 thì bỏ qua record này
-                    if (!isMatchForRanking && !isAuthorizedForReport) {
-                        return null;
-                    }
+                    if (!isAuthorized) return null;
 
-                    // Parse checklist from answers JSON
-                    let checklist = {
-                        fb: false, ig: false, caption: false, tiktok: false, youtube: false, lark: false,
-                    };
-
+                    // CHECKLIST PARSING
+                    let checklist = { fb: false, ig: false, caption: false, tiktok: false, youtube: false, lark: false };
                     let answersData = report?.answers;
-                    if (typeof answersData === 'string') {
-                        try { answersData = JSON.parse(answersData); } catch (e) { }
-                    }
-
+                    if (typeof answersData === 'string') { try { answersData = JSON.parse(answersData); } catch (e) { } }
                     if (answersData && typeof answersData === 'object') {
                         checklist.fb = answersData['Bạn đã đăng video lên FB chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên FB chưa?'] === true || false;
                         checklist.ig = answersData['Bạn đã đăng video lên IG chưa?'] === true || answersData['Báo cáo Lark - Bạn đã đăng video lên IG chưa?'] === true || false;
@@ -4421,6 +4538,20 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         checklist.lark = answersData['Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || answersData['Báo cáo Lark - Bạn đã báo cáo đầy đủ thông tin công việc trên lark chưa?'] === true || false;
                         checklist.caption = answersData['Bạn đã check lại caption và hagtag video chưa?'] === true || answersData['Báo cáo Lark - Bạn đã check lại caption và hagtag video chưa?'] === true;
                     }
+
+                    // FINAL OBJECT ASSEMBLY
+                    let kpiMonthForFinal = 0;
+                    let kpiYearForFinal = 0;
+                    const mStrFinal = (kpi.month || '').trim();
+                    const matchedMonthFinal = monthsInRange.find(m => m.formats.includes(mStrFinal)) || monthsInRange[0];
+                    kpiMonthForFinal = matchedMonthFinal.monthNum;
+                    kpiYearForFinal = matchedMonthFinal.year;
+
+                    const timeKey = `${kpiMonthForFinal}_${kpiYearForFinal}`;
+                    const emailKeyFinal = kpi.email?.toLowerCase().trim();
+                    const nkFinal = kpi.name ? normName(kpi.name) : null;
+                    const rKpi = (emailKeyFinal ? reportKpiMapByEmail.get(`${emailKeyFinal}_${timeKey}`) : null) ||
+                        (nkFinal ? reportKpiMapByName.get(`${nkFinal}_${timeKey}`) : null);
 
                     // Get the specific month key for this KPI record to lookup reportKpi
                     let kpiMonth = 0;
@@ -4433,7 +4564,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     }) || monthsInRange[0];
                     kpiMonth = matchedMonth.monthNum;
                     kpiYear = matchedMonth.year;
-                    const timeKey = `${kpiMonth}_${kpiYear}`;
+                    // Use the timeKey calculated during FINAL OBJECT ASSEMBLY
+                    // const timeKey = `${kpiMonth}_${kpiYear}`;
 
                     // Get high-fidelity KPI report data for this specific person and month
                     const rKpiEmailKey = report?.email ? `${report.email.toLowerCase().trim()}_${timeKey}` : null;
@@ -4505,9 +4637,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     return {
                         id: kpi.id,
                         employee_id: trimmedEmpId,
-                        personKey: personKey,
+                        personKey: emailLookupKey || nameKey,
                         name: kpi.name,
-                        position: position,
+                        position: employee?.position || (employee?.role === 'leader' ? 'Leader' : 'Member'),
                         // Role: ưu tiên lấy từ chính employee (bảng users)
                         // Role: ưu tiên lấy từ chính employee (bảng users)
                         role: employee?.role || personEmp?.role || kpi._empRole || 'member',
@@ -4551,7 +4683,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                         monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
                         channelCount: channelsOwnedCount,
-                        isAuthorizedForReport,
+                        isAuthorizedForReport: isAuthorized as boolean,
                         isMatchForRanking,
                         needsTraffic,
                         // Daily traffic per platform
@@ -4650,7 +4782,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                                 );
                             }
                         }
-                        const isAuthorizedForReport = isMatchForRanking;
+                        const isAuthorized = isMatchForRanking;
 
                         const repChannelsOwned = Math.max(
                             channelCountByNormOwner.get(rNameKey) || 0,
@@ -4719,7 +4851,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             revenueTarget: 0,
                             monthlyProgress: 0,
                             channelCount: repChannelsOwned,
-                            isAuthorizedForReport,
+                            isAuthorizedForReport: isAuthorized,
                             isMatchForRanking,
                             needsTraffic: repNeedsTraffic,
                             trafficToday: personTraffic
@@ -4740,8 +4872,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     }
                 });
 
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H-users-team', location: 'lark.service.ts:getUserActivityReports:teamFixStats', message: 'users.team multi-team + display', data: { ...teamFixStats, ...teamResolveStats, teamFilter: filters?.team || 'All', cardCount: allResults.filter(r => r !== null).length, duplicateNameKeys: Array.from(duplicateNameCounts.entries()).filter(([, c]) => c > 1).slice(0, 10), teamMismatchSamples, resignedDropSamples }, timestamp: Date.now(), runId: 'team-users-v4' }) }).catch(() => { });
+                // #region agent log removed due to corrupted variables
                 // #endregion
                 const preGroupDupStats = { duplicateKeys: 0, duplicateRows: 0, duplicateRowsWithNonZeroDaily: 0 };
                 const preGroupByKey = new Map<string, any[]>();
@@ -4776,16 +4907,28 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (r.name && (r.name.toLowerCase().includes('nghỉ') || r.name.toLowerCase().includes('off'))) {
                         return; // skip off member based on name
                     }
-                    // Use a normalized name + month as primary key to prevent duplicate cards for the same person
-                    // But wait, the goal of groupedResults is to sum UP multiple records if they fall into the same VIEWING range
-                    // If viewing a month, we want one card per person.
-                    const key = r.personKey || r.email?.toLowerCase().trim() || r.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || r.employee_id;
+                    // Use a unified identity to prevent duplicate cards for the same person
+                    const nameKeyRep = r.name ? normName(r.name) : null;
+                    const emailKeyRep = r.email?.toLowerCase().trim();
+                    const authoritativeUser = (emailKeyRep ? employeeMap.get(emailKeyRep) : null) || (nameKeyRep ? employeeMap.get(nameKeyRep) : null);
+
+                    const key = authoritativeUser
+                        ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
+                        : (r.personKey || emailKeyRep || nameKeyRep || r.employee_id);
 
                     if (!groupedResults.has(key)) {
-                        groupedResults.set(key, { ...r });
+                        const newObj = { ...r };
+                        if (authoritativeUser) {
+                            // OVERRIDE for Checklist: Use official profile info
+                            newObj.team = authoritativeUser.team || r.team;
+                            newObj.role = authoritativeUser.role || r.role;
+                            newObj.avatar = authoritativeUser.image_url || r.avatar;
+                            newObj.image_url = authoritativeUser.image_url || r.image_url;
+                            newObj.position = authoritativeUser.position || (authoritativeUser.role === 'leader' ? 'Leader' : 'Member');
+                        }
+                        groupedResults.set(key, newObj);
                     } else {
                         const existing = groupedResults.get(key);
-                        // Sum numeric metrics
                         // Sum numeric RESULTS
                         existing.done += r.done;
                         existing.videoCount += r.videoCount;
@@ -5029,14 +5172,18 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     globalTotals.revenue += re;
                     // globalTotals.channels will be set to aggregates.totalChannels after this loop
 
-                    const team = r.team || 'Khác';
-                    if (!teamBreakdown[team]) {
-                        teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0, channels: 0 };
-                    }
-                    teamBreakdown[team].videos += v;
-                    teamBreakdown[team].traffic += t;
-                    teamBreakdown[team].revenue += re;
-                    teamBreakdown[team].channels += c;
+                    const rawTeam = r.team || 'Khác';
+                    const teams = rawTeam.split(',').map(t => t.trim()).filter(Boolean);
+
+                    teams.forEach(team => {
+                        if (!teamBreakdown[team]) {
+                            teamBreakdown[team] = { videos: 0, traffic: 0, revenue: 0, channels: 0 };
+                        }
+                        teamBreakdown[team].videos += v;
+                        teamBreakdown[team].traffic += t;
+                        teamBreakdown[team].revenue += re;
+                        teamBreakdown[team].channels += c;
+                    });
                 });
 
                 // Ensure global total matches the big summary card
@@ -5301,7 +5448,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             });
         }
 
-        return { report, traffic };
+        // Identify which teams have already been reported in traffic records
+        const reportedTeams = Array.from(new Set(trafficRecords.map(t => t.team).filter(Boolean)));
+
+        return { report, traffic, trafficRecords, reportedTeams };
 
     }
 
@@ -5614,7 +5764,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     team = String(team).trim();
                 }
 
-                const status = fields['Trang Thai'] || fields['Trạng thái'] || fields['Status'] || null;
+                const statusField = fields['Trạng thái nhân sự'] || fields['Trang Thai'] || fields['Trạng thái'] || fields['Status'] || 'Đang hoạt động';
+                let employee_status = 'on';
+                const lowStatus = String(statusField).toLowerCase();
+                if (lowStatus.includes('nghỉ') || lowStatus.includes('off') || lowStatus.includes('khóa')) {
+                    employee_status = 'off';
+                }
 
                 // Lấy ảnh. User có thể dán string google drive URL thẳng vào cột 'Anh' / 'Ảnh'.
                 let avatarUrl = null;
@@ -5710,7 +5865,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             full_name: fullName,
                             roles: isRoleDowngrade ? existingUser.roles : userRoles,
                             team: this.mergeTeamValues(existingUser.team, team),
-                            employee_status: status || null,
+                            employee_status: employee_status,
                             image_url: avatarUrl || null,
                             ...(empId ? { employee_id: empId } : {}),
                             updated_at: dateNow,
@@ -5729,7 +5884,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                                 full_name: fullName,
                                 roles: userRoles as any,
                                 team: this.mergeTeamValues(team),
-                                employee_status: status || null,
+                                employee_status: employee_status,
                                 employee_id: empId || null,
                                 image_url: avatarUrl || null,
                                 password_hash: null,

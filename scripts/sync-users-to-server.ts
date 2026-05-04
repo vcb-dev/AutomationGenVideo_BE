@@ -18,10 +18,25 @@ async function main() {
 
   let upserted = 0;
   for (const u of users) {
+    if (!u.email) continue;
+    
+    // Proactively handle unique constraint conflicts on server
+    if (u.employee_id) {
+       await server.user.updateMany({
+         where: { employee_id: u.employee_id, email: { not: u.email } },
+         data: { employee_id: null }
+       });
+    }
+    if (u.lark_employee_record_id) {
+       await server.user.updateMany({
+         where: { lark_employee_record_id: u.lark_employee_record_id, email: { not: u.email } },
+         data: { lark_employee_record_id: null }
+       });
+    }
+
     await server.user.upsert({
-      where: { id: u.id },
+      where: { email: u.email },
       update: {
-        email: u.email,
         password_hash: u.password_hash,
         full_name: u.full_name,
         google_id: u.google_id,

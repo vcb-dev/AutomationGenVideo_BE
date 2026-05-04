@@ -1,8 +1,12 @@
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
 
-// Remote DB URL from request
-const REMOTE_DB_URL = "postgresql://postgres:trunghieu2003Hh%40@34.143.247.162:5432/video_production?sslmode=require&schema=public&connection_limit=10";
+// Remote DB URL from env
+const REMOTE_DB_URL = process.env.SERVER_DATABASE_URL;
+if (!REMOTE_DB_URL) {
+    console.error('Missing SERVER_DATABASE_URL in environment');
+    process.exit(1);
+}
 
 // Lark Config from URL
 const LARK_APP_ID = process.env.LARK_APP_ID || 'cli_a9b023ef4078ded0';
@@ -89,7 +93,7 @@ function mapRecordToKPI(record: any) {
 }
 
 async function main() {
-    console.log('--- STARTING FORCE SYNC LARK KPI TO REMOTE (Team from Lark) ---');
+    console.log('--- STARTING FORCE SYNC LARK KPI TO REMOTE (Team prioritized from Users table) ---');
     const token = await getToken();
     const rawRecords = await fetchLarkRecords(token);
     
@@ -114,6 +118,33 @@ async function main() {
     try {
         await prismaRemote.$connect();
         console.log('Connected to remote DB');
+
+        // Fetch users to prioritize team from Users table
+        console.log('Fetching users from remote DB for team resolution...');
+        const remoteUsers = await prismaRemote.user.findMany({
+            where: { is_active: true },
+            select: { email: true, full_name: true, team: true, employee_id: true }
+        });
+        const userMap = new Map<string, any>();
+        const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
+        remoteUsers.forEach(u => {
+            if (u.email) userMap.set(u.email.toLowerCase().trim(), u);
+            if (u.full_name) userMap.set(norm(u.full_name), u);
+            if (u.employee_id) userMap.set(String(u.employee_id).trim(), u);
+        });
+
+        // Apply authoritative team from Users table
+        console.log('Applying authoritative team from Users table...');
+        kpiData.forEach(row => {
+            const nameKey = row.name ? norm(row.name) : '';
+            const emailKey = row.name && row.name.includes('@') ? row.name.toLowerCase().trim() : ''; // fallback if email is in name field
+            const empIdKey = row.employee_id ? String(row.employee_id).trim() : '';
+            
+            const match = (emailKey ? userMap.get(emailKey) : null) || (empIdKey ? userMap.get(empIdKey) : null) || (nameKey ? userMap.get(nameKey) : null);
+            if (match && match.team) {
+                row.team = match.team;
+            }
+        });
 
         // Delete existing records
         console.log('Cleaning remote lark_kpi table...');
