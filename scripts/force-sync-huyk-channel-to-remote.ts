@@ -1,8 +1,12 @@
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
 
-// Remote DB URL from previous context
-const REMOTE_DB_URL = "postgresql://postgres:trunghieu2003Hh%40@34.143.247.162:5432/video_production?sslmode=require&schema=public&connection_limit=10";
+// Remote DB URL from env
+const REMOTE_DB_URL = process.env.SERVER_DATABASE_URL;
+if (!REMOTE_DB_URL) {
+    console.error('Missing SERVER_DATABASE_URL in environment');
+    process.exit(1);
+}
 
 // Lark Config for Huyk Channel
 const LARK_APP_ID = process.env.LARK_APP_ID || 'cli_a9b023ef4078ded0';
@@ -91,9 +95,13 @@ async function main() {
         await prismaRemote.$connect();
         console.log('Connected to remote DB');
 
-        // Delete existing records in huyk_channels
-        console.log('Cleaning remote huyk_channels table...');
-        await prismaRemote.channel.deleteMany({});
+        // Delete existing records in huyk_channels (except Đồ Da which are synced separately)
+        console.log('Cleaning remote non-Đồ Da channels...');
+        await prismaRemote.channel.deleteMany({
+            where: { 
+                NOT: { team_traffic: 'Đồ Da' }
+            }
+        });
 
         // Insert new records in chunks
         const CHUNK_SIZE = 300;

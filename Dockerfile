@@ -41,5 +41,5 @@ COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
 
-# Deploy migrations and start the application
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+# Start the application directly to avoid startup timeouts
+CMD ["node", "dist/src/main"]

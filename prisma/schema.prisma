@@ -80,10 +80,10 @@ model TrackedChannel {
   updated_at          DateTime    @updatedAt
   initial_video_count Int         @default(0)
   posts_count         Int?
-  /// Id bản ghi huyk_channels (Lark) — mỗi dòng Lark tối đa 1 tracked (NULL = nhập tay)
-  lark_channel_id     String?     @unique
   /// manual | lark
   added_via           String      @default("manual")
+  /// Id bản ghi huyk_channels (Lark) — mỗi dòng Lark tối đa 1 tracked (NULL = nhập tay)
+  lark_channel_id     String?     @unique
   user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   video_posts         VideoPost[]
 
@@ -1019,55 +1019,23 @@ model video_management_channelanalysis {
   @@index([username], map: "video_management_channelanalysis_username_22fc03be_like")
 }
 
-enum UserRole {
-  ADMIN
-  MANAGER
-  MEMBER
-  LEADER
-}
-
-enum Platform {
-  TIKTOK
-  INSTAGRAM
-  FACEBOOK
-  DOUYIN
-  XIAOHONGSHU
-  YOUTUBE
-}
-
-enum DuplicateStatus {
-  UNIQUE
-  DUPLICATE
-  PENDING_REVIEW
-  SUSPICIOUS
-}
-
-enum CollectionType {
-  TEAM
-  SHARED
-}
-
 model ApprovedContent {
   id                   String   @id @default(uuid())
-  script               String   @db.Text
+  script               String
   content_type         String   @db.VarChar(20)
   content_type_display String   @db.VarChar(100)
   word_count           Int      @default(0)
-
   source_video_id      String?  @db.VarChar(255)
   source_video_title   String   @default("")
-  source_video_desc    String   @default("") @db.Text
+  source_video_desc    String   @default("")
   source_video_url     String   @default("") @db.VarChar(2000)
-
   product_id           String?  @db.VarChar(100)
   product_name         String?  @db.VarChar(255)
   product_category     String?  @db.VarChar(255)
   product_sku          String?  @db.VarChar(100)
-
   approved_by_id       String
   approved_by_name     String   @default("")
   approved_by_role     UserRole
-
   created_at           DateTime @default(now())
   updated_at           DateTime @updatedAt
 
@@ -1102,4 +1070,32 @@ model VideoLibrary {
   @@unique([video_id, collection_type])
   @@index([collection_type, created_at(sort: Desc)])
   @@map("video_library")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  MEMBER
+  LEADER
+}
+
+enum Platform {
+  TIKTOK
+  INSTAGRAM
+  FACEBOOK
+  DOUYIN
+  XIAOHONGSHU
+  YOUTUBE
+}
+
+enum DuplicateStatus {
+  UNIQUE
+  DUPLICATE
+  PENDING_REVIEW
+  SUSPICIOUS
+}
+
+enum CollectionType {
+  TEAM
+  SHARED
 }

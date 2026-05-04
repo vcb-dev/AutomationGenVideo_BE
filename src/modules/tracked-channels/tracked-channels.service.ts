@@ -124,18 +124,17 @@ export class TrackedChannelsService {
   async findAllByUser(userId: string, platform?: string, team?: string) {
     if (team) {
       // Single-query path: JOIN tracked_channels → huyk_channels on lark_channel_id = id
-      const platformFilter = platform ? `AND tc.platform = '${platform.toUpperCase().replace(/'/g, "''")}'` : '';
-      const teamEscaped = team.replace(/'/g, "''");
-      const rows = await this.prisma.$queryRawUnsafe<any[]>(`
+      const platformFilter = platform ? `AND tc.platform = ${platform.toUpperCase()}` : '';
+      const rows = await this.prisma.$queryRaw<any[]>`
         SELECT tc.*
         FROM tracked_channels tc
         JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-        WHERE tc.user_id = '${userId.replace(/'/g, "''")}'
+        WHERE tc.user_id = ${userId}
           AND tc.is_active = true
-          AND hc.team_traffic ILIKE '%${teamEscaped}%'
+          AND hc.team_traffic ILIKE ${'%' + team + '%'}
           ${platformFilter}
         ORDER BY tc.created_at DESC
-      `);
+      `;
       return rows.map((ch) => ({
         ...ch,
         total_likes: Number(ch.total_likes ?? 0),

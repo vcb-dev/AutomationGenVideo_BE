@@ -472,6 +472,18 @@ export class LarkController {
         }
     }
 
+    @Post('checklist-report')
+    @ApiOperation({ summary: 'Submit daily checklist report (replaces Django AI endpoint)' })
+    async submitChecklistReport(@Body() data: any) {
+        try {
+            const result = await this.larkService.submitChecklistReport(data);
+            return result;
+        } catch (error) {
+            this.logger.error(`[checklist-report] Failed: ${error?.message}`, error?.stack);
+            return { success: false, message: error?.message || 'Lỗi gửi báo cáo', error: error?.message };
+        }
+    }
+
     @Post('traffic-report')
     @ApiOperation({ summary: 'Submit daily traffic report' })
     async submitTrafficReport(@Body() data: any) {
