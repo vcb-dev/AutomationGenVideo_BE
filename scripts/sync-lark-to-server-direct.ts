@@ -204,7 +204,7 @@ async function main() {
     // 2. Normalize & deduplicate by email, filtering for ONLY 'ON' status
     const normalized = rawRecords
       .map(normalizeRecord)
-      .filter((x): x is NormalizedUser => Boolean(x) && x.employeeStatus === 'ON');
+      .filter((x): x is NormalizedUser => x !== null && x.employeeStatus === 'ON');
 
     const uniqueByEmail = new Map<string, NormalizedUser>();
     for (const row of normalized) uniqueByEmail.set(row.email, row);

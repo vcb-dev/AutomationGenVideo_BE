@@ -146,9 +146,18 @@ async function main() {
             }
         });
 
-        // Delete existing records
-        console.log('Cleaning remote lark_kpi table...');
-        await prismaRemote.larkKPI.deleteMany({});
+        // Delete existing records (EXCEPT Đồ Da team)
+        console.log('Cleaning remote lark_kpi table (preserving Đồ Da)...');
+        await prismaRemote.larkKPI.deleteMany({
+            where: {
+                NOT: {
+                    team: {
+                        contains: 'Đồ Da',
+                        mode: 'insensitive'
+                    }
+                }
+            }
+        });
 
         // Insert new records in chunks
         const CHUNK_SIZE = 300;
