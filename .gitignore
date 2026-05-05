@@ -73,6 +73,10 @@ tmp/
 temp/
 *.tmp
 
+# Docker / local exports (GitHub max 100MB per file)
+*.tar
+video-backend-*.tar
+
 # OS
 Thumbs.db
 .DS_Store

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
-import { ThrottlerModule } from "@nestjs/throttler";
+import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { ScheduleModule } from "@nestjs/schedule";
 import { join } from "path";
 import { AppController } from "./app.controller";
@@ -30,17 +31,16 @@ import { SocialPublishingModule } from './modules/social-publishing/social-publi
     }),
     ThrottlerModule.forRoot([
       {
-        // Long window: 600 req/min/IP – đủ cho 50 users × 12 req/min (bao gồm auto-refresh 60s)
-        // Trước đây 120 req/min dễ bị throttle khi 50 users cùng mạng LAN (same IP/NAT)
+        // Long window: 1200 req/min/IP — 70+ users cùng mạng LAN (NAT shared IP)
         name: 'long',
         ttl: 60000,
-        limit: 600,
+        limit: 1200,
       },
       {
-        // Short window: chống burst attack – tối đa 30 req/5s/IP
+        // Short window: chống burst — 80 req/5s/IP (70 users cùng lúc qua 1 IP)
         name: 'short',
         ttl: 5000,
-        limit: 30,
+        limit: 80,
       },
     ]),
     ScheduleModule.forRoot(),
@@ -61,6 +61,9 @@ import { SocialPublishingModule } from './modules/social-publishing/social-publi
     SocialPublishingModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule { }

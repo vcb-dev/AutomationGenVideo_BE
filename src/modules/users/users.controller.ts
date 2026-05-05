@@ -12,6 +12,7 @@ import {
   Request,
   Query,
 } from "@nestjs/common";
+import { SkipThrottle } from "@nestjs/throttler";
 import {
   ApiTags,
   ApiOperation,
@@ -30,6 +31,7 @@ import { UserRole } from "@prisma/client";
 
 @ApiTags("users")
 @Controller("users")
+@SkipThrottle({ long: true, short: true })
 @UseInterceptors(ClassSerializerInterceptor)
 export class UsersController {
   constructor(private readonly usersService: UsersService) { }

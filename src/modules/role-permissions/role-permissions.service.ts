@@ -1,11 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { UserRole } from '@prisma/client';
 import { UpdateRolePermissionDto } from './dto/update-role-permission.dto';
 
 @Injectable()
 export class RolePermissionsService {
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        private cacheService: CacheService,
+    ) { }
 
     async findAll() {
         return this.prisma.rolePermission.findMany({
@@ -21,6 +25,7 @@ export class RolePermissionsService {
 
     async update(updateDto: UpdateRolePermissionDto) {
         const { role, menu_ids } = updateDto;
+        this.cacheService.invalidate('role-perm:');
         return this.prisma.rolePermission.upsert({
             where: { role },
             update: { menu_ids },
@@ -35,27 +40,25 @@ export class RolePermissionsService {
         });
     }
 
-    /**
-     * Get all menu IDs for a user based on their roles and custom overrides
-     */
     async getPermissionsForUser(roles: UserRole[], customPermissions: string[] = []) {
         if ((!roles || roles.length === 0) && (!customPermissions || customPermissions.length === 0)) {
             return [];
         }
 
-        const rolePermissions = roles.length > 0
-            ? await this.prisma.rolePermission.findMany({
-                where: {
-                    role: { in: roles },
-                },
-            })
-            : [];
+        const rolesKey = roles.sort().join(',');
+        const customKey = customPermissions.sort().join(',');
+        const cacheKey = `role-perm:${rolesKey}:${customKey}`;
 
-        // Merge all menu_ids from roles
-        const roleMenuIds = rolePermissions.flatMap((p) => p.menu_ids);
+        return this.cacheService.get(cacheKey, 5 * 60 * 1000, async () => {
+            const rolePermissions = roles.length > 0
+                ? await this.prisma.rolePermission.findMany({
+                    where: { role: { in: roles } },
+                })
+                : [];
 
-        // Combine with custom permissions and remove duplicates
-        const allMenuIds = [...roleMenuIds, ...customPermissions];
-        return Array.from(new Set(allMenuIds));
+            const roleMenuIds = rolePermissions.flatMap((p) => p.menu_ids);
+            const allMenuIds = [...roleMenuIds, ...customPermissions];
+            return Array.from(new Set(allMenuIds));
+        });
     }
 }
