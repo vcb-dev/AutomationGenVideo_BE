@@ -7,11 +7,13 @@ import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./strategies/jwt.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
 import { UsersModule } from "../users/users.module";
+import { CacheModule } from "../../common/cache/cache.module";
 import { getRuntimeJwtSecret } from "./jwt-secret.util";
 
 @Module({
   imports: [
     UsersModule,
+    CacheModule,
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -30,3 +32,5 @@ import { getRuntimeJwtSecret } from "./jwt-secret.util";
   exports: [AuthService],
 })
 export class AuthModule {}
+
+

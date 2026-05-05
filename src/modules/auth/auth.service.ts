@@ -59,7 +59,6 @@ export class AuthService {
       return null;
     }
 
-    // If user has no password (e.g. Google user attempting password login)
     if (!user.password_hash) {
       return null;
     }
@@ -68,14 +67,10 @@ export class AuthService {
     if (isBcryptPasswordHash(user.password_hash)) {
       isPasswordValid = await bcrypt.compare(password, user.password_hash);
     } else {
-      // Legacy: mật khẩu lưu plain text trong DB → cho đăng nhập và chuyển sang bcrypt
       if (password === user.password_hash) {
         isPasswordValid = true;
-        try {
-          await this.usersService.rehashPasswordFromPlain(user.id, password);
-        } catch {
-          /* vẫn cho login; lần sau có thể cần sửa DB tay */
-        }
+        // Fire-and-forget: rehash nền, không block login flow
+        this.usersService.rehashPasswordFromPlain(user.id, password).catch(() => {});
       }
     }
 
@@ -83,7 +78,7 @@ export class AuthService {
       return null;
     }
 
-    return this.usersService.findByEmail(email);
+    return user;
   }
 
   async validateGoogleUser(googleUser: GoogleUser) {
@@ -94,10 +89,14 @@ export class AuthService {
     if (user) {
       // If user exists but no google_id, link it
       if (!(user as any).google_id) {
-        await this.usersService.update(user.id, {
+        const updateData: any = {
           google_id: googleUser.googleId,
-          image_url: googleUser.picture,
-        } as any);
+        };
+        // ONLY update image_url if it's currently empty
+        if (!user.image_url) {
+          updateData.image_url = googleUser.picture;
+        }
+        await this.usersService.update(user.id, updateData);
         user = await this.usersService.findByEmail(emailLowerCase); // Refresh
       }
       return user;

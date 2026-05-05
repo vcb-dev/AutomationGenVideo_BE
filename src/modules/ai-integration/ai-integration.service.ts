@@ -4,7 +4,7 @@ import { HttpService } from '@nestjs/axios';
 
 import { ConfigService } from '@nestjs/config';
 
-import { catchError, firstValueFrom } from 'rxjs';
+import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 
 import { AxiosError } from 'axios';
 
@@ -28,7 +28,7 @@ export class AiIntegrationService {
 
   ) {
 
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8001');
+    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
 
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
 
@@ -308,36 +308,20 @@ export class AiIntegrationService {
     );
 
     try {
-      const { data } = await firstValueFrom(
-        this.httpService
-          .post(
-            endpoint,
-            {
-              url,
-              max_posts: maxPosts,
-              force_method: forceMethod,
-              start_date: startDate || undefined,
-              end_date: endDate || undefined,
-              force_refresh: forceRefresh,
-            },
-            {
-              timeout: 600000,
-            },
-          )
-          .pipe(
-            catchError((error: AxiosError) => {
-              this.logger.error(
-                `AI Service channel metrics error: ${error.message}`,
-                error.response?.data,
-              );
-              throw new HttpException(
-                error.response?.data || 'Failed to connect to AI Service (channel metrics)',
-                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
-              );
-            }),
-          ),
+      const { data } = await lastValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/api/facebook/channel-metrics/`,
+          {
+            url,
+            max_posts: maxPosts,
+            force_method: forceMethod,
+            start_date: startDate || undefined,
+            end_date: endDate || undefined,
+            force_refresh: forceRefresh,
+          },
+          { timeout: 600000 },
+        ),
       );
-
       return data;
     } catch (error: any) {
       this.logger.error(`Channel metrics failed: ${error.message}`);
@@ -355,30 +339,20 @@ export class AiIntegrationService {
     );
 
     try {
-      const { data } = await firstValueFrom(
-        this.httpService
-          .post(
-            endpoint,
-            {
-              platform,
-              username: usernameOrUrl,
-              max_posts: maxPosts,
-              language,
-              start_date: startDate || undefined,
-              end_date: endDate || undefined,
-              force_refresh: forceRefresh,
-            },
-            { timeout: 600000 },
-          )
-          .pipe(
-            catchError((error: AxiosError) => {
-              this.logger.error(`AI Service generic insights error: ${error.message}`, error.response?.data);
-              throw new HttpException(
-                error.response?.data || 'Failed to connect to AI Service (generic insights)',
-                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
-              );
-            }),
-          ),
+      const { data } = await lastValueFrom(
+        this.httpService.post(
+          endpoint,
+          {
+            platform,
+            username: usernameOrUrl,
+            max_posts: maxPosts,
+            language,
+            start_date: startDate || undefined,
+            end_date: endDate || undefined,
+            force_refresh: forceRefresh,
+          },
+          { timeout: 600000 },
+        ),
       );
       return data;
     } catch (error: any) {
@@ -409,7 +383,10 @@ export class AiIntegrationService {
               end_date: endDate || undefined,
               force_refresh: forceRefresh,
             },
-            { timeout: 600000 },
+            {
+              timeout: 600000,
+              headers: { 'Content-Type': 'application/json' },
+            },
           )
           .pipe(
             catchError((error: AxiosError) => {
@@ -836,6 +813,12 @@ export class AiIntegrationService {
         'tiktok.com',
         'muscdn.com',
         'musical.ly',
+        // Google user content (Lark employee profile photos)
+        'googleusercontent.com',
+        'lh3.googleusercontent.com',
+        'lh4.googleusercontent.com',
+        'lh5.googleusercontent.com',
+        'lh6.googleusercontent.com',
       ];
 
       const isAllowed = allowedDomains.some(domain => imageUrl.includes(domain));
@@ -845,7 +828,8 @@ export class AiIntegrationService {
         return;
       }
 
-      // Fetch the image - headers giống browser để tránh Instagram CDN block
+      const isGoogleContent = imageUrl.includes('googleusercontent.com');
+      // Fetch the image - headers giống browser để tránh CDN block
       const response = await firstValueFrom(
         this.httpService.get(imageUrl, {
           responseType: 'arraybuffer',
@@ -855,7 +839,7 @@ export class AiIntegrationService {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.instagram.com/',
+            'Referer': isGoogleContent ? 'https://www.google.com/' : 'https://www.instagram.com/',
             'Sec-Fetch-Dest': 'image',
             'Sec-Fetch-Mode': 'no-cors',
           },

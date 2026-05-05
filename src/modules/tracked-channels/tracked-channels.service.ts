@@ -15,7 +15,41 @@ export class TrackedChannelsService {
   ) {}
 
   async create(userId: string, createDto: CreateTrackedChannelDto) {
-    // Use upsert to handle both creation and update of stats
+    // Lấy thông tin user để gắn owner/email vào Channel table
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, full_name: true, team: true },
+    });
+
+    // Upsert vào Channel table (huyk_channels) — link kênh với công ty
+    const channelId = `manual_${createDto.platform}_${createDto.username}`.toLowerCase();
+    const platformLabel = this.mapPlatformToLabel(createDto.platform);
+
+    const channel = await this.prisma.channel.upsert({
+      where: { id: channelId },
+      update: {
+        name: createDto.display_name || createDto.username,
+        platform: platformLabel,
+        owner: user?.full_name || '',
+        email: user?.email || null,
+        team_traffic: user?.team || '',
+      },
+      create: {
+        id: channelId,
+        name: createDto.display_name || createDto.username,
+        platform: platformLabel,
+        channel_id: createDto.username,
+        link_channel: '',
+        status: 'Đang hoạt động',
+        team_traffic: user?.team || '',
+        owner: user?.full_name || '',
+        email: user?.email || null,
+      },
+    });
+
+    this.logger.log(`[create] Upserted Channel "${channel.name}" (${channelId}) for user ${user?.full_name}`);
+
+    // Upsert vào TrackedChannel table
     const result = await this.prisma.trackedChannel.upsert({
       where: {
         user_id_platform_username: {
@@ -34,7 +68,8 @@ export class TrackedChannelsService {
         posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate,
         last_synced_at: new Date(),
-        is_active: true, // Reactivate if it was deleted/inactive
+        is_active: true,
+        lark_channel_id: channel.id,
       } as any,
       create: {
         user_id: userId,
@@ -48,6 +83,8 @@ export class TrackedChannelsService {
         total_videos: createDto.total_videos || 0,
         posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate || 0,
+        lark_channel_id: channel.id,
+        added_via: 'manual',
       } as any,
     });
 
@@ -73,19 +110,47 @@ export class TrackedChannelsService {
     };
   }
 
-  async findAllByUser(userId: string, platform?: string) {
+  private mapPlatformToLabel(platform: Platform): string {
+    const map: Record<string, string> = {
+      TIKTOK: 'TikTok',
+      INSTAGRAM: 'Instagram',
+      FACEBOOK: 'Facebook',
+      DOUYIN: 'Douyin',
+      XIAOHONGSHU: 'Xiaohongshu',
+    };
+    return map[platform] || platform;
+  }
+
+  async findAllByUser(userId: string, platform?: string, team?: string) {
+    if (team) {
+      // Single-query path: JOIN tracked_channels → huyk_channels on lark_channel_id = id
+      const platformFilter = platform ? `AND tc.platform = ${platform.toUpperCase()}` : '';
+      const rows = await this.prisma.$queryRaw<any[]>`
+        SELECT tc.*
+        FROM tracked_channels tc
+        JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
+        WHERE tc.user_id = ${userId}
+          AND tc.is_active = true
+          AND hc.team_traffic ILIKE ${'%' + team + '%'}
+          ${platformFilter}
+        ORDER BY tc.created_at DESC
+      `;
+      return rows.map((ch) => ({
+        ...ch,
+        total_likes: Number(ch.total_likes ?? 0),
+        total_views: Number(ch.total_views ?? 0),
+      }));
+    }
+
     const channels = await this.prisma.trackedChannel.findMany({
       where: {
         user_id: userId,
         is_active: true,
         ...(platform && { platform: platform.toUpperCase() as any }),
       },
-      orderBy: {
-        created_at: 'desc',
-      },
+      orderBy: { created_at: 'desc' },
     });
 
-    // Convert BigInt to number for JSON serialization
     return channels.map((channel) => ({
       ...channel,
       total_likes: Number(channel.total_likes),
@@ -93,8 +158,8 @@ export class TrackedChannelsService {
     }));
   }
 
-  async getMyChannels(userId: string, platform?: string) {
-    const channels = await this.findAllByUser(userId, platform);
+  async getMyChannels(userId: string, platform?: string, team?: string) {
+    const channels = await this.findAllByUser(userId, platform, team);
 
     return {
       success: true,
@@ -265,11 +330,26 @@ export class TrackedChannelsService {
   }
 
   async remove(id: string, userId: string) {
-    await this.findOne(id, userId); // Check ownership
+    const channel = await this.findOne(id, userId);
 
-    return this.prisma.trackedChannel.delete({
+    // Nếu tracked channel link với Channel manual → xóa luôn bên Channel
+    const tracked = await this.prisma.trackedChannel.findUnique({
+      where: { id },
+      select: { lark_channel_id: true, added_via: true },
+    });
+
+    const result = await this.prisma.trackedChannel.delete({
       where: { id },
     });
+
+    if (tracked?.lark_channel_id?.startsWith('manual_')) {
+      await this.prisma.channel.delete({
+        where: { id: tracked.lark_channel_id },
+      }).catch(() => {});
+      this.logger.log(`[remove] Also deleted manual Channel: ${tracked.lark_channel_id}`);
+    }
+
+    return result;
   }
 
   async getManagerDashboard(userId: string): Promise<ManagerDashboardDto> {

@@ -11,13 +11,22 @@ import { AppModule } from "./app.module";
 };
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: process.env.NODE_ENV === 'production'
+      ? ['error', 'warn', 'log']
+      : ['error', 'warn', 'log', 'debug'],
+  });
 
   // Security and Optimization
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
   }));
-  app.use(compression());
+  app.use(compression({ level: 6, threshold: 1024 }));
+
+  const expressInstance = app.getHttpAdapter().getInstance();
+  if (typeof expressInstance.set === "function") {
+    expressInstance.set("trust proxy", true);
+  }
 
   // Global validation pipe
   app.useGlobalPipes(
@@ -65,11 +74,19 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup("api", app, document);
 
+  // Graceful shutdown support
+  app.enableShutdownHooks();
+
   const port = process.env.PORT || 3000;
   await app.listen(port);
 
-  console.log(`🚀 Application is running on: http://localhost:${port}`);
-  console.log(`📚 Swagger documentation: http://localhost:${port}/api`);
+  expressInstance.keepAliveTimeout  = 65_000;
+  expressInstance.headersTimeout    = 66_000;
+  expressInstance.maxHeadersCount   = 100;
+  expressInstance.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+
+  console.log(`Application is running on: http://localhost:${port}`);
+  console.log(`Swagger documentation: http://localhost:${port}/api`);
 }
 
 bootstrap();
