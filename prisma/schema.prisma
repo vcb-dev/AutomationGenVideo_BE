@@ -1045,6 +1045,24 @@ model SocialPost {
   @@index([next_retry_at])
   @@index([status, scheduled_at])
   @@map("social_posts")
+
+  media_files   SocialMediaFile[]
+}
+
+/// Video/ảnh đã đăng — lưu binary trực tiếp vào DB sau khi nén xong, xóa file local
+model SocialMediaFile {
+  id         String      @id @default(uuid())
+  post_id    String?
+  filename   String      @unique
+  mimetype   String      @default("video/mp4")
+  size       Int
+  data       Bytes
+  created_at DateTime    @default(now())
+  post       SocialPost? @relation(fields: [post_id], references: [id], onDelete: SetNull)
+
+  @@index([post_id])
+  @@index([filename])
+  @@map("social_media_files")
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
