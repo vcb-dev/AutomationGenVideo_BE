@@ -430,11 +430,11 @@ export class LarkController {
     @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts + Permission/Team)' })
     async syncHRData() {
         try {
-            const result = await this.larkSyncService.syncFromLark();
-            await this.larkService.syncPermissionData();
-            return { message: 'HR sync completed successfully', data: result };
+            // Trigger the unified 3-hour sync process in background
+            this.larkSyncService.unifiedSync();
+            return { message: 'HR sync (Unified) triggered in background. This will wipe remote data, sync users, and force sync KPIs.' };
         } catch (error) {
-            return { message: 'HR sync failed', error: error.message };
+            return { message: 'HR sync trigger failed', error: error.message };
         }
     }
 

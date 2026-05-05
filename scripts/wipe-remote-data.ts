@@ -12,9 +12,18 @@ async function main() {
   console.log('⚠️  WIPING DATA ON REMOTE SERVER...');
 
   try {
-    // Wipe LarkKPI
-    const kpiCount = await server.larkKPI.deleteMany({});
-    console.log(`✅ Wiped LarkKPI: ${kpiCount.count} records`);
+    // Wipe LarkKPI (EXCEPT Đồ Da team)
+    const kpiCount = await server.larkKPI.deleteMany({
+      where: {
+        NOT: {
+          team: {
+            contains: 'Đồ Da',
+            mode: 'insensitive'
+          }
+        }
+      }
+    });
+    console.log(`✅ Wiped LarkKPI (preserving Đồ Da): ${kpiCount.count} records`);
 
     // Wipe Users
     // NOTE: This will delete ALL users. Make sure you sync back immediately!

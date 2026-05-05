@@ -42,7 +42,7 @@ async function localToServerSync() {
         for (let i = 0; i < localKpi.length; i += chunkSize) {
             const chunk = localKpi.slice(i, i + chunkSize);
             await remote.larkKPI.createMany({
-                data: chunk,
+                data: chunk as any,
                 skipDuplicates: true,
             });
             console.log(`📡 Uploaded LarkKPI: ${i + chunk.length}/${localKpi.length}`);
@@ -52,7 +52,7 @@ async function localToServerSync() {
         for (let i = 0; i < localDoDa.length; i += chunkSize) {
             const chunk = localDoDa.slice(i, i + chunkSize);
             await remote.larkKpiDoDaEditor.createMany({
-                data: chunk,
+                data: chunk as any,
                 skipDuplicates: true,
             });
             console.log(`📡 Uploaded DoDa KPI: ${i + chunk.length}/${localDoDa.length}`);
