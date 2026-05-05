@@ -405,21 +405,16 @@ export class PublishService {
   }
 
   /**
-   * Nén video xuống định dạng nhẹ hơn (720p, CRF 28, 4Mbps) sau khi đăng thành công.
-   * Chạy bất đồng bộ — không block response. Cập nhật media_urls trong DB sau khi nén xong.
+   * Nén video sau khi đăng thành công, lưu binary thẳng vào DB (social_media_files),
+   * sau đó xóa toàn bộ file local — LUÔN xóa dù nén thành công hay thất bại.
    */
   public async archiveMediaAsync(postId: string, mediaUrls: string[]): Promise<void> {
     if (!mediaUrls?.length) return;
 
     const ffmpegPath = process.env.FFMPEG_PATH;
-    if (!ffmpegPath) {
-      this.logger.warn('[Archive] FFMPEG_PATH chưa cấu hình — bỏ qua nén video');
-      return;
-    }
-
-    if (!fs.existsSync(ffmpegPath)) {
-      this.logger.warn(`[Archive] ffmpeg không tìm thấy tại ${ffmpegPath}`);
-      return;
+    const ffmpegAvailable = !!(ffmpegPath && fs.existsSync(ffmpegPath));
+    if (!ffmpegAvailable) {
+      this.logger.warn('[Archive] FFMPEG_PATH không khả dụng — lưu file gốc vào DB không nén');
     }
 
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
@@ -427,7 +422,6 @@ export class PublishService {
     let hasChange = false;
 
     for (const url of mediaUrls) {
-      // Chỉ xử lý file local, bỏ qua URL ngoài (catbox, CDN, ...)
       if (!url.includes('/api/social/media/')) {
         updatedUrls.push(url);
         continue;
@@ -436,8 +430,9 @@ export class PublishService {
       const filename = url.split('/api/social/media/').pop()!.split('?')[0];
       const inputPath = path.join(uploadBase, filename);
 
-      // Bỏ qua file ảnh, chỉ nén video
+      // Ảnh: xóa local ngay, không lưu DB
       if (!/\.(mp4|mov|avi|mkv|webm)$/i.test(filename)) {
+        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
         updatedUrls.push(url);
         continue;
       }
@@ -447,52 +442,62 @@ export class PublishService {
         continue;
       }
 
+      const beforeSize = fs.statSync(inputPath).size;
       const baseName = path.basename(filename, path.extname(filename));
       const archiveName = `arc_${Date.now()}_${baseName}.mp4`;
       const outputPath = path.join(uploadBase, archiveName);
 
+      let finalPath = inputPath;
+      let finalName = filename;
+
+      // Thử nén nếu ffmpeg có sẵn
+      if (ffmpegAvailable) {
+        try {
+          this.logger.log(`[Archive] Nén ${filename} (${(beforeSize / 1024 / 1024).toFixed(1)} MB)...`);
+          const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c:v libx264 -profile:v main -crf 28 -maxrate 4M -bufsize 8M -vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
+          await execAsync(cmd, { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
+
+          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size < beforeSize) {
+            const afterSize = fs.statSync(outputPath).size;
+            const ratio = Math.round((1 - afterSize / beforeSize) * 100);
+            this.logger.log(`[Archive] Nén xong: ${(beforeSize / 1024 / 1024).toFixed(1)}MB → ${(afterSize / 1024 / 1024).toFixed(1)}MB (-${ratio}%)`);
+            finalPath = outputPath;
+            finalName = archiveName;
+          } else {
+            this.logger.log(`[Archive] Nén không hiệu quả — dùng file gốc`);
+            try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+          }
+        } catch (err: any) {
+          this.logger.warn(`[Archive] Nén thất bại: ${err.message} — dùng file gốc`);
+          try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+        }
+      }
+
+      // Luôn lưu vào DB (dù nén được hay không) rồi xóa file
       try {
-        const beforeSize = fs.statSync(inputPath).size;
-        this.logger.log(`[Archive] Nén ${filename} (${(beforeSize / 1024 / 1024).toFixed(1)} MB)...`);
+        const finalSize = fs.statSync(finalPath).size;
+        const buffer = fs.readFileSync(finalPath);
+        const mediaFile = await this.prisma.socialMediaFile.create({
+          data: { post_id: postId, filename: finalName, mimetype: 'video/mp4', size: finalSize, data: buffer },
+        });
+        this.logger.log(`[Archive] ✅ Lưu DB: id=${mediaFile.id} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
 
-        // 720p max, CRF 28, 4Mbps, 30fps CFR, AAC 96k
-        const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c:v libx264 -profile:v main -crf 28 -maxrate 4M -bufsize 8M -vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
-        await execAsync(cmd, { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
-
-        if (!fs.existsSync(outputPath)) {
-          this.logger.warn(`[Archive] Output không tồn tại sau nén: ${archiveName}`);
-          updatedUrls.push(url);
-          continue;
+        // Xóa file local ngay sau khi đã lưu DB
+        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
+        if (finalPath !== inputPath) {
+          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
         }
-
-        const afterSize = fs.statSync(outputPath).size;
-        const ratio = Math.round((1 - afterSize / beforeSize) * 100);
-        this.logger.log(`[Archive] ✅ ${filename} → ${archiveName}: ${(beforeSize / 1024 / 1024).toFixed(1)} MB → ${(afterSize / 1024 / 1024).toFixed(1)} MB (${ratio}% nhỏ hơn)`);
-
-        // Nếu nén xong lại lớn hơn gốc → giữ gốc, xóa output
-        if (afterSize >= beforeSize) {
-          this.logger.log(`[Archive] Output lớn hơn gốc — giữ file gốc`);
-          try { fs.unlinkSync(outputPath); } catch {}
-          updatedUrls.push(url);
-          continue;
-        }
-
-        // Xóa file gốc sau 30 phút để các tiến trình song song khác (nếu có) kịp đọc (ví dụ: Facebook trích xuất thumbnail)
-        setTimeout(() => {
-          try {
-            if (fs.existsSync(inputPath)) {
-              fs.unlinkSync(inputPath);
-              this.logger.log(`[Archive] Đã xóa file gốc sau khi nén: ${filename}`);
-            }
-          } catch {}
-        }, 30 * 60 * 1000);
 
         const urlBase = url.substring(0, url.indexOf('/api/social/media/'));
-        updatedUrls.push(`${urlBase}/api/social/media/${archiveName}`);
+        updatedUrls.push(`${urlBase}/api/social/media/${finalName}`);
         hasChange = true;
       } catch (err: any) {
-        this.logger.warn(`[Archive] Nén thất bại cho ${filename}: ${err.message}`);
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+        // Lưu DB thất bại → vẫn xóa file để tránh tích lũy
+        this.logger.error(`[Archive] Lưu DB thất bại cho ${filename}: ${err.message} — xóa file local`);
+        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
+        if (finalPath !== inputPath) {
+          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
+        }
         updatedUrls.push(url);
       }
     }
@@ -503,7 +508,7 @@ export class PublishService {
           where: { id: postId },
           data: { media_urls: updatedUrls, updated_at: new Date() },
         });
-        this.logger.log(`[Archive] Đã cập nhật media_urls cho post ${postId}`);
+        this.logger.log(`[Archive] Cập nhật media_urls post ${postId}`);
       } catch (err: any) {
         this.logger.warn(`[Archive] Không cập nhật DB được: ${err.message}`);
       }
