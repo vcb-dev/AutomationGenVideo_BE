@@ -9,6 +9,7 @@ const PLATFORM_TO_AI: Record<Platform, string> = {
   TIKTOK: 'tiktok',
   DOUYIN: 'douyin',
   XIAOHONGSHU: 'xiaohongshu',
+  YOUTUBE: 'youtube',
 };
 
 export type EnrichTarget = { userId: string; platform: Platform; username: string };

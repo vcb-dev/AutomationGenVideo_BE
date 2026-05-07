@@ -2647,9 +2647,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                 const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
                 if (sysMatch) {
-                    // Role comes from Users table (handled in getUserActivityReports), 
-                    // and Team now also prioritizes Users table (requested by user).
-                    if (sysMatch.team) kpiData.team = sysMatch.team;
+                    // Role comes from Users table (handled in getUserActivityReports)
                     // We also fetch current employee_status to skip resigned users.
                     if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                 }

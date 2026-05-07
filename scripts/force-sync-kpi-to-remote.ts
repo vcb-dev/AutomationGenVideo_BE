@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 // Remote DB URL from env
 const REMOTE_DB_URL = process.env.SERVER_DATABASE_URL;
@@ -33,7 +35,7 @@ async function fetchLarkRecords(token: string) {
             headers: { Authorization: `Bearer ${token}` },
             params: { page_size: 500, page_token: pageToken }
         });
-        
+
         const data = res.data.data;
         if (data.items) records.push(...data.items);
         hasMore = data.has_more;
@@ -54,7 +56,7 @@ function extractText(field: any): string | null {
 
 function mapRecordToKPI(record: any) {
     const fields = record.fields;
-    
+
     // Extract report_date from "Ngày báo cáo"
     let reportDate: Date | null = null;
     if (fields['Ngày báo cáo']) {
@@ -93,10 +95,10 @@ function mapRecordToKPI(record: any) {
 }
 
 async function main() {
-    console.log('--- STARTING FORCE SYNC LARK KPI TO REMOTE (Team prioritized from Users table) ---');
+    console.log('--- STARTING FORCE SYNC LARK KPI TO REMOTE ---');
     const token = await getToken();
     const rawRecords = await fetchLarkRecords(token);
-    
+
     // Filter records from March 1st, 2026
     const minDate = new Date('2026-03-01T00:00:00Z');
     const kpiData = rawRecords
@@ -119,45 +121,22 @@ async function main() {
         await prismaRemote.$connect();
         console.log('Connected to remote DB');
 
-        // Fetch users to prioritize team from Users table
-        console.log('Fetching users from remote DB for team resolution...');
-        const remoteUsers = await prismaRemote.user.findMany({
-            where: { is_active: true },
-            select: { email: true, full_name: true, team: true, employee_id: true }
-        });
-        const userMap = new Map<string, any>();
-        const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
-        remoteUsers.forEach(u => {
-            if (u.email) userMap.set(u.email.toLowerCase().trim(), u);
-            if (u.full_name) userMap.set(norm(u.full_name), u);
-            if (u.employee_id) userMap.set(String(u.employee_id).trim(), u);
-        });
-
-        // Apply authoritative team from Users table
-        console.log('Applying authoritative team from Users table...');
-        kpiData.forEach(row => {
-            const nameKey = row.name ? norm(row.name) : '';
-            const emailKey = row.name && row.name.includes('@') ? row.name.toLowerCase().trim() : ''; // fallback if email is in name field
-            const empIdKey = row.employee_id ? String(row.employee_id).trim() : '';
-            
-            const match = (emailKey ? userMap.get(emailKey) : null) || (empIdKey ? userMap.get(empIdKey) : null) || (nameKey ? userMap.get(nameKey) : null);
-            if (match && match.team) {
-                row.team = match.team;
-            }
-        });
-
-        // Delete existing records (EXCEPT Đồ Da team)
-        console.log('Cleaning remote lark_kpi table (preserving Đồ Da)...');
-        await prismaRemote.larkKPI.deleteMany({
-            where: {
-                NOT: {
-                    team: {
-                        contains: 'Đồ Da',
-                        mode: 'insensitive'
-                    }
-                }
-            }
-        });
+        // Delete existing records in small batches (EXCEPT Đồ Da team) to avoid statement timeout
+        console.log('Cleaning remote lark_kpi table (preserving Đồ Da, batched)...');
+        let delCount = 0;
+        while (true) {
+            const batch: any[] = await prismaRemote.$queryRaw`
+                SELECT id FROM lark_kpi
+                WHERE NOT (LOWER(COALESCE(team,'')) LIKE '%đồ da%' OR LOWER(COALESCE(team,'')) LIKE '%do da%')
+                LIMIT 50
+            `;
+            if (batch.length === 0) break;
+            const ids = batch.map((r: any) => r.id);
+            await prismaRemote.$executeRaw`DELETE FROM lark_kpi WHERE id = ANY(${ids})`;
+            delCount += ids.length;
+            if (delCount % 500 === 0) process.stdout.write(`\r  Cleaned ${delCount} rows...`);
+        }
+        console.log(`\n  Cleaned ${delCount} total rows`);
 
         // Insert new records in chunks
         const CHUNK_SIZE = 300;

@@ -16,6 +16,8 @@
 
 import axios from 'axios';
 import { PrismaClient, UserRole } from '@prisma/client';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 // ─── Lark config ────────────────────────────────────────────────────────────
 const LARK_APP_ID     = process.env.LARK_APP_ID     || 'cli_a9b023ef4078ded0';

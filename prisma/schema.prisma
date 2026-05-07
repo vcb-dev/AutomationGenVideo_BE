@@ -1073,6 +1073,11 @@ model VideoLibrary {
   @@map("video_library")
 }
 
+enum CollectionType {
+  TEAM
+  SHARED
+}
+
 enum UserRole {
   ADMIN
   MANAGER

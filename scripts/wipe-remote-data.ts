@@ -1,4 +1,6 @@
 import { PrismaClient } from '@prisma/client';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 async function main() {
   const serverUrl = process.env.SERVER_DATABASE_URL;
@@ -12,8 +14,8 @@ async function main() {
   console.log('⚠️  WIPING DATA ON REMOTE SERVER...');
 
   try {
-    // Wipe LarkKPI (EXCEPT Đồ Da team)
-    const kpiCount = await server.larkKPI.deleteMany({
+    // Fetch IDs of records to delete (preserving Đồ Da)
+    const recordsToDelete = await server.larkKPI.findMany({
       where: {
         NOT: {
           team: {
@@ -21,12 +23,27 @@ async function main() {
             mode: 'insensitive'
           }
         }
-      }
+      },
+      select: { id: true }
     });
-    console.log(`✅ Wiped LarkKPI (preserving Đồ Da): ${kpiCount.count} records`);
+
+    const ids = recordsToDelete.map(r => r.id);
+    console.log(`Found ${ids.length} records to wipe...`);
+
+    if (ids.length > 0) {
+      // Delete in tiny chunks of 50 to avoid timeout
+      const CHUNK = 50;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        await server.larkKPI.deleteMany({
+          where: { id: { in: chunk } }
+        });
+        if (i % 500 === 0) console.log(`  Wiped ${i}/${ids.length}...`);
+      }
+    }
+
 
     // Wipe Users
-    // NOTE: This will delete ALL users. Make sure you sync back immediately!
     const userCount = await server.user.deleteMany({});
     console.log(`✅ Wiped Users: ${userCount.count} records`);
 
@@ -39,3 +56,7 @@ async function main() {
 }
 
 main();
+
+
+
+
