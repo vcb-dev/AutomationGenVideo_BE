@@ -623,7 +623,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         }, 3, 'getAccessToken');
     }
 
-    @Cron('0 0 8,10,12,14,16,18,20,22 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    // @Cron('0 0 8,10,12,14,16,18,20,22 * * *', { name: 'lark-data-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async handleCron() {
         this.logger.log('[Cron] Start full Lark sync: Lark -> local + Lark -> server');
         const startTime = Date.now();
@@ -4206,11 +4206,37 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 };
 
                 // --- 1. Seed kpisForAggregation with ALL employees matching team filter (to show full team in Checklist) ---
+                // FIRST: Build person → KPI team lookup from actual KPI data.
+                // This ensures "KPI team nào thì thuộc về team đó" — the KPI record's team is authoritative.
+                const personKpiTeamMap = new Map<string, string>();
+                for (const kpi of kpiData) {
+                    const kName = kpi.name ? normName(kpi.name) : null;
+                    const kEmail = kpi.email?.toLowerCase().trim();
+                    const kTeam = (kpi.team || '').trim();
+                    if (!kTeam) continue;
+                    // Index by email and name so we can look up later
+                    if (kEmail) personKpiTeamMap.set(kEmail, kTeam);
+                    if (kName) personKpiTeamMap.set(kName, kTeam);
+                    // Also try extracting email from employee_data
+                    if (!kEmail && kpi.employee_data) {
+                        const empArr = Array.isArray(kpi.employee_data) ? kpi.employee_data : [kpi.employee_data];
+                        const empEmail = empArr[0]?.email?.toLowerCase().trim();
+                        if (empEmail) personKpiTeamMap.set(empEmail, kTeam);
+                    }
+                }
+
                 const kpisForAggregation = new Map<string, any>();
                 if (selectedSingleDay) {
                     employees.forEach(emp => {
                         const teamNormFilter = teamFilterNormalized ? normalizeTeamKey(teamFilterNormalized) : null;
-                        const userTeams = (emp.team || '').split(',').map(t => t.trim()).filter(Boolean);
+                        
+                        // Resolve team: KPI team is authoritative, fallback to first team from users table
+                        const empEmail = emp.email?.toLowerCase().trim();
+                        const empNameKey = normName(emp.full_name);
+                        const kpiTeam = (empEmail ? personKpiTeamMap.get(empEmail) : null)
+                                     || (empNameKey ? personKpiTeamMap.get(empNameKey) : null);
+                        const resolvedTeam = kpiTeam || ((emp.team || '').split(',')[0] || '').trim() || '';
+                        const userTeams = resolvedTeam ? [resolvedTeam] : [];
 
                         let isMatch = false;
                         if (!teamNormFilter) {
@@ -4224,20 +4250,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         }
 
                         if (isMatch) {
-                            const pKey = emp.email?.toLowerCase().trim() || normName(emp.full_name);
-                            // Default to first matching team if multiple, or specific filtered team
-                            const displayTeam = teamNormFilter && !['allglobal', 'allvn'].includes(teamNormFilter)
-                                ? userTeams.find(t => normalizeTeamKey(t) === teamNormFilter) || userTeams[0]
-                                : userTeams[0];
+                            const pKey = empEmail || empNameKey;
+                            const displayTeam = resolvedTeam || 'Khác';
 
-                            const teamNorm = normalizeTeamKey(displayTeam || 'Khác');
+                            const teamNorm = normalizeTeamKey(displayTeam);
                             const pmk = `${pKey}_${teamNorm}_T${monthsInRange[0].monthNum}_${monthsInRange[0].year}`;
 
                             kpisForAggregation.set(pmk, {
                                 employee_id: emp.employee_id,
                                 name: emp.full_name,
                                 email: emp.email,
-                                team: displayTeam || 'Khác',
+                                team: displayTeam,
                                 role: emp.role || 'member',
                                 image_url: emp.image_url,
                                 status: emp.status || 'on',
@@ -4247,7 +4270,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                                 completed_month: 0,
                                 traffic_month: 0,
                                 revenue_month: 0,
-                                isAuthorizedForReport: true // Seeded from Users table -> always authorized for this team
+                                isAuthorizedForReport: true
                             });
                         }
                     });
@@ -4359,10 +4382,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
                         : (emailKey || nameKey || `unknown_r_${r.id}`);
 
-                    // AUTHORITATIVE TEAM RESOLUTION: Priority Users Profile > Report Team
-                    // If user is in Users table, we prefer their profile team.
-                    const authoritativeTeam = (authoritativeUser?.team || '').trim() || r.team || 'Khác';
-                    const teams = authoritativeTeam.split(',').map(t => t.trim()).filter(Boolean);
+                    // AUTHORITATIVE TEAM RESOLUTION: Priority Report/KPI team > Users Profile
+                    // Use the SINGLE team from the report/KPI record. Only fallback to users.team
+                    // if the record has no team. Never split multi-team from users table.
+                    const singleTeam = (r.team || '').trim();
+                    const fallbackTeam = singleTeam || ((authoritativeUser?.team || '').split(',')[0] || '').trim() || 'Khác';
+                    const teams = [fallbackTeam];
 
                     const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
 
@@ -4407,8 +4432,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         authUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
                     }
                     
-                    const authoritativeTeamStr = (authUser?.team || '').trim() || r.team || 'Khác';
-                    const rTeams = authoritativeTeamStr.split(',').map(t => t.trim()).filter(Boolean);
+                    // Use report's own team as single source. Only fallback to first team from users.
+                    const singleReportTeam = (r.team || '').trim();
+                    const rTeamFallback = singleReportTeam || ((authUser?.team || '').split(',')[0] || '').trim() || 'Khác';
+                    const rTeams = [rTeamFallback];
                     
                     rTeams.forEach(t => {
                         const rTeamNorm = normalizeTeamKey(t);
@@ -4471,34 +4498,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                     if (isResigned) return null;
 
-                    // AUTHORITATIVE TEAM SELECTION (Priority Users Profile > LarkKPI)
-                    const userTeamStr = (employee?.team || '').trim();
+                    // AUTHORITATIVE TEAM SELECTION
+                    // For KPI (Hiệu suất): ALWAYS use kpi.team from lark_kpi record.
+                    // For Checklist: use users.team (handled separately in checklist section).
+                    // This prevents cross-team data mixing (e.g. Hồ Đạt Team K1 + Đồ Da).
                     const kpiTeamStr = String(kpi.team || report?.team || 'Khác');
+                    const effectiveTeam = kpiTeamStr;
 
-                    // If user is in Users table, use ONLY their team from profile.
-                    // Fallback to KPI team only if they don't exist in Users table.
-                    const authoritativeTeamStr = userTeamStr || kpiTeamStr;
-                    const teamPool = authoritativeTeamStr
-                        .split(',')
-                        .map((t: string) => t.trim())
-                        .filter(Boolean);
-
-                    const orphanTeam = userTeamStr || kpiTeamStr || 'Khác';
-                    let effectiveTeam: string = orphanTeam;
-
-                    if (teamPool.length > 0) {
-                        if (teamFilterNormalized && teamFilterNormalized !== 'all global' && teamFilterNormalized !== 'all vn') {
-                            const normFilter = normalizeTeamKey(teamFilterNormalized);
-                            const hit = teamPool.find(t => normalizeTeamKey(t) === normFilter);
-                            effectiveTeam = hit || teamPool[0];
-                        } else {
-                            effectiveTeam = teamPool[0];
-                        }
-                    }
-
-                    // TEAM FILTER MATCHING
+                    // TEAM FILTER MATCHING — use KPI team only (single value, no multi-team split)
                     let isMatchForRanking = false;
-                    const poolForMatch = teamPool.length > 0 ? teamPool : [effectiveTeam];
+                    const poolForMatch = [effectiveTeam];
 
                     if (!teamFilterNormalized) {
                         isMatchForRanking = true;
@@ -4733,29 +4742,18 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             (rEmailKey ? employeeMap.get(rEmailKey) : null) ||
                             (rNameKey ? employeeMap.get(rNameKey) : null);
 
-                        const userTeamsRep = employee
-                            ? String(employee.team || '')
-                                .split(',')
-                                .map((t: string) => t.trim())
-                                .filter(Boolean)
-                            : [];
+                        // Use report's own team as primary source. Only fallback to FIRST team
+                        // from employee profile to prevent multi-team leakage.
+                        const reportOwnTeam = (report.team || '').trim();
+                        const employeeFirstTeam = employee
+                            ? (String(employee.team || '').split(',')[0] || '').trim()
+                            : '';
+                        const userTeamsRep = reportOwnTeam
+                            ? [reportOwnTeam]
+                            : (employeeFirstTeam ? [employeeFirstTeam] : []);
                         let displayTeamRep: string;
-                        if (employee && userTeamsRep.length > 0) {
-                            if (
-                                teamFilterNormalized &&
-                                teamFilterNormalized !== 'all global' &&
-                                teamFilterNormalized !== 'all vn'
-                            ) {
-                                const normFilterRep = normalizeTeamKey(teamFilterNormalized);
-                                const hitRep = userTeamsRep.find(
-                                    (t: string) =>
-                                        normalizeTeamKey(t.toLowerCase()) === normFilterRep ||
-                                        t.toLowerCase().trim() === teamFilterNormalized,
-                                );
-                                displayTeamRep = hitRep || userTeamsRep[0];
-                            } else {
-                                displayTeamRep = userTeamsRep[0];
-                            }
+                        if (userTeamsRep.length > 0) {
+                            displayTeamRep = userTeamsRep[0];
                         } else if (employee) {
                             displayTeamRep = 'Khác';
                         } else {
@@ -4910,15 +4908,19 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     const emailKeyRep = r.email?.toLowerCase().trim();
                     const authoritativeUser = (emailKeyRep ? employeeMap.get(emailKeyRep) : null) || (nameKeyRep ? employeeMap.get(nameKeyRep) : null);
 
-                    const key = authoritativeUser
+                    // Include team in key to prevent cross-team data summing
+                    // (e.g. Hồ Đạt Team K1 completed=3 + Đồ Da completed=4 = 7 bug)
+                    const teamKeyPart = normalizeTeamKey(r.team || 'khac');
+                    const key = (authoritativeUser
                         ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
-                        : (r.personKey || emailKeyRep || nameKeyRep || r.employee_id);
+                        : (r.personKey || emailKeyRep || nameKeyRep || r.employee_id))
+                        + '_' + teamKeyPart;
 
                     if (!groupedResults.has(key)) {
                         const newObj = { ...r };
                         if (authoritativeUser) {
-                            // OVERRIDE for Checklist: Use official profile info
-                            newObj.team = authoritativeUser.team || r.team;
+                            // OVERRIDE for Checklist: Use official profile info (but trust record team more if available)
+                            newObj.team = r.team || authoritativeUser.team;
                             newObj.role = authoritativeUser.role || r.role;
                             newObj.avatar = authoritativeUser.image_url || r.avatar;
                             newObj.image_url = authoritativeUser.image_url || r.image_url;

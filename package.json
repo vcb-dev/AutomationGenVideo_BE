@@ -21,7 +21,10 @@
     "prisma:generate": "prisma generate",
     "prisma:generate:fresh": "node -e \"try{require('fs').rmSync('node_modules/.prisma/client',{recursive:true,force:true})}catch(e){}\" && prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "sync:larkkpi:force": "ts-node scripts/force-sync-kpi-to-remote.ts",
+    "sync:channels:force": "ts-node scripts/sync-channels-to-server-direct.ts",
+    "sync:all-kpis:force": "ts-node scripts/sync-all-kpis-from-lark-to-server-direct.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -54,7 +57,8 @@
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.1.13",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.12.0",
@@ -69,6 +73,7 @@
     "@types/node": "^20.3.1",
     "@types/passport-jwt": "^4.0.0",
     "@types/supertest": "^2.0.12",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.42.0",

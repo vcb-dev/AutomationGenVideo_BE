@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import * as ws from 'ws';
 
 @Injectable()
 export class SupabaseStorageService implements OnModuleInit {
@@ -18,7 +19,10 @@ export class SupabaseStorageService implements OnModuleInit {
       return;
     }
 
-    this.client = createClient(url, key, { auth: { persistSession: false } });
+    this.client = createClient(url, key, { 
+      auth: { persistSession: false },
+      realtime: { transport: ws as any }
+    });
     this.available = true;
     this.logger.log(`✅ Supabase Storage sẵn sàng (bucket: ${this.bucket})`);
   }

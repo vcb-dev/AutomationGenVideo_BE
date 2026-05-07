@@ -146,11 +146,14 @@ export class LarkSyncService implements OnApplicationBootstrap {
             this.logger.log('Step 1/3: Wiping remote data...');
             await execPromise('npx ts-node scripts/wipe-remote-data.ts');
 
-            this.logger.log('Step 2/3: Syncing Lark users to server direct...');
+            this.logger.log('Step 2/4: Syncing Lark users to server direct...');
             await execPromise('npx ts-node scripts/sync-lark-to-server-direct.ts');
 
-            this.logger.log('Step 3/3: Force syncing Lark KPI...');
-            await execPromise('npm run sync:larkkpi:force');
+            this.logger.log('Step 3/4: Syncing Lark channels to server direct...');
+            await execPromise('npm run sync:channels:force');
+
+            this.logger.log('Step 4/4: Syncing ALL Lark KPIs (Main + Do Da) to server direct...');
+            await execPromise('npm run sync:all-kpis:force');
 
             this.logger.log('✅ Unified Lark Sync completed successfully!');
         } catch (err) {
