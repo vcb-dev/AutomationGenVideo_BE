@@ -31,14 +31,16 @@ async function main() {
     console.log(`Found ${ids.length} records to wipe...`);
 
     if (ids.length > 0) {
-      // Delete in tiny chunks of 50 to avoid timeout
-      const CHUNK = 50;
+      // Use raw SQL and smaller chunk sizes with a small delay to avoid database locks & timeouts
+      const CHUNK = 30;
       for (let i = 0; i < ids.length; i += CHUNK) {
         const chunk = ids.slice(i, i + CHUNK);
-        await server.larkKPI.deleteMany({
-          where: { id: { in: chunk } }
-        });
-        if (i % 500 === 0) console.log(`  Wiped ${i}/${ids.length}...`);
+        await server.$executeRaw`DELETE FROM lark_kpi WHERE id = ANY(${chunk})`;
+        if (i % 300 === 0) {
+          console.log(`  Wiped ${i}/${ids.length}...`);
+        }
+        // Brief pause to release DB locks and prevent resource exhaustion
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
 
