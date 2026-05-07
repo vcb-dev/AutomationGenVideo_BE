@@ -4,6 +4,7 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
 import { UploadController } from './upload/upload.controller';
 import { MediaController } from './upload/media.controller';
 import { FromDriveController } from './upload/from-drive.controller';
+import { SupabaseStorageService } from './upload/supabase-storage.service';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -65,6 +66,7 @@ import { DraftsService } from './drafts/drafts.service';
   providers: [
     // Core
     CryptoService,
+    SupabaseStorageService,
     // Accounts
     AccountsService,
     // OAuth

@@ -4,13 +4,12 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { SupabaseStorageService } from './supabase-storage.service';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
 
 const UPLOAD_DIR = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 @ApiTags('Social Upload')
 @ApiBearerAuth()
@@ -18,10 +17,12 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 @Controller('social/upload')
 export class FromDriveController {
   private static readonly ALLOWED_MIME_RE = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|quicktime|x-msvideo|x-matroska|webm))$/;
-  private static readonly MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2GB
+  private static readonly MAX_BYTES = 500 * 1024 * 1024;
+
+  constructor(private readonly storage: SupabaseStorageService) {}
 
   @Post('from-drive')
-  @ApiOperation({ summary: 'Tải file từ Google Drive → lưu server → trả về public URL' })
+  @ApiOperation({ summary: 'Tải file từ Google Drive → Supabase Storage → trả về public URL' })
   async uploadFromDrive(
     @Body() body: { fileId: string; accessToken: string; mimeType: string; filename: string },
     @Request() req: any,
@@ -35,62 +36,50 @@ export class FromDriveController {
 
     const ext = this.extFromMime(mimeType) || path.extname(path.basename(filename)) || '.bin';
     const savedName = `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
-    const filePath = path.join(UPLOAD_DIR, savedName);
 
-    // Kiểm tra kích thước trước khi download
     const headRes = await axios.head(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 15_000 },
     ).catch(() => null);
     const contentLength = headRes ? parseInt(headRes.headers['content-length'] || '0', 10) : 0;
-    if (contentLength > FromDriveController.MAX_DOWNLOAD_BYTES) {
-      throw new BadRequestException(`File vượt quá giới hạn 2GB`);
+    if (contentLength > FromDriveController.MAX_BYTES) {
+      throw new BadRequestException('File vượt quá giới hạn 500MB');
     }
 
-    // Download từ Google Drive
     const response = await axios.get(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
-        responseType: 'stream',
+        responseType: 'arraybuffer',
         timeout: 120_000,
-        maxContentLength: FromDriveController.MAX_DOWNLOAD_BYTES,
+        maxContentLength: FromDriveController.MAX_BYTES,
       },
     );
 
-    await new Promise<void>((resolve, reject) => {
-      const writer = fs.createWriteStream(filePath);
-      response.data.pipe(writer);
-      writer.on('finish', resolve);
-      writer.on('error', reject);
-    });
+    const buffer = Buffer.from(response.data);
+    let url: string;
 
-    // Dùng PUBLIC_BASE_URL từ env để tránh Host Header Injection
-    const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.headers.host}`;
+    if (this.storage.isAvailable()) {
+      url = await this.storage.upload(buffer, savedName, mimeType);
+    } else {
+      if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+      const filePath = path.join(UPLOAD_DIR, savedName);
+      fs.writeFileSync(filePath, buffer);
+      const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.headers.host}`;
+      url = `${baseUrl}/api/social/media/${savedName}`;
+    }
 
     return {
       success: true,
-      urls: [{
-        url: `${baseUrl}/api/social/media/${savedName}`,
-        filename: savedName,
-        originalname: filename,
-        mimetype: mimeType,
-        size: fs.statSync(filePath).size,
-      }],
+      urls: [{ url, filename: savedName, originalname: filename, mimetype: mimeType, size: buffer.length }],
     };
   }
 
   private extFromMime(mimeType: string): string {
     const map: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/jpg': '.jpg',
-      'image/png': '.png',
-      'image/gif': '.gif',
-      'image/webp': '.webp',
-      'video/mp4': '.mp4',
-      'video/quicktime': '.mov',
-      'video/x-msvideo': '.avi',
-      'video/webm': '.webm',
+      'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png',
+      'image/gif': '.gif', 'image/webp': '.webp', 'video/mp4': '.mp4',
+      'video/quicktime': '.mov', 'video/x-msvideo': '.avi', 'video/webm': '.webm',
     };
     return map[mimeType] || '';
   }
