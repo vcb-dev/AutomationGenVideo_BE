@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { CryptoService } from '../crypto/crypto.service';
+import { SupabaseStorageService } from '../upload/supabase-storage.service';
 import { FacebookPublisher } from './platforms/facebook.platform';
 import { InstagramPublisher } from './platforms/instagram.platform';
 import { TiktokPublisher } from './platforms/tiktok.platform';
@@ -26,6 +27,7 @@ export class PublishService {
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
     private readonly crypto: CryptoService,
+    private readonly supabase: SupabaseStorageService,
     private readonly fb: FacebookPublisher,
     private readonly ig: InstagramPublisher,
     private readonly tt: TiktokPublisher,
@@ -473,27 +475,36 @@ export class PublishService {
         }
       }
 
-      // Luôn lưu vào DB (dù nén được hay không) rồi xóa file
+      // Lưu file sau khi nén rồi xóa local
       try {
         const finalSize = fs.statSync(finalPath).size;
         const buffer = fs.readFileSync(finalPath);
-        const mediaFile = await this.prisma.socialMediaFile.create({
-          data: { post_id: postId, filename: finalName, mimetype: 'video/mp4', size: finalSize, data: buffer },
-        });
-        this.logger.log(`[Archive] ✅ Lưu DB: id=${mediaFile.id} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+        let archivedUrl: string;
 
-        // Xóa file local ngay sau khi đã lưu DB
+        if (this.supabase.isAvailable()) {
+          // Supabase: upload lên cloud, trả về public URL — không cần lưu binary vào DB
+          archivedUrl = await this.supabase.upload(buffer, finalName, 'video/mp4');
+          this.logger.log(`[Archive] ✅ Supabase: ${finalName} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+        } else {
+          // Fallback: lưu binary vào DB
+          const mediaFile = await this.prisma.socialMediaFile.create({
+            data: { post_id: postId, filename: finalName, mimetype: 'video/mp4', size: finalSize, data: buffer },
+          });
+          const urlBase = url.substring(0, url.indexOf('/api/social/media/'));
+          archivedUrl = `${urlBase}/api/social/media/${finalName}`;
+          this.logger.log(`[Archive] ✅ DB: id=${mediaFile.id} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+        }
+
+        // Xóa file local sau khi đã lưu
         try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
         if (finalPath !== inputPath) {
           try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
         }
 
-        const urlBase = url.substring(0, url.indexOf('/api/social/media/'));
-        updatedUrls.push(`${urlBase}/api/social/media/${finalName}`);
+        updatedUrls.push(archivedUrl);
         hasChange = true;
       } catch (err: any) {
-        // Lưu DB thất bại → vẫn xóa file để tránh tích lũy
-        this.logger.error(`[Archive] Lưu DB thất bại cho ${filename}: ${err.message} — xóa file local`);
+        this.logger.error(`[Archive] Lưu thất bại cho ${filename}: ${err.message} — xóa file local`);
         try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
         if (finalPath !== inputPath) {
           try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}

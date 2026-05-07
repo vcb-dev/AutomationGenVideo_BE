@@ -153,18 +153,52 @@ export class AccountsService {
     }
   }
 
-  /** Fetch pages trực tiếp từ API (không qua cache) — dùng nội bộ cho sync token */
+  /** Fetch pages trực tiếp từ API (không qua cache) — dùng nội bộ cho sync token và auto-save */
   private async fetchFacebookPagesWithTokens(accountId: string, userId: string) {
     const account = await this.findOne(accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
     const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
       params: {
         access_token: token,
-        fields: 'id,name,access_token,instagram_business_account{id,name,username}',
+        fields: 'id,name,access_token,picture,instagram_business_account{id,name,username,profile_picture_url}',
         limit: 100,
       },
     });
-    return (res.data.data || []) as Array<{ id: string; name: string; access_token: string; instagram_business_account?: { id: string } }>;
+    return (res.data.data || []) as Array<{
+      id: string;
+      name: string;
+      access_token: string;
+      picture?: { data?: { url?: string } };
+      instagram_business_account?: { id: string; name?: string; username?: string; profile_picture_url?: string };
+    }>;
+  }
+
+  /** Tự động lưu tất cả Facebook Pages (+ Instagram liên kết) sau khi OAuth thành công */
+  async autoSaveFacebookPages(accountId: string, userId: string): Promise<void> {
+    this.logger.log(`[AutoSave] Bắt đầu tự động lưu Pages cho account ${accountId}`);
+    try {
+      const pages = await this.fetchFacebookPagesWithTokens(accountId, userId);
+      let savedCount = 0;
+      for (const p of pages) {
+        try {
+          await this.saveFacebookPageAccount(userId, {
+            parentAccountId: accountId,
+            pageId: p.id,
+            pageName: p.name,
+            pageToken: p.access_token,
+            pagePicture: p.picture?.data?.url,
+            igId: p.instagram_business_account?.id,
+            igName: p.instagram_business_account?.name,
+            igUsername: p.instagram_business_account?.username,
+            igPicture: p.instagram_business_account?.profile_picture_url,
+          });
+          savedCount++;
+        } catch { /* bỏ qua nếu page đã tồn tại */ }
+      }
+      this.logger.log(`[AutoSave] ✅ Đã lưu ${savedCount}/${pages.length} Pages cho account ${accountId}`);
+    } catch (err: any) {
+      this.logger.warn(`[AutoSave] Thất bại: ${err.message}`);
+    }
   }
 
   /** Lưu một Facebook Page thành SocialAccount riêng (để đăng bài trực tiếp vào Page) */
