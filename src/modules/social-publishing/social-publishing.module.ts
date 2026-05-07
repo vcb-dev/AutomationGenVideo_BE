@@ -2,8 +2,8 @@ import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { UploadController } from './upload/upload.controller';
+import { UploadService } from './upload/upload.service';
 import { MediaController } from './upload/media.controller';
-import { FromDriveController } from './upload/from-drive.controller';
 import { SupabaseStorageService } from './upload/supabase-storage.service';
 
 // Crypto
@@ -54,7 +54,6 @@ import { DraftsService } from './drafts/drafts.service';
   controllers: [
     UploadController,
     MediaController,
-    FromDriveController,
     AccountsController,
     OAuthController,
     PublishController,
@@ -67,6 +66,7 @@ import { DraftsService } from './drafts/drafts.service';
     // Core
     CryptoService,
     SupabaseStorageService,
+    UploadService,
     // Accounts
     AccountsService,
     // OAuth

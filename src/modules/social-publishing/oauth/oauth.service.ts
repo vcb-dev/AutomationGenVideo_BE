@@ -149,10 +149,10 @@ export class OAuthService {
       extraData: result.extraData,
     });
 
-    // Tự động đồng bộ Token cho các tài khoản con (Pages, Instagram liên kết)
     if (platform === 'FACEBOOK') {
-      // Không await để không làm chậm response callback, chạy ngầm
+      // Chạy ngầm — không await để không làm chậm response callback
       this.accounts.syncFacebookChildrenTokens(saved.id, userId).catch(() => {});
+      this.accounts.autoSaveFacebookPages(saved.id, userId).catch(() => {});
     }
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);
