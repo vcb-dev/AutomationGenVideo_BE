@@ -665,6 +665,27 @@ export class AiIntegrationService {
 
    */
 
+  async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/chat/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, { message, history }, { timeout: 60000 }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`Chat proxy error: ${error.message}`);
+            throw new HttpException(
+              error.response?.data ?? 'AI Service unavailable',
+              (error.response?.status as number) ?? HttpStatus.SERVICE_UNAVAILABLE,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      throw new HttpException('AI Service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
   async healthCheck(): Promise<any> {
 
     const url = `${this.aiServiceUrl}/api/health/`;

@@ -1,15 +1,49 @@
-import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, HttpException, Res, UseInterceptors, UploadedFile, Req } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, HttpException, Res, UseInterceptors, UploadedFile, Req, UseGuards } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @ApiTags('AI Integration')
 @Controller('ai')
 export class AiIntegrationController {
   constructor(private readonly aiService: AiIntegrationService) { }
+
+  @Post('chat')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'VCB Assistant chat — trả về message + dashboard JSON' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['message'],
+      properties: {
+        message: { type: 'string', example: 'Báo cáo doanh thu tháng 5?' },
+        history: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string', enum: ['user', 'assistant'] },
+              content: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Chat response with optional dashboard' })
+  async chat(@Body() body: { message: string; history?: { role: string; content: string }[] }) {
+    const { message, history } = body;
+    if (!message?.trim()) {
+      throw new HttpException('message is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.chat(message.trim(), history ?? []);
+  }
 
   @Post('search')
   @HttpCode(HttpStatus.OK)
