@@ -37,6 +37,7 @@ model User {
   /// Tháng/ngày từ Lark (cột NGÀY)
   employee_date           DateTime?
   search_histories        SearchHistory[]
+  chat_conversations      ChatConversation[]
   tracked_channels        TrackedChannel[]
   manager                 User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors                 User[]           @relation("ManagerEditors")
@@ -1237,4 +1238,34 @@ model SocialDraft {
 
   @@index([user_id])
   @@map("social_drafts")
+}
+
+/// Phiên chat với VCB Assistant
+model ChatConversation {
+  id         String        @id @default(uuid())
+  user_id    String
+  title      String
+  created_at DateTime      @default(now())
+  updated_at DateTime      @updatedAt
+  user       User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages   ChatMessage[]
+
+  @@index([user_id])
+  @@index([user_id, updated_at])
+  @@map("chat_conversations")
+}
+
+/// Tin nhắn trong phiên chat VCB Assistant
+model ChatMessage {
+  id              String           @id @default(uuid())
+  conversation_id String
+  role            String           // "user" | "assistant"
+  content         String           @db.Text
+  dashboard       Json?            // structured dashboard JSON từ AI
+  created_at      DateTime         @default(now())
+  conversation    ChatConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+
+  @@index([conversation_id])
+  @@index([conversation_id, created_at])
+  @@map("chat_messages")
 }
