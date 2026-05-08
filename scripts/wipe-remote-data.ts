@@ -31,16 +31,15 @@ async function main() {
     console.log(`Found ${ids.length} records to wipe...`);
 
     if (ids.length > 0) {
-      // Use raw SQL and smaller chunk sizes with a small delay to avoid database locks & timeouts
-      const CHUNK = 30;
+      // Very small chunk size (10) with 100ms delay to keep query times well below PgBouncer's strict limits
+      const CHUNK = 10;
       for (let i = 0; i < ids.length; i += CHUNK) {
         const chunk = ids.slice(i, i + CHUNK);
         await server.$executeRaw`DELETE FROM lark_kpi WHERE id = ANY(${chunk})`;
-        if (i % 300 === 0) {
+        if (i % 200 === 0) {
           console.log(`  Wiped ${i}/${ids.length}...`);
         }
-        // Brief pause to release DB locks and prevent resource exhaustion
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
