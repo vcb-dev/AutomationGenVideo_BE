@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { SocialPlatform } from '@prisma/client';
@@ -303,8 +304,54 @@ export class AccountsService {
     }
   }
 
+  /** Chạy mỗi ngày lúc 9h: cảnh báo token sắp hết hạn, vô hiệu hoá token đã hết hạn */
+  @Cron(CronExpression.EVERY_DAY_AT_9AM)
+  async checkExpiringTokens() {
+    const now = new Date();
+    const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const expired = await this.prisma.socialAccount.updateMany({
+      where: { is_active: true, token_expires_at: { not: null, lt: now } },
+      data: { is_active: false, updated_at: now },
+    });
+    if (expired.count > 0)
+      this.logger.warn(`[TokenExpiry] Đã vô hiệu hoá ${expired.count} account hết hạn token`);
+
+    const expiring = await this.prisma.socialAccount.findMany({
+      where: { is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
+      select: { id: true, name: true, platform: true, token_expires_at: true, user_id: true },
+    });
+
+    for (const acc of expiring) {
+      const daysLeft = Math.ceil((acc.token_expires_at!.getTime() - now.getTime()) / 86400000);
+      this.logger.warn(`[TokenExpiry] ⚠️ ${acc.platform} "${acc.name}" hết hạn trong ${daysLeft} ngày (user: ${acc.user_id})`);
+    }
+    this.logger.log(`[TokenExpiry] Kiểm tra xong — ${expiring.length} account sắp hết hạn`);
+  }
+
+  async getExpiringAccounts(userId: string) {
+    const now = new Date();
+    const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const accounts = await this.prisma.socialAccount.findMany({
+      where: { user_id: userId, is_active: true, token_expires_at: { not: null, lte: warnBefore } },
+      select: { id: true, name: true, platform: true, avatar_url: true, token_expires_at: true },
+      orderBy: { token_expires_at: 'asc' },
+    });
+    return accounts.map(a => ({
+      ...a,
+      days_until_expiry: Math.ceil((a.token_expires_at!.getTime() - now.getTime()) / 86400000),
+    }));
+  }
+
   private sanitize(account: any) {
     const { access_token_enc, refresh_token_enc, ...rest } = account;
-    return rest;
+    const now = Date.now();
+    const expiresAt = rest.token_expires_at ? new Date(rest.token_expires_at).getTime() : null;
+    const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / 86400000) : null;
+    return {
+      ...rest,
+      token_expires_soon: daysLeft !== null && daysLeft <= 7,
+      token_expires_in_days: daysLeft,
+    };
   }
 }

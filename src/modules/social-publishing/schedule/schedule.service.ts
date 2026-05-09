@@ -5,8 +5,12 @@ import { PublishService } from '../publish/publish.service';
 import { SocialPlatform, SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 
-const MAX_RETRIES    = 3;
-const RETRY_DELAY_MS = 5 * 60 * 1000; // 5 phút
+const MAX_RETRIES = 3;
+
+/** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
+function retryDelayMs(attempt: number): number {
+  return Math.min(5 * Math.pow(3, attempt - 1) * 60 * 1000, 2 * 60 * 60 * 1000);
+}
 
 @Injectable()
 export class ScheduleService {
@@ -88,7 +92,7 @@ export class ScheduleService {
         status:       SocialPostStatus.PENDING,
         retry_count:  0,
         error_msg:    null,
-        scheduled_at: new Date(Date.now() + RETRY_DELAY_MS),
+        scheduled_at: new Date(Date.now() + retryDelayMs(1)),
         updated_at:   new Date(),
       },
     });
@@ -175,9 +179,20 @@ export class ScheduleService {
   }
 
   private async executePost(post: any) {
+    // Idempotency: nếu đã có result → đã publish thành công nhưng DB update bị fail trước đó
+    if (post.result && typeof post.result === 'object' && Object.keys(post.result as any).length > 0) {
+      this.logger.warn(`[Worker] ⚠️ Post ${post.id} already has result — marking COMPLETED without re-publish`);
+      await this.prisma.socialPost.updateMany({
+        where: { id: post.id },
+        data: { status: SocialPostStatus.COMPLETED, executed_at: new Date(), updated_at: new Date(), next_retry_at: null },
+      });
+      return;
+    }
+
     try {
+      this.logger.log(`[Worker] ▶ Đang publish post ${post.id} | platform=${post.platform} | media=${post.media_urls?.length ?? 0} file`);
       const result = await this.publishService.executeScheduled(post);
-      await this.prisma.socialPost.update({
+      const updated = await this.prisma.socialPost.updateMany({
         where: { id: post.id },
         data: {
           status:        SocialPostStatus.COMPLETED,
@@ -187,33 +202,42 @@ export class ScheduleService {
           next_retry_at: null,
         },
       });
+      if (updated.count === 0) {
+        this.logger.warn(`[Worker] ⚠️ Post ${post.id} published but DB record missing — skipping archive`);
+        return;
+      }
       this.publishService.archiveMediaAsync(post.id, (post.media_urls as string[]) ?? []);
       this.logger.log(`[Worker] ✅ Post ${post.id} (${post.platform}) completed`);
     } catch (err: any) {
+      this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack: ${err.stack?.split('\n')[1]?.trim() ?? ''}`);
       const retryCount = (post.retry_count ?? 0) + 1;
-      if (retryCount >= MAX_RETRIES) {
-        await this.prisma.socialPost.update({
-          where: { id: post.id },
-          data: {
-            status:        SocialPostStatus.FAILED,
-            retry_count:   retryCount,
-            error_msg:     err.message,
-            updated_at:    new Date(),
-            next_retry_at: null,
-          },
-        });
-        this.logger.warn(`[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`);
-      } else {
-        await this.prisma.socialPost.update({
-          where: { id: post.id },
-          data: {
-            retry_count:   retryCount,
-            next_retry_at: new Date(Date.now() + RETRY_DELAY_MS),
-            error_msg:     err.message,
-            updated_at:    new Date(),
-          },
-        });
-        this.logger.warn(`[Worker] ⚠️ Post ${post.id} retry ${retryCount}/${MAX_RETRIES}: ${err.message}`);
+      try {
+        if (retryCount >= MAX_RETRIES) {
+          await this.prisma.socialPost.updateMany({
+            where: { id: post.id },
+            data: {
+              status:        SocialPostStatus.FAILED,
+              retry_count:   retryCount,
+              error_msg:     err.message,
+              updated_at:    new Date(),
+              next_retry_at: null,
+            },
+          });
+          this.logger.warn(`[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`);
+        } else {
+          await this.prisma.socialPost.updateMany({
+            where: { id: post.id },
+            data: {
+              retry_count:   retryCount,
+              next_retry_at: new Date(Date.now() + retryDelayMs(retryCount)),
+              error_msg:     err.message,
+              updated_at:    new Date(),
+            },
+          });
+          this.logger.warn(`[Worker] ⚠️ Post ${post.id} retry ${retryCount}/${MAX_RETRIES} in ${retryDelayMs(retryCount) / 60000}min: ${err.message}`);
+        }
+      } catch (dbErr: any) {
+        this.logger.error(`[Worker] ❌ Post ${post.id} — publish error: ${err.message} | DB update error: ${dbErr.message}`);
       }
     }
   }

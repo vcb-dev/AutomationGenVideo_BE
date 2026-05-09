@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import * as fs from 'fs';
 import * as ws from 'ws';
 
 @Injectable()
@@ -31,12 +32,25 @@ export class SupabaseStorageService implements OnModuleInit {
     return this.available;
   }
 
+  /** Upload từ Buffer — dùng cho ảnh nhỏ */
   async upload(buffer: Buffer, filename: string, mimetype: string): Promise<string> {
     const { error } = await this.client.storage
       .from(this.bucket)
       .upload(filename, buffer, { contentType: mimetype, upsert: true });
 
     if (error) throw new Error(`Supabase upload thất bại: ${error.message}`);
+    return this.getPublicUrl(filename);
+  }
+
+  /** Upload từ file path dùng ReadableStream — dùng cho video lớn, tránh OOM */
+  async uploadFromPath(filePath: string, filename: string, mimetype: string): Promise<string> {
+    const stream = fs.createReadStream(filePath);
+    const { error } = await this.client.storage
+      .from(this.bucket)
+      .upload(filename, stream as any, { contentType: mimetype, upsert: true, duplex: 'half' } as any);
+
+    if (error) throw new Error(`Supabase stream upload thất bại: ${error.message}`);
+    this.logger.log(`[Supabase] ✅ Stream uploaded: ${filename}`);
     return this.getPublicUrl(filename);
   }
 

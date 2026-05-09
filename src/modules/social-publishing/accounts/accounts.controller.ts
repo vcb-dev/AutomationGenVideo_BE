@@ -16,6 +16,12 @@ export class AccountsController {
     return this.accountsService.findAll(req.user.id);
   }
 
+  @Get('expiring')
+  @ApiOperation({ summary: 'Lấy danh sách account sắp hết hạn token (trong 7 ngày)' })
+  getExpiring(@Request() req) {
+    return this.accountsService.getExpiringAccounts(req.user.id);
+  }
+
   @Get(':id/pages')
   @ApiOperation({ summary: 'Lấy Facebook Pages + Instagram liên kết (cache 5 phút)' })
   getPages(

@@ -21,7 +21,7 @@ RUN npm run build
 # Stage 2: Runtime
 FROM node:20-alpine
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl ffmpeg
 
 WORKDIR /app
 
