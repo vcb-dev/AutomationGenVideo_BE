@@ -15,7 +15,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
      * with LarkService cron. Default OFF to keep one single source-of-truth flow.
      */
     private readonly legacySyncEnabled =
-        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'false').toLowerCase() === 'true';
+        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'true').toLowerCase() === 'true';
 
     constructor(
         private readonly prisma: PrismaService,
@@ -54,12 +54,12 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // ──────────────────────────────────────────────────────────────────────────
     async onApplicationBootstrap() {
         if (!this.legacySyncEnabled) {
-            this.logger.log('Legacy bootstrap sync is disabled (LARK_ENABLE_LEGACY_SYNC_SERVICE=false).');
+            this.logger.log('Legacy bootstrap sync is disabled.');
             return;
         }
-        const DELAY_MS = 2 * 60 * 1000;
-        this.logger.log(`🚀 Server started — deferring Lark bootstrap sync by ${DELAY_MS / 1000}s...`);
-        setTimeout(() => this.runBootstrapSync(), DELAY_MS);
+        const DELAY_MS = 10 * 1000; // 10s trễ để server ổn định
+        this.logger.log(`🚀 Server started — deferring Lark master sync by ${DELAY_MS / 1000}s...`);
+        setTimeout(() => this.unifiedSync(), DELAY_MS);
     }
 
     private async runBootstrapSync() {
@@ -127,37 +127,28 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // UNIFIED LARK SYNC — Every 3 hours (Cho tất cả các phần còn lại)
     // Runs: wipe-remote-data -> sync-lark-to-server-direct -> force-sync-kpi-to-remote
     // ──────────────────────────────────────────────────────────────────────────
-    @Cron('0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    @Cron('0 0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async unifiedSync() {
         if (!this.legacySyncEnabled) return;
         if (this.syncLock) {
-            this.logger.warn('⏭️ Unified sync skipped — another sync is in progress');
+            this.logger.warn('⏭️ Master sync skipped — another sync is in progress');
             return;
         }
 
         this.syncLock = true;
-        this.logger.log('⏰ Unified Lark Sync triggered (every 3 hours)');
+        this.logger.log('⏰ Master Lark Sync triggered (Starting All Fast Sync Scripts)');
 
         const { exec } = require('child_process');
         const util = require('util');
         const execPromise = util.promisify(exec);
 
         try {
-            this.logger.log('Step 1/3: Wiping remote data...');
-            await execPromise('npx ts-node scripts/wipe-remote-data.ts');
-
-            this.logger.log('Step 2/4: Syncing Lark users to server direct...');
-            await execPromise('npx ts-node scripts/sync-lark-to-server-direct.ts');
-
-            this.logger.log('Step 3/4: Syncing Lark channels to server direct...');
-            await execPromise('npm run sync:channels:force');
-
-            this.logger.log('Step 4/4: Syncing ALL Lark KPIs (Main + Do Da) to server direct...');
-            await execPromise('npm run sync:all-kpis:force');
-
-            this.logger.log('✅ Unified Lark Sync completed successfully!');
+            this.logger.log('🚀 Running: npm run sync:all:fast...');
+            const { stdout } = await execPromise('npm run sync:all:fast');
+            this.logger.log(`✅ Master Sync Output:\n${stdout}`);
+            this.logger.log('🎉 MASTER SYNC COMPLETED SUCCESSFULLY!');
         } catch (err) {
-            this.logger.error(`❌ Unified Lark Sync failed: ${err.message}`);
+            this.logger.error(`❌ Master Sync failed: ${err.message}`);
             if (err.stdout) this.logger.error(`Stdout: ${err.stdout}`);
             if (err.stderr) this.logger.error(`Stderr: ${err.stderr}`);
         } finally {
