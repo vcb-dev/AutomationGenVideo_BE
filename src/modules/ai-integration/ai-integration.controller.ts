@@ -45,6 +45,19 @@ export class AiIntegrationController {
     return this.aiService.chat(message.trim(), history ?? []);
   }
 
+  @Get('channels')
+  @ApiOperation({ summary: 'Lấy danh sách kênh từ huyk_channels' })
+  @ApiQuery({ name: 'platform', required: false })
+  @ApiQuery({ name: 'team', required: false })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async getHuykChannels(
+    @Query('platform') platform?: string,
+    @Query('team') team?: string,
+    @Query('limit') limit?: number,
+  ) {
+    return this.aiService.getHuykChannels(platform, team, limit ? Number(limit) : 200);
+  }
+
   @Post('search')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Search for videos using AI service (v2)' })

@@ -1,37 +1,22 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
-
 import { HttpService } from '@nestjs/axios';
-
 import { ConfigService } from '@nestjs/config';
-
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
-
 import { AxiosError } from 'axios';
-
-
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
-
 export class AiIntegrationService {
-
   private readonly logger = new Logger(AiIntegrationService.name);
-
   private readonly aiServiceUrl: string;
 
-
-
   constructor(
-
     private readonly httpService: HttpService,
-
     private readonly configService: ConfigService,
-
+    private readonly prisma: PrismaService,
   ) {
-
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
-
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
-
   }
 
 
@@ -664,6 +649,21 @@ export class AiIntegrationService {
    * Health check for AI service
 
    */
+
+  async getHuykChannels(platform?: string, team?: string, limit = 200): Promise<any> {
+    const safeP = (platform || '').replace(/'/g, '');
+    const safeT = (team || '').replace(/'/g, '');
+    return this.prisma.$queryRawUnsafe(`
+      SELECT name AS display_name, platform, channel_id AS username,
+             link_channel, team_traffic AS team, owner AS owner_name, email AS owner_email
+      FROM huyk_channels
+      WHERE status = 'Đang hoạt động'
+      ${safeP ? `AND LOWER(platform) LIKE LOWER('%${safeP}%')` : ''}
+      ${safeT ? `AND LOWER(team_traffic) LIKE LOWER('%${safeT}%')` : ''}
+      ORDER BY platform, name
+      LIMIT ${limit}
+    `);
+  }
 
   async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
     const url = `${this.aiServiceUrl}/api/chat/`;
