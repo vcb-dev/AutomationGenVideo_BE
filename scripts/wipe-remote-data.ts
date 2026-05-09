@@ -9,42 +9,16 @@ async function main() {
     process.exit(1);
   }
 
-  const server = new PrismaClient({ datasources: { db: { url: serverUrl } } });
+  const serverUrlWithLimit = serverUrl.includes('?') 
+    ? `${serverUrl}&connection_limit=1` 
+    : `${serverUrl}?connection_limit=1`;
+
+  const server = new PrismaClient({ datasources: { db: { url: serverUrlWithLimit } } });
 
   console.log('⚠️  WIPING DATA ON REMOTE SERVER...');
 
   try {
-    // Fetch IDs of records to delete (preserving Đồ Da)
-    const recordsToDelete = await server.larkKPI.findMany({
-      where: {
-        NOT: {
-          team: {
-            contains: 'Đồ Da',
-            mode: 'insensitive'
-          }
-        }
-      },
-      select: { id: true }
-    });
-
-    const ids = recordsToDelete.map(r => r.id);
-    console.log(`Found ${ids.length} records to wipe...`);
-
-    if (ids.length > 0) {
-      // Very small chunk size (10) with 100ms delay to keep query times well below PgBouncer's strict limits
-      const CHUNK = 10;
-      for (let i = 0; i < ids.length; i += CHUNK) {
-        const chunk = ids.slice(i, i + CHUNK);
-        await server.$executeRaw`DELETE FROM lark_kpi WHERE id = ANY(${chunk})`;
-        if (i % 200 === 0) {
-          console.log(`  Wiped ${i}/${ids.length}...`);
-        }
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-
-
-    // Wipe Users
+    // Wipe Users only — lark_kpi is handled by UPSERT in force-sync, no need to delete
     const userCount = await server.user.deleteMany({});
     console.log(`✅ Wiped Users: ${userCount.count} records`);
 
@@ -57,7 +31,3 @@ async function main() {
 }
 
 main();
-
-
-
-
