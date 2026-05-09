@@ -40,32 +40,31 @@ export class PublishService {
     if (!mediaUrls || mediaUrls.length === 0) return [];
 
     const publicBaseUrl = process.env.PUBLIC_BASE_URL;
-    const useCatboxForIgThreads = process.env.USE_CATBOX_FOR_IG_THREADS !== 'false';
-
     const resultUrls: string[] = [];
 
     for (const url of mediaUrls) {
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         try {
           const localUrl = new URL(url);
-          
-          if ((platform === SocialPlatform.INSTAGRAM || platform === SocialPlatform.THREADS) && useCatboxForIgThreads) {
-            const filename = localUrl.pathname.split('/').pop()!;
-            const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            const filePath = path.join(uploadBase, filename);
-            
-            if (fs.existsSync(filePath)) {
-              try {
-                const catboxUrl = await this.uploadToCatbox(filePath);
-                this.logger.log(`[makeUrlsPublic] ${url} → Catbox: ${catboxUrl}`);
-                resultUrls.push(catboxUrl);
-                continue;
-              } catch (err) {
-                this.logger.warn(`[makeUrlsPublic] Catbox upload failed, fallback to PUBLIC_BASE_URL`);
-              }
+          const filename = localUrl.pathname.split('/').pop()!;
+          const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+          const filePath = path.join(uploadBase, filename);
+
+          // Ưu tiên 1: Upload lên Supabase → URL luôn public, mọi platform đều dùng được
+          if (fs.existsSync(filePath) && this.supabase.isAvailable()) {
+            try {
+              const ext = path.extname(filename).toLowerCase();
+              const mime = ext === '.mov' ? 'video/quicktime' : ext === '.webm' ? 'video/webm' : 'video/mp4';
+              const supabaseUrl = await this.supabase.uploadFromPath(filePath, filename, mime);
+              this.logger.log(`[makeUrlsPublic] ${url} → Supabase: ${supabaseUrl}`);
+              resultUrls.push(supabaseUrl);
+              continue;
+            } catch (err: any) {
+              this.logger.warn(`[makeUrlsPublic] Supabase upload failed: ${err.message}, fallback PUBLIC_BASE_URL`);
             }
           }
 
+          // Ưu tiên 2: PUBLIC_BASE_URL (Cloud Run URL hoặc ngrok)
           if (!publicBaseUrl) {
             this.logger.warn('[makeUrlsPublic] PUBLIC_BASE_URL chưa được cấu hình — localhost URLs sẽ không được convert');
             resultUrls.push(url);
@@ -212,17 +211,19 @@ export class PublishService {
     return promise;
   }
 
-  private async _doTranscode(localUrl: string): Promise<string> {
-    const ffmpegPath = process.env.FFMPEG_PATH;
-    if (!ffmpegPath) {
-      this.logger.warn('[Transcode] FFMPEG_PATH chưa cấu hình, bỏ qua transcode');
-      return localUrl;
-    }
+  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
+  private resolveFFmpegPath(): string | null {
+    const fromEnv = process.env.FFMPEG_PATH;
+    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+    // Fallback: ffmpeg đã cài qua apk/apt trong Docker
+    if (fs.existsSync('/usr/bin/ffmpeg')) return '/usr/bin/ffmpeg';
+    this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
+    return null;
+  }
 
-    if (!fs.existsSync(ffmpegPath)) {
-      this.logger.warn(`[Transcode] ffmpeg không tồn tại tại ${ffmpegPath}`);
-      return localUrl;
-    }
+  private async _doTranscode(localUrl: string): Promise<string> {
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) return localUrl;
 
     try {
       const urlObj = new URL(localUrl);
@@ -250,8 +251,9 @@ export class PublishService {
       const outputSize = fs.statSync(outputPath).size;
       this.logger.log(`[Transcode] Hoàn thành ${transcodedName} trong ${((Date.now() - start) / 1000).toFixed(1)}s | size: ${(outputSize / 1024 / 1024).toFixed(1)}MB`);
 
-      const port = process.env.PORT || 3000;
-      return `http://127.0.0.1:${port}/api/social/media/${transcodedName}`;
+      // Cloud Run: dùng PUBLIC_BASE_URL thay vì 127.0.0.1 (sẽ được convert bởi makeUrlsPublic)
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return `${base}/api/social/media/${transcodedName}`;
     } catch (err: any) {
       this.logger.warn(`[Transcode] Thất bại: ${err.message} — dùng file gốc`);
       return localUrl;
@@ -413,10 +415,10 @@ export class PublishService {
   public async archiveMediaAsync(postId: string, mediaUrls: string[]): Promise<void> {
     if (!mediaUrls?.length) return;
 
-    const ffmpegPath = process.env.FFMPEG_PATH;
-    const ffmpegAvailable = !!(ffmpegPath && fs.existsSync(ffmpegPath));
+    const ffmpegPath = this.resolveFFmpegPath();
+    const ffmpegAvailable = !!ffmpegPath;
     if (!ffmpegAvailable) {
-      this.logger.warn('[Archive] FFMPEG_PATH không khả dụng — lưu file gốc vào DB không nén');
+      this.logger.warn('[Archive] FFmpeg không khả dụng — lưu file gốc vào DB không nén');
     }
 
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');

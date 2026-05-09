@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { SupabaseStorageService } from './supabase-storage.service';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -10,6 +10,7 @@ export const UPLOAD_DIR = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd
 export class UploadService {
   static readonly ALLOWED_MIME_RE = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|quicktime|x-msvideo|x-matroska|webm))$/;
   static readonly MAX_BYTES = 500 * 1024 * 1024;
+  private readonly logger = new Logger(UploadService.name);
 
   private static readonly MIME_EXT_MAP: Record<string, string> = {
     'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png',
@@ -29,6 +30,10 @@ export class UploadService {
   async saveBuffer(buffer: Buffer, filename: string, mimetype: string, baseUrl: string): Promise<string> {
     if (this.storage.isAvailable()) {
       return this.storage.upload(buffer, filename, mimetype);
+    }
+    // Cloud Run: local disk là ephemeral — file sẽ mất khi container restart
+    if (process.env.NODE_ENV === 'production') {
+      this.logger.warn('[Upload] ⚠️ Supabase không available — file lưu tạm /tmp sẽ mất khi container restart!');
     }
     if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);

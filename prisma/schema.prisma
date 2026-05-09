@@ -1238,3 +1238,20 @@ model SocialDraft {
   @@index([user_id])
   @@map("social_drafts")
 }
+
+/// File đã upload vào Media Library — metadata only (binary lưu Supabase/DB)
+model SocialUploadedFile {
+  id           String   @id @default(uuid())
+  user_id      String
+  filename     String
+  originalname String
+  mimetype     String
+  size         Int
+  url          String
+  storage      String   @default("supabase")
+  created_at   DateTime @default(now())
+
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+  @@map("social_uploaded_files")
+}

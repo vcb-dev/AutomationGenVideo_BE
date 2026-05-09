@@ -86,13 +86,11 @@ export class FacebookPublisher {
 
       // ── TỰ ĐỘNG TRÍCH XUẤT ẢNH BÌA (FRAME ĐẦU) & ĐẶT LÀM THUMBNAIL ──
       try {
-        const ffmpegPath = process.env.FFMPEG_PATH;
+        const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
+          ? process.env.FFMPEG_PATH
+          : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
         if (!ffmpegPath) {
-          this.logger.warn('[FB] FFMPEG_PATH chưa được cấu hình — bỏ qua bước set thumbnail');
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
-        }
-        if (!fs.existsSync(ffmpegPath)) {
-          this.logger.warn(`[FB] ffmpeg không tồn tại tại: ${ffmpegPath} — bỏ qua bước set thumbnail`);
+          this.logger.warn('[FB] FFmpeg không tìm thấy — bỏ qua bước set thumbnail');
           return { postId: videoId, url: `https://facebook.com/${videoId}` };
         }
 
