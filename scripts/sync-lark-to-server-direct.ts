@@ -193,7 +193,10 @@ function normalizeRecord(record: any): NormalizedUser | null {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   const serverUrl = requireEnv('SERVER_DATABASE_URL');
-  const server = new PrismaClient({ datasources: { db: { url: serverUrl } } });
+  const serverUrlWithLimit = serverUrl.includes('?') 
+    ? `${serverUrl}&connection_limit=1` 
+    : `${serverUrl}?connection_limit=1`;
+  const server = new PrismaClient({ datasources: { db: { url: serverUrlWithLimit } } });
 
   console.log('🚀 Starting: Lark → Server DB direct sync');
   console.log('   Table:', LARK_BASE_APP_TOKEN, '/', LARK_BASE_TABLE_ID);
@@ -283,16 +286,28 @@ async function main() {
     }
 
     // Deactivate users không còn trên Lark (có lark_employee_record_id nhưng không có trong list)
-    const deactivated = await server.user.updateMany({
+    const usersToDeactivate = await server.user.findMany({
       where: {
-        email: { notIn: larkEmails },
         OR: [
           { lark_employee_record_id: { not: null } },
           { employee_id: { not: null } },
         ],
       },
-      data: { employee_status: 'OFF', is_active: false },
+      select: { email: true }
     });
+
+    const emailsToDeactivate = usersToDeactivate
+      .map(u => u.email)
+      .filter(email => !larkEmails.includes(email));
+
+    let deactivatedCount = 0;
+    if (emailsToDeactivate.length > 0) {
+      const result = await server.user.updateMany({
+        where: { email: { in: emailsToDeactivate } },
+        data: { employee_status: 'OFF', is_active: false },
+      });
+      deactivatedCount = result.count;
+    }
 
     // Fix dữ liệu employee_status bị lệch chuẩn
     await server.$executeRawUnsafe(`
@@ -306,7 +321,7 @@ async function main() {
       END
     `);
 
-    console.log(`⚠️  Deactivated (not on Lark): ${deactivated.count}`);
+    console.log(`⚠️  Deactivated (not on Lark): ${deactivatedCount}`);
 
     console.log('');
     console.log('✅ Sync complete!');
