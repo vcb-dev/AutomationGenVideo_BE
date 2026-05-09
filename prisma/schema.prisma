@@ -1269,3 +1269,87 @@ model ChatMessage {
   @@index([conversation_id, created_at])
   @@map("chat_messages")
 }
+
+/// Stats từng video/post của kênh — sync 1 lần/ngày qua cronjob
+model ChannelPostStats {
+  id           String   @id @default(uuid())
+  platform     String
+  channel_name String
+  username     String
+  team         String?
+  owner        String?
+  post_id      String
+  title        String?  @db.Text
+  url          String?
+  published_at DateTime?
+  views        BigInt   @default(0)
+  likes        BigInt   @default(0)
+  comments     BigInt   @default(0)
+  shares       BigInt   @default(0)
+  year         Int
+  month        Int
+  synced_at    DateTime @default(now()) @updatedAt
+
+  @@unique([platform, post_id])
+  @@index([platform, year, month])
+  @@index([username, year, month])
+  @@index([team, year, month])
+  @@index([year, month])
+  @@map("channel_post_stats")
+}
+
+/// Tổng hợp traffic theo tháng từng kênh — AI đọc bảng này để báo cáo
+model ChannelMonthlyStats {
+  id               String   @id @default(uuid())
+  platform         String
+  channel_name     String
+  username         String
+  team             String?
+  owner            String?
+  year             Int
+  month            Int
+  total_views      BigInt   @default(0)
+  total_likes      BigInt   @default(0)
+  total_comments   BigInt   @default(0)
+  total_shares     BigInt   @default(0)
+  total_followers  BigInt   @default(0)
+  post_count       Int      @default(0)
+  synced_at        DateTime @default(now()) @updatedAt
+
+  @@unique([platform, username, year, month])
+  @@index([team, year, month])
+  @@index([year, month])
+  @@map("channel_monthly_stats")
+}
+
+/// Stats từng campaign quảng cáo Facebook — sync 1 lần/ngày
+model AdsCampaignStats {
+  id                  String   @id @default(uuid())
+  account_id          String
+  account_name        String?
+  campaign_id         String
+  campaign_name       String
+  camp_type           String?  // mess | like_page | tuong_tac
+  content_type        String?  // A1 | A2 | A3 | A4 | A5
+  spend               Float    @default(0)
+  impressions         BigInt   @default(0)
+  reach               BigInt   @default(0)
+  mess_count          Int      @default(0)
+  cost_per_mess       Float    @default(0)
+  like_count          Int      @default(0)
+  cost_per_like       Float    @default(0)
+  engagement_count    Int      @default(0)
+  cost_per_engagement Float    @default(0)
+  clicks              Int      @default(0)
+  date_start          String
+  date_stop           String
+  year                Int
+  month               Int
+  synced_at           DateTime @default(now()) @updatedAt
+
+  @@unique([campaign_id, date_start, date_stop])
+  @@index([year, month])
+  @@index([camp_type, year, month])
+  @@index([content_type, year, month])
+  @@map("ads_campaign_stats")
+}
