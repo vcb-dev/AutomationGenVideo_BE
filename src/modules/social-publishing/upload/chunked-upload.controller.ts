@@ -76,7 +76,13 @@ export class ChunkedUploadController {
     for (let i = 0; i < body.totalChunks; i++) {
       const chunkPath = path.join(chunkDir, `chunk_${String(i).padStart(6, '0')}`);
       if (!fs.existsSync(chunkPath)) throw new BadRequestException(`Chunk ${i} bị thiếu`);
-      writeStream.write(fs.readFileSync(chunkPath));
+      
+      await new Promise<void>((resolve, reject) => {
+        const readStream = fs.createReadStream(chunkPath);
+        readStream.pipe(writeStream, { end: false });
+        readStream.on('end', resolve);
+        readStream.on('error', reject);
+      });
     }
     await new Promise<void>((resolve, reject) => { writeStream.end(); writeStream.on('finish', resolve); writeStream.on('error', reject); });
     fs.rmSync(chunkDir, { recursive: true, force: true });
