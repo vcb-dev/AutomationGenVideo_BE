@@ -45,6 +45,23 @@ export class AiIntegrationController {
     return this.aiService.chat(message.trim(), history ?? []);
   }
 
+  @Get('social-stats')
+  @ApiOperation({ summary: 'Thống kê traffic từ social_video_report' })
+  @ApiQuery({ name: 'year',     required: false, type: Number })
+  @ApiQuery({ name: 'month',    required: false, type: Number })
+  @ApiQuery({ name: 'platform', required: false })
+  @ApiQuery({ name: 'team',     required: false })
+  async getSocialStats(
+    @Query('year')     year?: number,
+    @Query('month')    month?: number,
+    @Query('platform') platform?: string,
+    @Query('team')     team?: string,
+  ) {
+    const y = year  ? Number(year)  : new Date().getFullYear();
+    const m = month ? Number(month) : new Date().getMonth() + 1;
+    return this.aiService.getSocialStats(y, m, platform, team);
+  }
+
   @Get('channels')
   @ApiOperation({ summary: 'Lấy danh sách kênh từ huyk_channels' })
   @ApiQuery({ name: 'platform', required: false })

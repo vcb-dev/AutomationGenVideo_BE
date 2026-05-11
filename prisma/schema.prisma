@@ -1355,10 +1355,11 @@ model AdsCampaignStats {
   @@map("ads_campaign_stats")
 }
 
-/// Dữ liệu từng video TikTok theo kênh — crawl từ Apify
-model TiktokVideoReport {
+/// Dữ liệu từng video/post theo kênh — YouTube, Facebook, Instagram
+model SocialVideoReport {
   id           String   @id @default(uuid())
-  video_id     String
+  platform     String   // youtube | facebook | instagram
+  post_id      String
   channel_name String
   username     String
   owner        String?
@@ -1374,13 +1375,14 @@ model TiktokVideoReport {
   published_at DateTime?
   year         Int
   month        Int
+  source       String   @default("api") // api | apify
   synced_at    DateTime @default(now()) @updatedAt
 
-  @@unique([video_id])
+  @@unique([platform, post_id])
+  @@index([platform, year, month])
   @@index([username, year, month])
   @@index([team, year, month])
-  @@index([owner, year, month])
   @@index([year, month])
-  @@index([views])
-  @@map("tiktok_video_report")
+  @@map("social_video_report")
 }
+

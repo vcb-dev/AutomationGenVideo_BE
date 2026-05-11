@@ -650,6 +650,84 @@ export class AiIntegrationService {
 
    */
 
+  async getSocialStats(year: number, month: number, platform?: string, team?: string): Promise<any> {
+    const safeP = (platform || '').replace(/'/g, '');
+    const safeT = (team || '').replace(/'/g, '');
+    const platformFilter = safeP ? `AND LOWER(platform) LIKE LOWER('%${safeP}%')` : '';
+    const teamFilter     = safeT ? `AND LOWER(team) LIKE LOWER('%${safeT}%')` : '';
+
+    const [summary, byPlatform, byTeam, topViews, topLikes, topComments] = await Promise.all([
+      // Tổng hợp
+      this.prisma.$queryRawUnsafe(`
+        SELECT
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text    AS total_views,
+          COALESCE(SUM(likes),0)::text    AS total_likes,
+          COALESCE(SUM(comments),0)::text AS total_comments,
+          COALESCE(SUM(shares),0)::text   AS total_shares,
+          COUNT(*)::text                  AS total_videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+      `),
+      // Theo platform
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform,
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text   AS views,
+          COALESCE(SUM(likes),0)::text   AS likes,
+          COUNT(*)::text                 AS videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${teamFilter}
+        GROUP BY platform ORDER BY SUM(views) DESC
+      `),
+      // Theo team
+      this.prisma.$queryRawUnsafe(`
+        SELECT COALESCE(NULLIF(team,''),'Chưa phân team') AS team,
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text   AS views,
+          COALESCE(SUM(likes),0)::text   AS likes,
+          COUNT(*)::text                 AS videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter}
+        GROUP BY team ORDER BY SUM(views) DESC LIMIT 10
+      `),
+      // Top 10 views
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team, owner,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY views DESC LIMIT 10
+      `),
+      // Top 10 likes
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY likes DESC LIMIT 10
+      `),
+      // Top 10 comments
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY comments DESC LIMIT 10
+      `),
+    ]);
+
+    return {
+      year, month, platform: platform || 'all', team: team || 'all',
+      summary:      (summary as any[])[0] || {},
+      by_platform:  byPlatform,
+      by_team:      byTeam,
+      top_views:    topViews,
+      top_likes:    topLikes,
+      top_comments: topComments,
+    };
+  }
+
   async getHuykChannels(platform?: string, team?: string, limit = 200): Promise<any> {
     const safeP = (platform || '').replace(/'/g, '');
     const safeT = (team || '').replace(/'/g, '');
