@@ -113,7 +113,7 @@ export class ChunkedUploadController {
       url = `${baseUrl}/api/social/media/${finalName}`;
     }
 
-    this.library.save(req.user.id, { filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, url, storage }).catch(() => {});
+    await this.library.save(req.user.id, { filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, url, storage }).catch(() => {});
     return { success: true, urls: [{ url, filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, storage }] };
   }
 }
