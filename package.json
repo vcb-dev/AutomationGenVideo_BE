@@ -23,7 +23,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "sync:larkkpi:force": "ts-node scripts/force-sync-kpi-to-remote.ts",
-    "sync:all:fast": "ts-node scripts/wipe-remote-data.ts && ts-node scripts/sync-lark-to-server-direct.ts && ts-node scripts/sync-channels-to-server-direct.ts && ts-node scripts/force-sync-kpi-to-remote.ts && ts-node scripts/force-sync-kpi-doda-to-remote.ts",
+    "sync:all:fast": "ts-node scripts/sync-lark-to-server-direct.ts && ts-node scripts/sync-channels-to-server-direct.ts && ts-node scripts/force-sync-kpi-to-remote.ts && ts-node scripts/force-sync-kpi-doda-to-remote.ts",
     "sync:channels:force": "ts-node scripts/sync-channels-to-server-direct.ts",
     "sync:all-kpis:force": "ts-node scripts/sync-all-kpis-from-lark-to-server-direct.ts"
   },

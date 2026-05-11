@@ -131,7 +131,7 @@ export class MediaLibraryService {
   async save(userId: string, file: { filename: string; originalname: string; mimetype: string; size: number; url: string; thumbnail_url?: string | null; storage: string }) {
     if (!modelReady(this.prisma)) { this.logger.warn('[Library] Model chưa sẵn sàng — bỏ qua save metadata'); return null; }
     try {
-      const model = (this.prisma.socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
+      const model = (this.prisma as any).socialUploadedFile;
       return await model.create({ data: { user_id: userId, ...file } });
     } catch (err: any) {
       if (isNotReady(err)) { this.logger.warn('[Library] Bảng chưa tồn tại — chạy migration SQL'); return null; }
