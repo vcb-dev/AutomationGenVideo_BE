@@ -3168,33 +3168,35 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             return String(val);
         };
 
-        let name = extractString(
-            findValue([
-                'Tên',
-                'Ten',
-                'Họ tên',
-                'Ho ten',
-                'Họ và tên',
-                'Ho va ten',
-                'Tên nhân sự',
-                'Ten nhan su',
-                'Họ tên nhân sự',
-                'Ho ten nhan su',
-                'Full Name',
-                'Name',
-                'Người sưu tầm',
-                'Nguoi suu tam',
-                'Người phụ trách',
-                'Nguoi phu trach',
-                'Owner',
-                'Người tạo',
-                'Nguoi tao'
-            ]),
-        );
+        // Priority 1: 'Nhân viên' Person field — Lark trả về .name chính xác (VD: "Huyền Cam").
+        // Trường "Tên" (text/formula) thường bị đảo ngược thành "Cam Huyền" nên chỉ dùng làm fallback.
+        let name = extractString(findValue(['Nhân viên', 'Nhan vien', 'Employee']));
 
-        // If name still null, try 'Nhân viên' or 'Nhan vien' (User field)
+        // Priority 2: Fallback sang các trường text nếu Person field rỗng
         if (!name) {
-            name = extractString(findValue(['Nhân viên', 'Nhan vien', 'Employee']));
+            name = extractString(
+                findValue([
+                    'Họ tên',
+                    'Ho ten',
+                    'Họ và tên',
+                    'Ho va ten',
+                    'Tên nhân sự',
+                    'Ten nhan su',
+                    'Họ tên nhân sự',
+                    'Ho ten nhan su',
+                    'Full Name',
+                    'Name',
+                    'Tên',
+                    'Ten',
+                    'Người sưu tầm',
+                    'Nguoi suu tam',
+                    'Người phụ trách',
+                    'Nguoi phu trach',
+                    'Owner',
+                    'Người tạo',
+                    'Nguoi tao'
+                ]),
+            );
         }
 
         // Fallback for child/detail KPI tables that only expose parent relation title.
