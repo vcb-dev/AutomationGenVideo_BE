@@ -1248,8 +1248,9 @@ model SocialUploadedFile {
   originalname String
   mimetype     String
   size         Int
-  url          String
-  storage      String   @default("supabase")
+  url           String
+  thumbnail_url String?
+  storage       String   @default("supabase")
   created_at   DateTime @default(now())
 
   @@index([user_id])

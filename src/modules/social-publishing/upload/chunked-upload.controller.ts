@@ -88,32 +88,28 @@ export class ChunkedUploadController {
     fs.rmSync(chunkDir, { recursive: true, force: true });
 
     const fileSize = fs.statSync(finalPath).size;
-    this.logger.log(`[Chunk] Assembled ${finalName} (${(fileSize / 1024 / 1024).toFixed(1)}MB)`);
+    this.logger.log(`[Chunk] Assembled ${finalName} (${(fileSize / 1024 / 1024).toFixed(1)}MB). Processing metadata & compression...`);
 
     const baseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:3000';
-    const isProduction = process.env.NODE_ENV === 'production';
-    let url: string, storage: 'supabase' | 'local' = 'local';
-    if (this.supabase.isAvailable()) {
-      try {
-        url = await this.supabase.uploadFromPath(finalPath, finalName, meta.mimetype);
-        fs.unlink(finalPath, () => {});
-        storage = 'supabase';
-      } catch (e: any) {
-        if (isProduction) {
-          this.logger.error(`[Chunk] Supabase upload thất bại trên production: ${e.message}`);
-          throw new BadRequestException(`Upload thất bại: ${e.message}. Vui lòng thử lại.`);
-        }
-        this.logger.warn(`[Chunk] Supabase fail, using local (dev): ${e.message}`);
-        url = `${baseUrl}/api/social/media/${finalName}`;
-      }
-    } else {
-      if (isProduction) {
-        throw new BadRequestException('Storage chưa được cấu hình. Liên hệ admin.');
-      }
-      url = `${baseUrl}/api/social/media/${finalName}`;
-    }
+    
+    // Sử dụng logic chuẩn của MediaLibraryService (bao gồm nén và tạo thumbnail)
+    const result = await this.library.uploadAndStore(req.user.id, finalPath, {
+      originalname: meta.filename,
+      mimetype: meta.mimetype,
+      baseUrl
+    });
 
-    await this.library.save(req.user.id, { filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, url, storage }).catch(() => {});
-    return { success: true, urls: [{ url, filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, storage }] };
+    return { 
+      success: true, 
+      urls: [{ 
+        url: result.url, 
+        thumbnail_url: result.thumbnail_url,
+        filename: result.filename, 
+        originalname: result.originalname, 
+        mimetype: result.mimetype, 
+        size: result.size, 
+        storage: result.storage 
+      }] 
+    };
   }
 }
