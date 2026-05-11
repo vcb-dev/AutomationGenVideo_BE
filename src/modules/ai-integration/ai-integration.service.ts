@@ -732,10 +732,18 @@ export class AiIntegrationService {
     const safeP = (platform || '').replace(/'/g, '');
     const safeT = (team || '').replace(/'/g, '');
     return this.prisma.$queryRawUnsafe(`
-      SELECT name AS display_name, platform, channel_id AS username,
-             link_channel, team_traffic AS team, owner AS owner_name, email AS owner_email
+      SELECT
+        TRIM(name) AS display_name,
+        COALESCE(NULLIF(TRIM(platform), ''), 'Khác') AS platform,
+        TRIM(COALESCE(channel_id, '')) AS username,
+        link_channel,
+        COALESCE(NULLIF(TRIM(team_traffic), ''), '—') AS team,
+        TRIM(COALESCE(owner, '')) AS owner_name,
+        email AS owner_email
       FROM huyk_channels
-      WHERE status = 'Đang hoạt động'
+      WHERE status IN ('Đang hoạt động', 'ON')
+        AND name IS NOT NULL
+        AND TRIM(name) != ''
       ${safeP ? `AND LOWER(platform) LIKE LOWER('%${safeP}%')` : ''}
       ${safeT ? `AND LOWER(team_traffic) LIKE LOWER('%${safeT}%')` : ''}
       ORDER BY platform, name
