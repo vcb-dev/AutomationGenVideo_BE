@@ -6,6 +6,7 @@ import { SocialPlatform, SocialPostStatus, SocialPostSource } from '@prisma/clie
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 
 const MAX_RETRIES = 3;
+const MAX_HEAVY_JOBS = 2;
 
 /** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
 function retryDelayMs(attempt: number): number {
@@ -174,8 +175,11 @@ export class ScheduleService {
       Object.entries(claimedPerPlatform).map(([p, n]) => `${p}:${n}`).join(', '),
     );
 
-    // 4. Chạy song song tất cả job đã claim
-    await Promise.all(claimedPosts.map(post => this.executePost(post)));
+    // 4. Chạy tuần tự theo nhóm để tránh quá tải RAM (Heavy Jobs Control)
+    for (let i = 0; i < claimedPosts.length; i += MAX_HEAVY_JOBS) {
+      const chunk = claimedPosts.slice(i, i + MAX_HEAVY_JOBS);
+      await Promise.all(chunk.map(post => this.executePost(post)));
+    }
   }
 
   private async executePost(post: any) {
