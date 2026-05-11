@@ -21,7 +21,7 @@ function isNotReady(err: any): boolean {
 }
 
 function modelReady(prisma: any): boolean {
-  return typeof (prisma as any).socialUploadedFile?.findMany === 'function';
+  return !!((prisma as any).socialUploadedFile || (prisma as any).SocialUploadedFile);
 }
 
 const EMPTY_LIST  = { items: [], total: 0, page: 1, limit: 20, pages: 0 };
@@ -103,22 +103,32 @@ export class MediaLibraryService {
   }
 
   async save(userId: string, file: { filename: string; originalname: string; mimetype: string; size: number; url: string; storage: string }) {
-    if (!modelReady(this.prisma)) { this.logger.warn('[Library] Model chưa sẵn sàng — bỏ qua save metadata'); return null; }
+    if (!modelReady(this.prisma)) {
+      const models = Object.keys(this.prisma).filter(k => !k.startsWith('$') && !k.startsWith('_'));
+      this.logger.warn(`[Library] Model chưa sẵn sàng. Các model hiện có: ${models.join(', ')}`);
+      return null;
+    }
+    const model = ((this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
     try {
-      return await (this.prisma as any).socialUploadedFile.create({ data: { user_id: userId, ...file } });
+      return await model.create({ data: { user_id: userId, ...file } });
     } catch (err: any) {
-      if (isNotReady(err)) { this.logger.warn('[Library] Bảng chưa tồn tại — chạy migration SQL'); return null; }
+      if (isNotReady(err)) {
+        this.logger.warn(`[Library] Bảng chưa tồn tại — hãy chạy migration SQL. Error: ${err.message}`);
+        return null;
+      }
+      this.logger.error(`[Library] Lỗi khi lưu file vào DB: ${err.message}`, err.stack);
       throw err;
     }
   }
 
   async list(userId: string, page = 1, limit = 20) {
-    if (!modelReady(this.prisma)) { this.logger.warn('[Library] Prisma generate chưa chạy'); return EMPTY_LIST; }
+    if (!modelReady(this.prisma)) { return EMPTY_LIST; }
+    const model = ((this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
     try {
       const skip = (page - 1) * limit;
       const [items, total] = await Promise.all([
-        (this.prisma as any).socialUploadedFile.findMany({ where: { user_id: userId }, orderBy: { created_at: 'desc' }, skip, take: limit }),
-        (this.prisma as any).socialUploadedFile.count({ where: { user_id: userId } }),
+        model.findMany({ where: { user_id: userId }, orderBy: { created_at: 'desc' }, skip, take: limit }),
+        model.count({ where: { user_id: userId } }),
       ]);
       return { items, total, page, limit, pages: Math.ceil(total / limit) };
     } catch (err: any) {
@@ -129,12 +139,13 @@ export class MediaLibraryService {
 
   async remove(id: string, userId: string) {
     if (!modelReady(this.prisma)) return null;
+    const model = ((this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
     try {
-      const file = await (this.prisma as any).socialUploadedFile.findFirst({ where: { id, user_id: userId } });
+      const file = await model.findFirst({ where: { id, user_id: userId } });
       if (!file) return null;
       await this.prisma.socialMediaFile.deleteMany({ where: { filename: file.filename } }).catch(() => {});
       if (file.storage === 'supabase') await this.supabase.delete([file.filename]).catch(() => {});
-      await (this.prisma as any).socialUploadedFile.delete({ where: { id } });
+      await model.delete({ where: { id } });
       return file;
     } catch (err: any) {
       if (isNotReady(err)) return null;
@@ -144,8 +155,9 @@ export class MediaLibraryService {
 
   async stats(userId: string) {
     if (!modelReady(this.prisma)) return EMPTY_STATS;
+    const model = ((this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
     try {
-      const result = await (this.prisma as any).socialUploadedFile.aggregate({
+      const result = await model.aggregate({
         where: { user_id: userId }, _count: { id: true }, _sum: { size: true },
       });
       return { count: result._count.id, totalBytes: result._sum.size ?? 0, totalMB: Number(((result._sum.size ?? 0) / 1024 / 1024).toFixed(2)) };
@@ -157,8 +169,9 @@ export class MediaLibraryService {
 
   async getPostHistory(id: string, userId: string) {
     if (!modelReady(this.prisma)) return { posts: [] };
+    const model = ((this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile) as any;
     try {
-      const file = await (this.prisma as any).socialUploadedFile.findFirst({ where: { id, user_id: userId } });
+      const file = await model.findFirst({ where: { id, user_id: userId } });
       if (!file) return { posts: [] };
       const posts = await this.prisma.socialPost.findMany({
         where: { user_id: userId, media_urls: { has: file.url } },
