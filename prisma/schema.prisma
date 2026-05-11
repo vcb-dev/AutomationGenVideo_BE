@@ -1354,3 +1354,33 @@ model AdsCampaignStats {
   @@index([content_type, year, month])
   @@map("ads_campaign_stats")
 }
+
+/// Dữ liệu từng video TikTok theo kênh — crawl từ Apify
+model TiktokVideoReport {
+  id           String   @id @default(uuid())
+  video_id     String
+  channel_name String
+  username     String
+  owner        String?
+  team         String?
+  title        String?  @db.Text
+  hashtags     String[] @default([])
+  views        BigInt   @default(0)
+  likes        BigInt   @default(0)
+  comments     BigInt   @default(0)
+  shares       BigInt   @default(0)
+  followers    BigInt   @default(0)
+  video_url    String?
+  published_at DateTime?
+  year         Int
+  month        Int
+  synced_at    DateTime @default(now()) @updatedAt
+
+  @@unique([video_id])
+  @@index([username, year, month])
+  @@index([team, year, month])
+  @@index([owner, year, month])
+  @@index([year, month])
+  @@index([views])
+  @@map("tiktok_video_report")
+}
