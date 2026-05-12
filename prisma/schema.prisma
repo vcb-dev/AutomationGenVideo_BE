@@ -1386,3 +1386,24 @@ model SocialVideoReport {
   @@map("social_video_report")
 }
 
+model BusinessChannelConnection {
+  id               String    @id @default(uuid())
+  channel_name     String
+  platform_id      String
+  platform         String
+  connection_type  String    @default("Kênh nội dung")
+  sync_status      String    @default("Chưa đồng bộ")
+  last_sync_at     DateTime?
+  creator_email    String?
+  is_active        Boolean   @default(true)
+  avatar_url       String?
+  
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  @@index([platform])
+  @@index([sync_status])
+  @@map("business_channel_connections")
+}
+
+
