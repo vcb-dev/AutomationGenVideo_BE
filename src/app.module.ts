@@ -23,6 +23,7 @@ import { RolePermissionsModule } from './modules/role-permissions/role-permissio
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
 import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
 import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
+import { OAuthModule } from './modules/oauth/oauth.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { BusinessConnectionsModule } from './modules/business-connections/busine
     RolePermissionsModule,
     SocialPublishingModule,
     BusinessConnectionsModule,
+    OAuthModule,
   ],
   controllers: [AppController],
   providers: [

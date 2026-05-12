@@ -1401,6 +1401,7 @@ model BusinessChannelConnection {
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
+  @@unique([platform_id, platform])
   @@index([platform])
   @@index([sync_status])
   @@map("business_channel_connections")
