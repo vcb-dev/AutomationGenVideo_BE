@@ -97,7 +97,7 @@ export class MediaLibraryService {
       const thumbName = `thumb_${baseName}.jpg`, thumbPath = path.join(UPLOAD_DIR, thumbName);
       try {
         this.logger.log(`[Library] Đang tạo thumbnail cho ${finalName}...`);
-        await execAsync(`"${ffmpegPath}" -y -ss 1 -i "${finalPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
+        await execAsync(`"${ffmpegPath}" -y -ss 0 -i "${finalPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
         if (fs.existsSync(thumbPath)) {
           this.logger.log(`[Library] Đã tạo xong file tạm thumbnail: ${thumbPath}`);
           if (this.supabase.isAvailable()) {
