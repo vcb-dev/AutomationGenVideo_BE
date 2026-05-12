@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as FormData from 'form-data';
+import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 const execAsync = promisify(exec);
 
@@ -12,6 +13,8 @@ const execAsync = promisify(exec);
 export class FacebookPublisher {
   private readonly logger = new Logger(FacebookPublisher.name);
   private readonly BASE = 'https://graph.facebook.com/v21.0';
+
+  constructor(private readonly prisma: PrismaService) {}
 
   async publish(token: string, opts: {
     message: string;
@@ -84,25 +87,40 @@ export class FacebookPublisher {
         videoId = res.data.id;
       }
 
-      // ── TỰ ĐỘNG TRÍCH XUẤT ẢNH BÌA (FRAME ĐẦU) & ĐẶT LÀM THUMBNAIL ──
+      // ── TỰ ĐỘNG LẤY ẢNH BÌA TỪ DB HOẶC LOCAL FILE ──
       try {
-        const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
-          ? process.env.FFMPEG_PATH
-          : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
-        if (!ffmpegPath) {
-          this.logger.warn('[FB] FFmpeg không tìm thấy — bỏ qua bước set thumbnail');
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
+        let buffer: Buffer | null = null;
+        
+        // 1. Cố gắng lấy thumbnail_url từ DB (vì local file thường đã bị xoá)
+        try {
+          const filename = firstMedia.split('/').pop()?.split('?')[0];
+          if (filename) {
+            const uploadedFile = await this.prisma.socialUploadedFile.findFirst({
+              where: { filename }
+            });
+            if (uploadedFile && uploadedFile.thumbnail_url) {
+              this.logger.log(`[FB] Tải thumbnail từ URL trong DB: ${uploadedFile.thumbnail_url}`);
+              const res = await axios.get(uploadedFile.thumbnail_url, { responseType: 'arraybuffer', timeout: 15000 });
+              buffer = Buffer.from(res.data);
+            }
+          }
+        } catch (e: any) {
+          this.logger.warn(`[FB] Lỗi khi lấy thumbnail từ DB: ${e.message}`);
         }
 
-        // Chỉ trích xuất thumbnail từ file local để tránh command injection với external URL
-        if (!localFilePath) {
-          this.logger.log('[FB] Bỏ qua thumbnail vì không có local file');
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
+        // 2. Nếu DB không có, dùng FFmpeg cắt file local (nếu còn giữ trên disk)
+        if (!buffer && localFilePath) {
+          const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
+            ? process.env.FFMPEG_PATH
+            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+            
+          if (ffmpegPath) {
+            this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
+            const cmd = `"${ffmpegPath}" -ss 00:00:00 -i "${localFilePath}" -vframes 1 -q:v 2 -f image2 -`;
+            const { stdout } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any);
+            buffer = stdout;
+          }
         }
-        this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
-
-        const cmd = `"${ffmpegPath}" -ss 00:00:00 -i "${localFilePath}" -vframes 1 -q:v 2 -f image2 -`;
-        const { stdout: buffer } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any);
 
         if (buffer && buffer.length > 0) {
           const thumbForm = new FormData();
@@ -115,6 +133,8 @@ export class FacebookPublisher {
             params: { access_token: pageToken },
           });
           this.logger.log(`[FB] Successfully set custom thumbnail for video ${videoId}`);
+        } else {
+          this.logger.warn('[FB] Không có buffer thumbnail để upload (không có file local lẫn DB)');
         }
       } catch (err: any) {
         this.logger.warn(`[FB] Failed to set custom thumbnail: ${err.message}`);
