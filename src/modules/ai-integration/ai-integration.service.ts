@@ -758,22 +758,30 @@ export class AiIntegrationService {
       this.logger.log(`[AI Analytics] Đang xử lý câu hỏi: ${message}`);
 
       // 1. Gửi yêu cầu tới DeepSeek để chuyển câu hỏi thành SQL
+      const now = new Date();
+      const currentDateContext = `Hôm nay là ngày ${now.getDate()}, tháng ${now.getMonth() + 1}, năm ${now.getFullYear()}.`;
+      
       const schemaContext = `
-        Bảng 1: social_video_report (Dữ liệu organic)
-        Cột: platform ('youtube', 'facebook', 'instagram'), channel_name, views, likes, comments, shares, followers, team, owner, year, month, published_at
+        Bảng 1: social_video_report (Dữ liệu organic/traffic)
+        Cột quan trọng: platform, channel_name, views, likes, comments, shares, followers, team, owner, year, month
 
-        Bảng 2: ads_campaign_stats (Dữ liệu quảng cáo)
-        Cột: platform ('meta', 'tiktok'), campaign_name, spend, impressions, reach, clicks, mess_count, team, owner, year, month, date_start
+        Bảng 2: ads_campaign_stats (Dữ liệu quảng cáo/ads)
+        Cột quan trọng: platform, campaign_name, spend, impressions, reach, clicks, mess_count, team, owner, year, month
 
         Bảng 3: huyk_channels (Danh sách kênh)
-        Cột: platform, name, team_traffic, owner, follower_count
+        Cột quan trọng: platform, name, team_traffic, owner
       `;
 
       const prompt = `
+        ${currentDateContext}
         Bạn là chuyên gia phân tích dữ liệu VCB. Dựa trên schema sau:
         ${schemaContext}
-        Hãy chuyển câu hỏi sau thành 1 câu lệnh SQL SELECT (PostgreSQL).
-        Chỉ trả về DUY NHẤT câu SQL, không giải thích. Nếu câu hỏi không liên quan đến dữ liệu, hãy trả về 'NORMAL_CHAT'.
+        
+        Nhiệm vụ: Chuyển câu hỏi người dùng thành 1 câu SQL SELECT (PostgreSQL).
+        LƯU Ý: 
+        - Nếu người dùng hỏi "tháng này", hãy dùng year=${now.getFullYear()} and month=${now.getMonth() + 1}.
+        - Chỉ trả về DUY NHẤT câu SQL, không giải thích. Nếu không liên quan đến dữ liệu, trả về 'NORMAL_CHAT'.
+        
         Câu hỏi: "${message}"
       `;
 
