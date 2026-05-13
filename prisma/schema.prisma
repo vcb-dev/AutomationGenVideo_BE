@@ -1299,29 +1299,6 @@ model ChannelPostStats {
   @@map("channel_post_stats")
 }
 
-/// Tổng hợp traffic theo tháng từng kênh — AI đọc bảng này để báo cáo
-model ChannelMonthlyStats {
-  id               String   @id @default(uuid())
-  platform         String
-  channel_name     String
-  username         String
-  team             String?
-  owner            String?
-  year             Int
-  month            Int
-  total_views      BigInt   @default(0)
-  total_likes      BigInt   @default(0)
-  total_comments   BigInt   @default(0)
-  total_shares     BigInt   @default(0)
-  total_followers  BigInt   @default(0)
-  post_count       Int      @default(0)
-  synced_at        DateTime @default(now()) @updatedAt
-
-  @@unique([platform, username, year, month])
-  @@index([team, year, month])
-  @@index([year, month])
-  @@map("channel_monthly_stats")
-}
 
 /// Stats từng campaign quảng cáo Facebook — sync 1 lần/ngày
 model AdsCampaignStats {

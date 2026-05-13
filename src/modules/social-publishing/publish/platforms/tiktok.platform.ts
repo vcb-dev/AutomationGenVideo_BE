@@ -78,7 +78,7 @@ export class TiktokPublisher {
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
       const r = await axios.head(urlOrPath);
-      return parseInt(r.headers['content-length'] || '0');
+      return parseInt(String(r.headers['content-length'] || '0'));
     }
     return fs.statSync(urlOrPath).size;
   }

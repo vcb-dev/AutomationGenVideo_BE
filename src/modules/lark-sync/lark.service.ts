@@ -5553,7 +5553,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                 return {
                     data: response.data,
-                    contentType: response.headers['content-type'] || 'image/png',
+                    contentType: String(response.headers['content-type'] || 'image/png'),
                 };
             } catch (error) {
                 lastError = error;

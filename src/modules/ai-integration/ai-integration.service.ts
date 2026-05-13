@@ -752,35 +752,42 @@ export class AiIntegrationService {
   }
 
   async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
+    console.log("====================================================");
+    console.log("!!! AI ANALYTICS IS RUNNING NOW !!!");
+    console.log("QUESTION:", message);
+    console.log("====================================================");
+    
     const DEEPSEEK_KEY = this.configService.get<string>('DEEPSEEK_API_KEY');
+    console.log("DEEPSEEK_KEY STARTS WITH:", DEEPSEEK_KEY ? DEEPSEEK_KEY.substring(0, 5) : "UNDEFINED");
     
     try {
       this.logger.log(`[AI Analytics] Đang xử lý câu hỏi: ${message}`);
 
-      // 1. Gửi yêu cầu tới DeepSeek để chuyển câu hỏi thành SQL
+      // 1. Gửi yêu cầu
       const now = new Date();
       const currentDateContext = `Hôm nay là ngày ${now.getDate()}, tháng ${now.getMonth() + 1}, năm ${now.getFullYear()}.`;
-      
       const schemaContext = `
-        Bảng 1: social_video_report (Dữ liệu organic/traffic)
-        Cột quan trọng: platform, channel_name, views, likes, comments, shares, followers, team, owner, year, month
+        Bảng "ads_campaign_stats" (Quảng cáo):
+        - Cột: platform (meta/tiktok), campaign_name, spend, impressions, reach, clicks, mess_count, team, owner, year, month, day
 
-        Bảng 2: ads_campaign_stats (Dữ liệu quảng cáo/ads)
-        Cột quan trọng: platform, campaign_name, spend, impressions, reach, clicks, mess_count, team, owner, year, month
+        Bảng "huyk_channels" (Danh sách kênh):
+        - Cột: platform, name, channel_id, team_traffic, owner, status
 
-        Bảng 3: huyk_channels (Danh sách kênh)
-        Cột quan trọng: platform, name, team_traffic, owner
+        Bảng "social_video_report" (Traffic tự nhiên/Kênh MXH):
+        - Cột: platform (youtube/facebook/tiktok), channel_name, username, title, views, likes, comments, shares, followers, team, owner, year, month
       `;
 
       const prompt = `
         ${currentDateContext}
-        Bạn là chuyên gia phân tích dữ liệu VCB. Dựa trên schema sau:
+        Bạn là chuyên gia SQL PostgreSQL cho hệ thống VCB Studio.
+        Dựa trên schema sau:
         ${schemaContext}
         
-        Nhiệm vụ: Chuyển câu hỏi người dùng thành 1 câu SQL SELECT (PostgreSQL).
-        LƯU Ý: 
-        - Nếu người dùng hỏi "tháng này", hãy dùng year=${now.getFullYear()} and month=${now.getMonth() + 1}.
-        - Chỉ trả về DUY NHẤT câu SQL, không giải thích. Nếu không liên quan đến dữ liệu, trả về 'NORMAL_CHAT'.
+        Nhiệm vụ: Chuyển câu hỏi người dùng thành 1 câu SQL SELECT hoàn chỉnh.
+        LƯU Ý QUAN TRỌNG: 
+        - Nếu người dùng hỏi "tháng này", hãy dùng year=${now.getFullYear()} AND month=${now.getMonth() + 1}.
+        - Tên bảng và tên cột phải viết thường chính xác như schema.
+        - Trả về DUY NHẤT câu SQL, không giải thích. Nếu không cần dữ liệu, trả về 'NORMAL_CHAT'.
         
         Câu hỏi: "${message}"
       `;
@@ -815,29 +822,54 @@ export class AiIntegrationService {
       const dbResults = await this.prisma.$queryRawUnsafe(sql);
 
       // 3. AI giải thích kết quả
+      // 3. AI giải thích kết quả và tạo Dashboard JSON
       const summaryPrompt = `
         Dựa trên kết quả từ Database:
         ${JSON.stringify(dbResults, (key, value) => typeof value === 'bigint' ? value.toString() : value)}
-        Hãy trả lời câu hỏi "${message}" của người dùng bằng tiếng Việt một cách chuyên nghiệp.
+        
+        Nhiệm vụ: Trả lời câu hỏi "${message}" và tạo Dashboard JSON.
+        YÊU CẦU: Trả về DUY NHẤT một đối tượng JSON (không bọc trong markdown) có cấu trúc:
+        {
+          "message": "Câu trả lời bằng tiếng Việt",
+          "dashboard": {
+            "layout": "mixed",
+            "blocks": [
+              { "type": "kpi_card", "data": [{ "label": "Tổng chi", "value": "...", "trend": "...", "trendUp": true }] },
+              { "type": "bar", "title": "Phân tích số liệu", "xKey": "...", "yKey": "...", "data": [...] },
+              { "type": "table", "title": "Chi tiết dữ liệu", "columns": ["...", "..."], "data": [...] }
+            ]
+          }
+        }
+        LƯU Ý: 
+        - Nếu có ít dữ liệu, chỉ dùng kpi_card và table.
+        - Nếu có so sánh (theo team, platform), hãy dùng bar chart.
       `;
 
       const { data: summaryRes } = await firstValueFrom(
         this.httpService.post('https://api.deepseek.com/chat/completions', {
           model: "deepseek-chat",
-          messages: [{ role: "user", content: summaryPrompt }]
+          messages: [{ role: "user", content: summaryPrompt }],
+          response_format: { type: "json_object" }
         }, {
           headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` }
         })
       );
 
+      const aiContent = summaryRes.choices[0].message.content;
+      const finalResult = typeof aiContent === 'string' ? JSON.parse(aiContent) : aiContent;
+
       return {
-        message: summaryRes.data?.choices[0]?.message?.content || summaryRes.choices[0].message.content,
+        ...finalResult,
         data: dbResults
       };
 
     } catch (err) {
-      this.logger.error(`AI Analytics Error: ${err.message}`);
-      return { message: "Xin lỗi, tôi gặp lỗi khi truy vấn dữ liệu. Bạn vui lòng thử lại sau." };
+      this.logger.error(`[AI Analytics ERROR]`);
+      this.logger.error(`Message: ${err.message}`);
+      if (err.response) {
+          this.logger.error(`API Response: ${JSON.stringify(err.response.data)}`);
+      }
+      return { message: `Xin lỗi, tôi gặp lỗi khi truy vấn dữ liệu: ${err.message}. Bạn vui lòng thử lại sau.` };
     }
   }
 
