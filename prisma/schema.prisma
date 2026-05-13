@@ -1330,6 +1330,8 @@ model AdsCampaignStats {
   account_name        String?
   campaign_id         String
   campaign_name       String
+  team                String?  // Team K1, K2, Đồ da...
+  owner               String?  // Việt, Nhạn...
   camp_type           String?  // mess | like_page | tuong_tac
   content_type        String?  // A1 | A2 | A3 | A4 | A5
   spend               Float    @default(0)
@@ -1339,6 +1341,8 @@ model AdsCampaignStats {
   cost_per_mess       Float    @default(0)
   like_count          Int      @default(0)
   cost_per_like       Float    @default(0)
+  comment_count       Int      @default(0)
+  share_count         Int      @default(0)
   engagement_count    Int      @default(0)
   cost_per_engagement Float    @default(0)
   clicks              Int      @default(0)
