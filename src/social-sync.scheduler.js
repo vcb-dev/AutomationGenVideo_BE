@@ -12,17 +12,19 @@ function runSocialSync() {
     const pythonPath = path.join(__dirname, '../../AutomationGenVideo_AI/venv/bin/python3');
     const scriptPath = path.join(__dirname, '../../AutomationGenVideo_AI/cron_meta_insights.py');
     
-    const command = `${pythonPath} ${scriptPath}`;
+    const commandSocial = `${pythonPath} ${scriptPath}`;
+    const commandAds = `${pythonPath} ${path.join(__dirname, '../../AutomationGenVideo_AI/cron_ads_sync.py')}`;
     
-    exec(command, (error, stdout, stderr) => {
-        if (error) {
-            console.error(`[Scheduler] Lỗi khi chạy script: ${error.message}`);
-            return;
-        }
-        if (stderr) {
-            console.warn(`[Scheduler] Cảnh báo: ${stderr}`);
-        }
-        console.log(`[Scheduler] Đồng bộ hoàn tất thành công!\nKết quả:\n${stdout}`);
+    // Chạy Social Sync
+    exec(commandSocial, (error, stdout, stderr) => {
+        if (error) console.error(`[Scheduler] Lỗi Social Sync: ${error.message}`);
+        else console.log('[Scheduler] Social Sync hoàn tất.');
+    });
+
+    // Chạy Ads Sync
+    exec(commandAds, (error, stdout, stderr) => {
+        if (error) console.error(`[Scheduler] Lỗi Ads Sync: ${error.message}`);
+        else console.log('[Scheduler] Ads Sync hoàn tất.');
     });
 }
 

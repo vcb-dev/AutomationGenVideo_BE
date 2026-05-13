@@ -1326,6 +1326,7 @@ model ChannelMonthlyStats {
 /// Stats từng campaign quảng cáo Facebook — sync 1 lần/ngày
 model AdsCampaignStats {
   id                  String   @id @default(uuid())
+  platform            String   @default("meta") // meta | tiktok
   account_id          String
   account_name        String?
   campaign_id         String
