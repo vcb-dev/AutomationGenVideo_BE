@@ -752,23 +752,84 @@ export class AiIntegrationService {
   }
 
   async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
-    const url = `${this.aiServiceUrl}/api/chat/`;
+    const DEEPSEEK_KEY = this.configService.get<string>('DEEPSEEK_API_KEY');
+    
     try {
-      const { data } = await firstValueFrom(
-        this.httpService.post(url, { message, history }, { timeout: 60000 }).pipe(
-          catchError((error: AxiosError) => {
-            this.logger.error(`Chat proxy error: ${error.message}`);
-            throw new HttpException(
-              error.response?.data ?? 'AI Service unavailable',
-              (error.response?.status as number) ?? HttpStatus.SERVICE_UNAVAILABLE,
-            );
-          }),
-        ),
+      this.logger.log(`[AI Analytics] Đang xử lý câu hỏi: ${message}`);
+
+      // 1. Gửi yêu cầu tới DeepSeek để chuyển câu hỏi thành SQL
+      const schemaContext = `
+        Bảng 1: social_video_report (Dữ liệu organic)
+        Cột: platform ('youtube', 'facebook', 'instagram'), channel_name, views, likes, comments, shares, followers, team, owner, year, month, published_at
+
+        Bảng 2: ads_campaign_stats (Dữ liệu quảng cáo)
+        Cột: platform ('meta', 'tiktok'), campaign_name, spend, impressions, reach, clicks, mess_count, team, owner, year, month, date_start
+
+        Bảng 3: huyk_channels (Danh sách kênh)
+        Cột: platform, name, team_traffic, owner, follower_count
+      `;
+
+      const prompt = `
+        Bạn là chuyên gia phân tích dữ liệu VCB. Dựa trên schema sau:
+        ${schemaContext}
+        Hãy chuyển câu hỏi sau thành 1 câu lệnh SQL SELECT (PostgreSQL).
+        Chỉ trả về DUY NHẤT câu SQL, không giải thích. Nếu câu hỏi không liên quan đến dữ liệu, hãy trả về 'NORMAL_CHAT'.
+        Câu hỏi: "${message}"
+      `;
+
+      const { data: sqlRes } = await firstValueFrom(
+        this.httpService.post('https://api.deepseek.com/chat/completions', {
+          model: "deepseek-chat",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0
+        }, {
+          headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` }
+        })
       );
-      return data;
+
+      let sql = sqlRes.choices[0].message.content.replace(/```sql|```/g, "").trim();
+
+      if (sql.includes('NORMAL_CHAT')) {
+        // Chat bình thường nếu không cần dữ liệu
+        const { data: normalChat } = await firstValueFrom(
+          this.httpService.post('https://api.deepseek.com/chat/completions', {
+            model: "deepseek-chat",
+            messages: [...history, { role: "user", content: message }]
+          }, {
+            headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` }
+          })
+        );
+        return { message: normalChat.choices[0].message.content };
+      }
+
+      // 2. Thực thi SQL
+      this.logger.log(`[AI Analytics] SQL: ${sql}`);
+      const dbResults = await this.prisma.$queryRawUnsafe(sql);
+
+      // 3. AI giải thích kết quả
+      const summaryPrompt = `
+        Dựa trên kết quả từ Database:
+        ${JSON.stringify(dbResults, (key, value) => typeof value === 'bigint' ? value.toString() : value)}
+        Hãy trả lời câu hỏi "${message}" của người dùng bằng tiếng Việt một cách chuyên nghiệp.
+      `;
+
+      const { data: summaryRes } = await firstValueFrom(
+        this.httpService.post('https://api.deepseek.com/chat/completions', {
+          model: "deepseek-chat",
+          messages: [{ role: "user", content: summaryPrompt }]
+        }, {
+          headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` }
+        })
+      );
+
+      return {
+        message: summaryRes.data?.choices[0]?.message?.content || summaryRes.choices[0].message.content,
+        data: dbResults
+      };
+
     } catch (err) {
-      if (err instanceof HttpException) throw err;
-      throw new HttpException('AI Service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+      this.logger.error(`AI Analytics Error: ${err.message}`);
+      return { message: "Xin lỗi, tôi gặp lỗi khi truy vấn dữ liệu. Bạn vui lòng thử lại sau." };
     }
   }
 
