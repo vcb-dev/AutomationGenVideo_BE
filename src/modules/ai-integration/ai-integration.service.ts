@@ -802,7 +802,10 @@ export class AiIntegrationService {
         })
       );
 
-      let sql = sqlRes.choices[0].message.content.replace(/```sql|```/g, "").trim();
+      let sql = sqlRes.choices[0].message.content
+        .replace(/```sql|```/g, "")
+        .replace(/^['"`]|['"`]$/g, "") // Xóa dấu nháy ở đầu/cuối
+        .trim();
 
       if (sql.includes('NORMAL_CHAT')) {
         // Chat bình thường nếu không cần dữ liệu
