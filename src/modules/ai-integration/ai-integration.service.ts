@@ -853,7 +853,10 @@ Bạn có quyền truy cập TRỰC TIẾP vào database PostgreSQL với các b
 Bảng "ads_campaign_stats" — dữ liệu quảng cáo Facebook/TikTok:
   platform: meta | tiktok
   Số liệu: spend, impressions, reach, clicks, mess_count, like_count, comment_count, share_count, engagement_count, cost_per_mess, cost_per_like
-  Phân loại: camp_type (mess|like_page|tuong_tac), content_type (A1|A2|A3|A4|A5), team, owner, year, month, day
+  Phân loại: camp_type (mess|like_page|tuong_tac), content_type (A1|A2|A3|A4|A5), team, owner, year, month
+  Ngày: date_start (VARCHAR 'YYYY-MM-DD'), date_stop (VARCHAR 'YYYY-MM-DD') — là ngày sync, KHÔNG dùng để lọc "đang chạy"
+  KHÔNG có cột "day" — chỉ dùng year và month để lọc theo thời gian
+  QUAN TRỌNG: "campaign đang chạy tháng X" = tất cả campaign có year=X AND month=X, KHÔNG filter theo date_stop
   Teams có dữ liệu: ${teamsAds.map(r => r.team).join(', ')}
 
 Bảng "huyk_channels" — danh sách kênh (master list):
@@ -902,6 +905,8 @@ Q: "so sánh flow các team tháng này?" → {"type":"query","sql":"SELECT team
 Q: "top kênh follower nhất?" → {"type":"query","sql":"SELECT channel_name, platform, MAX(followers) as max_followers FROM social_video_report GROUP BY channel_name, platform ORDER BY max_followers DESC LIMIT 10"}
 Q: "team K1 chi ads bao nhiêu tháng này?" → {"type":"query","sql":"SELECT team, SUM(spend) as ads_spend, SUM(mess_count) as mess_count, SUM(impressions) as impressions, ROUND(AVG(spend/NULLIF(mess_count,0))::numeric,0) as avg_cost_per_mess FROM ads_campaign_stats WHERE LOWER(team) LIKE '%k1%' AND year=${currentYear} AND month=${currentMonth} GROUP BY team"}
 Q: "bạn đang dùng bảng nào?" → {"type":"chat","reply":"Tôi đang truy cập trực tiếp 3 bảng trong database: ads_campaign_stats (quảng cáo), huyk_channels (danh sách kênh), social_video_report (traffic tự nhiên Facebook/Instagram)."}
+Q: "tổng số campaign tháng này" hoặc "campaign đang chạy" → {"type":"query","sql":"SELECT COUNT(DISTINCT campaign_id) as total_campaigns, COUNT(DISTINCT campaign_name) as unique_names, SUM(spend) as total_spend FROM ads_campaign_stats WHERE year=${currentYear} AND month=${currentMonth}"}
+Q: "danh sách campaign tháng này" → {"type":"query","sql":"SELECT campaign_name, platform, camp_type, content_type, team, SUM(spend) as total_spend, SUM(mess_count) as total_mess FROM ads_campaign_stats WHERE year=${currentYear} AND month=${currentMonth} GROUP BY campaign_name, platform, camp_type, content_type, team ORDER BY total_spend DESC LIMIT 20"}
 Q: "xin chào" → {"type":"chat","reply":"Xin chào! Tôi là VCB Studio AI Analyst. Bạn có thể hỏi tôi về dữ liệu quảng cáo, traffic kênh, follower, hoặc hiệu suất theo team."}
 
 ${recentHistory ? `=== LỊCH SỬ GẦN ĐÂY ===\n${recentHistory}\n` : ''}
