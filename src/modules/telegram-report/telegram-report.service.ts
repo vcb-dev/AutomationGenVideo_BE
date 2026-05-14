@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import * as TelegramBot from 'node-telegram-bot-api';
 import * as ExcelJS from 'exceljs';
@@ -8,18 +8,327 @@ import {
   TextRun, HeadingLevel, AlignmentType, WidthType, ShadingType,
 } from 'docx';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { PdfReportGenerator, ReportData } from './pdf-report.generator';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Injectable()
-export class TelegramReportService {
+export class TelegramReportService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramReportService.name);
 
   private static readonly GLOBAL_KEYWORDS = ['global', 'thái lan', 'thai lan', 'indo', 'japan', 'jp'];
   private static readonly BM = { mess: { great: 18000, good: 25000, avg: 40000 } };
 
-  constructor(private readonly prisma: PrismaService) {}
+  // Chatbot state
+  private chatbotInstances = new Map<string, TelegramBot>();
+  private userTyping       = new Set<string>(); // chatId đang chờ AI trả lời
+
+  // ID của system user dùng cho Telegram conversations
+  private static TELEGRAM_SYSTEM_USER_ID: string | null = null;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiService: AiIntegrationService,
+  ) {}
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────────
+
+  async onModuleInit() {
+    // Khởi động chatbot cho tất cả config đang active
+    const configs = await this.prisma.telegramReportConfig.findMany({
+      where: { is_active: true, bot_token: { not: '' } },
+    });
+    for (const cfg of configs) {
+      this.startChatbot(cfg.bot_token, cfg.chat_id);
+    }
+    this.logger.log(`[TelegramBot] Started ${configs.length} chatbot(s)`);
+  }
+
+  onModuleDestroy() {
+    for (const bot of this.chatbotInstances.values()) {
+      try { bot.stopPolling(); } catch {}
+    }
+  }
+
+  // ── Start / Stop chatbot ──────────────────────────────────────────────────────
+
+  startChatbot(token: string, authorizedChatId?: string) {
+    if (!token || this.chatbotInstances.has(token)) return;
+    try {
+      const bot = new TelegramBot(token, { polling: { interval: 1000, autoStart: true } });
+
+      bot.on('message', async (msg) => {
+        const chatId = String(msg.chat.id);
+        const text   = msg.text?.trim() || '';
+        if (!text) return;
+
+        // Lệnh /start
+        if (text === '/start') {
+          await bot.sendMessage(chatId,
+            '👋 *Xin chào\\! Tôi là VCB Studio AI Analyst*\n\n' +
+            'Tôi có thể giúp bạn phân tích dữ liệu:\n' +
+            '• Báo cáo quảng cáo Meta \\+ TikTok\n' +
+            '• Traffic organic Facebook \\+ Instagram\n' +
+            '• So sánh hiệu suất theo team\n' +
+            '• Phân tích kênh, video, SKU\n\n' +
+            'Gõ bất kỳ câu hỏi để bắt đầu\\!\n\n' +
+            '📋 Lệnh:\n' +
+            '/clear \\- Xóa lịch sử hội thoại\n' +
+            '/report \\- Gửi báo cáo tháng này',
+            { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        // Lệnh /clear
+        if (text === '/clear') {
+          await this.clearTelegramHistory(chatId);
+          await bot.sendMessage(chatId, '🗑️ Đã xóa lịch sử hội thoại. Bắt đầu cuộc trò chuyện mới!');
+          return;
+        }
+
+        // Lệnh /report — gửi tất cả format đã config
+        if (text === '/report') {
+          const cfg = await this.prisma.telegramReportConfig.findFirst({ where: { bot_token: token, is_active: true } });
+          if (cfg) {
+            await bot.sendMessage(chatId, '📊 Đang tạo báo cáo tháng này, vui lòng chờ...');
+            try { await this.sendReports(cfg); }
+            catch (e) { await bot.sendMessage(chatId, `❌ Lỗi: ${e.message}`); }
+          } else {
+            await bot.sendMessage(chatId, '⚠️ Chưa có cấu hình báo cáo. Vào web để cài đặt.');
+          }
+          return;
+        }
+
+        // Nhận diện yêu cầu gửi file báo cáo qua ngôn ngữ tự nhiên
+        const fileRequest = this.detectFileRequest(text);
+        if (fileRequest) {
+          if (this.userTyping.has(chatId)) {
+            await bot.sendMessage(chatId, '⏳ Đang xử lý, vui lòng chờ...');
+            return;
+          }
+          this.userTyping.add(chatId);
+          try {
+            const cfg = await this.prisma.telegramReportConfig.findFirst({ where: { bot_token: token, is_active: true } });
+            if (!cfg) {
+              await bot.sendMessage(chatId, '⚠️ Chưa có cấu hình báo cáo. Vào web để cài đặt.');
+              return;
+            }
+            const { formats, types, label } = fileRequest;
+            await bot.sendMessage(chatId, `📊 Đang tạo ${label}, vui lòng chờ...`);
+
+            const now = new Date();
+            const data = await this.collectData(now.getFullYear(), now.getMonth() + 1, types);
+
+            for (const fmt of formats) {
+              try {
+                if (fmt === 'pdf')  await this.sendPdf(bot, chatId, data, now.getFullYear(), now.getMonth() + 1);
+                if (fmt === 'xlsx') await this.sendXlsx(bot, chatId, data, now.getFullYear(), now.getMonth() + 1);
+                if (fmt === 'csv')  await this.sendCsv(bot, chatId, data, now.getFullYear(), now.getMonth() + 1);
+                if (fmt === 'docx') await this.sendDocx(bot, chatId, data, now.getFullYear(), now.getMonth() + 1);
+              } catch (e) {
+                await bot.sendMessage(chatId, `⚠️ Không tạo được ${fmt.toUpperCase()}: ${e.message}`);
+              }
+            }
+          } finally {
+            this.userTyping.delete(chatId);
+          }
+          return;
+        }
+
+        // Ngăn spam — nếu đang xử lý câu hỏi trước
+        if (this.userTyping.has(chatId)) {
+          await bot.sendMessage(chatId, '⏳ Đang xử lý câu hỏi trước, vui lòng chờ...');
+          return;
+        }
+
+        // ── AI Chat ───────────────────────────────────────────────────────────
+        this.userTyping.add(chatId);
+        try {
+          await bot.sendChatAction(chatId, 'typing');
+
+          // Load history từ DB
+          const history = await this.loadTelegramHistory(chatId);
+
+          // Lưu tin nhắn user
+          await this.saveTelegramMessage(chatId, 'user', text, text);
+
+          const aiResponse = await this.aiService.chat(text, history);
+          const reply = aiResponse?.message || 'Xin lỗi, tôi không hiểu câu hỏi này.';
+
+          // Lưu tin nhắn assistant
+          await this.saveTelegramMessage(chatId, 'assistant', reply, text);
+
+          // Gửi reply (giới hạn 4096 ký tự)
+          const safeReply = reply.length > 4000 ? reply.slice(0, 3997) + '...' : reply;
+          await bot.sendMessage(chatId, safeReply);
+
+          // Nếu có data table, gửi preview
+          if (aiResponse?.data && Array.isArray(aiResponse.data) && aiResponse.data.length > 0) {
+            const preview = this.formatDataPreview(aiResponse.data);
+            if (preview) {
+              try { await bot.sendMessage(chatId, preview, { parse_mode: 'MarkdownV2' }); }
+              catch { await bot.sendMessage(chatId, preview.replace(/[`]/g, "'")); }
+            }
+          }
+
+        } catch (err) {
+          this.logger.error(`[TelegramBot] AI error for ${chatId}: ${err.message}`);
+          await bot.sendMessage(chatId, '❌ Xin lỗi, tôi gặp lỗi khi xử lý câu hỏi. Thử lại nhé!');
+        } finally {
+          this.userTyping.delete(chatId);
+        }
+      });
+
+      bot.on('polling_error', (err) => {
+        this.logger.warn(`[TelegramBot] Polling error: ${err.message}`);
+      });
+
+      this.chatbotInstances.set(token, bot);
+    } catch (err) {
+      this.logger.error(`[TelegramBot] Failed to start: ${err.message}`);
+    }
+  }
+
+  // ── File request detector ─────────────────────────────────────────────────────
+
+  private detectFileRequest(text: string): { formats: string[]; types: string[]; label: string } | null {
+    const t = text.toLowerCase();
+
+    // Kiểm tra có yêu cầu gửi file/báo cáo không
+    const isReport = ['báo cáo','bao cao','report','file','gửi','gui','xuất','xuat','tải','tai','download'].some(kw => t.includes(kw));
+    if (!isReport) return null;
+
+    // Xác định format(s) cần gửi
+    const formats: string[] = [];
+    if (t.includes('pdf'))              formats.push('pdf');
+    if (t.includes('xlsx') || t.includes('excel')) formats.push('xlsx');
+    if (t.includes('csv'))              formats.push('csv');
+    if (t.includes('docx') || t.includes('word')) formats.push('docx');
+    if (t.includes('tất cả') || t.includes('tat ca') || t.includes('all') || t.includes('full')) {
+      formats.push('pdf', 'xlsx', 'csv', 'docx');
+    }
+    // Nếu không chỉ rõ format → gửi PDF + XLSX (phổ biến nhất)
+    if (formats.length === 0) formats.push('pdf', 'xlsx');
+
+    // Xác định loại báo cáo
+    const types: string[] = [];
+    if (t.includes('ads') || t.includes('quảng cáo') || t.includes('quang cao') || t.includes('camp')) types.push('ads');
+    if (t.includes('traffic') || t.includes('view') || t.includes('kênh') || t.includes('kenh') || t.includes('organic')) types.push('traffic');
+    if (types.length === 0) types.push('ads', 'traffic'); // Mặc định: cả 2
+
+    // Label hiển thị
+    const fmtStr = [...new Set(formats)].map(f => f.toUpperCase()).join(' + ');
+    const typeStr = types.includes('ads') && types.includes('traffic') ? 'báo cáo đầy đủ'
+      : types.includes('ads') ? 'báo cáo quảng cáo'
+      : 'báo cáo traffic';
+
+    return { formats: [...new Set(formats)], types, label: `${typeStr} (${fmtStr})` };
+  }
+
+  private formatDataPreview(data: any[]): string {
+    if (!data || data.length === 0) return '';
+    try {
+      const keys = Object.keys(data[0]).slice(0, 4); // Tối đa 4 cột
+      const s = (_: string, v: any) => typeof v === 'bigint' ? v.toString() : v;
+      const header = keys.join(' | ');
+      const rows = data.slice(0, 8).map(row =>
+        keys.map(k => {
+          const v = row[k];
+          const num = typeof v === 'bigint' ? Number(v) : Number(v);
+          if (!isNaN(num) && num >= 1000) {
+            if (num >= 1e9) return (num / 1e9).toFixed(1) + 'B';
+            if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
+            if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
+          }
+          return String(v ?? '');
+        }).join(' | ')
+      );
+      return `\`\`\`\n${header}\n${'-'.repeat(40)}\n${rows.join('\n')}\n\`\`\``;
+    } catch { return ''; }
+  }
+
+  // ── DB helpers cho Telegram chat ─────────────────────────────────────────────
+
+  /** Lấy hoặc tạo system user dùng cho Telegram bot (không gắn với Google account) */
+  private async getTelegramSystemUserId(): Promise<string | null> {
+    if (TelegramReportService.TELEGRAM_SYSTEM_USER_ID) {
+      return TelegramReportService.TELEGRAM_SYSTEM_USER_ID;
+    }
+    // Tìm user đầu tiên trong hệ thống làm owner cho Telegram conversations
+    const user = await this.prisma.user.findFirst({ orderBy: { created_at: 'asc' } });
+    if (!user) return null;
+    TelegramReportService.TELEGRAM_SYSTEM_USER_ID = user.id;
+    return user.id;
+  }
+
+  /** Lấy conversation hiện tại của Telegram user, tạo mới nếu chưa có */
+  private async getTelegramConversation(telegramChatId: string, title: string): Promise<string> {
+    const existing = await this.prisma.chatConversation.findFirst({
+      where: { telegram_chat_id: telegramChatId },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (existing) return existing.id;
+
+    const userId = await this.getTelegramSystemUserId();
+    if (!userId) throw new Error('No users in system');
+
+    const conv = await this.prisma.chatConversation.create({
+      data: {
+        user_id: userId,
+        telegram_chat_id: telegramChatId,
+        title: title.slice(0, 60),
+      },
+    });
+    return conv.id;
+  }
+
+  /** Load lịch sử tin nhắn gần đây từ DB */
+  private async loadTelegramHistory(telegramChatId: string): Promise<{ role: string; content: string }[]> {
+    const conv = await this.prisma.chatConversation.findFirst({
+      where: { telegram_chat_id: telegramChatId },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (!conv) return [];
+
+    const msgs = await this.prisma.chatMessage.findMany({
+      where: { conversation_id: conv.id },
+      orderBy: { created_at: 'asc' },
+      take: 20, // 10 lượt gần nhất
+      select: { role: true, content: true },
+    });
+    return msgs.map(m => ({ role: m.role, content: m.content }));
+  }
+
+  /** Lưu tin nhắn vào DB */
+  private async saveTelegramMessage(telegramChatId: string, role: 'user' | 'assistant', content: string, firstMsg: string) {
+    try {
+      const convId = await this.getTelegramConversation(telegramChatId, firstMsg);
+      await this.prisma.$transaction([
+        this.prisma.chatMessage.create({ data: { conversation_id: convId, role, content } }),
+        this.prisma.chatConversation.update({ where: { id: convId }, data: { updated_at: new Date() } }),
+      ]);
+    } catch (e) {
+      this.logger.warn(`[TelegramBot] Failed to save message: ${e.message}`);
+    }
+  }
+
+  /** Xóa lịch sử hội thoại Telegram của user */
+  private async clearTelegramHistory(telegramChatId: string) {
+    const convs = await this.prisma.chatConversation.findMany({
+      where: { telegram_chat_id: telegramChatId },
+    });
+    for (const conv of convs) {
+      await this.prisma.chatConversation.delete({ where: { id: conv.id } });
+    }
+  }
+
+  // Reload chatbot khi config thay đổi
+  async reloadChatbot(token: string, chatId?: string) {
+    const existing = this.chatbotInstances.get(token);
+    if (existing) { try { existing.stopPolling(); } catch {} this.chatbotInstances.delete(token); }
+    if (token) this.startChatbot(token, chatId);
+  }
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -41,15 +350,22 @@ export class TelegramReportService {
 
   async saveConfig(userId: string, userEmail: string | undefined, dto: any) {
     const existing = await this.getConfig(userId, userEmail);
+    let result: any;
     if (existing) {
-      return this.prisma.telegramReportConfig.update({
+      result = await this.prisma.telegramReportConfig.update({
         where: { id: existing.id },
         data: { ...dto, user_id: userId, user_email: userEmail, updated_at: new Date() },
       });
+    } else {
+      result = await this.prisma.telegramReportConfig.create({
+        data: { user_id: userId, user_email: userEmail, ...dto },
+      });
     }
-    return this.prisma.telegramReportConfig.create({
-      data: { user_id: userId, user_email: userEmail, ...dto },
-    });
+    // Reload chatbot với token mới
+    if (dto.bot_token && dto.is_active) {
+      await this.reloadChatbot(dto.bot_token, dto.chat_id);
+    }
+    return result;
   }
 
   async sendTestReport(userId: string, userEmail?: string): Promise<{ ok: boolean; message: string }> {

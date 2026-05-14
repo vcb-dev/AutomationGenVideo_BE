@@ -1243,16 +1243,18 @@ model SocialDraft {
 
 /// Phiên chat với VCB Assistant
 model ChatConversation {
-  id         String        @id @default(uuid())
-  user_id    String
-  title      String
-  created_at DateTime      @default(now())
-  updated_at DateTime      @updatedAt
-  user       User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  messages   ChatMessage[]
+  id               String        @id @default(uuid())
+  user_id          String
+  telegram_chat_id String?       // Telegram chat_id nếu đến từ bot
+  title            String
+  created_at       DateTime      @default(now())
+  updated_at       DateTime      @updatedAt
+  user             User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages         ChatMessage[]
 
   @@index([user_id])
   @@index([user_id, updated_at])
+  @@index([telegram_chat_id])
   @@map("chat_conversations")
 }
 
