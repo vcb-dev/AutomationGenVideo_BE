@@ -1055,6 +1055,10 @@ Tạo JSON với 2 phần:
 • Luôn có kpi_card + table
 • So sánh ≥ 3 đối tượng → thêm bar chart
 • Format số: spend → "29.5M", views → "2.6M", followers → "371K"
+• TUYỆT ĐỐI KHÔNG dùng "N/A", "null", "undefined" trong bất kỳ giá trị nào
+• Nếu không có data trend → BỎ HOÀN TOÀN field "trend" (đừng để "N/A")
+• Nếu team/content_type = null → hiển thị "Không xác định" thay vì "null"
+• Nếu giá trị = 0 → hiển thị "0" hoặc "-" (không phải "null")
 • Trả về DUY NHẤT object JSON, không markdown`;
 
       const { data: summaryRes } = await firstValueFrom(
