@@ -774,7 +774,11 @@ export class AiIntegrationService {
         - Cột: platform, name, channel_id, team_traffic, owner, status
 
         Bảng "social_video_report" (Traffic tự nhiên/Kênh MXH):
-        - Cột: platform (youtube/facebook/tiktok), channel_name, username, title, views, likes, comments, shares, followers, team, owner, year, month
+        - Cột: platform, channel_name, username, title, views, likes, comments, shares, followers, team, owner, year, month
+
+        QUAN TRỌNG: 
+        - Để JOIN huyk_channels và social_video_report, hãy dùng: huyk_channels.channel_id = social_video_report.username.
+        - Để JOIN ads_campaign_stats và social_video_report (nếu cần), hãy dùng platform + campaign_name.
       `;
 
       const prompt = `
