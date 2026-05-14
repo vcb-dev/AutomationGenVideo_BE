@@ -163,7 +163,8 @@ export class TelegramReportService {
       SELECT UPPER(tag) sku, COUNT(*) videos,
              SUM(views) views, array_agg(DISTINCT team) teams
       FROM social_video_report, unnest(hashtags) tag
-      WHERE year=${y} AND month=${m} AND tag ~ '^[kK][0-9]+'
+      WHERE year=${y} AND month=${m}
+        AND UPPER(tag) ~ '^[A-Z]{1,2}[0-9]{5,7}$'
       GROUP BY UPPER(tag) ORDER BY videos DESC, views DESC LIMIT 10`);
   }
 
