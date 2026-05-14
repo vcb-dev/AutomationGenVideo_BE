@@ -1361,4 +1361,17 @@ model BusinessChannelConnection {
   @@map("business_channel_connections")
 }
 
+model TelegramReportConfig {
+  id           String   @id @default(uuid())
+  user_id      String   @unique
+  bot_token    String
+  chat_id      String
+  schedule     String   @default("0 8 * * *")
+  formats      String[] @default(["text"])
+  report_types String[] @default(["ads","traffic"])
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
+  @@map("telegram_report_config")
+}

@@ -10,18 +10,8 @@ export const getRuntimeJwtSecret = (configService: ConfigService): string => {
     process.env.NODE_ENV ||
     "development";
 
-  // In development, change the effective secret on every server restart
-  // so that all existing tokens become invalid immediately.
-  if (nodeEnv === "development") {
-    if (!process.env.JWT_BOOT_SUFFIX) {
-      process.env.JWT_BOOT_SUFFIX = `${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2)}`;
-    }
-    return `${baseSecret}.${process.env.JWT_BOOT_SUFFIX}`;
-  }
-
-  // In production, keep a stable secret so tokens survive deployments
+  // Dùng stable secret cho cả dev và production
+  // để token không bị mất khi restart server
   return baseSecret;
 };
 

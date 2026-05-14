@@ -22,6 +22,7 @@ import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
 import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
+import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
 import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
 import { OAuthModule } from './modules/oauth/oauth.module';
 
@@ -61,6 +62,7 @@ import { OAuthModule } from './modules/oauth/oauth.module';
     SearchRecommendationModule,
     LarkModule,
     ChatHistoryModule,
+    TelegramReportModule,
     RolePermissionsModule,
     SocialPublishingModule,
     BusinessConnectionsModule,
