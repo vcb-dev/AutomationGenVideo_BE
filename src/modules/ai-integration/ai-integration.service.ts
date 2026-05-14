@@ -741,24 +741,30 @@ export class AiIntegrationService {
       ORDER BY platform, name
     `) as any[];
 
-    // Kênh có data trong social_video_report tháng này
+    // Kênh có data trong social_video_report tháng này — group by platform + name
     const withData = await this.prisma.$queryRawUnsafe(`
-      SELECT DISTINCT LOWER(TRIM(channel_name)) as channel_key,
+      SELECT LOWER(TRIM(platform)) as platform_key,
+        LOWER(TRIM(channel_name)) as channel_key,
         SUM(views) views, COUNT(*) videos, MAX(followers) followers
       FROM social_video_report
       WHERE year=${year} AND month=${month}
-      GROUP BY LOWER(TRIM(channel_name))
+      GROUP BY LOWER(TRIM(platform)), LOWER(TRIM(channel_name))
     `) as any[];
 
-    const dataMap = new Map(withData.map((r: any) => [r.channel_key, r]));
+    // Key: normalized_platform::channel_name
+    const dataMap = new Map(withData.map((r: any) => [
+      `${normalizePlatform(r.platform_key)}::${r.channel_key}`,
+      r,
+    ]));
 
     // Gán coverage status cho từng kênh
     const enriched = allChannels.map((ch: any) => {
-      const key = (ch.name || '').toLowerCase().trim();
-      const data = dataMap.get(key);
+      const platformNorm = normalizePlatform(ch.platform);
+      const nameKey = (ch.name || '').toLowerCase().trim();
+      const data = dataMap.get(`${platformNorm}::${nameKey}`);
       return {
         ...ch,
-        platform_norm: normalizePlatform(ch.platform),
+        platform_norm: platformNorm,
         has_data: !!data,
         views: data ? Number(data.views) : 0,
         videos: data ? Number(data.videos) : 0,
