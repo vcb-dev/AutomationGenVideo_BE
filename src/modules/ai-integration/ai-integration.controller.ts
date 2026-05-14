@@ -257,6 +257,15 @@ export class AiIntegrationController {
     return this.aiService.getStats();
   }
 
+  @Get('channel-coverage')
+  @ApiOperation({ summary: 'Channel data coverage: which channels have social_video_report data' })
+  async getChannelCoverage(@Query('year') year?: string, @Query('month') month?: string) {
+    const now = new Date();
+    const y = parseInt(year || String(now.getFullYear()));
+    const m = parseInt(month || String(now.getMonth() + 1));
+    return this.aiService.getChannelCoverage(y, m);
+  }
+
   @Get('health')
   @ApiOperation({ summary: 'Check AI service health' })
   @ApiResponse({ status: 200, description: 'AI service is healthy.' })

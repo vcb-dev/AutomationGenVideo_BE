@@ -720,6 +720,83 @@ export class AiIntegrationService {
 
    */
 
+  async getChannelCoverage(year: number, month: number) {
+    // Chuẩn hóa platform name để group
+    const normalizePlatform = (p: string) => {
+      const l = (p || '').toLowerCase();
+      if (l.includes('facebook'))  return 'Facebook';
+      if (l.includes('tiktok'))    return 'TikTok';
+      if (l.includes('youtube'))   return 'YouTube';
+      if (l.includes('instagram') || l === 'ig') return 'Instagram';
+      if (l.includes('thread'))    return 'Threads';
+      if (l.includes('zalo'))      return 'Zalo';
+      if (p) return p;
+      return 'Khác';
+    };
+
+    // Tất cả kênh trong huyk_channels
+    const allChannels = await this.prisma.$queryRawUnsafe(`
+      SELECT id, name, platform, team_traffic as team, owner, status
+      FROM huyk_channels
+      ORDER BY platform, name
+    `) as any[];
+
+    // Kênh có data trong social_video_report tháng này
+    const withData = await this.prisma.$queryRawUnsafe(`
+      SELECT DISTINCT LOWER(TRIM(channel_name)) as channel_key,
+        SUM(views) views, COUNT(*) videos, MAX(followers) followers
+      FROM social_video_report
+      WHERE year=${year} AND month=${month}
+      GROUP BY LOWER(TRIM(channel_name))
+    `) as any[];
+
+    const dataMap = new Map(withData.map((r: any) => [r.channel_key, r]));
+
+    // Gán coverage status cho từng kênh
+    const enriched = allChannels.map((ch: any) => {
+      const key = (ch.name || '').toLowerCase().trim();
+      const data = dataMap.get(key);
+      return {
+        ...ch,
+        platform_norm: normalizePlatform(ch.platform),
+        has_data: !!data,
+        views: data ? Number(data.views) : 0,
+        videos: data ? Number(data.videos) : 0,
+        followers: data ? Number(data.followers) : 0,
+      };
+    });
+
+    // Tổng hợp theo platform
+    const byPlatform: Record<string, { platform: string; total: number; has_data: number; no_data: number; coverage_pct: number; total_views: number }> = {};
+    for (const ch of enriched) {
+      const p = ch.platform_norm;
+      if (!byPlatform[p]) byPlatform[p] = { platform: p, total: 0, has_data: 0, no_data: 0, coverage_pct: 0, total_views: 0 };
+      byPlatform[p].total++;
+      if (ch.has_data) { byPlatform[p].has_data++; byPlatform[p].total_views += ch.views; }
+      else byPlatform[p].no_data++;
+    }
+    for (const stat of Object.values(byPlatform)) {
+      stat.coverage_pct = stat.total > 0 ? Math.round((stat.has_data / stat.total) * 100) : 0;
+    }
+
+    const totalChannels = enriched.length;
+    const hasDataCount  = enriched.filter((c: any) => c.has_data).length;
+
+    return {
+      year, month,
+      summary: {
+        total_channels: totalChannels,
+        has_data: hasDataCount,
+        no_data: totalChannels - hasDataCount,
+        coverage_pct: totalChannels > 0 ? Math.round((hasDataCount / totalChannels) * 100) : 0,
+        total_views: enriched.reduce((a: number, c: any) => a + c.views, 0),
+      },
+      by_platform: Object.values(byPlatform).sort((a, b) => b.total - a.total),
+      channels_with_data: enriched.filter((c: any) => c.has_data).sort((a: any, b: any) => b.views - a.views),
+      channels_no_data:   enriched.filter((c: any) => !c.has_data).sort((a: any, b: any) => (a.platform_norm).localeCompare(b.platform_norm)),
+    };
+  }
+
   async getSocialStats(year: number, month: number, platform?: string, team?: string): Promise<any> {
     const safeP = (platform || '').replace(/'/g, '');
     const safeT = (team || '').replace(/'/g, '');
