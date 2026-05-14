@@ -2,38 +2,32 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import * as TelegramBot from 'node-telegram-bot-api';
 import * as ExcelJS from 'exceljs';
-import * as PDFDocument from 'pdfkit';
-import * as path from 'path';
 import * as fs from 'fs';
 import {
   Document, Packer, Paragraph, Table, TableRow, TableCell,
-  TextRun, HeadingLevel, AlignmentType, WidthType, BorderStyle,
-  ShadingType,
+  TextRun, HeadingLevel, AlignmentType, WidthType, ShadingType,
 } from 'docx';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { PdfReportGenerator, ReportData } from './pdf-report.generator';
 
-const serializeBigInt = (_: string, v: any) => (typeof v === 'bigint' ? v.toString() : v);
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class TelegramReportService {
   private readonly logger = new Logger(TelegramReportService.name);
 
+  private static readonly GLOBAL_KEYWORDS = ['global', 'thái lan', 'thai lan', 'indo', 'japan', 'jp'];
+  private static readonly BM = { mess: { great: 18000, good: 25000, avg: 40000 } };
+
   constructor(private readonly prisma: PrismaService) {}
 
-  // ── Config CRUD ──────────────────────────────────────────────────────────
+  // ── CRUD ──────────────────────────────────────────────────────────────────
 
   async getConfig(userId: string) {
     return this.prisma.telegramReportConfig.findUnique({ where: { user_id: userId } });
   }
 
-  async saveConfig(userId: string, dto: {
-    bot_token: string;
-    chat_id: string;
-    schedule: string;
-    formats: string[];
-    report_types: string[];
-    is_active: boolean;
-  }) {
+  async saveConfig(userId: string, dto: any) {
     return this.prisma.telegramReportConfig.upsert({
       where: { user_id: userId },
       update: { ...dto, updated_at: new Date() },
@@ -41,539 +35,541 @@ export class TelegramReportService {
     });
   }
 
-  // ── Send test report ──────────────────────────────────────────────────────
-
   async sendTestReport(userId: string): Promise<{ ok: boolean; message: string }> {
-    const config = await this.getConfig(userId);
-    if (!config) return { ok: false, message: 'Chưa có cấu hình Telegram' };
-    if (!config.bot_token || !config.chat_id) return { ok: false, message: 'Bot token hoặc Chat ID trống' };
-
-    try {
-      await this.sendReports(config);
-      return { ok: true, message: 'Đã gửi báo cáo test thành công!' };
-    } catch (e) {
-      return { ok: false, message: `Lỗi: ${e.message}` };
-    }
+    const cfg = await this.getConfig(userId);
+    if (!cfg?.bot_token || !cfg?.chat_id) return { ok: false, message: 'Chưa có cấu hình Telegram' };
+    try { await this.sendReports(cfg); return { ok: true, message: 'Đã gửi báo cáo test thành công!' }; }
+    catch (e) { return { ok: false, message: `Lỗi: ${e.message}` }; }
   }
 
-  // ── Cron: chạy mỗi phút, kiểm tra xem config nào đến giờ gửi ─────────────
+  // ── Cron check ────────────────────────────────────────────────────────────
 
-  @Cron('0 * * * * *', { timeZone: 'Asia/Ho_Chi_Minh' }) // Mỗi phút check, giờ VN
+  @Cron('0 * * * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async handleScheduledReports() {
     const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-
-    const configs = await this.prisma.telegramReportConfig.findMany({
-      where: { is_active: true },
-    });
-
-    for (const config of configs) {
+    const configs = await this.prisma.telegramReportConfig.findMany({ where: { is_active: true } });
+    for (const cfg of configs) {
       try {
-        // Parse cron: "0 8 * * *" → giờ 8, phút 0
-        const parts = config.schedule.split(' ');
-        const schedMinute = parseInt(parts[0]);
-        const schedHour   = parseInt(parts[1]);
-        if (currentHour === schedHour && currentMinute === schedMinute) {
-          this.logger.log(`[Telegram] Gửi báo cáo cho user ${config.user_id}`);
-          await this.sendReports(config);
+        const [m, h] = (cfg.schedule || '0 8 * * *').split(' ').map(Number);
+        if (now.getHours() === h && now.getMinutes() === m) {
+          this.logger.log(`[Telegram] Gửi cho user ${cfg.user_id}`);
+          await this.sendReports(cfg);
         }
-      } catch (e) {
-        this.logger.error(`[Telegram] Lỗi gửi cho ${config.user_id}: ${e.message}`);
-      }
+      } catch (e) { this.logger.error(`[Telegram] Lỗi ${cfg.user_id}: ${e.message}`); }
     }
   }
 
-  // ── Core: tạo + gửi báo cáo ──────────────────────────────────────────────
+  // ── Core send ─────────────────────────────────────────────────────────────
 
-  private async sendReports(config: any) {
-    const bot = new TelegramBot(config.bot_token, { polling: false });
-    const chatId = config.chat_id;
+  private async sendReports(cfg: any) {
+    const bot = new TelegramBot(cfg.bot_token, { polling: false });
+    const chatId = cfg.chat_id;
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
-    const types: string[] = config.report_types ?? ['ads', 'traffic'];
-    const formats: string[] = config.formats ?? ['text'];
+    const types: string[] = cfg.report_types ?? ['ads', 'traffic'];
+    const formats: string[] = cfg.formats ?? ['text'];
+    const doAds = types.includes('ads');
+    const doTrf = types.includes('traffic');
 
-    // Lấy dữ liệu
-    const [adsData, trafficData] = await Promise.all([
-      types.includes('ads') ? this.getAdsData(year, month) : [],
-      types.includes('traffic') ? this.getTrafficData(year, month) : [],
-    ]);
+    const data = await this.collectData(year, month, types);
 
-    // 1. Luôn gửi text summary trước
-    const text = this.buildTextReport(adsData, trafficData, year, month);
-    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    // ── Gửi 2 tin nhắn text riêng biệt ──
+    if (doAds && data.adsTeam.length > 0) {
+      await bot.sendMessage(chatId, this.buildAdsText(data, year, month), { parse_mode: 'HTML' });
+    }
+    if (doTrf && data.trafficTeam.length > 0) {
+      await bot.sendMessage(chatId, this.buildTrafficText(data, year, month), { parse_mode: 'HTML' });
+    }
 
-    // 2. Gửi file theo format
+    // ── Gửi file theo format ──
     for (const fmt of formats) {
       if (fmt === 'text') continue;
       try {
-        if (fmt === 'csv')  await this.sendCsv(bot, chatId, adsData, trafficData, year, month);
-        if (fmt === 'xlsx') await this.sendXlsx(bot, chatId, adsData, trafficData, year, month);
-        if (fmt === 'pdf')  await this.sendPdf(bot, chatId, adsData, trafficData, year, month);
-        if (fmt === 'docx') await this.sendDocx(bot, chatId, adsData, trafficData, year, month);
+        if (fmt === 'csv')  await this.sendCsv(bot, chatId, data, year, month);
+        if (fmt === 'xlsx') await this.sendXlsx(bot, chatId, data, year, month);
+        if (fmt === 'pdf')  await this.sendPdf(bot, chatId, data, year, month);
+        if (fmt === 'docx') await this.sendDocx(bot, chatId, data, year, month);
       } catch (e) {
-        this.logger.warn(`[Telegram] Không gửi được ${fmt}: ${e.message}`);
+        this.logger.error(`[Telegram] Lỗi gửi ${fmt}: ${e.message}\n${e.stack?.slice(0,300)}`);
+        try {
+          await bot.sendMessage(chatId, `⚠️ Không thể gửi file ${fmt.toUpperCase()}: ${e.message}`);
+        } catch {}
       }
     }
   }
 
-  // ── Lấy data ─────────────────────────────────────────────────────────────
+  // ── Collect all data ──────────────────────────────────────────────────────
 
-  private async getAdsData(year: number, month: number): Promise<any[]> {
-    return this.prisma.$queryRawUnsafe(`
-      SELECT platform, team, SUM(spend) as spend, SUM(mess_count) as mess,
-             SUM(impressions) as impressions, SUM(clicks) as clicks
-      FROM ads_campaign_stats
-      WHERE year=${year} AND month=${month}
-      GROUP BY platform, team ORDER BY spend DESC
-    `) as any;
+  private async collectData(year: number, month: number, types: string[]) {
+    const doAds = types.includes('ads');
+    const doTrf = types.includes('traffic');
+    const [adsCamps, adsTeam, trafficTeam, contentTypes, topSkus, topViews, topCmts] =
+      await Promise.all([
+        doAds ? this.qAdsCamps(year, month) : Promise.resolve([]),
+        doAds ? this.qAdsTeam(year, month)  : Promise.resolve([]),
+        doTrf ? this.qTrafficTeam(year, month)  : Promise.resolve([]),
+        doTrf ? this.qContentTypes(year, month) : Promise.resolve([]),
+        doTrf ? this.qTopSkus(year, month)      : Promise.resolve([]),
+        doTrf ? this.qTopViews(year, month)     : Promise.resolve([]),
+        doTrf ? this.qTopComments(year, month)  : Promise.resolve([]),
+      ]);
+    return { adsCamps, adsTeam, trafficTeam, contentTypes, topSkus, topViews, topCmts };
   }
 
-  private async getTrafficData(year: number, month: number): Promise<any[]> {
-    return this.prisma.$queryRawUnsafe(`
-      SELECT platform, team, SUM(views) as views, MAX(followers) as followers,
-             SUM(likes) as likes, COUNT(DISTINCT channel_name) as channels
-      FROM social_video_report
-      WHERE year=${year} AND month=${month}
-      GROUP BY platform, team ORDER BY views DESC
-    `) as any;
+  // ── SQL Queries ───────────────────────────────────────────────────────────
+
+  private q(sql: string) { return this.prisma.$queryRawUnsafe(sql) as Promise<any[]>; }
+
+  private qAdsCamps(y: number, m: number) {
+    return this.q(`
+      SELECT campaign_name, camp_type, content_type, platform, team, owner,
+             SUM(spend) spend, SUM(mess_count) mess, SUM(impressions) impr,
+             SUM(clicks) clicks, SUM(like_count) likes, SUM(engagement_count) engage
+      FROM ads_campaign_stats WHERE year=${y} AND month=${m}
+      GROUP BY campaign_name,camp_type,content_type,platform,team,owner ORDER BY spend DESC`);
   }
 
-  // ── Tạo text report ───────────────────────────────────────────────────────
+  private qAdsTeam(y: number, m: number) {
+    return this.q(`
+      SELECT platform, team,
+             SUM(spend) spend, SUM(mess_count) mess, SUM(impressions) impr,
+             SUM(clicks) clicks, SUM(like_count) likes, SUM(engagement_count) engage
+      FROM ads_campaign_stats WHERE year=${y} AND month=${m}
+      GROUP BY platform,team ORDER BY spend DESC`);
+  }
 
-  private buildTextReport(ads: any[], traffic: any[], year: number, month: number): string {
-    const s = (_: string, v: any) => typeof v === 'bigint' ? Number(v) : v;
-    const fmt = (n: any) => {
-      const num = typeof n === 'bigint' ? Number(n) : Number(n || 0);
-      if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-      if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-      return num.toLocaleString('vi-VN');
-    };
+  private qTrafficTeam(y: number, m: number) {
+    return this.q(`
+      SELECT platform, team,
+             SUM(views) views, MAX(followers) followers,
+             SUM(likes) likes, SUM(comments) comments, SUM(shares) shares,
+             COUNT(*) videos, COUNT(DISTINCT channel_name) channels
+      FROM social_video_report WHERE year=${y} AND month=${m}
+      GROUP BY platform,team ORDER BY views DESC`);
+  }
 
-    let msg = `📊 <b>BÁO CÁO THÁNG ${month}/${year}</b>\n`;
-    msg += `⏰ Gửi lúc ${new Date().toLocaleString('vi-VN')}\n`;
-    msg += `${'─'.repeat(30)}\n\n`;
+  private qContentTypes(y: number, m: number) {
+    return this.q(`
+      SELECT UPPER(tag) ct, platform, team,
+             COUNT(*) videos, SUM(views) views, SUM(likes) likes
+      FROM social_video_report, unnest(hashtags) tag
+      WHERE year=${y} AND month=${m} AND LOWER(tag) IN ('a1','a2','a3','a4','a5')
+      GROUP BY UPPER(tag),platform,team ORDER BY ct,views DESC`);
+  }
 
-    if (ads.length > 0) {
-      const totalSpend = ads.reduce((a, r) => a + Number(r.spend || 0), 0);
-      const totalMess  = ads.reduce((a, r) => a + Number(r.mess || 0), 0);
-      msg += `💰 <b>QUẢNG CÁO</b>\n`;
-      msg += `• Tổng chi phí: <b>${fmt(totalSpend)} VNĐ</b>\n`;
-      msg += `• Tổng tin nhắn: <b>${fmt(totalMess)}</b>\n`;
-      if (totalMess > 0) msg += `• CPMess TB: <b>${fmt(Math.round(totalSpend / totalMess))} VNĐ</b>\n`;
-      msg += `\n<i>Chi tiết theo team:</i>\n`;
-      for (const row of ads.slice(0, 8)) {
-        const team = row.team || 'Không rõ';
-        msg += `  ${row.platform === 'meta' ? '📘' : '🎵'} ${team}: ${fmt(row.spend)}đ | ${fmt(row.mess)} mess\n`;
-      }
-      msg += '\n';
+  private qTopSkus(y: number, m: number) {
+    return this.q(`
+      SELECT UPPER(tag) sku, COUNT(*) videos,
+             SUM(views) views, array_agg(DISTINCT team) teams
+      FROM social_video_report, unnest(hashtags) tag
+      WHERE year=${y} AND month=${m} AND tag ~ '^[kK][0-9]+'
+      GROUP BY UPPER(tag) ORDER BY videos DESC, views DESC LIMIT 10`);
+  }
+
+  private qTopViews(y: number, m: number) {
+    return this.q(`
+      SELECT title, channel_name, platform, team, views, likes, comments, hashtags
+      FROM social_video_report WHERE year=${y} AND month=${m}
+      ORDER BY views DESC LIMIT 10`);
+  }
+
+  private qTopComments(y: number, m: number) {
+    return this.q(`
+      SELECT title, channel_name, platform, team, views, likes, comments, hashtags
+      FROM social_video_report WHERE year=${y} AND month=${m}
+      ORDER BY comments DESC LIMIT 10`);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  private n(v: any): number { return typeof v === 'bigint' ? Number(v) : (Number(v) || 0); }
+
+  private f(v: any): string {
+    const x = this.n(v);
+    if (x >= 1_000_000_000) return `${(x/1e9).toFixed(1)}B`;
+    if (x >= 1_000_000)     return `${(x/1e6).toFixed(1)}M`;
+    if (x >= 1_000)         return `${(x/1e3).toFixed(1)}K`;
+    return x.toLocaleString('vi-VN');
+  }
+
+  private isGlobal(team: string): boolean {
+    const t = (team || '').toLowerCase();
+    return TelegramReportService.GLOBAL_KEYWORDS.some(k => t.includes(k));
+  }
+
+  private campType(c: any): string {
+    const src = (c.camp_type || c.campaign_name || '').toLowerCase();
+    if (src.includes('like page') || src.includes('likepage') || src.includes('like_page')) return 'Like Page';
+    if (src.includes('tương tác') || src.includes('engagement')) return 'Tương tác';
+    if (src.includes('mess')) return 'Mess';
+    return 'Khác';
+  }
+
+  private rateLabel(cpm: number, html = false): string {
+    const lt = html ? '&lt;' : '<';
+    const gt = html ? '&gt;' : '>';
+    const b = TelegramReportService.BM.mess;
+    if (cpm <= b.great) return `🟢 Xuất sắc (${lt}18K)`;
+    if (cpm <= b.good)  return `🟡 Tốt (18–25K)`;
+    if (cpm <= b.avg)   return `🟠 TB (25–40K)`;
+    return `🔴 Kém (${gt}40K)`;
+  }
+
+  // ── Text: Báo cáo Quảng cáo ───────────────────────────────────────────────
+
+  private buildAdsText(d: any, year: number, month: number): string {
+    const { adsTeam, adsCamps } = d;
+    const ts = adsTeam.reduce((a: number, r: any) => a + this.n(r.spend), 0);
+    const tm = adsTeam.reduce((a: number, r: any) => a + this.n(r.mess), 0);
+    const tl = adsTeam.reduce((a: number, r: any) => a + this.n(r.likes), 0);
+    const vnS = adsTeam.filter((r: any) => !this.isGlobal(r.team)).reduce((a: number, r: any) => a + this.n(r.spend), 0);
+    const glS = adsTeam.filter((r: any) => this.isGlobal(r.team)).reduce((a: number, r: any) => a + this.n(r.spend), 0);
+    const cpm = tm > 0 ? Math.round(ts / tm) : 0;
+
+    const ctSpend: Record<string, {sp: number; ms: number}> = {};
+    for (const c of adsCamps) {
+      const ct = this.campType(c);
+      if (!ctSpend[ct]) ctSpend[ct] = { sp: 0, ms: 0 };
+      ctSpend[ct].sp += this.n(c.spend);
+      ctSpend[ct].ms += this.n(c.mess);
     }
 
-    if (traffic.length > 0) {
-      const totalViews = traffic.reduce((a, r) => a + Number(r.views || 0), 0);
-      const totalChannels = traffic.reduce((a, r) => a + Number(r.channels || 0), 0);
-      msg += `📱 <b>TRAFFIC TỰ NHIÊN</b>\n`;
-      msg += `• Tổng lượt xem: <b>${fmt(totalViews)}</b>\n`;
-      msg += `• Số kênh hoạt động: <b>${totalChannels}</b>\n`;
-      msg += `\n<i>Chi tiết theo team:</i>\n`;
-      for (const row of traffic.slice(0, 6)) {
-        const team = row.team || 'Không rõ';
-        msg += `  ${row.platform === 'facebook' ? '📘' : '📷'} ${team}: ${fmt(row.views)} views | ${fmt(row.followers)} followers\n`;
-      }
-      msg += '\n';
+    let msg = `💰 <b>BÁO CÁO QUẢNG CÁO — THÁNG ${month}/${year}</b>\n`;
+    msg += `⏰ ${new Date().toLocaleString('vi-VN')}\n`;
+    msg += `${'─'.repeat(32)}\n\n`;
+
+    msg += `<b>📌 TỔNG QUAN</b>\n`;
+    msg += `• Tổng chi phí: <b>${this.f(ts)} VNĐ</b>\n`;
+    msg += `• 🇻🇳 Vietnam: ${this.f(vnS)} VNĐ\n`;
+    msg += `• 🌏 Global: ${this.f(glS)} VNĐ\n`;
+    msg += `• Tin nhắn: <b>${this.f(tm)}</b>  |  CPMess: <b>${this.f(cpm)} VNĐ</b>\n`;
+    msg += `• Đánh giá: ${this.rateLabel(cpm, true)}\n`;
+    msg += `• Like Page: ${this.f(tl)}\n\n`;
+
+    msg += `<b>📊 THEO LOẠI CHIẾN DỊCH</b>\n`;
+    for (const [ct, v] of Object.entries(ctSpend)) {
+      const cpmCt = v.ms > 0 ? Math.round(v.sp / v.ms) : 0;
+      msg += `• ${ct}: ${this.f(v.sp)} VNĐ | ${this.f(v.ms)} mess | CPMess ${this.f(cpmCt)}\n`;
     }
 
-    msg += `${'─'.repeat(30)}\n`;
-    msg += `🤖 VCB Studio AI — Báo cáo tự động`;
+    msg += `\n<b>🏆 TOP TEAM</b>\n`;
+    for (const r of adsTeam.slice(0, 6)) {
+      const mk = this.isGlobal(r.team) ? '🌏' : '🇻🇳';
+      const cpmT = this.n(r.mess) > 0 ? Math.round(this.n(r.spend) / this.n(r.mess)) : 0;
+      msg += `${mk} ${r.team || 'N/A'}: ${this.f(r.spend)} VNĐ | ${this.f(r.mess)} mess | ${this.f(cpmT)} CPM\n`;
+    }
+
+    msg += `\n─────────────────────────────\n🤖 VCB Studio AI`;
     return msg;
+  }
+
+  // ── Text: Báo cáo Traffic ─────────────────────────────────────────────────
+
+  private buildTrafficText(d: any, year: number, month: number): string {
+    const { trafficTeam, contentTypes, topSkus, topViews } = d;
+    const tv = trafficTeam.reduce((a: number, r: any) => a + this.n(r.views), 0);
+    const vnV = trafficTeam.filter((r: any) => !this.isGlobal(r.team)).reduce((a: number, r: any) => a + this.n(r.views), 0);
+    const glV = trafficTeam.filter((r: any) => this.isGlobal(r.team)).reduce((a: number, r: any) => a + this.n(r.views), 0);
+    const totalVideos = trafficTeam.reduce((a: number, r: any) => a + this.n(r.videos), 0);
+
+    let msg = `📱 <b>BÁO CÁO TRAFFIC — THÁNG ${month}/${year}</b>\n`;
+    msg += `⏰ ${new Date().toLocaleString('vi-VN')}\n`;
+    msg += `${'─'.repeat(32)}\n\n`;
+
+    msg += `<b>📌 TỔNG QUAN</b>\n`;
+    msg += `• Tổng lượt xem: <b>${this.f(tv)}</b>\n`;
+    msg += `• 🇻🇳 Vietnam: ${this.f(vnV)}\n`;
+    msg += `• 🌏 Global: ${this.f(glV)}\n`;
+    msg += `• Tổng video: ${this.f(totalVideos)}\n\n`;
+
+    if (contentTypes.length > 0) {
+      const ctSum: Record<string, {v: number; vw: number}> = {};
+      for (const r of contentTypes) {
+        if (!ctSum[r.ct]) ctSum[r.ct] = { v: 0, vw: 0 };
+        ctSum[r.ct].v  += this.n(r.videos);
+        ctSum[r.ct].vw += this.n(r.views);
+      }
+      msg += `<b>🎬 CONTENT THEO LOẠI</b>\n`;
+      for (const ct of ['A1','A2','A3','A4','A5']) {
+        if (ctSum[ct]) msg += `• ${ct}: ${ctSum[ct].v} video | ${this.f(ctSum[ct].vw)} views\n`;
+      }
+      msg += '\n';
+    }
+
+    msg += `<b>🏆 TOP TEAM</b>\n`;
+    for (const r of trafficTeam.slice(0, 5)) {
+      const mk = this.isGlobal(r.team) ? '🌏' : '🇻🇳';
+      msg += `${mk} ${r.team || 'N/A'} [${r.platform}]: ${this.f(r.views)} views | ${this.f(r.videos)} video\n`;
+    }
+
+    if (topViews.length > 0) {
+      msg += `\n<b>🔥 TOP 5 VIDEO NHIỀU VIEWS</b>\n`;
+      for (const [i, v] of topViews.slice(0, 5).entries()) {
+        const title = (v.title || 'No title').slice(0, 35);
+        msg += `${i + 1}. ${title}\n   ↳ ${this.f(v.views)} views | ${v.channel_name || ''}\n`;
+      }
+    }
+
+    if (topSkus.length > 0) {
+      msg += `\n<b>📦 TOP SKU NHIỀU VIDEO</b>\n`;
+      for (const s of topSkus.slice(0, 5)) {
+        msg += `• ${s.sku}: ${this.n(s.videos)} video | ${this.f(s.views)} views\n`;
+      }
+    }
+
+    msg += `\n─────────────────────────────\n🤖 VCB Studio AI`;
+    return msg;
+  }
+
+  // ── Legacy compat ─────────────────────────────────────────────────────────
+  private buildText(d: any, year: number, month: number): string {
+    return this.buildAdsText(d, year, month);
   }
 
   // ── CSV ───────────────────────────────────────────────────────────────────
 
-  private async sendCsv(bot: TelegramBot, chatId: string, ads: any[], traffic: any[], year: number, month: number) {
-    const fmt = (v: any) => typeof v === 'bigint' ? Number(v) : (v ?? '');
-
-    let csv = 'Loại,Platform,Team,Chi phí/Views,Mess/Followers,Impressions/Likes\n';
-    for (const r of ads) {
-      csv += `Ads,${r.platform},${r.team || ''},${fmt(r.spend)},${fmt(r.mess)},${fmt(r.impressions)}\n`;
-    }
-    for (const r of traffic) {
-      csv += `Traffic,${r.platform},${r.team || ''},${fmt(r.views)},${fmt(r.followers)},${fmt(r.likes)}\n`;
-    }
-
-    const buf = Buffer.from('﻿' + csv, 'utf-8');
-    await bot.sendDocument(chatId, buf, {
-      caption: `📊 Báo cáo tháng ${month}/${year}`,
-    }, {
-      filename: `bao-cao-${month}-${year}.csv`,
-      contentType: 'text/csv',
-    });
+  private async sendCsv(bot: TelegramBot, chatId: string, d: any, year: number, month: number) {
+    const rows: string[] = ['Loai,Platform,Team,Spend/Views,Mess/Followers,Impr/Likes'];
+    for (const r of d.adsTeam)     rows.push(`Ads,${r.platform},${r.team||''},${this.n(r.spend)},${this.n(r.mess)},${this.n(r.impr)}`);
+    for (const r of d.trafficTeam) rows.push(`Traffic,${r.platform},${r.team||''},${this.n(r.views)},${this.n(r.followers)},${this.n(r.likes)}`);
+    const buf = Buffer.from('﻿' + rows.join('\n'), 'utf-8');
+    await bot.sendDocument(chatId, buf, { caption: `📊 CSV tháng ${month}/${year}` }, { filename: `bao-cao-${month}-${year}.csv`, contentType: 'text/csv' });
   }
 
   // ── XLSX ──────────────────────────────────────────────────────────────────
 
-  private async sendXlsx(bot: TelegramBot, chatId: string, ads: any[], traffic: any[], year: number, month: number) {
+  private async sendXlsx(bot: TelegramBot, chatId: string, d: any, year: number, month: number) {
     const wb = new ExcelJS.Workbook();
     wb.creator = 'VCB Studio AI';
+    const hdStyle = { font: { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 }, fill: { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FF7C3AED' } } };
+    const hdBlue  = { ...hdStyle, fill: { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FF0EA5E9' } } };
+    const addSheet = (name: string, cols: {h:string;w:number}[], rows: any[][], color: 'purple'|'blue') => {
+      const ws = wb.addWorksheet(name);
+      ws.columns = cols.map(c => ({ header: c.h, width: c.w }));
+      const st = color === 'purple' ? hdStyle : hdBlue;
+      ws.getRow(1).eachCell(cell => Object.assign(cell, st));
+      rows.forEach((r, i) => { ws.addRow(r); if (i % 2 === 0) ws.getRow(i+2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color === 'purple' ? 'FFF5F3FF' : 'FFF0F9FF' } } as any; });
+    };
 
-    const fmt = (v: any) => typeof v === 'bigint' ? Number(v) : (Number(v) || 0);
-
-    // Sheet Ads
-    if (ads.length > 0) {
-      const ws = wb.addWorksheet('Quảng cáo');
-      ws.columns = [
-        { header: 'Platform', key: 'platform', width: 12 },
-        { header: 'Team', key: 'team', width: 18 },
-        { header: 'Chi phí (VNĐ)', key: 'spend', width: 16 },
-        { header: 'Tin nhắn', key: 'mess', width: 12 },
-        { header: 'Hiển thị', key: 'impressions', width: 14 },
-        { header: 'Click', key: 'clicks', width: 10 },
-        { header: 'CPMess', key: 'cpmess', width: 12 },
-      ];
-      ws.getRow(1).font = { bold: true };
-      ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7C3AED' } };
-      ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-
-      for (const r of ads) {
-        const spend = fmt(r.spend);
-        const mess  = fmt(r.mess);
-        ws.addRow({
-          platform: r.platform, team: r.team || 'Không rõ',
-          spend, mess, impressions: fmt(r.impressions), clicks: fmt(r.clicks),
-          cpmess: mess > 0 ? Math.round(spend / mess) : 0,
-        });
-      }
-
-      // Tổng
-      const lastRow = ads.length + 2;
-      ws.addRow({
-        platform: 'TỔNG', team: '',
-        spend: ads.reduce((a, r) => a + fmt(r.spend), 0),
-        mess:  ads.reduce((a, r) => a + fmt(r.mess), 0),
-        impressions: ads.reduce((a, r) => a + fmt(r.impressions), 0),
-        clicks: ads.reduce((a, r) => a + fmt(r.clicks), 0),
-      });
-      ws.getRow(lastRow).font = { bold: true };
+    if (d.adsTeam.length > 0) {
+      addSheet('Ads theo Team', [{h:'Market',w:10},{h:'Platform',w:10},{h:'Team',w:18},{h:'Chi phí',w:14},{h:'Mess',w:10},{h:'Hiển thị',w:12},{h:'CPMess',w:10}],
+        d.adsTeam.map((r: any) => [this.isGlobal(r.team)?'Global':'Vietnam', r.platform, r.team, this.n(r.spend), this.n(r.mess), this.n(r.impr), this.n(r.mess)>0?Math.round(this.n(r.spend)/this.n(r.mess)):0]), 'purple');
     }
-
-    // Sheet Traffic
-    if (traffic.length > 0) {
-      const ws = wb.addWorksheet('Traffic tự nhiên');
-      ws.columns = [
-        { header: 'Platform', key: 'platform', width: 12 },
-        { header: 'Team', key: 'team', width: 18 },
-        { header: 'Lượt xem', key: 'views', width: 14 },
-        { header: 'Followers', key: 'followers', width: 14 },
-        { header: 'Likes', key: 'likes', width: 10 },
-        { header: 'Số kênh', key: 'channels', width: 10 },
-      ];
-      ws.getRow(1).font = { bold: true };
-      ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0EA5E9' } };
-      ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-
-      for (const r of traffic) {
-        ws.addRow({
-          platform: r.platform, team: r.team || 'Không rõ',
-          views: fmt(r.views), followers: fmt(r.followers),
-          likes: fmt(r.likes), channels: fmt(r.channels),
-        });
-      }
+    if (d.adsCamps.length > 0) {
+      addSheet('Camp Detail', [{h:'Campaign',w:40},{h:'Loại',w:12},{h:'Team',w:16},{h:'Chi phí',w:12},{h:'Mess',w:10}],
+        d.adsCamps.map((r: any) => [(r.campaign_name||'').slice(0,50), this.campType(r), r.team, this.n(r.spend), this.n(r.mess)]), 'purple');
+    }
+    if (d.trafficTeam.length > 0) {
+      addSheet('Traffic theo Team', [{h:'Market',w:10},{h:'Platform',w:10},{h:'Team',w:18},{h:'Views',w:12},{h:'Followers',w:12},{h:'Videos',w:8}],
+        d.trafficTeam.map((r: any) => [this.isGlobal(r.team)?'Global':'Vietnam', r.platform, r.team, this.n(r.views), this.n(r.followers), this.n(r.videos)]), 'blue');
+    }
+    if (d.contentTypes.length > 0) {
+      addSheet('Content A1-A5', [{h:'Loại',w:8},{h:'Platform',w:10},{h:'Team',w:18},{h:'Videos',w:8},{h:'Views',w:12}],
+        d.contentTypes.map((r: any) => [r.ct, r.platform, r.team, this.n(r.videos), this.n(r.views)]), 'blue');
+    }
+    if (d.topSkus.length > 0) {
+      addSheet('Top SKU', [{h:'SKU',w:10},{h:'Số video',w:10},{h:'Tổng views',w:14},{h:'Teams',w:30}],
+        d.topSkus.map((r: any) => [r.sku, this.n(r.videos), this.n(r.views), Array.isArray(r.teams)?r.teams.filter(Boolean).join(', '):'']  ), 'blue');
+    }
+    if (d.topViews.length > 0) {
+      addSheet('Top Views', [{h:'Title',w:40},{h:'Kênh',w:20},{h:'Team',w:16},{h:'Views',w:10},{h:'Likes',w:8},{h:'CMT',w:8}],
+        d.topViews.map((r: any) => [(r.title||'').slice(0,50), r.channel_name, r.team, this.n(r.views), this.n(r.likes), this.n(r.comments)]), 'blue');
+    }
+    if (d.topCmts.length > 0) {
+      addSheet('Top Comments', [{h:'Title',w:40},{h:'Kênh',w:20},{h:'Team',w:16},{h:'CMT',w:8},{h:'Views',w:10}],
+        d.topCmts.map((r: any) => [(r.title||'').slice(0,50), r.channel_name, r.team, this.n(r.comments), this.n(r.views)]), 'blue');
     }
 
     const buf = Buffer.from(await wb.xlsx.writeBuffer());
-    await bot.sendDocument(chatId, buf, {
-      caption: `📊 Báo cáo tháng ${month}/${year}`,
-    }, {
-      filename: `bao-cao-${month}-${year}.xlsx`,
-      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    });
+    await bot.sendDocument(chatId, buf, { caption: `📊 XLSX tháng ${month}/${year}` }, { filename: `bao-cao-${month}-${year}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  // ── PDF ───────────────────────────────────────────────────────────────────
+  // ── PDF (2 files: Ads + Traffic) ────────────────────────────────────────────
 
-  private async sendPdf(bot: TelegramBot, chatId: string, ads: any[], traffic: any[], year: number, month: number) {
-    const n = (v: any) => typeof v === 'bigint' ? Number(v) : (Number(v) || 0);
-    const fmt = (v: any) => {
-      const num = n(v);
-      if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-      if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-      return num.toLocaleString('vi-VN');
-    };
-
-    // Tìm font hỗ trợ tiếng Việt (dùng font hệ thống)
-    const fontCandidates = [
-      '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-    ];
-    const fontPath = fontCandidates.find(f => fs.existsSync(f));
-
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
-    const chunks: Buffer[] = [];
-    doc.on('data', (c: Buffer) => chunks.push(c));
-
-    const endPromise = new Promise<Buffer>((resolve) => {
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-    });
-
-    if (fontPath) doc.registerFont('VN', fontPath);
-    const useFont = fontPath ? 'VN' : 'Helvetica';
-    const useFontBold = fontPath ? 'VN' : 'Helvetica-Bold';
-
-    // ── Header ──
-    doc.rect(0, 0, doc.page.width, 70).fill('#7C3AED');
-    doc.fillColor('white').font(useFontBold).fontSize(18)
-      .text(`BAO CAO THANG ${month}/${year}`, 40, 20, { align: 'center' });
-    doc.fontSize(9).font(useFont)
-      .text(`VCB Studio AI  |  ${new Date().toLocaleString('vi-VN')}`, 40, 46, { align: 'center' });
-
-    doc.fillColor('#1f2937').moveDown(2);
-
-    // ── Ads section ──
-    if (ads.length > 0) {
-      const totalSpend = ads.reduce((a, r) => a + n(r.spend), 0);
-      const totalMess  = ads.reduce((a, r) => a + n(r.mess), 0);
-
-      doc.font(useFontBold).fontSize(12).fillColor('#7C3AED')
-        .text('QUANG CAO', 40, doc.y + 10);
-      doc.font(useFont).fontSize(9).fillColor('#374151');
-
-      // KPI row
-      const kpiY = doc.y + 6;
-      const kpiW = (doc.page.width - 80) / 3;
-      [
-        { label: 'Tong chi phi', value: `${fmt(totalSpend)} VND` },
-        { label: 'Tin nhan', value: fmt(totalMess) },
-        { label: 'CPMess TB', value: totalMess > 0 ? `${fmt(Math.round(totalSpend / totalMess))} VND` : '-' },
-      ].forEach(({ label, value }, i) => {
-        const x = 40 + i * kpiW;
-        doc.rect(x, kpiY, kpiW - 8, 46).fill('#f5f3ff').stroke('#ddd6fe');
-        doc.fillColor('#6d28d9').font(useFontBold).fontSize(14)
-          .text(value, x + 6, kpiY + 6, { width: kpiW - 20, align: 'center' });
-        doc.fillColor('#6b7280').font(useFont).fontSize(7)
-          .text(label, x + 6, kpiY + 28, { width: kpiW - 20, align: 'center' });
-      });
-
-      doc.y = kpiY + 56;
-
-      // Table header
-      const cols = [160, 100, 100, 80, 80];
-      const headers = ['Team', 'Chi phi (VND)', 'Tin nhan', 'Hien thi', 'Platform'];
-      const tX = 40; let tY = doc.y + 6;
-
-      doc.rect(tX, tY, cols.reduce((a, c) => a + c, 0), 18).fill('#7C3AED');
-      doc.fillColor('white').font(useFontBold).fontSize(8);
-      let cx = tX;
-      headers.forEach((h, i) => {
-        doc.text(h, cx + 4, tY + 4, { width: cols[i] - 8 });
-        cx += cols[i];
-      });
-      tY += 18;
-
-      ads.forEach((row, idx) => {
-        doc.rect(tX, tY, cols.reduce((a, c) => a + c, 0), 16)
-          .fill(idx % 2 === 0 ? '#faf5ff' : 'white');
-        doc.fillColor('#374151').font(useFont).fontSize(8);
-        const cells = [row.team || 'N/A', fmt(row.spend), fmt(row.mess), fmt(row.impressions), row.platform];
-        cx = tX;
-        cells.forEach((cell, i) => {
-          doc.text(String(cell), cx + 4, tY + 3, { width: cols[i] - 8 });
-          cx += cols[i];
-        });
-        tY += 16;
-      });
-      doc.y = tY + 8;
+  private async sendPdf(bot: TelegramBot, chatId: string, d: any, year: number, month: number) {
+    // Ads PDF
+    if (d.adsTeam?.length > 0) {
+      const adsData: ReportData = {
+        type: 'ads', year, month,
+        adsTeam: d.adsTeam, adsCamps: d.adsCamps,
+      };
+      const adsBuf = await new PdfReportGenerator().generate(adsData);
+      await bot.sendDocument(chatId, adsBuf,
+        { caption: `📊 Báo cáo Quảng cáo tháng ${month}/${year}` },
+        { filename: `ads-${month}-${year}.pdf`, contentType: 'application/pdf' },
+      );
     }
-
-    // ── Traffic section ──
-    if (traffic.length > 0) {
-      if (doc.y > doc.page.height - 150) doc.addPage();
-
-      const totalViews = traffic.reduce((a, r) => a + n(r.views), 0);
-      doc.font(useFontBold).fontSize(12).fillColor('#0EA5E9')
-        .text('TRAFFIC TU NHIEN', 40, doc.y + 10);
-
-      const kpiY = doc.y + 6;
-      const kpiW = (doc.page.width - 80) / 2;
-      [
-        { label: 'Tong luot xem', value: fmt(totalViews) },
-        { label: 'So kenh', value: String(traffic.reduce((a, r) => a + n(r.channels), 0)) },
-      ].forEach(({ label, value }, i) => {
-        const x = 40 + i * kpiW;
-        doc.rect(x, kpiY, kpiW - 8, 46).fill('#f0f9ff').stroke('#bae6fd');
-        doc.fillColor('#0284c7').font(useFontBold).fontSize(14)
-          .text(value, x + 6, kpiY + 6, { width: kpiW - 20, align: 'center' });
-        doc.fillColor('#6b7280').font(useFont).fontSize(7)
-          .text(label, x + 6, kpiY + 28, { width: kpiW - 20, align: 'center' });
-      });
-
-      doc.y = kpiY + 56;
-      const cols = [160, 110, 110, 80, 80];
-      const headers = ['Team', 'Luot xem', 'Followers', 'Likes', 'Platform'];
-      const tX = 40; let tY = doc.y + 6;
-
-      doc.rect(tX, tY, cols.reduce((a, c) => a + c, 0), 18).fill('#0EA5E9');
-      doc.fillColor('white').font(useFontBold).fontSize(8);
-      let cx = tX;
-      headers.forEach((h, i) => { doc.text(h, cx + 4, tY + 4, { width: cols[i] - 8 }); cx += cols[i]; });
-      tY += 18;
-
-      traffic.forEach((row, idx) => {
-        doc.rect(tX, tY, cols.reduce((a, c) => a + c, 0), 16).fill(idx % 2 === 0 ? '#f0f9ff' : 'white');
-        doc.fillColor('#374151').font(useFont).fontSize(8);
-        const cells = [row.team || 'N/A', fmt(row.views), fmt(row.followers), fmt(row.likes), row.platform];
-        cx = tX;
-        cells.forEach((cell, i) => { doc.text(String(cell), cx + 4, tY + 3, { width: cols[i] - 8 }); cx += cols[i]; });
-        tY += 16;
-      });
+    // Traffic PDF
+    if (d.trafficTeam?.length > 0) {
+      const totalViews  = d.trafficTeam.reduce((a: number, r: any) => a + (typeof r.views==='bigint'?Number(r.views):Number(r.views||0)), 0);
+      const vnViews     = d.trafficTeam.filter((r: any) => !['global','thái lan','thai','indo','japan','jp'].some((k:string) => (r.team||'').toLowerCase().includes(k))).reduce((a: number, r: any) => a + (typeof r.views==='bigint'?Number(r.views):Number(r.views||0)), 0);
+      const globalViews = totalViews - vnViews;
+      const totalVideos = d.trafficTeam.reduce((a: number, r: any) => a + (typeof r.videos==='bigint'?Number(r.videos):Number(r.videos||0)), 0);
+      const byPlatform  = await this.prisma.$queryRawUnsafe(`SELECT platform, SUM(views) views, COUNT(*) cnt FROM social_video_report WHERE year=${year} AND month=${month} GROUP BY platform ORDER BY views DESC`) as any[];
+      const topChannels = await this.prisma.$queryRawUnsafe(`SELECT channel_name, platform, team, SUM(views) views FROM social_video_report WHERE year=${year} AND month=${month} GROUP BY channel_name,platform,team ORDER BY views DESC LIMIT 10`) as any[];
+      const trafData: ReportData = {
+        type: 'traffic', year, month,
+        totalViews, vnViews, globalViews, totalVideos,
+        byPlatform, byTeam: d.trafficTeam, topChannels,
+        contentTypes: d.contentTypes, topSkus: d.topSkus,
+        topViews: d.topViews, topCmts: d.topCmts,
+      };
+      const trafBuf = await new PdfReportGenerator().generate(trafData);
+      await bot.sendDocument(chatId, trafBuf,
+        { caption: `📱 Báo cáo Traffic tháng ${month}/${year}` },
+        { filename: `traffic-${month}-${year}.pdf`, contentType: 'application/pdf' },
+      );
     }
-
-    // ── Footer ──
-    doc.fillColor('#9ca3af').font(useFont).fontSize(7)
-      .text('VCB Studio AI - Bao cao tu dong', 40, doc.page.height - 30, { align: 'center' });
-
-    doc.end();
-    const buf = await endPromise;
-
-    await bot.sendDocument(chatId, buf, {
-      caption: `📊 Báo cáo PDF tháng ${month}/${year}`,
-    }, {
-      filename: `bao-cao-${month}-${year}.pdf`,
-      contentType: 'application/pdf',
-    });
   }
 
   // ── DOCX ──────────────────────────────────────────────────────────────────
 
-  private async sendDocx(bot: TelegramBot, chatId: string, ads: any[], traffic: any[], year: number, month: number) {
-    const n = (v: any) => typeof v === 'bigint' ? Number(v) : (Number(v) || 0);
-    const fmt = (v: any) => {
-      const num = n(v);
-      if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-      if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-      return num.toLocaleString('vi-VN');
-    };
+  private async sendDocx(bot: TelegramBot, chatId: string, d: any, year: number, month: number) {
+    const f = this.f.bind(this);
+    const n = this.n.bind(this);
 
-    const cellStyle = (text: string, bold = false, bg?: string) => new TableCell({
-      children: [new Paragraph({
-        children: [new TextRun({ text, bold, size: 18 })],
-        alignment: AlignmentType.CENTER,
-      })],
-      shading: bg ? { type: ShadingType.SOLID, color: bg } : undefined,
-      margins: { top: 80, bottom: 80, left: 100, right: 100 },
+    const hCell = (text: string, bg = '7C3AED') => new TableCell({
+      children: [new Paragraph({ children: [new TextRun({ text, bold: true, color: 'FFFFFF', size: 16 })], alignment: AlignmentType.CENTER })],
+      shading: { type: ShadingType.SOLID, color: bg },
+      margins: { top: 60, bottom: 60, left: 80, right: 80 },
     });
 
-    const sections: any[] = [];
+    const dCell = (text: string, bg = 'FFFFFF') => new TableCell({
+      children: [new Paragraph({ children: [new TextRun({ text, size: 16 })], alignment: AlignmentType.CENTER })],
+      shading: bg !== 'FFFFFF' ? { type: ShadingType.SOLID, color: bg } : undefined,
+      margins: { top: 40, bottom: 40, left: 80, right: 80 },
+    });
 
-    // Title
-    sections.push(
+    const makeTable = (headers: string[], dataRows: string[][], hColor: string) => new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({ children: headers.map(h => hCell(h, hColor)), tableHeader: true }),
+        ...dataRows.map((row, i) => new TableRow({ children: row.map(cell => dCell(cell, i%2===0?'F5F3FF':'FFFFFF')) })),
+      ],
+    });
+
+    const h1 = (text: string) => new Paragraph({ text, heading: HeadingLevel.HEADING_1, spacing: { before: 300, after: 120 } });
+    const h2 = (text: string) => new Paragraph({ text, heading: HeadingLevel.HEADING_2, spacing: { before: 200, after: 100 } });
+    const p  = (text: string) => new Paragraph({ children: [new TextRun({ text, size: 18 })], spacing: { after: 80 } });
+    const br = () => new Paragraph({ text: '' });
+
+    const children: any[] = [
       new Paragraph({
-        text: `BAO CAO THANG ${month}/${year}`,
-        heading: HeadingLevel.HEADING_1,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
+        children: [new TextRun({ text: `BAO CAO THANG ${month}/${year}`, bold: true, size: 36, color: '7C3AED' })],
+        alignment: AlignmentType.CENTER, spacing: { after: 120 },
       }),
       new Paragraph({
         children: [new TextRun({ text: `VCB Studio AI  |  ${new Date().toLocaleString('vi-VN')}`, color: '888888', size: 18 })],
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 400 },
+        alignment: AlignmentType.CENTER, spacing: { after: 300 },
       }),
-    );
+    ];
 
-    // Ads section
-    if (ads.length > 0) {
-      const totalSpend = ads.reduce((a, r) => a + n(r.spend), 0);
-      const totalMess  = ads.reduce((a, r) => a + n(r.mess), 0);
+    // ADS
+    if (d.adsTeam.length > 0) {
+      const ts = d.adsTeam.reduce((a: number, r: any) => a + n(r.spend), 0);
+      const tm = d.adsTeam.reduce((a: number, r: any) => a + n(r.mess), 0);
+      const vnS = d.adsTeam.filter((r: any) => !this.isGlobal(r.team)).reduce((a: number, r: any) => a + n(r.spend), 0);
+      const glS = d.adsTeam.filter((r: any) => this.isGlobal(r.team)).reduce((a: number, r: any) => a + n(r.spend), 0);
+      const cpm = tm > 0 ? Math.round(ts / tm) : 0;
 
-      sections.push(
-        new Paragraph({ text: 'QUANG CAO', heading: HeadingLevel.HEADING_2, spacing: { after: 120 } }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: `Tong chi phi: ${fmt(totalSpend)} VND  |  `, bold: true }),
-            new TextRun({ text: `Tin nhan: ${fmt(totalMess)}  |  ` }),
-            new TextRun({ text: `CPMess TB: ${totalMess > 0 ? fmt(Math.round(totalSpend / totalMess)) + ' VND' : '-'}` }),
-          ],
-          spacing: { after: 200 },
-        }),
-      );
+      children.push(h1('1. QUANG CAO — TONG QUAN'));
+      children.push(p(`Tong chi phi: ${f(ts)} VND  |  VN: ${f(vnS)}  |  Global: ${f(glS)}`));
+      children.push(p(`Tin nhan: ${f(tm)}  |  CPMess: ${f(cpm)} VND  |  Danh gia: ${this.rateLabel(cpm).replace(/[🟢🟡🟠🔴]/g,'').trim()}`));
+      children.push(p(`Benchmark: <18K Xuat sac | 18-25K Tot | 25-40K Trung binh | >40K Kem`));
+      children.push(br());
 
-      const adsTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: [
-          new TableRow({
-            children: ['Team', 'Chi phi (VND)', 'Tin nhan', 'Hien thi', 'Platform']
-              .map(h => cellStyle(h, true, '7C3AED')),
-            tableHeader: true,
-          }),
-          ...ads.map((row, i) => new TableRow({
-            children: [
-              cellStyle(row.team || 'N/A', false, i % 2 === 0 ? 'F5F3FF' : 'FFFFFF'),
-              cellStyle(fmt(row.spend), false, i % 2 === 0 ? 'F5F3FF' : 'FFFFFF'),
-              cellStyle(fmt(row.mess), false, i % 2 === 0 ? 'F5F3FF' : 'FFFFFF'),
-              cellStyle(fmt(row.impressions), false, i % 2 === 0 ? 'F5F3FF' : 'FFFFFF'),
-              cellStyle(row.platform, false, i % 2 === 0 ? 'F5F3FF' : 'FFFFFF'),
-            ],
-          })),
-        ],
-      });
-      sections.push(adsTable, new Paragraph({ text: '', spacing: { after: 300 } }));
+      // Camp type
+      const ctSpend: Record<string, {sp:number;ms:number}> = {};
+      for (const c of d.adsCamps) {
+        const ct = this.campType(c);
+        if (!ctSpend[ct]) ctSpend[ct] = {sp:0, ms:0};
+        ctSpend[ct].sp += n(c.spend); ctSpend[ct].ms += n(c.mess);
+      }
+      children.push(h2('1a. Phan tich theo loai camp'));
+      children.push(makeTable(['Loai Camp','Chi Phi (VND)','Tin Nhan','CPMess'],
+        Object.entries(ctSpend).map(([ct, v]) => [ct, f(v.sp)+' VND', f(v.ms), v.ms>0?f(Math.round(v.sp/v.ms)):'-']),
+        '7C3AED'));
+      children.push(br());
+
+      children.push(h2('1b. Chi tiet theo thi truong'));
+      const mkData: Record<string, {sp:number;ms:number}> = {Vietnam:{sp:0,ms:0}, Global:{sp:0,ms:0}};
+      for (const r of d.adsTeam) { const mk=this.isGlobal(r.team)?'Global':'Vietnam'; mkData[mk].sp+=n(r.spend); mkData[mk].ms+=n(r.mess); }
+      children.push(makeTable(['Thi Truong','Chi Phi','Mess','CPMess','% Chi Phi'],
+        Object.entries(mkData).map(([mk, v]) => [mk, f(v.sp)+' VND', f(v.ms), v.ms>0?f(Math.round(v.sp/v.ms)):'-', ts>0?((v.sp/ts)*100).toFixed(1)+'%':'0%']),
+        '6D28D9'));
+      children.push(br());
+
+      children.push(h2('1c. Chi tiet theo team'));
+      children.push(makeTable(['Market','Platform','Team','Chi Phi','Mess','Hien Thi','CPMess'],
+        d.adsTeam.map((r: any) => [this.isGlobal(r.team)?'Global':'VN', r.platform||'', r.team||'', f(r.spend)+' VND', f(r.mess), f(r.impr), n(r.mess)>0?f(Math.round(n(r.spend)/n(r.mess))):'-']),
+        '5B21B6'));
+      children.push(br());
     }
 
-    // Traffic section
-    if (traffic.length > 0) {
-      const totalViews = traffic.reduce((a, r) => a + n(r.views), 0);
+    // TRAFFIC
+    if (d.trafficTeam.length > 0) {
+      const tv = d.trafficTeam.reduce((a: number, r: any) => a + n(r.views), 0);
+      const vnV = d.trafficTeam.filter((r: any) => !this.isGlobal(r.team)).reduce((a: number, r: any) => a + n(r.views), 0);
+      const glV = d.trafficTeam.filter((r: any) => this.isGlobal(r.team)).reduce((a: number, r: any) => a + n(r.views), 0);
 
-      sections.push(
-        new Paragraph({ text: 'TRAFFIC TU NHIEN', heading: HeadingLevel.HEADING_2, spacing: { after: 120 } }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: `Tong luot xem: ${fmt(totalViews)}  |  `, bold: true }),
-            new TextRun({ text: `So kenh: ${traffic.reduce((a, r) => a + n(r.channels), 0)}` }),
-          ],
-          spacing: { after: 200 },
-        }),
-      );
+      children.push(h1('2. TRAFFIC TU NHIEN'));
+      children.push(p(`Tong views: ${f(tv)}  |  VN: ${f(vnV)}  |  Global: ${f(glV)}`));
+      children.push(p(`Tong video: ${f(d.trafficTeam.reduce((a: number, r: any) => a + n(r.videos), 0))}  |  So kenh: ${f(d.trafficTeam.reduce((a: number, r: any) => a + n(r.channels), 0))}`));
+      children.push(br());
 
-      const trafficTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: [
-          new TableRow({
-            children: ['Team', 'Luot xem', 'Followers', 'Likes', 'Platform']
-              .map(h => cellStyle(h, true, '0EA5E9')),
-            tableHeader: true,
-          }),
-          ...traffic.map((row, i) => new TableRow({
-            children: [
-              cellStyle(row.team || 'N/A', false, i % 2 === 0 ? 'F0F9FF' : 'FFFFFF'),
-              cellStyle(fmt(row.views), false, i % 2 === 0 ? 'F0F9FF' : 'FFFFFF'),
-              cellStyle(fmt(row.followers), false, i % 2 === 0 ? 'F0F9FF' : 'FFFFFF'),
-              cellStyle(fmt(row.likes), false, i % 2 === 0 ? 'F0F9FF' : 'FFFFFF'),
-              cellStyle(row.platform, false, i % 2 === 0 ? 'F0F9FF' : 'FFFFFF'),
-            ],
-          })),
-        ],
-      });
-      sections.push(trafficTable);
+      children.push(h2('2a. Chi tiet theo team & platform'));
+      children.push(makeTable(['Market','Platform','Team','Views','Followers','Videos','Likes'],
+        d.trafficTeam.map((r: any) => [this.isGlobal(r.team)?'Global':'VN', r.platform||'', r.team||'', f(r.views), f(r.followers), f(r.videos), f(r.likes)]),
+        '0EA5E9'));
+      children.push(br());
+
+      if (d.contentTypes.length > 0) {
+        children.push(h2('2b. Content A1–A5'));
+        const ctSum: Record<string, {v:number;vw:number}> = {};
+        for (const r of d.contentTypes) { if (!ctSum[r.ct]) ctSum[r.ct]={v:0,vw:0}; ctSum[r.ct].v+=n(r.videos); ctSum[r.ct].vw+=n(r.views); }
+        children.push(p('Tong hop: ' + Object.entries(ctSum).sort(([a],[b])=>a<b?-1:1).map(([k,v])=>`${k}: ${v.v} video / ${f(v.vw)} views`).join('  |  ')));
+        children.push(makeTable(['Content','Platform','Team','Videos','Views'],
+          d.contentTypes.map((r: any) => [r.ct, r.platform, r.team, String(n(r.videos)), f(r.views)]),
+          '0284C7'));
+        children.push(br());
+      }
+
+      if (d.topSkus.length > 0) {
+        children.push(h2('2c. Top 10 SKU nhieu video nhat'));
+        children.push(makeTable(['SKU','So Video','Tong Views','Teams'],
+          d.topSkus.map((r: any) => [r.sku, String(n(r.videos)), f(r.views), Array.isArray(r.teams)?r.teams.filter(Boolean).slice(0,3).join(', '):'']),
+          '0369A1'));
+        children.push(br());
+      }
+
+      if (d.topViews.length > 0) {
+        children.push(h2('2d. Top 10 video nhieu views nhat'));
+        children.push(makeTable(['#','Title','Kenh','Team','Views','Likes','CMT'],
+          d.topViews.map((r: any, i: number) => [String(i+1),(r.title||'').slice(0,40),(r.channel_name||'').slice(0,20),r.team||'',f(r.views),f(r.likes),f(r.comments)]),
+          '075985'));
+        children.push(br());
+      }
+
+      if (d.topCmts.length > 0) {
+        children.push(h2('2e. Top 10 video nhieu comment nhat'));
+        children.push(makeTable(['#','Title','Kenh','Team','CMT','Views'],
+          d.topCmts.map((r: any, i: number) => [String(i+1),(r.title||'').slice(0,40),(r.channel_name||'').slice(0,20),r.team||'',f(r.comments),f(r.views)]),
+          '1E3A5F'));
+      }
     }
 
-    const docFile = new Document({
-      sections: [{ children: sections }],
+    const doc = new Document({
+      sections: [{ children }],
       styles: {
         default: {
-          heading1: { run: { size: 32, bold: true, color: '7C3AED' } },
-          heading2: { run: { size: 24, bold: true, color: '1f2937' } },
+          heading1: { run: { size: 28, bold: true, color: '7C3AED' } },
+          heading2: { run: { size: 22, bold: true, color: '1F2937' } },
         },
       },
     });
 
-    const buf = await Packer.toBuffer(docFile);
-    await bot.sendDocument(chatId, buf, {
-      caption: `📊 Báo cáo DOCX tháng ${month}/${year}`,
-    }, {
-      filename: `bao-cao-${month}-${year}.docx`,
-      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    });
+    const buf = await Packer.toBuffer(doc);
+    await bot.sendDocument(chatId, buf, { caption: `📝 DOCX tháng ${month}/${year}` }, { filename: `bao-cao-${month}-${year}.docx`, contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
 }
