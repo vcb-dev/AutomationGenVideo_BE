@@ -4,7 +4,7 @@ import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
 import { AppModule } from "./app.module";
-const { initSocialSyncCron } = require('./social-sync.scheduler');
+import { initSocialSyncCron } from './social-sync.scheduler';
 
 // Fix BigInt serialization for JSON
 (BigInt.prototype as any).toJSON = function () {
