@@ -972,13 +972,35 @@ Trả về JSON: {"type":"query","sql":"<SQL đã sửa>"}`;
         dbResults = await this.prisma.$queryRawUnsafe(sql) as any[];
       }
 
-      // 6. Xử lý kết quả rỗng
+      // 6. Xử lý kết quả rỗng — AI gợi ý câu hỏi thay vì báo lỗi
       if (!dbResults || dbResults.length === 0) {
-        return {
-          message: `Không tìm thấy dữ liệu phù hợp. Dữ liệu hiện có: tháng ${dr?.min_m}/${dr?.min_y} → ${dr?.max_m}/${dr?.max_y}, platform: facebook & instagram. Bạn thử điều chỉnh khoảng thời gian hoặc tiêu chí tìm kiếm nhé.`,
-          dashboard: null,
-          data: []
-        };
+        const clarifyPrompt = `${SYSTEM_PROMPT}
+
+Người dùng hỏi: "${message}"
+SQL đã chạy: ${sql}
+Kết quả: rỗng (0 dòng)
+
+Nhiệm vụ: Giải thích ngắn gọn tại sao không có dữ liệu, rồi đưa ra 2-3 câu hỏi gợi ý cụ thể hơn mà người dùng CÓ THỂ hỏi và sẽ có kết quả.
+
+Trả về JSON:
+{
+  "message": "Giải thích lý do (1 câu) + gợi ý:\\n• Câu hỏi gợi ý 1\\n• Câu hỏi gợi ý 2\\n• Câu hỏi gợi ý 3",
+  "suggestions": ["câu gợi ý 1", "câu gợi ý 2", "câu gợi ý 3"]
+}
+
+Ví dụ tốt: nếu hỏi về YouTube nhưng không có data → gợi ý hỏi về Facebook hoặc Instagram.
+Nếu hỏi về tháng cũ không có data → gợi ý hỏi tháng có data (${dr?.min_m}/${dr?.min_y} → ${dr?.max_m}/${dr?.max_y}).
+Trả về DUY NHẤT JSON, không markdown.`;
+
+        const { data: clarifyRes } = await firstValueFrom(
+          this.httpService.post('https://api.deepseek.com/chat/completions', {
+            model: "deepseek-chat",
+            messages: [{ role: "user", content: clarifyPrompt }],
+            response_format: { type: "json_object" }
+          }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` } })
+        );
+        const clarifyResult = JSON.parse(clarifyRes.choices[0].message.content);
+        return { message: clarifyResult.message, suggestions: clarifyResult.suggestions ?? [], dashboard: null, data: [] };
       }
 
       // 7. Tạo giải thích + Dashboard JSON
