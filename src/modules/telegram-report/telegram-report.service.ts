@@ -23,20 +23,37 @@ export class TelegramReportService {
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
 
-  async getConfig(userId: string) {
-    return this.prisma.telegramReportConfig.findUnique({ where: { user_id: userId } });
+  async getConfig(userId: string, userEmail?: string) {
+    // Tìm theo user_id trước, fallback theo email nếu user_id đổi
+    let cfg = await this.prisma.telegramReportConfig.findUnique({ where: { user_id: userId } });
+    if (!cfg && userEmail) {
+      cfg = await this.prisma.telegramReportConfig.findFirst({ where: { user_email: userEmail } });
+      // Nếu tìm được theo email nhưng user_id khác → update user_id mới
+      if (cfg && cfg.user_id !== userId) {
+        cfg = await this.prisma.telegramReportConfig.update({
+          where: { id: cfg.id },
+          data: { user_id: userId },
+        });
+      }
+    }
+    return cfg;
   }
 
-  async saveConfig(userId: string, dto: any) {
-    return this.prisma.telegramReportConfig.upsert({
-      where: { user_id: userId },
-      update: { ...dto, updated_at: new Date() },
-      create: { user_id: userId, ...dto },
+  async saveConfig(userId: string, userEmail: string | undefined, dto: any) {
+    const existing = await this.getConfig(userId, userEmail);
+    if (existing) {
+      return this.prisma.telegramReportConfig.update({
+        where: { id: existing.id },
+        data: { ...dto, user_id: userId, user_email: userEmail, updated_at: new Date() },
+      });
+    }
+    return this.prisma.telegramReportConfig.create({
+      data: { user_id: userId, user_email: userEmail, ...dto },
     });
   }
 
-  async sendTestReport(userId: string): Promise<{ ok: boolean; message: string }> {
-    const cfg = await this.getConfig(userId);
+  async sendTestReport(userId: string, userEmail?: string): Promise<{ ok: boolean; message: string }> {
+    const cfg = await this.getConfig(userId, userEmail);
     if (!cfg?.bot_token || !cfg?.chat_id) return { ok: false, message: 'Chưa có cấu hình Telegram' };
     try { await this.sendReports(cfg); return { ok: true, message: 'Đã gửi báo cáo test thành công!' }; }
     catch (e) { return { ok: false, message: `Lỗi: ${e.message}` }; }

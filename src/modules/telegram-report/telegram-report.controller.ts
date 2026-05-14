@@ -12,7 +12,7 @@ export class TelegramReportController {
 
   @Get('config')
   getConfig(@Req() req: any) {
-    return this.svc.getConfig(req.user.id);
+    return this.svc.getConfig(req.user.id, req.user.email);
   }
 
   @Post('config')
@@ -25,12 +25,12 @@ export class TelegramReportController {
     report_types: string[];
     is_active: boolean;
   }) {
-    return this.svc.saveConfig(req.user.id, body);
+    return this.svc.saveConfig(req.user.id, req.user.email, body);
   }
 
   @Post('send-now')
   @HttpCode(HttpStatus.OK)
   sendNow(@Req() req: any) {
-    return this.svc.sendTestReport(req.user.id);
+    return this.svc.sendTestReport(req.user.id, req.user.email);
   }
 }

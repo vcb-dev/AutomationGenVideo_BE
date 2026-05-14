@@ -1364,6 +1364,7 @@ model BusinessChannelConnection {
 model TelegramReportConfig {
   id           String   @id @default(uuid())
   user_id      String   @unique
+  user_email   String?
   bot_token    String
   chat_id      String
   schedule     String   @default("0 8 * * *")
@@ -1373,5 +1374,6 @@ model TelegramReportConfig {
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
+  @@index([user_email])
   @@map("telegram_report_config")
 }
