@@ -1271,34 +1271,6 @@ model ChatMessage {
   @@map("chat_messages")
 }
 
-/// Stats từng video/post của kênh — sync 1 lần/ngày qua cronjob
-model ChannelPostStats {
-  id           String   @id @default(uuid())
-  platform     String
-  channel_name String
-  username     String
-  team         String?
-  owner        String?
-  post_id      String
-  title        String?  @db.Text
-  url          String?
-  published_at DateTime?
-  views        BigInt   @default(0)
-  likes        BigInt   @default(0)
-  comments     BigInt   @default(0)
-  shares       BigInt   @default(0)
-  year         Int
-  month        Int
-  synced_at    DateTime @default(now()) @updatedAt
-
-  @@unique([platform, post_id])
-  @@index([platform, year, month])
-  @@index([username, year, month])
-  @@index([team, year, month])
-  @@index([year, month])
-  @@map("channel_post_stats")
-}
-
 
 /// Stats từng campaign quảng cáo Facebook — sync 1 lần/ngày
 model AdsCampaignStats {

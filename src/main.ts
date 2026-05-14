@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
 import { AppModule } from "./app.module";
+const { initSocialSyncCron } = require('./social-sync.scheduler');
 
 // Fix BigInt serialization for JSON
 (BigInt.prototype as any).toJSON = function () {
@@ -84,6 +85,9 @@ async function bootstrap() {
   expressInstance.headersTimeout    = 66_000;
   expressInstance.maxHeadersCount   = 100;
   expressInstance.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+
+  // Kích hoạt cron sync social_video_report + ads_campaign_stats (01:00 AM hàng ngày)
+  initSocialSyncCron();
 
   console.log(`Application is running on: http://localhost:${port}`);
   console.log(`Swagger documentation: http://localhost:${port}/api`);
