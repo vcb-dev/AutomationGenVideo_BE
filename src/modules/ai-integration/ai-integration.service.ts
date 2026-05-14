@@ -835,18 +835,21 @@ export class AiIntegrationService {
         ${JSON.stringify(dbResults, (key, value) => typeof value === 'bigint' ? value.toString() : value)}
         
         Nhiệm vụ: Trả lời câu hỏi "${message}" và tạo Dashboard JSON.
-        YÊU CẦU: Trả về DUY NHẤT một đối tượng JSON (không bọc trong markdown) có cấu trúc:
-        {
-          "message": "Câu trả lời bằng tiếng Việt",
-          "dashboard": {
-            "layout": "mixed",
-            "blocks": [
-              { "type": "kpi_card", "data": [{ "label": "Tổng chi", "value": "...", "trend": "...", "trendUp": true }] },
-              { "type": "bar", "title": "Phân tích số liệu", "xKey": "...", "yKey": "...", "data": [...] },
-              { "type": "table", "title": "Chi tiết dữ liệu", "columns": ["...", "..."], "data": [...] }
-            ]
-          }
-        }
+        YÊU CẦU:
+        1. "message": Giải thích ngắn gọn kết quả bằng tiếng Việt.
+        2. "dashboard": Tạo các block hiển thị phù hợp. 
+           - QUAN TRỌNG: Đặt label cho KPI Card và tiêu đề biểu đồ KHỚP với loại dữ liệu (Ví dụ: Nếu dữ liệu về views thì đặt là "Tổng lượt xem", nếu về ads thì đặt là "Tổng chi phí").
+           - JSON Structure:
+           {
+             "layout": "mixed",
+             "blocks": [
+               { "type": "kpi_card", "data": [{ "label": "Tên nhãn phù hợp", "value": "...", "trend": "...", "trendUp": true }] },
+               { "type": "bar", "title": "Tiêu đề phù hợp", "xKey": "...", "yKey": "...", "data": [...] },
+               { "type": "table", "title": "Danh sách chi tiết", "columns": ["...", "..."], "data": [...] }
+             ]
+           }
+        LƯU Ý: Trả về DUY NHẤT đối tượng JSON, không markdown.
+      `;
         LƯU Ý: 
         - Nếu có ít dữ liệu, chỉ dùng kpi_card và table.
         - Nếu có so sánh (theo team, platform), hãy dùng bar chart.
