@@ -734,10 +734,15 @@ export class AiIntegrationService {
       return 'Khác';
     };
 
-    // Tất cả kênh trong huyk_channels
+    // Chỉ lấy kênh đang hoạt động và có đủ name, platform, team, owner
     const allChannels = await this.prisma.$queryRawUnsafe(`
       SELECT id, name, platform, team_traffic as team, owner, status
       FROM huyk_channels
+      WHERE status IN ('Đang hoạt động', 'ON')
+        AND name IS NOT NULL AND TRIM(name) <> ''
+        AND platform IS NOT NULL AND TRIM(platform) <> ''
+        AND team_traffic IS NOT NULL AND TRIM(team_traffic) <> ''
+        AND owner IS NOT NULL AND TRIM(owner) <> ''
       ORDER BY platform, name
     `) as any[];
 
