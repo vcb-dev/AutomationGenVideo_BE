@@ -777,8 +777,9 @@ export class AiIntegrationService {
         - Cột: platform, channel_name, username, title, views, likes, comments, shares, followers, team, owner, year, month
 
         QUAN TRỌNG: 
-        - Để JOIN huyk_channels và social_video_report, hãy dùng: huyk_channels.channel_id = social_video_report.username.
-        - Để JOIN ads_campaign_stats và social_video_report (nếu cần), hãy dùng platform + campaign_name.
+        - Luôn sử dụng hàm LOWER() khi so sánh chuỗi (Ví dụ: LOWER(platform) = 'facebook').
+        - Để JOIN huyk_channels và social_video_report, hãy dùng: LOWER(huyk_channels.name) = LOWER(social_video_report.channel_name).
+        - Tên bảng và cột phải viết thường chính xác.
       `;
 
       const prompt = `
@@ -870,6 +871,7 @@ export class AiIntegrationService {
 
       return {
         ...finalResult,
+        message: `${finalResult.message}\n\n(Debug SQL: ${sql})`,
         data: dbResults
       };
 
