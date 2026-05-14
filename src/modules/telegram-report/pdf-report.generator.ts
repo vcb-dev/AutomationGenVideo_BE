@@ -236,15 +236,21 @@ export class PdfReportGenerator {
       { label: 'Tuong tac',      value: this._f(te) },
     ], C.accent);
 
-    // Benchmark box
-    this.doc.moveDown(0.3);
+    // Benchmark box — vẽ tại vị trí y cố định, sau đó set y xuống dưới hộp
+    this.doc.moveDown(0.4);
     const bColor = cpmColor(cpm);
     const bLabel = cpmLabel(cpm);
-    this.doc.roundedRect(this.L, this.doc.y, this.W, 28, 4).fill(bColor);
-    this.doc.fillColor(C.white).font(this.fontBold).fontSize(10)
-      .text(`DANH GIA CPMESS: ${bLabel.toUpperCase()}  (${this._f(cpm)} VND)  |  Benchmark: <18K Xuat sac | 18-25K Tot | 25-40K TB | >40K Can toi uu`,
-        this.L + 8, this.doc.y - 22, { width: this.W - 16, align: 'center' });
-    this.doc.fillColor(C.gray1).moveDown(0.8);
+    const boxY = this.doc.y;
+    const boxH = 26;
+    this.doc.roundedRect(this.L, boxY, this.W, boxH, 4).fill(bColor);
+    this.doc.fillColor(C.white).font(this.fontBold).fontSize(9)
+      .text(
+        `DANH GIA CPMESS: ${bLabel.toUpperCase()}  (${this._f(cpm)} VND)  |  Benchmark: <18K Xuat sac | 18-25K Tot | 25-40K TB | >40K Can toi uu`,
+        this.L + 8, boxY + 8,
+        { width: this.W - 16, align: 'center', lineBreak: false },
+      );
+    this.doc.y = boxY + boxH + 10;
+    this.doc.fillColor(C.gray1);
 
     // S2: Theo thi truong
     this._sectionHeader('2. PHAN BO THEO THI TRUONG', C.blue);
