@@ -2,7 +2,6 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { CryptoService } from '../crypto/crypto.service';
-import { SupabaseStorageService } from '../upload/supabase-storage.service';
 import { FacebookPublisher } from './platforms/facebook.platform';
 import { InstagramPublisher } from './platforms/instagram.platform';
 import { TiktokPublisher } from './platforms/tiktok.platform';
@@ -14,8 +13,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import axios from 'axios';
-import * as FormData from 'form-data';
 
 const execAsync = promisify(exec);
 
@@ -27,7 +24,6 @@ export class PublishService {
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
     private readonly crypto: CryptoService,
-    private readonly supabase: SupabaseStorageService,
     private readonly fb: FacebookPublisher,
     private readonly ig: InstagramPublisher,
     private readonly tt: TiktokPublisher,
@@ -46,25 +42,6 @@ export class PublishService {
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         try {
           const localUrl = new URL(url);
-          const filename = localUrl.pathname.split('/').pop()!;
-          const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-          const filePath = path.join(uploadBase, filename);
-
-          // Ưu tiên 1: Upload lên Supabase → URL luôn public, mọi platform đều dùng được
-          if (fs.existsSync(filePath) && this.supabase.isAvailable()) {
-            try {
-              const ext = path.extname(filename).toLowerCase();
-              const mime = ext === '.mov' ? 'video/quicktime' : ext === '.webm' ? 'video/webm' : 'video/mp4';
-              const supabaseUrl = await this.supabase.uploadFromPath(filePath, filename, mime);
-              this.logger.log(`[makeUrlsPublic] ${url} → Supabase: ${supabaseUrl}`);
-              resultUrls.push(supabaseUrl);
-              continue;
-            } catch (err: any) {
-              this.logger.warn(`[makeUrlsPublic] Supabase upload failed: ${err.message}, fallback PUBLIC_BASE_URL`);
-            }
-          }
-
-          // Ưu tiên 2: PUBLIC_BASE_URL (Cloud Run URL hoặc ngrok)
           if (!publicBaseUrl) {
             this.logger.warn('[makeUrlsPublic] PUBLIC_BASE_URL chưa được cấu hình — localhost URLs sẽ không được convert');
             resultUrls.push(url);
@@ -194,7 +171,7 @@ export class PublishService {
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
     if (!localUrl.includes('localhost') && !localUrl.includes('127.0.0.1')) return Promise.resolve(localUrl);
-    if (!/\.(mp4|mov|avi|mkv|webm)(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
@@ -377,153 +354,24 @@ export class PublishService {
     });
   }
 
-  private async uploadToCatbox(filePath: string): Promise<string> {
-    const MAX_ATTEMPTS = 3;
-    let lastErr: Error = new Error('Catbox: no attempts made');
-
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const form = new FormData();
-      form.append('reqtype', 'fileupload');
-      form.append('fileToUpload', fs.createReadStream(filePath));
-
-      try {
-        this.logger.log(`[Catbox] Uploading ${path.basename(filePath)}... (attempt ${attempt}/${MAX_ATTEMPTS})`);
-        const res = await axios.post('https://catbox.moe/user/api.php', form, {
-          headers: form.getHeaders(),
-          timeout: 60000,
-        });
-        if (res.data && typeof res.data === 'string' && res.data.startsWith('http')) {
-          this.logger.log(`[Catbox] Uploaded successfully: ${res.data.trim()}`);
-          return res.data.trim();
-        }
-        throw new Error(`Invalid response from Catbox: ${res.data}`);
-      } catch (err: any) {
-        lastErr = err;
-        this.logger.warn(`[Catbox] Attempt ${attempt}/${MAX_ATTEMPTS} failed: ${err.message}`);
-        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 2000 * attempt));
-      }
-    }
-
-    this.logger.error(`[Catbox] All ${MAX_ATTEMPTS} attempts exhausted`);
-    throw lastErr;
-  }
-
-  /**
-   * Nén video sau khi đăng thành công, lưu binary thẳng vào DB (social_media_files),
-   * sau đó xóa toàn bộ file local — LUÔN xóa dù nén thành công hay thất bại.
-   */
   public async archiveMediaAsync(postId: string, mediaUrls: string[]): Promise<void> {
     if (!mediaUrls?.length) return;
 
-    const ffmpegPath = this.resolveFFmpegPath();
-    const ffmpegAvailable = !!ffmpegPath;
-    if (!ffmpegAvailable) {
-      this.logger.warn('[Archive] FFmpeg không khả dụng — lưu file gốc vào DB không nén');
-    }
-
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-    const updatedUrls: string[] = [];
-    let hasChange = false;
 
     for (const url of mediaUrls) {
-      if (!url.includes('/api/social/media/')) {
-        updatedUrls.push(url);
-        continue;
-      }
+      if (!url.includes('/api/social/media/')) continue;
 
       const filename = url.split('/api/social/media/').pop()!.split('?')[0];
       const inputPath = path.join(uploadBase, filename);
 
-      // Ảnh: xóa local ngay, không lưu DB
-      if (!/\.(mp4|mov|avi|mkv|webm)$/i.test(filename)) {
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        updatedUrls.push(url);
-        continue;
-      }
-
-      if (!fs.existsSync(inputPath)) {
-        updatedUrls.push(url);
-        continue;
-      }
-
-      const beforeSize = fs.statSync(inputPath).size;
-      const baseName = path.basename(filename, path.extname(filename));
-      const archiveName = `arc_${Date.now()}_${baseName}.mp4`;
-      const outputPath = path.join(uploadBase, archiveName);
-
-      let finalPath = inputPath;
-      let finalName = filename;
-
-      // Thử nén nếu ffmpeg có sẵn
-      if (ffmpegAvailable) {
-        try {
-          this.logger.log(`[Archive] Nén ${filename} (${(beforeSize / 1024 / 1024).toFixed(1)} MB)...`);
-          const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c:v libx264 -profile:v main -crf 28 -maxrate 4M -bufsize 8M -vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
-          await execAsync(cmd, { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
-
-          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size < beforeSize) {
-            const afterSize = fs.statSync(outputPath).size;
-            const ratio = Math.round((1 - afterSize / beforeSize) * 100);
-            this.logger.log(`[Archive] Nén xong: ${(beforeSize / 1024 / 1024).toFixed(1)}MB → ${(afterSize / 1024 / 1024).toFixed(1)}MB (-${ratio}%)`);
-            finalPath = outputPath;
-            finalName = archiveName;
-          } else {
-            this.logger.log(`[Archive] Nén không hiệu quả — dùng file gốc`);
-            try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-          }
-        } catch (err: any) {
-          this.logger.warn(`[Archive] Nén thất bại: ${err.message} — dùng file gốc`);
-          try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-        }
-      }
-
-      // Lưu file sau khi nén rồi xóa local
       try {
-        const finalSize = fs.statSync(finalPath).size;
-        const buffer = fs.readFileSync(finalPath);
-        let archivedUrl: string;
-
-        if (this.supabase.isAvailable()) {
-          // Supabase: upload lên cloud, trả về public URL — không cần lưu binary vào DB
-          archivedUrl = await this.supabase.upload(buffer, finalName, 'video/mp4');
-          this.logger.log(`[Archive] ✅ Supabase: ${finalName} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
-        } else {
-          // Fallback: lưu binary vào DB
-          const mediaFile = await this.prisma.socialMediaFile.create({
-            data: { post_id: postId, filename: finalName, mimetype: 'video/mp4', size: finalSize, data: buffer },
-          });
-          const urlBase = url.substring(0, url.indexOf('/api/social/media/'));
-          archivedUrl = `${urlBase}/api/social/media/${finalName}`;
-          this.logger.log(`[Archive] ✅ DB: id=${mediaFile.id} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+        if (fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+          this.logger.log(`[Archive] Deleted local temp media for post ${postId}: ${filename}`);
         }
-
-        // Xóa file local sau khi đã lưu
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        if (finalPath !== inputPath) {
-          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
-        }
-
-        updatedUrls.push(archivedUrl);
-        hasChange = true;
       } catch (err: any) {
-        this.logger.error(`[Archive] Lưu thất bại cho ${filename}: ${err.message} — xóa file local`);
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        if (finalPath !== inputPath) {
-          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
-        }
-        updatedUrls.push(url);
-      }
-    }
-
-    if (hasChange) {
-      try {
-        await this.prisma.socialPost.update({
-          where: { id: postId },
-          data: { media_urls: updatedUrls, updated_at: new Date() },
-        });
-        this.logger.log(`[Archive] Cập nhật media_urls post ${postId}`);
-      } catch (err: any) {
-        this.logger.warn(`[Archive] Không cập nhật DB được: ${err.message}`);
+        this.logger.warn(`[Archive] Could not delete local temp media ${filename}: ${err.message}`);
       }
     }
   }

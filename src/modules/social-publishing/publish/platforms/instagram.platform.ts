@@ -33,7 +33,7 @@ export class InstagramPublisher {
 
     if (mediaUrls.length === 0) throw new Error('Instagram yêu cầu ít nhất 1 media');
 
-    const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(mediaUrls[0]);
+    const isVideo = /\.mp4(\?|$)/i.test(mediaUrls[0]);
 
     // ── Single media ──────────────────────────────────────────────────────────
     if (mediaUrls.length === 1) {
@@ -54,7 +54,7 @@ export class InstagramPublisher {
         this.createContainer(base, igUserId, token, {
           mediaUrl: url,
           isCarouselItem: true,
-          isVideo: /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(url),
+          isVideo: /\.mp4(\?|$)/i.test(url),
         }),
       ),
     );

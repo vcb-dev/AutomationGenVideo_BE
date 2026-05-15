@@ -1190,23 +1190,6 @@ model SocialPost {
   @@index([status, scheduled_at])
   @@map("social_posts")
 
-  media_files   SocialMediaFile[]
-}
-
-/// Video/ảnh đã đăng — lưu binary trực tiếp vào DB sau khi nén xong, xóa file local
-model SocialMediaFile {
-  id         String      @id @default(uuid())
-  post_id    String?
-  filename   String      @unique
-  mimetype   String      @default("video/mp4")
-  size       Int
-  data       Bytes
-  created_at DateTime    @default(now())
-  post       SocialPost? @relation(fields: [post_id], references: [id], onDelete: SetNull)
-
-  @@index([post_id])
-  @@index([filename])
-  @@map("social_media_files")
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
@@ -1240,7 +1223,7 @@ model SocialDraft {
   @@map("social_drafts")
 }
 
-/// File đã upload vào Media Library — metadata only (binary lưu Supabase/DB)
+/// Media Library file metadata only. Binary content is stored in Google Drive.
 model SocialUploadedFile {
   id           String   @id @default(uuid())
   user_id      String
@@ -1250,10 +1233,34 @@ model SocialUploadedFile {
   size         Int
   url           String
   thumbnail_url String?
-  storage       String   @default("supabase")
+  storage       String   @default("google_drive")
+  drive_file_id String?
+  drive_web_view_url String?
+  thumbnail_drive_file_id String?
   created_at   DateTime @default(now())
 
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_uploaded_files")
+}
+
+model SocialDriveUploadSession {
+  id           String   @id
+  user_id      String
+  filename     String
+  originalname String
+  mimetype     String
+  size         Int
+  upload_url   String   @db.Text
+  drive_file_id String?
+  uploaded_bytes Int      @default(0)
+  status       String   @default("PENDING")
+  error_msg    String?
+  expires_at   DateTime?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+  @@map("social_drive_upload_sessions")
 }

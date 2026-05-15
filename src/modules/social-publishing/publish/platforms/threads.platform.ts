@@ -17,7 +17,7 @@ export class ThreadsPublisher {
     }
 
     if (mediaUrls.length === 1) {
-      const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(mediaUrls[0]);
+      const isVideo = /\.mp4(\?|$)/i.test(mediaUrls[0]);
       const cid = await this.createContainer(userId, token, {
         text, mediaType: isVideo ? 'VIDEO' : 'IMAGE',
         mediaUrl: mediaUrls[0],
@@ -28,7 +28,7 @@ export class ThreadsPublisher {
 
     // Carousel
     const childIds = await Promise.all(mediaUrls.map((url) => {
-      const isVid = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(url);
+      const isVid = /\.mp4(\?|$)/i.test(url);
       return this.createContainer(userId, token, {
         mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
       });
