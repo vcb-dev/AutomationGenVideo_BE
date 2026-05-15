@@ -41,7 +41,7 @@ export class MediaLibraryController {
   }
 
   @Post('upload')
-  @ApiOperation({ summary: 'Upload file vào thư viện — nén video + lưu Supabase/DB' })
+  @ApiOperation({ summary: 'Upload file vao thu vien - luu binary tren Google Drive, DB chi luu metadata' })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -64,10 +64,9 @@ export class MediaLibraryController {
   )
   async upload(@UploadedFile() file: Express.Multer.File, @Request() req: any) {
     if (!file) throw new BadRequestException('Không có file nào được upload');
-    const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
     this.logger.log(`[Library] Upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
     const result = await this.library.uploadAndStore(req.user.id, file.path, {
-      originalname: file.originalname, mimetype: file.mimetype, baseUrl,
+      originalname: file.originalname, mimetype: file.mimetype,
     });
     return { success: true, file: result };
   }

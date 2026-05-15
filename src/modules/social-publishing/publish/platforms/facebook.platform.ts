@@ -51,7 +51,7 @@ export class FacebookPublisher {
     }
 
     const firstMedia = opts.mediaUrls[0];
-    const isVideo = /\.(mp4|mov|avi|mkv|webm)(\?|$)/i.test(firstMedia);
+    const isVideo = /\.mp4(\?|$)/i.test(firstMedia);
 
     // ── Video ──────────────────────────────────────────────────────
     if (isVideo) {

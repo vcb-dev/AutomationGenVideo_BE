@@ -6,7 +6,7 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
 import { UploadController } from './upload/upload.controller';
 import { UploadService } from './upload/upload.service';
 import { MediaController } from './upload/media.controller';
-import { SupabaseStorageService } from './upload/supabase-storage.service';
+import { GoogleDriveStorageService } from './upload/google-drive-storage.service';
 import { MediaLibraryController } from './upload/media-library.controller';
 import { MediaLibraryService } from './upload/media-library.service';
 import { ChunkedUploadController } from './upload/chunked-upload.controller';
@@ -76,7 +76,7 @@ import { HashtagController } from './hashtag/hashtag.controller';
   providers: [
     // Core
     CryptoService,
-    SupabaseStorageService,
+    GoogleDriveStorageService,
     UploadService,
     MediaLibraryService,
     // Accounts
