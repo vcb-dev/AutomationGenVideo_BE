@@ -1322,16 +1322,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 return null;
             };
 
-            // Clear data cũ (chỉ xóa channels KHÔNG thuộc Do Da prefix — Do Da sync riêng)
-            await this.prisma.channel.deleteMany({
-                where: { NOT: { id: { startsWith: 'doda_' } } },
-            });
-            this.logger.log('Cleared old Channel data (kept Do Da). Inserting fresh records...');
-
             const EXCLUDED_TEAMS = ['global - jp2', 'global - jp3'];
 
-            let synced = 0;
+            const channelsToInsert: any[] = [];
             let skippedTeam = 0;
+            
             for (const record of records) {
                 const f = record.fields;
 
@@ -1382,12 +1377,27 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         || null,
                 };
 
-                try {
-                    await this.prisma.channel.create({ data });
-                    synced++;
-                } catch (e: any) {
-                    this.logger.warn(`[Channel] Skip record ${record.record_id}: ${e?.message}`);
-                }
+                channelsToInsert.push(data);
+            }
+
+            let synced = 0;
+            if (channelsToInsert.length > 0) {
+                this.logger.log(`Syncing ${channelsToInsert.length} fresh records to Channel atomically...`);
+                
+                // Use atomic transaction: drop old non-doda records and batch insert fresh ones 
+                // to prevent connection overload and avoid parallel execution race conditions.
+                await this.prisma.$transaction([
+                    this.prisma.channel.deleteMany({
+                        where: { NOT: { id: { startsWith: 'doda_' } } },
+                    }),
+                    this.prisma.channel.createMany({
+                        data: channelsToInsert,
+                        skipDuplicates: true,
+                    }),
+                ]);
+                synced = channelsToInsert.length;
+            } else {
+                this.logger.log('No channel records to sync.');
             }
 
             this.logger.log(`Successfully synced ${synced}/${records.length} records to Channel (skipped ${skippedTeam} from excluded teams).`);
@@ -3385,7 +3395,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     select: { roles: true, team: true },
                 });
                 const recentKpis = await this.prisma.larkKPI.findMany({
-                    where: { state: { not: 'off' } },
+                    where: { OR: [{ state: { not: 'off' } }, { state: null }] },
                     select: { team: true, employee_data: true, report_date: true },
                     orderBy: { report_date: 'desc' },
                     take: 5000,
@@ -3767,7 +3777,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             },
                         ],
                         report_date: { gte: new Date('2026-03-01T00:00:00Z') },
-                        state: { not: 'off' },
+                        // Safely omitted state: 'off' DB filter to include nullable rows (downstream in-memory isResigned handles filtering)
                     }
                 });
 
@@ -3845,7 +3855,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     ORDER BY "date" DESC, "created_at" DESC LIMIT 200
                 `);
 
-                const totalKpiCount = await this.prisma.larkKPI.count({ where: { state: { not: 'off' }, report_date: { gte: new Date('2026-03-01T00:00:00Z') } } });
+                const totalKpiCount = await this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } });
 
 
                 const allKpiInDb = allKpiInDbRaw;
@@ -6059,7 +6069,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     return await this.prisma.larkKPI.findMany({
                         where: {
                             month: { in: formats },
-                            state: { not: 'off' }
+                            OR: [{ state: { not: 'off' } }, { state: null }]
                         }
                     });
                 };
@@ -6969,7 +6979,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             ]
                         }
                     ],
-                    state: { not: 'off' }
+                    // Safely omitted DB state filter to include nullable rows (handled in-memory by downstream filtering)
                 },
                 orderBy: { report_date: 'desc' },
                 select: {
