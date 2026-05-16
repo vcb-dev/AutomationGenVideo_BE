@@ -1,6 +1,6 @@
 import {
   Controller, Post, UseGuards, UseInterceptors,
-  UploadedFiles, BadRequestException,
+  UploadedFiles, BadRequestException, Request
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -31,11 +31,11 @@ export class UploadController {
       },
     }),
   )
-  async uploadMedia(@UploadedFiles() files: Express.Multer.File[]) {
+  async uploadMedia(@UploadedFiles() files: Express.Multer.File[], @Request() req: any) {
     if (!files?.length) throw new BadRequestException('Không có file nào được upload');
     const urls = await Promise.all(files.map(async (f) => {
       const filename = this.uploadService.generateFilename(f.originalname, f.mimetype);
-      const url = await this.uploadService.saveBuffer(f.buffer, filename, f.mimetype);
+      const url = await this.uploadService.saveBuffer(f.buffer, filename, f.mimetype, req.user);
       return { url, filename, originalname: f.originalname, mimetype: f.mimetype, size: f.size };
     }));
 

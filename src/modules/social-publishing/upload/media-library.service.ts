@@ -43,7 +43,7 @@ export class MediaLibraryService {
     return null;
   }
 
-  async uploadAndStore(userId: string, filePath: string, opts: { originalname: string; mimetype: string }) {
+  async uploadAndStore(userId: string, filePath: string, opts: { originalname: string; mimetype: string }, user?: any) {
     const isVideo = opts.mimetype.startsWith('video/');
     const ffmpegPath = this.resolveFFmpegPath();
     const ext = path.extname(opts.originalname).toLowerCase() || (isVideo ? '.mp4' : '.jpg');
@@ -63,7 +63,7 @@ export class MediaLibraryService {
     if (!this.googleDrive.isAvailable()) {
       throw new Error('Google Drive storage chua duoc cau hinh');
     }
-    const uploaded = await this.googleDrive.uploadFromPath(filePath, filename, opts.mimetype);
+    const uploaded = await this.googleDrive.uploadFromPath(filePath, filename, opts.mimetype, user);
     url = uploaded.url;
     storage = 'google_drive';
     drive_file_id = uploaded.fileId;
@@ -78,7 +78,7 @@ export class MediaLibraryService {
       try {
         await execAsync(`"${ffmpegPath}" -y -ss 0 -i "${filePath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
         if (fs.existsSync(thumbPath)) {
-          const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg');
+          const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
           thumbnail_url = uploadedThumb.url;
           thumbnail_drive_file_id = uploadedThumb.fileId;
           try { fs.unlinkSync(thumbPath); } catch {}
