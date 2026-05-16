@@ -248,6 +248,12 @@ export class GoogleDriveStorageService {
     });
 
     const directUrl = this.buildDownloadUrl(fileId, res.data.name);
+    const isVideo = (res.data.mimeType || '').startsWith('video/');
+    // Google Drive's thumbnailLink requires auth and is often null for recently uploaded videos
+    // Use public thumbnail URL instead for reliable display
+    const thumbnailUrl = isVideo
+      ? this.buildThumbnailUrl(fileId)
+      : (res.data.thumbnailLink || this.buildThumbnailUrl(fileId));
     return {
       fileId: res.data.id,
       name: res.data.name,
@@ -255,7 +261,7 @@ export class GoogleDriveStorageService {
       size: Number(res.data.size || 0),
       url: directUrl,
       webViewUrl: res.data.webViewLink,
-      thumbnailUrl: res.data.thumbnailLink,
+      thumbnailUrl,
     };
   }
 
@@ -330,6 +336,10 @@ export class GoogleDriveStorageService {
     });
     if (filename) params.set('filename', filename);
     return `https://drive.google.com/uc?${params.toString()}`;
+  }
+
+  private buildThumbnailUrl(fileId: string): string {
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w640`;
   }
 
   private async getAccessToken(): Promise<string> {
