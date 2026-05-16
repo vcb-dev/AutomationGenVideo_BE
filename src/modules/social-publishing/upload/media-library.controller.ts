@@ -67,7 +67,7 @@ export class MediaLibraryController {
     this.logger.log(`[Library] Upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
     const result = await this.library.uploadAndStore(req.user.id, file.path, {
       originalname: file.originalname, mimetype: file.mimetype,
-    });
+    }, req.user);
     return { success: true, file: result };
   }
 

@@ -31,7 +31,7 @@ export class ChunkedUploadController {
     if (!this.googleDrive.isAvailable()) throw new BadRequestException('Google Drive storage chua duoc cau hinh');
 
     const filename = this.uploadService.generateFilename(body.filename, body.mimetype);
-    const { uploadUrl, fileId } = await this.googleDrive.createResumableUpload(filename, body.mimetype, body.totalSize);
+    const { uploadUrl, fileId } = await this.googleDrive.createResumableUpload(filename, body.mimetype, body.totalSize, req.user);
     const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}_${req.user.id}`;
 
     await this.expireOldSessions(req.user.id);

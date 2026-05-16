@@ -8,7 +8,7 @@ const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
 const METADATA_TOKEN_URL = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 interface GoogleServiceAccountCredentials {
   client_email: string;
@@ -42,25 +42,114 @@ export interface GoogleDriveResumableStatus {
 export class GoogleDriveStorageService {
   private readonly logger = new Logger(GoogleDriveStorageService.name);
   private cachedToken: { token: string; expiresAt: number } | null = null;
+  private folderCache = new Map<string, string>();
 
   isAvailable(): boolean {
+    const hasAuth =
+      this.hasServiceAccountCredentials() ||
+      !!process.env.GOOGLE_DRIVE_REFRESH_TOKEN ||
+      process.env.GOOGLE_DRIVE_USE_METADATA === 'true' ||
+      !!process.env.K_SERVICE; // Auto-detect Cloud Run (uses metadata token automatically)
+
     return (
       process.env.COMPANY_DRIVE_PROVIDER === 'google' &&
       !!process.env.GOOGLE_DRIVE_FOLDER_ID &&
-      (
-        this.hasServiceAccountCredentials() ||
-        !!process.env.GOOGLE_DRIVE_REFRESH_TOKEN ||
-        process.env.GOOGLE_DRIVE_USE_METADATA === 'true'
-      )
+      hasAuth
     );
   }
 
-  async uploadFromPath(filePath: string, filename: string, mimetype: string): Promise<GoogleDriveUploadResult> {
+  async resolveTargetFolder(user?: any): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    // Use Vietnam timezone (ICT, UTC+7) for folder date to match business hours
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+
+    // 1. Get or create Date folder
+    const dateFolderId = await this.getOrCreateFolder(rootFolderId, dateStr);
+
+    // 2. Get or create User folder if user info is available
+    if (user && (user.full_name || user.email)) {
+      const folderName = user.full_name || user.email;
+      const userFolderId = await this.getOrCreateFolder(dateFolderId, folderName);
+      return userFolderId;
+    }
+
+    return dateFolderId;
+  }
+
+  private folderPending = new Map<string, Promise<string>>();
+
+  async getOrCreateFolder(parentFolderId: string, folderName: string): Promise<string> {
+    const cacheKey = `${parentFolderId}:${folderName}`;
+    if (this.folderCache.has(cacheKey)) {
+      return this.folderCache.get(cacheKey)!;
+    }
+
+    // Prevent race condition: if another request is already creating this folder, wait for it
+    if (this.folderPending.has(cacheKey)) {
+      return this.folderPending.get(cacheKey)!;
+    }
+
+    const promise = this._doGetOrCreateFolder(parentFolderId, folderName, cacheKey);
+    this.folderPending.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      this.folderPending.delete(cacheKey);
+    }
+  }
+
+  private async _doGetOrCreateFolder(parentFolderId: string, folderName: string, cacheKey: string): Promise<string> {
+    const token = await this.getAccessToken();
+
+    try {
+      // 1. Search if folder already exists
+      const searchRes = await axios.get(DRIVE_API_URL, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: {
+          q: `mimeType='application/vnd.google-apps.folder' and name='${folderName.replace(/'/g, "\\'")}' and '${parentFolderId}' in parents and trashed=false`,
+          fields: 'files(id)',
+          spaces: 'drive',
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        },
+        timeout: 10_000,
+      });
+
+      if (searchRes.data.files && searchRes.data.files.length > 0) {
+        const folderId = searchRes.data.files[0].id;
+        this.folderCache.set(cacheKey, folderId);
+        return folderId;
+      }
+
+      // 2. Create the folder
+      const createRes = await axios.post(DRIVE_API_URL, {
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentFolderId],
+      }, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        params: { supportsAllDrives: true },
+        timeout: 10_000,
+      });
+
+      const newFolderId = createRes.data.id;
+      this.logger.log(`[GoogleDrive] Created folder '${folderName}' -> ${newFolderId}`);
+      this.folderCache.set(cacheKey, newFolderId);
+      return newFolderId;
+    } catch (err: any) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error?.message || err.message;
+      this.logger.error(`[GoogleDrive] Failed to get/create folder '${folderName}' in ${parentFolderId}: ${status} ${msg}`);
+      throw new Error(`Google Drive folder error (${status || 'unknown'}): ${msg}`);
+    }
+  }
+
+  async uploadFromPath(filePath: string, filename: string, mimetype: string, user?: any): Promise<GoogleDriveUploadResult> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
-    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const folderId = await this.resolveTargetFolder(user);
     const token = await this.getAccessToken();
 
     const form = new FormData();
@@ -102,13 +191,13 @@ export class GoogleDriveStorageService {
     };
   }
 
-  async createResumableUpload(filename: string, mimetype: string, size: number): Promise<{ uploadUrl: string; fileId: string }> {
+  async createResumableUpload(filename: string, mimetype: string, size: number, user?: any): Promise<{ uploadUrl: string; fileId: string }> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
     const token = await this.getAccessToken();
-    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const folderId = await this.resolveTargetFolder(user);
     const res = await axios.post(
       DRIVE_UPLOAD_URL,
       {
@@ -328,7 +417,12 @@ export class GoogleDriveStorageService {
     if (!res.data?.access_token) {
       throw new Error('Google metadata server did not return an access token');
     }
-    return res.data.access_token;
+
+    this.cachedToken = {
+      token: res.data.access_token,
+      expiresAt: Date.now() + Number(res.data.expires_in || 3600) * 1000,
+    };
+    return this.cachedToken.token;
   }
 
   private hasServiceAccountCredentials(): boolean {

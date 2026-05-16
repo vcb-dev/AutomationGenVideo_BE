@@ -25,7 +25,7 @@ export class UploadService {
     return `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
   }
 
-  async saveBuffer(buffer: Buffer, filename: string, mimetype: string): Promise<string> {
+  async saveBuffer(buffer: Buffer, filename: string, mimetype: string, user?: any): Promise<string> {
     if (!this.googleDrive.isAvailable()) {
       throw new BadRequestException('Google Drive storage chua duoc cau hinh');
     }
@@ -34,11 +34,12 @@ export class UploadService {
     const tempPath = path.join(UPLOAD_DIR, `tmp_${Date.now()}_${Math.random().toString(36).slice(2)}_${filename}`);
     fs.writeFileSync(tempPath, buffer);
     try {
-      const uploaded = await this.googleDrive.uploadFromPath(tempPath, filename, mimetype);
+      const uploaded = await this.googleDrive.uploadFromPath(tempPath, filename, mimetype, user);
       return uploaded.url;
     } finally {
       try { fs.unlinkSync(tempPath); } catch {}
     }
   }
 }
+
 
