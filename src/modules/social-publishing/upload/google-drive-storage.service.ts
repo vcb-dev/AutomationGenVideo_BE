@@ -191,13 +191,23 @@ export class GoogleDriveStorageService {
     };
   }
 
-  async createResumableUpload(filename: string, mimetype: string, size: number, user?: any): Promise<{ uploadUrl: string; fileId: string }> {
+  async createResumableUpload(filename: string, mimetype: string, size: number, user?: any, origin?: string): Promise<{ uploadUrl: string; fileId: string }> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
     const token = await this.getAccessToken();
     const folderId = await this.resolveTargetFolder(user);
+    const reqHeaders: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimetype,
+      'X-Upload-Content-Length': String(size),
+    };
+    if (origin) {
+      reqHeaders['Origin'] = origin;
+    }
+
     const res = await axios.post(
       DRIVE_UPLOAD_URL,
       {
@@ -206,12 +216,7 @@ export class GoogleDriveStorageService {
         mimeType: mimetype,
       },
       {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json; charset=UTF-8',
-          'X-Upload-Content-Type': mimetype,
-          'X-Upload-Content-Length': String(size),
-        },
+        headers: reqHeaders,
         params: {
           uploadType: 'resumable',
           supportsAllDrives: true,
