@@ -128,8 +128,7 @@ export class PublishService {
     this.logger.log(`[PublishNow] ${account.platform} "${account.name}" | platformId=${account.platform_id} | igUserId=${extraData?.igUserId} | pageId=${extraData?.pageId} | mediaUrls=${JSON.stringify(dto.mediaUrls)}`);
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
-                           account.platform === SocialPlatform.THREADS || 
-                           account.platform === SocialPlatform.FACEBOOK;
+                           account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || []);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -185,8 +184,7 @@ export class PublishService {
     const extraData = account.extra_data as any;
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
-                           account.platform === SocialPlatform.THREADS || 
-                           account.platform === SocialPlatform.FACEBOOK;
+                           account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || []);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -272,7 +270,7 @@ export class PublishService {
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
-      const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -map 0:v:0 -map 0:a:0 -c:v libx264 -profile:v high -crf 20 -maxrate 8M -bufsize 16M -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 128k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
+      const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -map 0:v:0 -map 0:a:0 -c:v libx264 -preset ultrafast -threads 0 -profile:v high -crf 23 -maxrate 8M -bufsize 16M -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 128k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
       await execAsync(cmd, { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
 
       if (!fs.existsSync(outputPath)) {
