@@ -179,17 +179,29 @@ export class ChunkedUploadController {
       throw new BadRequestException('Video tren Google Drive chua upload du dung luong');
     }
 
+    const mimetype = file.mimetype || session.mimetype || '';
+    let thumbnailUrl = file.thumbnailUrl || null;
+    let thumbnailDriveId: string | null = null;
+
+    if (mimetype.startsWith('video/')) {
+      const res = await this.library.extractAndUploadThumbnail(file.fileId, session.filename, req.user);
+      if (res) {
+        thumbnailUrl = res.url;
+        thumbnailDriveId = res.fileId;
+      }
+    }
+
     await this.library.save(req.user.id, {
       filename: session.filename,
       originalname: session.originalname,
-      mimetype: file.mimetype || session.mimetype,
+      mimetype,
       size,
       url: file.url,
-      thumbnail_url: file.thumbnailUrl || null,
+      thumbnail_url: thumbnailUrl,
       storage: 'google_drive',
       drive_file_id: file.fileId,
       drive_web_view_url: file.webViewUrl || null,
-      thumbnail_drive_file_id: null,
+      thumbnail_drive_file_id: thumbnailDriveId,
     });
 
     await this.prisma.socialDriveUploadSession.update({
@@ -201,10 +213,10 @@ export class ChunkedUploadController {
       success: true,
       urls: [{
         url: file.url,
-        thumbnail_url: file.thumbnailUrl || null,
+        thumbnail_url: thumbnailUrl,
         filename: session.filename,
         originalname: session.originalname,
-        mimetype: file.mimetype || session.mimetype,
+        mimetype,
         size,
         storage: 'google_drive',
         drive_file_id: file.fileId,

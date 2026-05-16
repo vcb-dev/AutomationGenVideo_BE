@@ -106,6 +106,38 @@ export class MediaLibraryService {
     return saved || { url, thumbnail_url, filename, originalname: opts.originalname, mimetype: opts.mimetype, size: fileSize, storage, drive_file_id };
   }
 
+  async extractAndUploadThumbnail(driveFileId: string, baseFilename: string, user?: any): Promise<{ url: string; fileId: string } | null> {
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) return null;
+
+    try {
+      const tempVideoPath = path.join(UPLOAD_DIR, `dl_${Date.now()}_${driveFileId}.mp4`);
+      const baseNoExt = path.basename(baseFilename, path.extname(baseFilename));
+      const thumbName = `thumb_${Date.now()}_${baseNoExt}.jpg`;
+      const thumbPath = path.join(UPLOAD_DIR, thumbName);
+
+      this.logger.log(`[Library] Downloading Drive video ${driveFileId} to extract thumbnail...`);
+      await this.googleDrive.downloadFileToLocal(driveFileId, tempVideoPath);
+
+      this.logger.log(`[Library] Extracting frame 1s with ffmpeg...`);
+      await execAsync(`"${ffmpegPath}" -y -ss 00:00:01 -i "${tempVideoPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
+
+      let result: { url: string; fileId: string } | null = null;
+      if (fs.existsSync(thumbPath)) {
+        this.logger.log(`[Library] Uploading thumbnail to Google Drive...`);
+        const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
+        result = { url: uploadedThumb.url, fileId: uploadedThumb.fileId };
+        this.logger.log(`[Library] Created Drive thumbnail: ${result.url}`);
+        try { fs.unlinkSync(thumbPath); } catch {}
+      }
+      try { fs.unlinkSync(tempVideoPath); } catch {}
+      return result;
+    } catch (e: any) {
+      this.logger.warn(`[Library] Failed to extract Drive thumbnail: ${e.message}`);
+      return null;
+    }
+  }
+
   async save(userId: string, file: {
     filename: string;
     originalname: string;
