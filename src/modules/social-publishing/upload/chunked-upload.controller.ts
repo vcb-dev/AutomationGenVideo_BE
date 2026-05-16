@@ -30,8 +30,9 @@ export class ChunkedUploadController {
     if (!UploadService.ALLOWED_MIME_RE.test(body.mimetype)) throw new BadRequestException(`Loai file khong ho tro: ${body.mimetype}`);
     if (!this.googleDrive.isAvailable()) throw new BadRequestException('Google Drive storage chua duoc cau hinh');
 
+    const origin = req.headers?.origin || process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://www.vcbi.vn';
     const filename = this.uploadService.generateFilename(body.filename, body.mimetype);
-    const { uploadUrl, fileId } = await this.googleDrive.createResumableUpload(filename, body.mimetype, body.totalSize, req.user);
+    const { uploadUrl, fileId } = await this.googleDrive.createResumableUpload(filename, body.mimetype, body.totalSize, req.user, origin);
     const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}_${req.user.id}`;
 
     await this.expireOldSessions(req.user.id);
