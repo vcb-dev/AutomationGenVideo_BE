@@ -95,8 +95,20 @@ export class FacebookPublisher {
         try {
           const filename = firstMedia.split('/').pop()?.split('?')[0];
           if (filename) {
+            let cleanId = filename;
+            if (cleanId.startsWith('gd_') && cleanId.includes('_')) {
+              cleanId = cleanId.split('_').slice(2).join('_').replace(/\.mp4$/i, '');
+            } else if (cleanId.includes('_')) {
+              cleanId = cleanId.split('_').slice(1).join('_').replace(/\.mp4$/i, '');
+            }
             const uploadedFile = await this.prisma.socialUploadedFile.findFirst({
-              where: { filename }
+              where: {
+                OR: [
+                  { filename },
+                  { drive_file_id: cleanId },
+                  { url: firstMedia }
+                ]
+              }
             });
             if (uploadedFile && uploadedFile.thumbnail_url) {
               this.logger.log(`[FB] Tải thumbnail từ URL trong DB: ${uploadedFile.thumbnail_url}`);
@@ -112,7 +124,7 @@ export class FacebookPublisher {
         if (!buffer && localFilePath) {
           const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
             ? process.env.FFMPEG_PATH
-            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : 'ffmpeg';
             
           if (ffmpegPath) {
             this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
