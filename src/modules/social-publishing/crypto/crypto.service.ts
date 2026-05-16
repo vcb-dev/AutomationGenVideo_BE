@@ -44,12 +44,18 @@ export class CryptoService implements OnModuleInit {
   }
 
   decrypt(ciphertext: string): string {
-    const [ivHex, authTagHex, encryptedHex] = ciphertext.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const encrypted = Buffer.from(encryptedHex, 'hex');
-    const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
-    decipher.setAuthTag(authTag);
-    return decipher.update(encrypted) + decipher.final('utf8');
+    try {
+      if (!ciphertext || !ciphertext.includes(':')) return ciphertext;
+      const [ivHex, authTagHex, encryptedHex] = ciphertext.split(':');
+      const iv = Buffer.from(ivHex, 'hex');
+      const authTag = Buffer.from(authTagHex, 'hex');
+      const encrypted = Buffer.from(encryptedHex, 'hex');
+      const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
+      decipher.setAuthTag(authTag);
+      return decipher.update(encrypted) + decipher.final('utf8');
+    } catch (err: any) {
+      this.logger.error(`[Crypto] Decryption failed (key mismatch or corrupted data): ${err.message}`);
+      throw new Error('Không thể giải mã token (Khóa bảo mật không khớp). Vui lòng vào mục Tài khoản ngắt kết nối và kết nối lại.');
+    }
   }
 }
