@@ -8,6 +8,7 @@ import { TiktokPublisher } from './platforms/tiktok.platform';
 import { ThreadsPublisher } from './platforms/threads.platform';
 import { YoutubePublisher } from './platforms/youtube.platform';
 import { ZaloPublisher } from './platforms/zalo.platform';
+import { GoogleDriveStorageService } from '../upload/google-drive-storage.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -30,6 +31,7 @@ export class PublishService {
     private readonly threads: ThreadsPublisher,
     private readonly yt: YoutubePublisher,
     private readonly zalo: ZaloPublisher,
+    private readonly googleDrive: GoogleDriveStorageService,
   ) {}
 
   private async makeUrlsPublic(mediaUrls: string[], platform?: SocialPlatform): Promise<string[]> {
@@ -62,6 +64,56 @@ export class PublishService {
     return resultUrls;
   }
 
+  private async prepareMediaUrlsForPublishing(mediaUrls: string[]): Promise<{ urls: string[]; tempFiles: string[] }> {
+    if (!mediaUrls || !mediaUrls.length) return { urls: [], tempFiles: [] };
+
+    const resultUrls: string[] = [];
+    const tempFiles: string[] = [];
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+
+    if (!fs.existsSync(uploadBase)) {
+      fs.mkdirSync(uploadBase, { recursive: true });
+    }
+
+    const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+
+    for (const url of mediaUrls) {
+      if (url.includes('drive.google.com') || url.includes('docs.google.com') || url.includes('googleusercontent')) {
+        try {
+          const u = new URL(url);
+          let fileId = u.searchParams.get('id');
+          if (!fileId && url.includes('/file/d/')) {
+            const m = url.match(/\/file\/d\/([^\/]+)/);
+            if (m) fileId = m[1];
+          }
+
+          if (fileId) {
+            this.logger.log(`[PrepareMedia] Phát hiện Google Drive URL, đang tải fileId=${fileId} về local temp...`);
+            const ext = url.toLowerCase().includes('.mp4') ? '.mp4' : (url.toLowerCase().includes('.jpg') || url.toLowerCase().includes('thumbnail') ? '.jpg' : '.mp4');
+            const localName = `gd_${Date.now()}_${fileId}${ext}`;
+            const localPath = path.join(uploadBase, localName);
+
+            await this.googleDrive.downloadFileToLocal(fileId, localPath);
+            tempFiles.push(localPath);
+
+            const localMediaUrl = `${base}/api/social/media/${localName}`;
+            this.logger.log(`[PrepareMedia] Đã tải thành công file Google Drive về: ${localMediaUrl}`);
+            resultUrls.push(localMediaUrl);
+          } else {
+            resultUrls.push(url);
+          }
+        } catch (err: any) {
+          this.logger.warn(`[PrepareMedia] Lỗi khi tải Google Drive URL ${url}: ${err.message}`);
+          resultUrls.push(url);
+        }
+      } else {
+        resultUrls.push(url);
+      }
+    }
+
+    return { urls: resultUrls, tempFiles };
+  }
+
   async publishNow(userId: string, dto: {
     accountId: string;
     message: string;
@@ -78,8 +130,9 @@ export class PublishService {
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
                            account.platform === SocialPlatform.THREADS || 
                            account.platform === SocialPlatform.FACEBOOK;
-    let inputMediaUrls = dto.mediaUrls || [];
-    const transcodedFiles: string[] = [];
+    const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || []);
+    let inputMediaUrls = prep.urls;
+    const transcodedFiles: string[] = [...prep.tempFiles];
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
@@ -134,8 +187,9 @@ export class PublishService {
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
                            account.platform === SocialPlatform.THREADS || 
                            account.platform === SocialPlatform.FACEBOOK;
-    let inputMediaUrls = post.media_urls || [];
-    const transcodedFiles: string[] = [];
+    const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || []);
+    let inputMediaUrls = prep.urls;
+    const transcodedFiles: string[] = [...prep.tempFiles];
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
@@ -170,7 +224,7 @@ export class PublishService {
   private readonly transcodeCache = new Map<string, Promise<string>>();
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
-    if (!localUrl.includes('localhost') && !localUrl.includes('127.0.0.1')) return Promise.resolve(localUrl);
+    if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
     if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn

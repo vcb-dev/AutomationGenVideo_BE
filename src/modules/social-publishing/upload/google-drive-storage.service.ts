@@ -233,6 +233,29 @@ export class GoogleDriveStorageService {
     return { uploadUrl, fileId: '' };
   }
 
+  async downloadFileToLocal(fileId: string, outputPath: string): Promise<string> {
+    if (!this.isAvailable()) {
+      throw new Error('Google Drive storage is not configured');
+    }
+
+    this.logger.log(`[GoogleDrive] Downloading fileId=${fileId} to ${outputPath}`);
+    const token = await this.getAccessToken();
+    const res = await axios.get(`${DRIVE_API_URL}/${encodeURIComponent(fileId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { alt: 'media', supportsAllDrives: true },
+      responseType: 'stream',
+      timeout: 300_000,
+    });
+
+    const writer = fs.createWriteStream(outputPath);
+    res.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => resolve(outputPath));
+      writer.on('error', reject);
+    });
+  }
+
   async getFile(fileId: string, makePublic = true): Promise<GoogleDriveFileMetadata> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
