@@ -6,7 +6,7 @@ import { SocialPlatform, SocialPostStatus, SocialPostSource } from '@prisma/clie
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 
 const MAX_RETRIES = 3;
-const MAX_HEAVY_JOBS = 2;
+const MAX_HEAVY_JOBS = 5;
 
 /** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
 function retryDelayMs(attempt: number): number {
