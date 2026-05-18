@@ -38,7 +38,7 @@ export class ThreadsOAuthStrategy {
       const shortRes = await axios.post('https://graph.threads.net/oauth/access_token', form.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
-      const { access_token: shortToken, user_id } = shortRes.data;
+      const { access_token: shortToken } = shortRes.data;
 
       const longRes = await axios.get('https://graph.threads.net/access_token', {
         params: { grant_type: 'th_exchange_token', client_secret: appSecret, access_token: shortToken },

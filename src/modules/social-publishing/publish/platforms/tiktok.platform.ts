@@ -49,8 +49,8 @@ export class TiktokPublisher {
     const finalStatus = await this.pollStatus(token, publish_id);
     this.logger.log(`[TikTok] Final status: ${finalStatus}`);
 
-    if (finalStatus === 'FAILED') {
-      throw new Error('TikTok publishing failed');
+    if (finalStatus !== 'PUBLISH_COMPLETE') {
+      throw new Error(`TikTok publishing failed (status=${finalStatus})`);
     }
 
     return { publishId: publish_id, status: finalStatus };
@@ -78,7 +78,9 @@ export class TiktokPublisher {
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
       const r = await axios.head(urlOrPath);
-      return parseInt(r.headers['content-length'] || '0');
+      const size = parseInt(r.headers['content-length'] || '0');
+      if (!size) throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath} (Content-Length thiếu)`);
+      return size;
     }
     return fs.statSync(urlOrPath).size;
   }

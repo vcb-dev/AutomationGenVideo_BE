@@ -8,6 +8,11 @@ export class CryptoService implements OnModuleInit {
   private readonly algorithm = 'aes-256-gcm';
   private readonly logger = new Logger(CryptoService.name);
 
+  // Cache key để tránh gọi scryptSync (slow by design) mỗi lần encrypt/decrypt
+  private _cachedKey: Buffer | null = null;
+  private _cachedSecret: string | null = null;
+  private _cachedSalt: string | null = null;
+
   onModuleInit() {
     const secret = process.env.SOCIAL_TOKEN_SECRET;
     const isDefault = !secret || secret === DEFAULT_KEY;
@@ -32,7 +37,14 @@ export class CryptoService implements OnModuleInit {
     const secret = process.env.SOCIAL_TOKEN_SECRET || process.env.JWT_SECRET || DEFAULT_KEY;
     // SOCIAL_TOKEN_SALT nên được đặt trong .env — salt mặc định 'vcb-salt' vẫn dùng để backward-compat
     const salt = process.env.SOCIAL_TOKEN_SALT || 'vcb-salt';
-    return crypto.scryptSync(secret, salt, 32);
+    // Chỉ re-derive nếu secret/salt thay đổi (env var hot-reload) — tránh gọi scryptSync mỗi lần
+    if (this._cachedKey && this._cachedSecret === secret && this._cachedSalt === salt) {
+      return this._cachedKey;
+    }
+    this._cachedKey = crypto.scryptSync(secret, salt, 32) as Buffer;
+    this._cachedSecret = secret;
+    this._cachedSalt = salt;
+    return this._cachedKey;
   }
 
   encrypt(plaintext: string): string {

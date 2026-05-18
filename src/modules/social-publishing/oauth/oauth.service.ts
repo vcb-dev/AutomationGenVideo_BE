@@ -151,8 +151,10 @@ export class OAuthService {
 
     if (platform === 'FACEBOOK') {
       // Chạy ngầm — không await để không làm chậm response callback
-      this.accounts.syncFacebookChildrenTokens(saved.id, userId).catch(() => {});
-      this.accounts.autoSaveFacebookPages(saved.id, userId).catch(() => {});
+      this.accounts.syncFacebookChildrenTokens(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] syncFacebookChildrenTokens failed for ${saved.id}: ${err.message}`));
+      this.accounts.autoSaveFacebookPages(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] autoSaveFacebookPages failed for ${saved.id}: ${err.message}`));
     }
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);

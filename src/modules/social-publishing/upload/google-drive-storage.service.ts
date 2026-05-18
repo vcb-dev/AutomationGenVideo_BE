@@ -251,6 +251,10 @@ export class GoogleDriveStorageService {
     res.data.pipe(writer);
 
     return new Promise((resolve, reject) => {
+      res.data.on('error', (err: Error) => {
+        writer.destroy();
+        reject(err);
+      });
       writer.on('finish', () => resolve(outputPath));
       writer.on('error', reject);
     });

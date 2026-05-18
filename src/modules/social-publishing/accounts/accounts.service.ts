@@ -9,6 +9,12 @@ import axios from 'axios';
 export class AccountsService {
   private readonly logger = new Logger(AccountsService.name);
   private readonly pagesCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private readonly pagesCacheCleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, val] of this.pagesCache.entries()) {
+      if (val.expiresAt <= now) this.pagesCache.delete(key);
+    }
+  }, 60_000);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -270,8 +276,9 @@ export class AccountsService {
         const encryptedToken = this.crypto.encrypt(p.access_token);
 
         // Cập nhật Token cho Page
+        // Không lọc theo parent_id vì account cũ có thể chỉ có extra_data.parentAccountId
         const fbAccs = await this.prisma.socialAccount.findMany({
-          where: { user_id: userId, platform: SocialPlatform.FACEBOOK, platform_id: `page_${p.id}`, parent_id: parentId }
+          where: { user_id: userId, platform: SocialPlatform.FACEBOOK, platform_id: `page_${p.id}` }
         });
         for (const acc of fbAccs) {
           // Xóa pageToken khỏi extra_data — token chỉ lưu trong access_token_enc
@@ -285,8 +292,9 @@ export class AccountsService {
 
         // Cập nhật Token cho Instagram liên kết (nếu có)
         if (p.instagram_business_account) {
+          // Không lọc theo parent_id vì account cũ có thể chỉ có extra_data.parentAccountId
           const igAccs = await this.prisma.socialAccount.findMany({
-            where: { user_id: userId, platform: SocialPlatform.INSTAGRAM, platform_id: p.instagram_business_account.id, parent_id: parentId }
+            where: { user_id: userId, platform: SocialPlatform.INSTAGRAM, platform_id: p.instagram_business_account.id }
           });
           for (const acc of igAccs) {
             const { pageToken: _pt, ...safeExtra } = (acc.extra_data as any) || {};
@@ -333,7 +341,7 @@ export class AccountsService {
     const now = new Date();
     const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const accounts = await this.prisma.socialAccount.findMany({
-      where: { user_id: userId, is_active: true, token_expires_at: { not: null, lte: warnBefore } },
+      where: { user_id: userId, is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
       select: { id: true, name: true, platform: true, avatar_url: true, token_expires_at: true },
       orderBy: { token_expires_at: 'asc' },
     });

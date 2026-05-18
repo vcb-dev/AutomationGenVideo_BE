@@ -2,7 +2,7 @@ import { Injectable, BadRequestException, NotFoundException, Logger } from '@nes
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { PublishService } from '../publish/publish.service';
-import { SocialPlatform, SocialPostStatus, SocialPostSource } from '@prisma/client';
+import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 
 const MAX_RETRIES = 3;
@@ -29,10 +29,11 @@ export class ScheduleService {
     pageId?: string; privacy?: string; scheduledAt: string;
   }) {
     const scheduledAt = new Date(dto.scheduledAt);
+    if (isNaN(scheduledAt.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601 (vd: 2025-05-18T10:00:00+07:00)');
     if (scheduledAt <= new Date()) throw new BadRequestException('scheduledAt phải là thời điểm trong tương lai');
 
-    const account = await this.prisma.socialAccount.findFirst({ where: { id: dto.accountId, user_id: userId } });
-    if (!account) throw new NotFoundException('Account không tồn tại');
+    const account = await this.prisma.socialAccount.findFirst({ where: { id: dto.accountId, user_id: userId, is_active: true } });
+    if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
 
     return this.prisma.socialPost.create({
       data: {
@@ -64,12 +65,15 @@ export class ScheduleService {
     if (!post) throw new NotFoundException('Task không tồn tại hoặc không ở trạng thái PENDING');
 
     const data: any = { updated_at: new Date() };
-    if (dto.message)    data.message = dto.message;
+    if (dto.message !== undefined && dto.message !== '') data.message = dto.message;
     if (dto.mediaUrls)  data.media_urls = dto.mediaUrls;
     if (dto.scheduledAt) {
       const d = new Date(dto.scheduledAt);
+      if (isNaN(d.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601');
       if (d <= new Date()) throw new BadRequestException('scheduledAt phải ở tương lai');
       data.scheduled_at = d;
+      // Reset next_retry_at để tránh post bị kẹt ở retry cũ khi reschedule
+      data.next_retry_at = null;
     }
 
     return this.prisma.socialPost.update({ where: { id }, data });
@@ -90,11 +94,12 @@ export class ScheduleService {
     return this.prisma.socialPost.update({
       where: { id },
       data: {
-        status:       SocialPostStatus.PENDING,
-        retry_count:  0,
-        error_msg:    null,
-        scheduled_at: new Date(Date.now() + retryDelayMs(1)),
-        updated_at:   new Date(),
+        status:        SocialPostStatus.PENDING,
+        retry_count:   0,
+        error_msg:     null,
+        next_retry_at: null,
+        scheduled_at:  new Date(Date.now() + retryDelayMs(1)),
+        updated_at:    new Date(),
       },
     });
   }
@@ -106,12 +111,14 @@ export class ScheduleService {
     const now        = new Date();
     const claimUntil = new Date(Date.now() + 10 * 60 * 1000); // claim 10 phút
 
-    // 1. Đếm số job đang xử lý (đã claim) theo platform
+    // 1. Đếm số job đang xử lý (đã claim gần đây ≤ 10 phút) theo platform
+    // Chỉ đếm job có next_retry_at trong vòng 10 phút tới — tránh đếm nhầm job đang chờ retry delay dài hơn
+    const claimWindow = new Date(Date.now() + 10 * 60 * 1000);
     const inFlightRows = await this.prisma.socialPost.groupBy({
       by: ['platform'],
       where: {
         status:        SocialPostStatus.PENDING,
-        next_retry_at: { gt: now },
+        next_retry_at: { gt: now, lte: claimWindow },
       },
       _count: { platform: true },
     });
@@ -197,7 +204,7 @@ export class ScheduleService {
       this.logger.log(`[Worker] ▶ Đang publish post ${post.id} | platform=${post.platform} | media=${post.media_urls?.length ?? 0} file`);
       const result = await this.publishService.executeScheduled(post);
       const updated = await this.prisma.socialPost.updateMany({
-        where: { id: post.id },
+        where: { id: post.id, status: SocialPostStatus.PENDING },
         data: {
           status:        SocialPostStatus.COMPLETED,
           result,
@@ -251,12 +258,14 @@ export class ScheduleService {
   @Cron(CronExpression.EVERY_HOUR)
   async cleanupOldPosts() {
     const now = Date.now();
-    // SCHEDULED: giữ 7 ngày (ít quan trọng hơn trong history)
-    const scheduledCutoff = new Date(now - 7  * 24 * 60 * 60 * 1000);
+    // SCHEDULED: giữ 7 ngày
+    const scheduledCutoff  = new Date(now - 7  * 24 * 60 * 60 * 1000);
     // IMMEDIATE: giữ 30 ngày (editor cần xem lại lịch sử đăng bài)
-    const immediateCutoff = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const immediateCutoff  = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    // FAILED: giữ 30 ngày rồi xóa (cả SCHEDULED lẫn IMMEDIATE)
+    const failedCutoff     = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
-    const [s, i] = await Promise.all([
+    const [s, i, f] = await Promise.all([
       this.prisma.socialPost.deleteMany({
         where: {
           source:     SocialPostSource.SCHEDULED,
@@ -271,9 +280,16 @@ export class ScheduleService {
           updated_at: { lt: immediateCutoff },
         },
       }),
+      // FAILED posts chưa từng được cleanup — xóa sau 30 ngày để tránh DB phình
+      this.prisma.socialPost.deleteMany({
+        where: {
+          status:     SocialPostStatus.FAILED,
+          updated_at: { lt: failedCutoff },
+        },
+      }),
     ]);
 
-    const total = s.count + i.count;
-    if (total > 0) this.logger.log(`[Cleanup] Deleted ${s.count} scheduled + ${i.count} immediate old posts`);
+    const total = s.count + i.count + f.count;
+    if (total > 0) this.logger.log(`[Cleanup] Deleted ${s.count} scheduled + ${i.count} immediate + ${f.count} failed old posts`);
   }
 }

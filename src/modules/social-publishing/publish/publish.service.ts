@@ -34,7 +34,7 @@ export class PublishService {
     private readonly googleDrive: GoogleDriveStorageService,
   ) {}
 
-  private async makeUrlsPublic(mediaUrls: string[], platform?: SocialPlatform): Promise<string[]> {
+  private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
 
     const publicBaseUrl = process.env.PUBLIC_BASE_URL;
@@ -67,51 +67,48 @@ export class PublishService {
   private async prepareMediaUrlsForPublishing(mediaUrls: string[]): Promise<{ urls: string[]; tempFiles: string[] }> {
     if (!mediaUrls || !mediaUrls.length) return { urls: [], tempFiles: [] };
 
-    const resultUrls: string[] = [];
-    const tempFiles: string[] = [];
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-
-    if (!fs.existsSync(uploadBase)) {
-      fs.mkdirSync(uploadBase, { recursive: true });
-    }
+    if (!fs.existsSync(uploadBase)) fs.mkdirSync(uploadBase, { recursive: true });
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    for (const url of mediaUrls) {
+    // Song song hóa tất cả download — tránh chờ tuần tự khi có nhiều ảnh/video
+    const results = await Promise.all(mediaUrls.map(async (url) => {
       if (url.includes('drive.google.com') || url.includes('docs.google.com') || url.includes('googleusercontent')) {
         try {
           const u = new URL(url);
           let fileId = u.searchParams.get('id');
           if (!fileId && url.includes('/file/d/')) {
-            const m = url.match(/\/file\/d\/([^\/]+)/);
+            const m = url.match(/\/file\/d\/([^/]+)/);
             if (m) fileId = m[1];
           }
-
           if (fileId) {
-            this.logger.log(`[PrepareMedia] Phát hiện Google Drive URL, đang tải fileId=${fileId} về local temp...`);
-            const ext = url.toLowerCase().includes('.mp4') ? '.mp4' : (url.toLowerCase().includes('.jpg') || url.toLowerCase().includes('thumbnail') ? '.jpg' : '.mp4');
-            const localName = `gd_${Date.now()}_${fileId}${ext}`;
+            const urlLower = url.toLowerCase();
+            const ext = urlLower.includes('.mp4') ? '.mp4'
+              : urlLower.includes('.gif') ? '.gif'
+              : urlLower.includes('.png') ? '.png'
+              : urlLower.includes('.webp') ? '.webp'
+              : (urlLower.includes('.jpg') || urlLower.includes('.jpeg') || urlLower.includes('thumbnail')) ? '.jpg'
+              : '.mp4';
+            const localName = `gd_${Date.now()}_${Math.random().toString(36).slice(2)}_${fileId}${ext}`;
             const localPath = path.join(uploadBase, localName);
-
+            this.logger.log(`[PrepareMedia] Tải Drive fileId=${fileId} → ${localName}`);
             await this.googleDrive.downloadFileToLocal(fileId, localPath);
-            tempFiles.push(localPath);
-
             const localMediaUrl = `${base}/api/social/media/${localName}`;
-            this.logger.log(`[PrepareMedia] Đã tải thành công file Google Drive về: ${localMediaUrl}`);
-            resultUrls.push(localMediaUrl);
-          } else {
-            resultUrls.push(url);
+            this.logger.log(`[PrepareMedia] ✓ ${localName}`);
+            return { url: localMediaUrl, tempFile: localPath };
           }
         } catch (err: any) {
-          this.logger.warn(`[PrepareMedia] Lỗi khi tải Google Drive URL ${url}: ${err.message}`);
-          resultUrls.push(url);
+          this.logger.warn(`[PrepareMedia] Lỗi tải Drive URL ${url}: ${err.message}`);
         }
-      } else {
-        resultUrls.push(url);
       }
-    }
+      return { url, tempFile: null };
+    }));
 
-    return { urls: resultUrls, tempFiles };
+    return {
+      urls:      results.map(r => r.url),
+      tempFiles: results.map(r => r.tempFile).filter((f): f is string => f !== null),
+    };
   }
 
   async publishNow(userId: string, dto: {
@@ -357,12 +354,14 @@ export class PublishService {
 
       case SocialPlatform.YOUTUBE: {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
+        const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
           title: opts.message.substring(0, 100),
           description: opts.message,
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
           refreshToken,
+          tokenExpiresAt: ytAccount?.token_expires_at ?? undefined,
           onTokenRefreshed: opts.accountId ? async (newToken: string, expiresAt: Date) => {
             try {
               const encryptedToken = this.crypto.encrypt(newToken);
@@ -404,6 +403,46 @@ export class PublishService {
         updated_at: new Date(),
       },
     });
+  }
+
+  /**
+   * Đăng bài bất đồng bộ — trả về ngay postId, worker xử lý trong ≤10 giây.
+   * Dùng khi FE muốn UX nhanh, sau đó poll GET /social/publish/:postId để lấy kết quả.
+   */
+  async publishAsync(userId: string, dto: {
+    accountId: string; message: string; mediaUrls?: string[];
+    pageId?: string; privacy?: string;
+  }) {
+    const account = await this.accounts.findOne(dto.accountId, userId);
+
+    const post = await this.prisma.socialPost.create({
+      data: {
+        user_id:      userId,
+        account_id:   dto.accountId,
+        platform:     account.platform,
+        message:      dto.message,
+        media_urls:   dto.mediaUrls ?? [],
+        page_id:      dto.pageId,
+        privacy:      dto.privacy,
+        scheduled_at: new Date(), // đến hạn ngay lập tức
+        source:       SocialPostSource.IMMEDIATE,
+        status:       SocialPostStatus.PENDING,
+        updated_at:   new Date(),
+      },
+    });
+
+    this.logger.log(`[PublishAsync] Queued post ${post.id} (${account.platform}) — worker sẽ xử lý trong ≤10s`);
+    return { postId: post.id, status: 'PENDING', platform: account.platform };
+  }
+
+  /** Lấy trạng thái 1 post (dùng để poll sau publishAsync) */
+  async getPostStatus(postId: string, userId: string) {
+    const post = await this.prisma.socialPost.findFirst({
+      where: { id: postId, user_id: userId },
+      select: { id: true, status: true, platform: true, result: true, error_msg: true, executed_at: true },
+    });
+    if (!post) throw new BadRequestException('Post không tồn tại');
+    return post;
   }
 
   public async archiveMediaAsync(postId: string, mediaUrls: string[]): Promise<void> {

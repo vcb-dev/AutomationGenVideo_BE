@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from './google-drive-storage.service';
 import { exec } from 'child_process';
@@ -237,6 +237,116 @@ export class MediaLibraryService {
     } catch (err: any) {
       if (isNotReady(err)) return { posts: [] };
       throw err;
+    }
+  }
+
+  /**
+   * Trích xuất frame tại giây `timeSeconds` từ video Drive,
+   * lưu tạm local, trả về URL để FE preview trước khi confirm.
+   * File tạm tự xóa sau 5 phút.
+   */
+  async previewFrameAtTime(id: string, userId: string, timeSeconds: number): Promise<{ previewUrl: string }> {
+    if (!modelReady(this.prisma)) throw new BadRequestException('Prisma model chưa sẵn sàng');
+
+    const file = await this.getModel().findFirst({ where: { id, user_id: userId } });
+    if (!file) throw new NotFoundException('File không tồn tại');
+    if (!file.drive_file_id) throw new BadRequestException('File chưa có Google Drive ID');
+    if (!file.mimetype?.startsWith('video/')) throw new BadRequestException('Chỉ hỗ trợ chọn ảnh bìa cho video');
+
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) throw new BadRequestException('FFmpeg chưa được cài đặt trên server');
+
+    const ts = Math.max(0, Math.floor(timeSeconds));
+    const tempVideoPath = path.join(UPLOAD_DIR, `dl_prev_${Date.now()}_${file.drive_file_id}.mp4`);
+    const previewName = `prev_${Date.now()}_${id}.jpg`;
+    const previewPath = path.join(UPLOAD_DIR, previewName);
+
+    let previewReady = false;
+    try {
+      this.logger.log(`[Library] Download video ${file.drive_file_id} để preview frame tại ${ts}s`);
+      await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
+
+      await execAsync(
+        `"${ffmpegPath}" -y -ss ${ts} -i "${tempVideoPath}" -vframes 1 -q:v 2 "${previewPath}"`,
+        { timeout: 60_000 },
+      );
+
+      if (!fs.existsSync(previewPath) || fs.statSync(previewPath).size === 0) {
+        throw new Error(`FFmpeg không xuất được frame tại ${ts}s (video có thể ngắn hơn)`);
+      }
+
+      previewReady = true;
+
+      // Tự xóa file preview sau 5 phút
+      setTimeout(() => {
+        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch {}
+      }, 5 * 60 * 1000);
+
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return { previewUrl: `${base}/api/social/media/${previewName}` };
+    } finally {
+      try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch {}
+      // Nếu lỗi xảy ra trước khi preview sẵn sàng → xóa file partial (nếu có)
+      if (!previewReady) {
+        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch {}
+      }
+    }
+  }
+
+  /**
+   * Trích xuất frame tại giây `timeSeconds`, upload lên Drive,
+   * cập nhật thumbnail_url trong DB. Xóa thumbnail cũ nếu có.
+   */
+  async setThumbnailAtTime(id: string, userId: string, timeSeconds: number, user?: any): Promise<{ thumbnail_url: string }> {
+    if (!modelReady(this.prisma)) throw new BadRequestException('Prisma model chưa sẵn sàng');
+
+    const file = await this.getModel().findFirst({ where: { id, user_id: userId } });
+    if (!file) throw new NotFoundException('File không tồn tại');
+    if (!file.drive_file_id) throw new BadRequestException('File chưa có Google Drive ID');
+    if (!file.mimetype?.startsWith('video/')) throw new BadRequestException('Chỉ hỗ trợ chọn ảnh bìa cho video');
+
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) throw new BadRequestException('FFmpeg chưa được cài đặt trên server');
+
+    const ts = Math.max(0, Math.floor(timeSeconds));
+    const baseNoExt = path.basename(file.filename, path.extname(file.filename));
+    const tempVideoPath = path.join(UPLOAD_DIR, `dl_thumb_${Date.now()}_${file.drive_file_id}.mp4`);
+    const thumbName = `thumb_custom_${Date.now()}_${baseNoExt}.jpg`;
+    const thumbPath = path.join(UPLOAD_DIR, thumbName);
+
+    try {
+      this.logger.log(`[Library] Download video ${file.drive_file_id} để set thumbnail tại ${ts}s`);
+      await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
+
+      await execAsync(
+        `"${ffmpegPath}" -y -ss ${ts} -i "${tempVideoPath}" -vframes 1 -q:v 2 "${thumbPath}"`,
+        { timeout: 60_000 },
+      );
+
+      if (!fs.existsSync(thumbPath) || fs.statSync(thumbPath).size === 0) {
+        throw new Error(`FFmpeg không xuất được frame tại ${ts}s (video có thể ngắn hơn)`);
+      }
+
+      this.logger.log(`[Library] Upload thumbnail custom lên Drive: ${thumbName}`);
+      const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
+
+      // Cập nhật DB TRƯỚC — chỉ xóa Drive cũ sau khi DB update thành công
+      // (tránh trường hợp DB lỗi → mất thumbnail cũ mà không có cái mới)
+      await this.getModel().update({
+        where: { id },
+        data: { thumbnail_url: uploadedThumb.url, thumbnail_drive_file_id: uploadedThumb.fileId },
+      });
+
+      // Xóa Drive thumbnail cũ sau khi DB đã lưu thumbnail mới thành công
+      if (file.thumbnail_drive_file_id) {
+        await this.googleDrive.delete(file.thumbnail_drive_file_id).catch(() => {});
+      }
+
+      this.logger.log(`[Library] ✅ Đã cập nhật thumbnail tại ${ts}s cho file ${id}`);
+      return { thumbnail_url: uploadedThumb.url };
+    } finally {
+      try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch {}
+      try { if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath); } catch {}
     }
   }
 }
