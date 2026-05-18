@@ -1333,6 +1333,8 @@ model SocialVideoReport {
   month        Int
   source       String   @default("api") // api | apify
   synced_at    DateTime @default(now()) @updatedAt
+  is_active    Boolean  @default(true)  // false = video bị xóa khỏi platform
+  deleted_at   DateTime?                // thời điểm phát hiện bị xóa
 
   @@unique([platform, post_id])
   @@index([platform, year, month])

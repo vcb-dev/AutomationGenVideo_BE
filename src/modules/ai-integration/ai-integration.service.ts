@@ -3,49 +3,12 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
-import * as fs from 'fs';
-import * as path from 'path';
 import { PrismaService } from '../../common/prisma/prisma.service';
-
-// Skill routing: keywords → which files to load
-const SKILL_ROUTES: { keywords: string[]; files: string[] }[] = [
-  {
-    keywords: ['ads', 'camp', 'cpm', 'cpc', 'ctr', 'mess', 'spend', 'chi phí', 'quảng cáo', 'ngân sách', 'roas', 'tối ưu', 'hiệu suất'],
-    files: ['skills/03-danh-gia-hieu-suat.md', 'skills/10-tinh-kpi-nguoc.md'],
-  },
-  {
-    keywords: ['báo cáo', 'report', 'tổng kết', 'overview', 'tháng này', 'tháng trước', 'tóm tắt'],
-    files: ['skills/07-bao-cao-marketing.md'],
-  },
-  {
-    keywords: ['phân tích', 'tại sao', 'nguyên nhân', 'vì sao', 'lý do', 'giải thích', 'anomaly', 'bất thường'],
-    files: ['skills/13-phan-tich-du-lieu.md'],
-  },
-  {
-    keywords: ['kênh', 'channel', 'view', 'views', 'follower', 'organic', 'traffic', 'flow', 'content', 'video', 'engagement'],
-    files: ['references/channel-system.md', 'references/content-angles.md'],
-  },
-  {
-    keywords: ['kế hoạch', 'chiến lược', 'strategy', 'plan', 'mục tiêu', 'target'],
-    files: ['skills/00-ke-hoach-mkt.md'],
-  },
-];
-
-// Files always loaded (small + universally useful)
-const CORE_SKILL_FILES = [
-  'references/benchmarks-vietnam.md',
-  'references/kpi-formulas.md',
-  'agents/performance-analyst.md',
-];
-
-const SKILLS_REPO = '/Users/mac/Documents/Github/VCB-Automation/AutomationGenVideo_AI/fullstack-mkt-skills';
 
 @Injectable()
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
-  private fileCache = new Map<string, string>();
-
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -55,39 +18,6 @@ export class AiIntegrationService {
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
   }
 
-  private readSkillFile(relativePath: string): string {
-    if (this.fileCache.has(relativePath)) return this.fileCache.get(relativePath)!;
-    const fullPath = path.join(SKILLS_REPO, relativePath);
-    if (!fs.existsSync(fullPath)) return '';
-    const content = fs.readFileSync(fullPath, 'utf-8');
-    this.fileCache.set(relativePath, content);
-    return content;
-  }
-
-  private loadRelevantSkills(question: string): string {
-    const q = question.toLowerCase();
-    const filesToLoad = new Set<string>(CORE_SKILL_FILES);
-
-    for (const route of SKILL_ROUTES) {
-      if (route.keywords.some(kw => q.includes(kw))) {
-        route.files.forEach(f => filesToLoad.add(f));
-      }
-    }
-
-    const loaded: string[] = [];
-    const sections: string[] = [];
-    for (const file of filesToLoad) {
-      const content = this.readSkillFile(file);
-      if (content) { sections.push(content); loaded.push(file); }
-    }
-
-    this.logger.log(`[Skills] Loaded for question: ${loaded.join(', ')}`);
-    return sections.join('\n\n---\n\n');
-  }
-
-  clearSkillCache(): void {
-    this.fileCache.clear();
-  }
 
 
 
@@ -911,263 +841,25 @@ export class AiIntegrationService {
 
   async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
     this.logger.log(`[AI Analytics] Question: ${message}`);
-    const DEEPSEEK_KEY = this.configService.get<string>('DEEPSEEK_API_KEY');
-
     try {
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth() + 1;
-      const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
-      const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
-
-      // 1. Lấy metadata thực tế từ DB
-      const [teamsAds, teamsSocial, dateRange] = await Promise.all([
-        this.prisma.$queryRaw`SELECT DISTINCT team FROM ads_campaign_stats WHERE team IS NOT NULL ORDER BY team` as Promise<{team: string}[]>,
-        this.prisma.$queryRaw`SELECT DISTINCT team FROM social_video_report WHERE team IS NOT NULL ORDER BY team` as Promise<{team: string}[]>,
-        this.prisma.$queryRaw`SELECT MIN(year) as min_y, MIN(month) as min_m, MAX(year) as max_y, MAX(month) as max_m FROM social_video_report` as Promise<any[]>,
-      ]);
-
-      const dr = dateRange[0];
-      const serializeBigInt = (_key: string, value: any) => typeof value === 'bigint' ? value.toString() : value;
-
-      // 2. Load skills phù hợp với câu hỏi (smart routing, không load hết)
-      const skillsKnowledge = this.loadRelevantSkills(message);
-
-      // 3. System prompt duy nhất — AI luôn biết mình là ai, có gì, và phân tích được gì
-      const SYSTEM_PROMPT = `Bạn là VCB Studio AI Analyst — trợ lý phân tích dữ liệu nội bộ của hệ thống VCB Studio.
-Bạn có quyền truy cập TRỰC TIẾP vào database PostgreSQL với các bảng sau:
-
-=== DATABASE HIỆN TẠI ===
-Bảng "ads_campaign_stats" — dữ liệu quảng cáo Facebook/TikTok:
-  platform: meta | tiktok
-  Số liệu: spend, impressions, reach, clicks, mess_count, like_count, comment_count, share_count, engagement_count, cost_per_mess, cost_per_like
-  Phân loại: camp_type (mess|like_page|tuong_tac), content_type (A1|A2|A3|A4|A5), team, owner, year, month
-  Ngày: date_start (VARCHAR 'YYYY-MM-DD'), date_stop (VARCHAR 'YYYY-MM-DD') — là ngày sync, KHÔNG dùng để lọc "đang chạy"
-  KHÔNG có cột "day" — chỉ dùng year và month để lọc theo thời gian
-  QUAN TRỌNG: "campaign đang chạy tháng X" = tất cả campaign có year=X AND month=X, KHÔNG filter theo date_stop
-  Teams có dữ liệu: ${teamsAds.map(r => r.team).join(', ')}
-
-Bảng "huyk_channels" — danh sách kênh (master list):
-  platform: Facebook | Youtube | Tiktok | TikTok | IG | Thread
-  Cột: name, channel_id, team_traffic, owner, status (Đang hoạt động|Tạm ngừng|Ngừng hoạt động|ON)
-
-Bảng "social_video_report" — traffic tự nhiên từng video/post:
-  platform: facebook | instagram  ← CHỈ có 2 platform này, KHÔNG có YouTube
-  Cột: channel_name, username, title, views, likes, comments, shares, followers, team, owner, year, month
-  Dữ liệu có từ: ${dr?.min_m}/${dr?.min_y} → ${dr?.max_m}/${dr?.max_y}
-  Teams có dữ liệu: ${teamsSocial.map(r => r.team).join(', ')}
-
-=== NGÀY GIỜ ===
-Hôm nay: ${now.getDate()}/${currentMonth}/${currentYear}
-"tháng này" = ${currentMonth}/${currentYear} | "tháng trước" = ${prevMonth}/${prevYear}
-
-=== TỪ ĐỒNG NGHĨA ===
-flow / traffic / lượt xem / view → cột views (dùng SUM)
-follower / sub / fan / người theo dõi → cột followers (dùng MAX)
-kênh → channel_name hoặc name trong huyk_channels
-chi phí ads / budget → cột spend
-
-=== QUY TẮC SQL ===
-• Luôn dùng LOWER() khi so sánh chuỗi
-• Team matching: LOWER(team) LIKE '%k1%' (tên có thể "K1" hoặc "Team K1")
-• JOIN 2 bảng: LOWER(huyk_channels.name) = LOWER(social_video_report.channel_name)
-• Luôn có LIMIT (mặc định 20)
-${skillsKnowledge ? `\n=== KIẾN THỨC PHÂN TÍCH CHUYÊN SÂU ===\n${skillsKnowledge}` : ''}
-
-QUAN TRỌNG:
-• Bạn THỰC SỰ có dữ liệu thật từ DB — không bao giờ bịa số liệu
-• Khi có dữ liệu, hãy PHÂN TÍCH tại sao tốt/kém dựa trên benchmark trong skill
-• Luôn đưa ra nhận xét và đề xuất hành động cụ thể, không chỉ liệt kê số`;
-
-      // 3. Bước 1: AI routing có structured output — không còn split NORMAL_CHAT mù quáng
-      const recentHistory = history.slice(-6).map(h =>
-        `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content.substring(0, 400)}`
-      ).join('\n');
-
-      const routingPrompt = `${SYSTEM_PROMPT}
-
-=== VÍ DỤ ROUTING ===
-Q: "kênh facebook nào nhiều view nhất?" → {"type":"query","sql":"SELECT channel_name, SUM(views) as total_views FROM social_video_report WHERE LOWER(platform)='facebook' AND year=${currentYear} AND month=${currentMonth} GROUP BY channel_name ORDER BY total_views DESC LIMIT 10"}
-Q: "so sánh hiệu suất theo team" hoặc "hiệu suất từng team" → {"type":"query","sql":"SELECT COALESCE(a.team, s.team, 'Không xác định') as team, COALESCE(SUM(a.spend),0) as ads_spend, COALESCE(SUM(a.mess_count),0) as mess_count, COALESCE(SUM(a.impressions),0) as impressions, COALESCE(SUM(a.clicks),0) as clicks, COALESCE(SUM(s.views),0) as organic_views, COALESCE(MAX(s.followers),0) as max_followers FROM ads_campaign_stats a FULL OUTER JOIN social_video_report s ON LOWER(TRIM(a.team))=LOWER(TRIM(s.team)) AND a.year=s.year AND a.month=s.month WHERE (a.year=${currentYear} AND a.month=${currentMonth}) OR (s.year=${currentYear} AND s.month=${currentMonth}) GROUP BY COALESCE(a.team,s.team,'Không xác định') ORDER BY ads_spend DESC LIMIT 15"}
-Q: "so sánh flow các team tháng này?" → {"type":"query","sql":"SELECT team, SUM(views) as organic_views, MAX(followers) as max_followers FROM social_video_report WHERE year=${currentYear} AND month=${currentMonth} GROUP BY team ORDER BY organic_views DESC"}
-Q: "top kênh follower nhất?" → {"type":"query","sql":"SELECT channel_name, platform, MAX(followers) as max_followers FROM social_video_report GROUP BY channel_name, platform ORDER BY max_followers DESC LIMIT 10"}
-Q: "team K1 chi ads bao nhiêu tháng này?" → {"type":"query","sql":"SELECT team, SUM(spend) as ads_spend, SUM(mess_count) as mess_count, SUM(impressions) as impressions, ROUND(AVG(spend/NULLIF(mess_count,0))::numeric,0) as avg_cost_per_mess FROM ads_campaign_stats WHERE LOWER(team) LIKE '%k1%' AND year=${currentYear} AND month=${currentMonth} GROUP BY team"}
-Q: "bạn đang dùng bảng nào?" → {"type":"chat","reply":"Tôi đang truy cập trực tiếp 3 bảng trong database: ads_campaign_stats (quảng cáo), huyk_channels (danh sách kênh), social_video_report (traffic tự nhiên Facebook/Instagram)."}
-Q: "tổng số campaign tháng này" hoặc "campaign đang chạy" → {"type":"query","sql":"SELECT COUNT(DISTINCT campaign_id) as total_campaigns, COUNT(DISTINCT campaign_name) as unique_names, SUM(spend) as total_spend FROM ads_campaign_stats WHERE year=${currentYear} AND month=${currentMonth}"}
-Q: "danh sách campaign tháng này" → {"type":"query","sql":"SELECT campaign_name, platform, camp_type, content_type, team, SUM(spend) as total_spend, SUM(mess_count) as total_mess FROM ads_campaign_stats WHERE year=${currentYear} AND month=${currentMonth} GROUP BY campaign_name, platform, camp_type, content_type, team ORDER BY total_spend DESC LIMIT 20"}
-Q: "xin chào" → {"type":"chat","reply":"Xin chào! Tôi là VCB Studio AI Analyst. Bạn có thể hỏi tôi về dữ liệu quảng cáo, traffic kênh, follower, hoặc hiệu suất theo team."}
-
-${recentHistory ? `=== LỊCH SỬ GẦN ĐÂY ===\n${recentHistory}\n` : ''}
-=== CÂU HỎI ===
-"${message}"
-
-Trả về JSON:
-- Nếu cần query DB: {"type":"query","sql":"<câu SQL hoàn chỉnh>"}
-- Nếu là chat/meta/chào hỏi: {"type":"chat","reply":"<câu trả lời tiếng Việt>"}
-Chỉ trả về JSON, không giải thích.`;
-
-      const { data: routingRes } = await firstValueFrom(
-        this.httpService.post('https://api.deepseek.com/chat/completions', {
-          model: "deepseek-chat",
-          messages: [{ role: "user", content: routingPrompt }],
-          temperature: 0,
-          response_format: { type: "json_object" }
-        }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` } })
+      // Proxy sang Python AI service — toàn bộ logic xử lý ở đó
+      const { data } = await firstValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/api/chat/analytics/`,
+          { message, history },
+          { timeout: 60000 },   // 60s timeout — đủ cho 2 lần gọi DeepSeek
+        ).pipe(catchError((err: AxiosError) => {
+          this.logger.error(`[AI Analytics] Python service error: ${err.message}`);
+          throw err;
+        }))
       );
-
-      const routing = JSON.parse(routingRes.choices[0].message.content) as { type: string; sql?: string; reply?: string };
-      this.logger.log(`[AI Analytics] Routing: ${JSON.stringify(routing)}`);
-
-      // 4. Nhánh chat thuần — AI đã có context nên trả lời đúng
-      if (routing.type === 'chat') {
-        return { message: routing.reply || 'Xin lỗi, tôi không hiểu câu hỏi. Bạn thử hỏi lại nhé.' };
-      }
-
-      let sql = (routing.sql || '')
-        .replace(/```sql|```/g, "")
-        .replace(/^['"`]|['"`]$/g, "")
-        .trim();
-
-      if (!sql) {
-        return { message: 'Tôi không thể tạo câu truy vấn cho câu hỏi này. Bạn thử diễn đạt lại nhé.' };
-      }
-
-      // 5. Thực thi SQL — retry 1 lần nếu lỗi
-      let dbResults: any[];
-      try {
-        dbResults = await this.prisma.$queryRawUnsafe(sql) as any[];
-      } catch (sqlErr) {
-        this.logger.warn(`[AI Analytics] SQL error, retrying: ${sqlErr.message}`);
-        const retryPrompt = `${SYSTEM_PROMPT}
-
-SQL này bị lỗi PostgreSQL:
-SQL: ${sql}
-Lỗi: ${sqlErr.message}
-
-Viết lại SQL đúng cho câu hỏi: "${message}"
-Trả về JSON: {"type":"query","sql":"<SQL đã sửa>"}`;
-        const { data: retryRes } = await firstValueFrom(
-          this.httpService.post('https://api.deepseek.com/chat/completions', {
-            model: "deepseek-chat",
-            messages: [{ role: "user", content: retryPrompt }],
-            temperature: 0,
-            response_format: { type: "json_object" }
-          }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` } })
-        );
-        const retryRouting = JSON.parse(retryRes.choices[0].message.content);
-        sql = (retryRouting.sql || '').replace(/```sql|```/g, "").trim();
-        this.logger.log(`[AI Analytics] Retry SQL: ${sql}`);
-        dbResults = await this.prisma.$queryRawUnsafe(sql) as any[];
-      }
-
-      // 6. Xử lý kết quả rỗng — AI gợi ý câu hỏi thay vì báo lỗi
-      if (!dbResults || dbResults.length === 0) {
-        const clarifyPrompt = `${SYSTEM_PROMPT}
-
-Người dùng hỏi: "${message}"
-SQL đã chạy: ${sql}
-Kết quả: rỗng (0 dòng)
-
-Nhiệm vụ: Giải thích ngắn gọn tại sao không có dữ liệu, rồi đưa ra 2-3 câu hỏi gợi ý cụ thể hơn mà người dùng CÓ THỂ hỏi và sẽ có kết quả.
-
-Trả về JSON:
-{
-  "message": "Giải thích lý do (1 câu) + gợi ý:\\n• Câu hỏi gợi ý 1\\n• Câu hỏi gợi ý 2\\n• Câu hỏi gợi ý 3",
-  "suggestions": ["câu gợi ý 1", "câu gợi ý 2", "câu gợi ý 3"]
-}
-
-Ví dụ tốt: nếu hỏi về YouTube nhưng không có data → gợi ý hỏi về Facebook hoặc Instagram.
-Nếu hỏi về tháng cũ không có data → gợi ý hỏi tháng có data (${dr?.min_m}/${dr?.min_y} → ${dr?.max_m}/${dr?.max_y}).
-Trả về DUY NHẤT JSON, không markdown.`;
-
-        const { data: clarifyRes } = await firstValueFrom(
-          this.httpService.post('https://api.deepseek.com/chat/completions', {
-            model: "deepseek-chat",
-            messages: [{ role: "user", content: clarifyPrompt }],
-            response_format: { type: "json_object" }
-          }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` } })
-        );
-        const clarifyResult = JSON.parse(clarifyRes.choices[0].message.content);
-        return { message: clarifyResult.message, suggestions: clarifyResult.suggestions ?? [], dashboard: null, data: [] };
-      }
-
-      // 7. Tạo giải thích + Dashboard JSON
-      // Lấy sample row để AI biết các key thực tế trong data
-      const sampleRow = dbResults[0] ? JSON.stringify(dbResults[0], serializeBigInt) : '{}';
-
-      const summaryPrompt = `${SYSTEM_PROMPT}
-
-=== DỮ LIỆU TỪ DATABASE (${dbResults.length} dòng) ===
-${JSON.stringify(dbResults, serializeBigInt)}
-
-Sample row (các key thực tế): ${sampleRow}
-
-=== CÂU HỎI ===
-"${message}"
-
-=== NHIỆM VỤ ===
-Tạo JSON với 2 phần:
-
-1. "message": Phân tích chuyên sâu (KHÔNG chỉ liệt kê số):
-   - Nhận định TOP LINE: team/kênh nào tốt nhất và tại sao
-   - So sánh với benchmark (dùng kiến thức trong skill files): ví dụ "CPMess 45K → vượt ngưỡng kém (>40K), cần tối ưu"
-   - Chỉ ra điểm bất thường hoặc cần chú ý (null team, outlier, gap lớn)
-   - Đề xuất hành động cụ thể ít nhất 1 điểm
-
-2. "dashboard": Các block hiển thị
-
-=== QUY TẮC TABLE (QUAN TRỌNG) ===
-• "columns" array phải là ĐÚNG TÊN KEY trong data objects (không phải tên hiển thị)
-• Trước khi tạo table, hãy RENAME các key trong data thành tên tiếng Việt có ý nghĩa
-• Ví dụ: nếu data có key "total_spend", đổi thành "Chi phí" trong cả data lẫn columns
-• Ví dụ đúng:
-  columns: ["Team", "Chi phí", "Tin nhắn", "Lượt xem"]
-  data: [{ "Team": "K1", "Chi phí": "29.5M", "Tin nhắn": "1,200", "Lượt xem": "2.6M" }]
-• Ví dụ SAI (gây ra "—"):
-  columns: ["Team", "Chi phí"]
-  data: [{ "team": "K1", "total_spend": 29500000 }]   ← key không khớp
-
-=== FORMAT JSON ===
-{
-  "message": "<phân tích chuyên sâu, 3-5 câu, có benchmark so sánh và đề xuất>",
-  "dashboard": {
-    "layout": "mixed",
-    "blocks": [
-      { "type": "kpi_card", "data": [{ "label": "...", "value": "...", "trend": "...", "trendUp": true/false }] },
-      { "type": "bar", "title": "...", "xKey": "<key trong data>", "yKey": "<key trong data>", "data": [{"<xKey>": "...", "<yKey>": 123}] },
-      { "type": "table", "title": "...", "columns": ["<key1>","<key2>",...], "data": [{"<key1>": "...", "<key2>": "..."}] }
-    ]
-  }
-}
-
-• Luôn có kpi_card + table
-• So sánh ≥ 3 đối tượng → thêm bar chart
-• Format số: spend → "29.5M", views → "2.6M", followers → "371K"
-• TUYỆT ĐỐI KHÔNG dùng "N/A", "null", "undefined" trong bất kỳ giá trị nào
-• Nếu không có data trend → BỎ HOÀN TOÀN field "trend" (đừng để "N/A")
-• Nếu team/content_type = null → hiển thị "Không xác định" thay vì "null"
-• Nếu giá trị = 0 → hiển thị "0" hoặc "-" (không phải "null")
-• Trả về DUY NHẤT object JSON, không markdown`;
-
-      const { data: summaryRes } = await firstValueFrom(
-        this.httpService.post('https://api.deepseek.com/chat/completions', {
-          model: "deepseek-chat",
-          messages: [{ role: "user", content: summaryPrompt }],
-          response_format: { type: "json_object" }
-        }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}` } })
-      );
-
-      const aiContent = summaryRes.choices[0].message.content;
-      const finalResult = typeof aiContent === 'string' ? JSON.parse(aiContent) : aiContent;
-
-      return { ...finalResult, data: dbResults };
-
+      return data;
     } catch (err) {
       this.logger.error(`[AI Analytics ERROR] ${err.message}`);
-      if (err.response) this.logger.error(`API: ${JSON.stringify(err.response.data)}`);
-      return { message: `Xin lỗi, tôi gặp lỗi: ${err.message}. Vui lòng thử lại sau.` };
+      return { reply: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', type: 'chat' };
     }
   }
+
 
   async healthCheck(): Promise<any> {
 
