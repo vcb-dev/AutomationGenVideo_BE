@@ -34,7 +34,14 @@ export class MediaController {
   private serveFromDisk(filePath: string, safeName: string, req: Request, res: Response) {
     const ext = path.extname(safeName).toLowerCase();
     const contentType = MIME_MAP[ext] || 'application/octet-stream';
-    const fileSize = fs.statSync(filePath).size;
+    let fileSize: number;
+    try {
+      fileSize = fs.statSync(filePath).size;
+    } catch {
+      // File bị xóa giữa existsSync và statSync (TOCTOU)
+      res.status(404).end();
+      return;
+    }
 
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('ngrok-skip-browser-warning', 'true');
@@ -58,12 +65,22 @@ export class MediaController {
       res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
       res.setHeader('Content-Length', end - start + 1);
       res.status(206);
-      fs.createReadStream(filePath, { start, end }).pipe(res);
+      const rangeStream = fs.createReadStream(filePath, { start, end });
+      rangeStream.on('error', (err) => {
+        console.error(`[MediaController] Stream error for ${safeName}: ${err.message}`);
+        if (!res.headersSent) res.status(500).end(); else res.destroy();
+      });
+      rangeStream.pipe(res);
     } else {
       res.setHeader('Content-Length', fileSize);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.status(200);
-      fs.createReadStream(filePath).pipe(res);
+      const fullStream = fs.createReadStream(filePath);
+      fullStream.on('error', (err) => {
+        console.error(`[MediaController] Stream error for ${safeName}: ${err.message}`);
+        if (!res.headersSent) res.status(500).end(); else res.destroy();
+      });
+      fullStream.pipe(res);
     }
   }
 }

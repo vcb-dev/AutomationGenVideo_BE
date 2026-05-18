@@ -49,7 +49,12 @@ export class MediaLibraryService {
     const ext = path.extname(opts.originalname).toLowerCase() || (isVideo ? '.mp4' : '.jpg');
     const baseName = `lib_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const filename = `${baseName}${ext}`;
-    const fileSize = fs.statSync(filePath).size;
+    let fileSize: number;
+    try {
+      fileSize = fs.statSync(filePath).size;
+    } catch (e: any) {
+      throw new Error(`Không đọc được file sau khi upload: ${e.message}`);
+    }
 
     if (isVideo) {
       this.logger.log(`[Library] Upload video goc, khong nen: ${opts.originalname} (${(fileSize / 1024 / 1024).toFixed(1)}MB)`);
@@ -197,8 +202,8 @@ export class MediaLibraryService {
       const file = await model.findFirst({ where: { id, user_id: userId } });
       if (!file) return null;
 
-      if (file.drive_file_id) await this.googleDrive.delete(file.drive_file_id).catch(() => {});
-      if (file.thumbnail_drive_file_id) await this.googleDrive.delete(file.thumbnail_drive_file_id).catch(() => {});
+      if (file.drive_file_id) await this.googleDrive.delete(file.drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete failed for ${file.drive_file_id}: ${e.message}`));
+      if (file.thumbnail_drive_file_id) await this.googleDrive.delete(file.thumbnail_drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete failed for thumbnail ${file.thumbnail_drive_file_id}: ${e.message}`));
       await model.delete({ where: { id } });
       return file;
     } catch (err: any) {
@@ -339,7 +344,7 @@ export class MediaLibraryService {
 
       // Xóa Drive thumbnail cũ sau khi DB đã lưu thumbnail mới thành công
       if (file.thumbnail_drive_file_id) {
-        await this.googleDrive.delete(file.thumbnail_drive_file_id).catch(() => {});
+        await this.googleDrive.delete(file.thumbnail_drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete old thumbnail failed for ${file.thumbnail_drive_file_id}: ${e.message}`));
       }
 
       this.logger.log(`[Library] ✅ Đã cập nhật thumbnail tại ${ts}s cho file ${id}`);

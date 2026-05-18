@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
@@ -6,7 +6,7 @@ import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
 
 @Injectable()
-export class AccountsService {
+export class AccountsService implements OnModuleDestroy {
   private readonly logger = new Logger(AccountsService.name);
   private readonly pagesCache = new Map<string, { data: any[]; expiresAt: number }>();
   private readonly pagesCacheCleanupInterval = setInterval(() => {
@@ -20,6 +20,10 @@ export class AccountsService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
   ) {}
+
+  onModuleDestroy() {
+    clearInterval(this.pagesCacheCleanupInterval);
+  }
 
   async findAll(userId: string) {
     const accounts = await this.prisma.socialAccount.findMany({
@@ -200,7 +204,12 @@ export class AccountsService {
             igPicture: p.instagram_business_account?.profile_picture_url,
           });
           savedCount++;
-        } catch { /* bỏ qua nếu page đã tồn tại */ }
+        } catch (e: any) {
+          // Bỏ qua unique constraint (page đã tồn tại); log các lỗi khác để debug
+          if (!e?.message?.includes('Unique constraint') && !e?.message?.includes('unique')) {
+            this.logger.warn(`[AutoSave] Lỗi lưu page ${p.id}: ${e.message}`);
+          }
+        }
       }
       this.logger.log(`[AutoSave] ✅ Đã lưu ${savedCount}/${pages.length} Pages cho account ${accountId}`);
     } catch (err: any) {

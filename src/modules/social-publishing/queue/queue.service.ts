@@ -84,26 +84,28 @@ export class QueueService {
     });
 
     // Với các job còn PENDING, tính vị trí trong hàng chờ theo platform
+    // Dùng 1 query duy nhất thay vì N+1
     const pendingPlatforms = [
       ...new Set(posts.filter(p => p.status === 'PENDING').map(p => p.platform)),
     ];
 
     const queueByPlatform: Record<string, string[]> = {};
-    await Promise.all(
-      pendingPlatforms.map(async platform => {
-        const queue = await this.prisma.socialPost.findMany({
-          where: {
-            status: SocialPostStatus.PENDING,
-            platform,
-            scheduled_at: { lte: new Date() },
-            OR: [{ next_retry_at: null }, { next_retry_at: { lte: new Date() } }],
-          },
-          orderBy: { scheduled_at: 'asc' },
-          select: { id: true },
-        });
-        queueByPlatform[platform] = queue.map(p => p.id);
-      }),
-    );
+    if (pendingPlatforms.length > 0) {
+      const allPendingQueue = await this.prisma.socialPost.findMany({
+        where: {
+          status: SocialPostStatus.PENDING,
+          platform: { in: pendingPlatforms },
+          scheduled_at: { lte: new Date() },
+          OR: [{ next_retry_at: null }, { next_retry_at: { lte: new Date() } }],
+        },
+        orderBy: { scheduled_at: 'asc' },
+        select: { id: true, platform: true },
+      });
+      for (const p of allPendingQueue) {
+        if (!queueByPlatform[p.platform]) queueByPlatform[p.platform] = [];
+        queueByPlatform[p.platform].push(p.id);
+      }
+    }
 
     return posts.map(post => {
       const platformQueue = queueByPlatform[post.platform] ?? [];

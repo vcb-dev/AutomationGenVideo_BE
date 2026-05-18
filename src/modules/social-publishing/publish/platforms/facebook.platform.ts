@@ -62,7 +62,9 @@ export class FacebookPublisher {
         // Multipart upload trực tiếp từ disk — không cần URL công khai, không phụ thuộc ngrok/catbox
         this.logger.log(`[FB] Uploading video via multipart from disk: ${localFilePath}`);
         const form = new FormData();
-        form.append('source', fs.createReadStream(localFilePath), { filename: 'video.mp4', contentType: 'video/mp4' });
+        const videoReadStream = fs.createReadStream(localFilePath);
+        videoReadStream.on('error', (err) => this.logger.error(`[FB] Video stream error: ${err.message}`));
+        form.append('source', videoReadStream, { filename: 'video.mp4', contentType: 'video/mp4' });
         form.append('description', opts.message);
         form.append('access_token', pageToken);
         if (privacyParam) form.append('privacy', privacyParam);

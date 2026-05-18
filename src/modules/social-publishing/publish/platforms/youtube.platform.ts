@@ -78,7 +78,7 @@ export class YoutubePublisher {
         maxContentLength: Infinity,
       });
     } catch (err) {
-      videoStream.data.destroy();
+      try { videoStream?.data?.destroy(); } catch {}
       throw err;
     }
 

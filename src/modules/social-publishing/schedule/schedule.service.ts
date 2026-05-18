@@ -61,8 +61,15 @@ export class ScheduleService {
   }
 
   async update(id: string, userId: string, dto: { message?: string; scheduledAt?: string; mediaUrls?: string[] }) {
-    const post = await this.prisma.socialPost.findFirst({ where: { id, user_id: userId, status: SocialPostStatus.PENDING } });
-    if (!post) throw new NotFoundException('Task không tồn tại hoặc không ở trạng thái PENDING');
+    const now = new Date();
+    const post = await this.prisma.socialPost.findFirst({
+      where: {
+        id, user_id: userId, status: SocialPostStatus.PENDING,
+        // Không cho sửa post đang được worker xử lý (next_retry_at > now = đang claimed)
+        OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
+      },
+    });
+    if (!post) throw new NotFoundException('Task không tồn tại, không ở trạng thái PENDING, hoặc đang được xử lý');
 
     const data: any = { updated_at: new Date() };
     if (dto.message !== undefined && dto.message !== '') data.message = dto.message;
@@ -80,8 +87,14 @@ export class ScheduleService {
   }
 
   async cancel(id: string, userId: string) {
-    const post = await this.prisma.socialPost.findFirst({ where: { id, user_id: userId, status: SocialPostStatus.PENDING } });
-    if (!post) throw new NotFoundException('Task không tồn tại');
+    const now = new Date();
+    const post = await this.prisma.socialPost.findFirst({
+      where: {
+        id, user_id: userId, status: SocialPostStatus.PENDING,
+        OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
+      },
+    });
+    if (!post) throw new NotFoundException('Task không tồn tại hoặc đang được xử lý');
     return this.prisma.socialPost.update({
       where: { id },
       data: { status: SocialPostStatus.CANCELLED, updated_at: new Date() },
@@ -203,11 +216,19 @@ export class ScheduleService {
     try {
       this.logger.log(`[Worker] ▶ Đang publish post ${post.id} | platform=${post.platform} | media=${post.media_urls?.length ?? 0} file`);
       const result = await this.publishService.executeScheduled(post);
+
+      // Bước 1: Lưu result vào DB trước — idempotency check sẽ dùng field này
+      // nếu Bước 2 thất bại (mất kết nối DB), lần retry sau sẽ thấy result và không đăng lại
+      await this.prisma.socialPost.updateMany({
+        where: { id: post.id },
+        data: { result, updated_at: new Date() },
+      }).catch((e: any) => this.logger.warn(`[Worker] Lưu result tạm cho ${post.id} thất bại: ${e.message}`));
+
+      // Bước 2: Mark COMPLETED
       const updated = await this.prisma.socialPost.updateMany({
         where: { id: post.id, status: SocialPostStatus.PENDING },
         data: {
           status:        SocialPostStatus.COMPLETED,
-          result,
           executed_at:   new Date(),
           updated_at:    new Date(),
           next_retry_at: null,
@@ -217,7 +238,8 @@ export class ScheduleService {
         this.logger.warn(`[Worker] ⚠️ Post ${post.id} published but DB record missing — skipping archive`);
         return;
       }
-      this.publishService.archiveMediaAsync(post.id, (post.media_urls as string[]) ?? []);
+      this.publishService.archiveMediaAsync(post.id, (post.media_urls as string[]) ?? [])
+        .catch((err: any) => this.logger.warn(`[Worker] archiveMediaAsync failed for ${post.id}: ${err.message}`));
       this.logger.log(`[Worker] ✅ Post ${post.id} (${post.platform}) completed`);
     } catch (err: any) {
       this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack: ${err.stack?.split('\n')[1]?.trim() ?? ''}`);

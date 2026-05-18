@@ -251,12 +251,14 @@ export class GoogleDriveStorageService {
     res.data.pipe(writer);
 
     return new Promise((resolve, reject) => {
-      res.data.on('error', (err: Error) => {
-        writer.destroy();
+      const cleanup = (err: Error) => {
+        try { writer.destroy(); } catch {}
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
         reject(err);
-      });
+      };
+      res.data.on('error', cleanup);
+      writer.on('error', cleanup);
       writer.on('finish', () => resolve(outputPath));
-      writer.on('error', reject);
     });
   }
 
@@ -491,7 +493,12 @@ export class GoogleDriveStorageService {
 
     if (!jsonText) return null;
 
-    const credentials = JSON.parse(jsonText) as GoogleServiceAccountCredentials;
+    let credentials: GoogleServiceAccountCredentials;
+    try {
+      credentials = JSON.parse(jsonText) as GoogleServiceAccountCredentials;
+    } catch (e: any) {
+      throw new Error(`Google Drive: service account JSON không hợp lệ — ${e.message}`);
+    }
     if (!credentials.client_email || !credentials.private_key) {
       throw new Error('Google service account credentials must include client_email and private_key');
     }

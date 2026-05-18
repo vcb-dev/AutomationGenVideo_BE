@@ -69,7 +69,11 @@ export class TiktokPublisher {
         this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
         if (['PUBLISH_COMPLETE', 'FAILED'].includes(status)) return status;
       } catch (err: any) {
-        this.logger.warn(`[TikTok] Poll error: ${err.message}`);
+        const httpStatus = err.response?.status;
+        if (httpStatus && httpStatus >= 400 && httpStatus < 500) {
+          throw new Error(`TikTok poll thất bại vĩnh viễn (HTTP ${httpStatus}): ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
+        }
+        this.logger.warn(`[TikTok] Poll error (retrying): ${err.message}`);
       }
     }
     return 'TIMEOUT';
@@ -82,7 +86,11 @@ export class TiktokPublisher {
       if (!size) throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath} (Content-Length thiếu)`);
       return size;
     }
-    return fs.statSync(urlOrPath).size;
+    try {
+      return fs.statSync(urlOrPath).size;
+    } catch (e: any) {
+      throw new Error(`TikTok: không đọc được file local ${urlOrPath}: ${e.message}`);
+    }
   }
 
   private async uploadChunks(videoUrl: string, uploadUrl: string, fileSize: number) {

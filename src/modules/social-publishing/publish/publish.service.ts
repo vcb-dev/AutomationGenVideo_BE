@@ -137,8 +137,8 @@ export class PublishService {
           try {
             const fname = new URL(newUrl).pathname.split('/').pop()!;
             const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            transcodedFiles.push(path.join(base, fname));
-          } catch {}
+            if (fname) transcodedFiles.push(path.join(base, fname));
+          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
         }
       });
       inputMediaUrls = results;
@@ -167,7 +167,7 @@ export class PublishService {
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
-    this.archiveMediaAsync(saved.id, dto.mediaUrls || []);
+    this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
     this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
   }
@@ -193,8 +193,8 @@ export class PublishService {
           try {
             const fname = new URL(newUrl).pathname.split('/').pop()!;
             const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            transcodedFiles.push(path.join(base, fname));
-          } catch {}
+            if (fname) transcodedFiles.push(path.join(base, fname));
+          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
         }
       });
       inputMediaUrls = results;
@@ -202,17 +202,20 @@ export class PublishService {
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
 
-    const result = await this.dispatchPublish(account.platform, token, {
-      message: post.message,
-      mediaUrls: publicMediaUrls,
-      pageId: post.page_id || extraData?.pageId,
-      privacy: post.privacy,
-      extraData,
-      accountId: post.account_id,
-      platformId: account.platform_id,
-    });
-    this.scheduleCleanupTranscoded(transcodedFiles);
-    return result;
+    try {
+      const result = await this.dispatchPublish(account.platform, token, {
+        message: post.message,
+        mediaUrls: publicMediaUrls,
+        pageId: post.page_id || extraData?.pageId,
+        privacy: post.privacy,
+        extraData,
+        accountId: post.account_id,
+        platformId: account.platform_id,
+      });
+      return result;
+    } finally {
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   // Cache: sourceUrl → Promise<transcodedUrl> — tránh transcode 2 lần khi IG + Threads cùng dùng 1 video
@@ -290,7 +293,7 @@ export class PublishService {
     if (!filePaths.length) return;
     setTimeout(() => {
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch {}
+        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }

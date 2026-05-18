@@ -35,11 +35,11 @@ export class ZaloPublisher {
         this.logger.warn(`[Zalo] Thumbnail upload failed: ${err.message}`);
       }
 
-      // Upload video
+      // Upload video — stream trực tiếp thay vì load cả vào RAM để tránh OOM
       try {
-        const videoData = await axios.get(videoUrl, { responseType: 'arraybuffer', timeout: 120000 });
+        const videoStream = await axios.get(videoUrl, { responseType: 'stream', timeout: 120000 });
         const videoForm = new FormData();
-        videoForm.append('file', Buffer.from(videoData.data), { filename: 'video.mp4', contentType: 'video/mp4' });
+        videoForm.append('file', videoStream.data, { filename: 'video.mp4', contentType: 'video/mp4' });
         const videoUpload = await axios.post('https://openapi.zalo.me/v2.0/oa/upload/video', videoForm, {
           headers: { ...headers, ...videoForm.getHeaders() },
         });
