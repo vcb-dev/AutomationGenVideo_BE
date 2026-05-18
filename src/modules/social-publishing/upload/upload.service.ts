@@ -37,7 +37,7 @@ export class UploadService {
       const uploaded = await this.googleDrive.uploadFromPath(tempPath, filename, mimetype, user);
       return uploaded.url;
     } finally {
-      try { fs.unlinkSync(tempPath); } catch {}
+      try { fs.unlinkSync(tempPath); } catch (e: any) { console.warn(`[UploadService] Không xóa được temp file ${tempPath}: ${e.message}`); }
     }
   }
 

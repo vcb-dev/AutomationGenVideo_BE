@@ -63,7 +63,7 @@ export class ChunkedUploadController {
         expires_at: { lt: new Date() },
       },
       data: { status: 'EXPIRED', error_msg: 'Upload session expired' },
-    }).catch(() => {});
+    }).catch((err: any) => this.logger.warn(`[Upload] expireOldSessions failed: ${err.message}`));
   }
 
   @Post('status')

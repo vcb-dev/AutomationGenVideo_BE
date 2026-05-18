@@ -61,7 +61,7 @@ export class HashtagController {
         const content: string = res.data?.content || res.data?.generated_content || '';
         const aiTags = (content.match(/#\w+/g) || []).slice(0, 20);
         if (aiTags.length >= 5) return { hashtags: aiTags, source: 'ai' };
-      } catch { /* fallback */ }
+      } catch (e: any) { /* AI service không khả dụng, fallback sang keyword */ }
     }
 
     return { hashtags: extractHashtagsFromText(message), source: 'keyword' };
