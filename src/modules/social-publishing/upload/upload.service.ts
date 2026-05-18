@@ -40,6 +40,19 @@ export class UploadService {
       try { fs.unlinkSync(tempPath); } catch {}
     }
   }
+
+  /** Upload thẳng từ disk path (dùng với diskStorage — tránh load file vào RAM) */
+  async saveFromDisk(filePath: string, filename: string, mimetype: string, user?: any): Promise<string> {
+    if (!this.googleDrive.isAvailable()) {
+      throw new BadRequestException('Google Drive storage chua duoc cau hinh');
+    }
+    try {
+      const uploaded = await this.googleDrive.uploadFromPath(filePath, filename, mimetype, user);
+      return uploaded.url;
+    } finally {
+      try { fs.unlinkSync(filePath); } catch {}
+    }
+  }
 }
 
 

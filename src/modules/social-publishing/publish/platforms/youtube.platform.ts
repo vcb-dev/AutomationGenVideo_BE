@@ -7,16 +7,20 @@ export class YoutubePublisher {
 
   async publish(token: string, opts: {
     title: string; description?: string; privacy?: string; mediaUrls: string[];
-    refreshToken?: string; onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
+    refreshToken?: string; tokenExpiresAt?: Date;
+    onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
   }): Promise<{ videoId: string; url: string }> {
     if (!opts.mediaUrls?.length) throw new Error('YouTube yêu cầu video file');
     const videoUrl = opts.mediaUrls[0];
 
-    // Refresh token nếu cần (được gọi trước mỗi upload)
+    // Chỉ refresh khi token hết hạn hoặc sắp hết hạn trong 5 phút
     let accessToken = token;
-    if (opts.refreshToken) {
+    const needsRefresh = opts.refreshToken && (
+      !opts.tokenExpiresAt || opts.tokenExpiresAt.getTime() < Date.now() + 5 * 60 * 1000
+    );
+    if (needsRefresh) {
       try {
-        const refreshed = await this.refreshAccessToken(opts.refreshToken);
+        const refreshed = await this.refreshAccessToken(opts.refreshToken!);
         accessToken = refreshed.accessToken;
         opts.onTokenRefreshed?.(refreshed.accessToken, refreshed.tokenExpiresAt);
         this.logger.log('[YouTube] Token refreshed OK');
@@ -61,16 +65,22 @@ export class YoutubePublisher {
     // Stream video trực tiếp vào upload — không load toàn bộ file vào RAM
     const videoStream = await axios.get(videoUrl, { responseType: 'stream', timeout: 300000 });
 
-    const uploadRes = await axios.put(uploadUrl, videoStream.data, {
-      headers: {
-        'Content-Type': 'video/mp4',
-        ...(fileSize > 0 && { 'Content-Length': fileSize }),
-        Authorization: `Bearer ${accessToken}`,
-      },
-      timeout: 600000,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-    });
+    let uploadRes: any;
+    try {
+      uploadRes = await axios.put(uploadUrl, videoStream.data, {
+        headers: {
+          'Content-Type': 'video/mp4',
+          ...(fileSize > 0 && { 'Content-Length': fileSize }),
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 600000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    } catch (err) {
+      videoStream.data.destroy();
+      throw err;
+    }
 
     const videoId = uploadRes.data.id;
     if (!videoId) throw new Error('YouTube: upload thành công nhưng không nhận được video ID');

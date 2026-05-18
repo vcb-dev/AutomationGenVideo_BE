@@ -1,12 +1,12 @@
 import {
-  Controller, Get, Post, Delete, Param, Query, Request,
+  Controller, Get, Post, Delete, Param, Query, Request, Body,
   UseGuards, UseInterceptors, UploadedFile, Logger, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery, ApiConsumes } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MediaLibraryService } from './media-library.service';
 import { UploadService, UPLOAD_DIR } from './upload.service';
@@ -75,5 +75,31 @@ export class MediaLibraryController {
   @ApiOperation({ summary: 'Xoá file khỏi thư viện' })
   remove(@Param('id') id: string, @Request() req: any) {
     return this.library.remove(id, req.user.id);
+  }
+
+  @Post(':id/preview-frame')
+  @ApiOperation({ summary: 'Preview frame tại giây bất kỳ — trả URL tạm để FE hiện trước khi confirm (tự xóa sau 5 phút)' })
+  @ApiBody({ schema: { properties: { timeSeconds: { type: 'number', example: 5 } }, required: ['timeSeconds'] } })
+  async previewFrame(
+    @Param('id') id: string,
+    @Body() body: { timeSeconds: number },
+    @Request() req: any,
+  ) {
+    const ts = Number(body.timeSeconds);
+    if (isNaN(ts) || ts < 0) throw new BadRequestException('timeSeconds phải là số không âm');
+    return this.library.previewFrameAtTime(id, req.user.id, ts);
+  }
+
+  @Post(':id/set-thumbnail')
+  @ApiOperation({ summary: 'Chọn ảnh bìa tại giây bất kỳ — upload lên Drive và cập nhật thumbnail_url trong DB' })
+  @ApiBody({ schema: { properties: { timeSeconds: { type: 'number', example: 10 } }, required: ['timeSeconds'] } })
+  async setThumbnail(
+    @Param('id') id: string,
+    @Body() body: { timeSeconds: number },
+    @Request() req: any,
+  ) {
+    const ts = Number(body.timeSeconds);
+    if (isNaN(ts) || ts < 0) throw new BadRequestException('timeSeconds phải là số không âm');
+    return this.library.setThumbnailAtTime(id, req.user.id, ts, req.user);
   }
 }

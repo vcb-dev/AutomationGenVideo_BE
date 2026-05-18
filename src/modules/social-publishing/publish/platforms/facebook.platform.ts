@@ -124,8 +124,8 @@ export class FacebookPublisher {
         if (!buffer && localFilePath) {
           const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
             ? process.env.FFMPEG_PATH
-            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : 'ffmpeg';
-            
+            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+
           if (ffmpegPath) {
             this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
             const cmd = `"${ffmpegPath}" -ss 00:00:00 -i "${localFilePath}" -vframes 1 -q:v 2 -f image2 -`;

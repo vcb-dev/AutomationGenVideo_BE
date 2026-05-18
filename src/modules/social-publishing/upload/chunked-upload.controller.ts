@@ -127,6 +127,7 @@ export class ChunkedUploadController {
     });
     if (!session) throw new BadRequestException('uploadId khong hop le');
     if (session.status === 'COMPLETED') {
+      if (!session.drive_file_id) throw new BadRequestException('Upload da finish nhung thieu Google Drive file ID');
       const existing = await this.prisma.socialUploadedFile.findFirst({
         where: { user_id: req.user.id, drive_file_id: session.drive_file_id },
         orderBy: { created_at: 'desc' },
