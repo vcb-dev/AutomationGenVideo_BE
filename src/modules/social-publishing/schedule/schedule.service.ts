@@ -11,6 +11,7 @@ const RETRY_DELAY_MS = 5 * 60 * 1000; // 5 phút
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
+  private _checkRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -94,10 +95,20 @@ export class ScheduleService {
     });
   }
 
-  // ─── WORKER: chạy mỗi 10 giây ───────────────────────────────────────────────
+  // ─── WORKER: chạy mỗi 30 giây, có guard chống concurrent ───────────────────
 
-  @Cron('*/10 * * * * *')
+  @Cron('*/30 * * * * *')
   async checkAndExecute() {
+    if (this._checkRunning) return;
+    this._checkRunning = true;
+    try {
+      await this._doCheckAndExecute();
+    } finally {
+      this._checkRunning = false;
+    }
+  }
+
+  private async _doCheckAndExecute() {
     const now        = new Date();
     const claimUntil = new Date(Date.now() + 10 * 60 * 1000); // claim 10 phút
 
@@ -172,7 +183,7 @@ export class ScheduleService {
 
     // 4. Chạy song song tất cả job đã claim
     await Promise.all(claimedPosts.map(post => this.executePost(post)));
-  }
+  } // end _doCheckAndExecute
 
   private async executePost(post: any) {
     try {

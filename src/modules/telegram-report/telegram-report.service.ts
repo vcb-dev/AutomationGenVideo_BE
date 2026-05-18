@@ -377,18 +377,26 @@ export class TelegramReportService implements OnModuleInit, OnModuleDestroy {
 
   // ── Cron check ────────────────────────────────────────────────────────────
 
+  private _reportRunning = false;
+
   @Cron('0 * * * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async handleScheduledReports() {
-    const now = new Date();
-    const configs = await this.prisma.telegramReportConfig.findMany({ where: { is_active: true } });
-    for (const cfg of configs) {
-      try {
-        const [m, h] = (cfg.schedule || '0 8 * * *').split(' ').map(Number);
-        if (now.getHours() === h && now.getMinutes() === m) {
-          this.logger.log(`[Telegram] Gửi cho user ${cfg.user_id}`);
-          await this.sendReports(cfg);
-        }
-      } catch (e) { this.logger.error(`[Telegram] Lỗi ${cfg.user_id}: ${e.message}`); }
+    if (this._reportRunning) return;
+    this._reportRunning = true;
+    try {
+      const now = new Date();
+      const configs = await this.prisma.telegramReportConfig.findMany({ where: { is_active: true } });
+      for (const cfg of configs) {
+        try {
+          const [m, h] = (cfg.schedule || '0 8 * * *').split(' ').map(Number);
+          if (now.getHours() === h && now.getMinutes() === m) {
+            this.logger.log(`[Telegram] Gửi cho user ${cfg.user_id}`);
+            await this.sendReports(cfg);
+          }
+        } catch (e) { this.logger.error(`[Telegram] Lỗi ${cfg.user_id}: ${e.message}`); }
+      }
+    } finally {
+      this._reportRunning = false;
     }
   }
 

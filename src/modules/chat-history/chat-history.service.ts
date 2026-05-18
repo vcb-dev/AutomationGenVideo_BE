@@ -40,6 +40,9 @@ export class ChatHistoryService {
   }
 
   async createConversation(userId: string, title: string) {
+    // Kiểm tra user tồn tại trước để tránh foreign key crash
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new Error(`User ${userId} không tồn tại — vui lòng đăng xuất và đăng nhập lại`);
     return this.prisma.chatConversation.create({
       data: { user_id: userId, title },
     });
