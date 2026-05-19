@@ -15,13 +15,14 @@ export class DraftsService {
 
   async create(userId: string, dto: {
     title?: string; message: string; mediaUrls?: string[];
-    platform?: SocialPlatform; accountId?: string; pageId?: string;
+    platform?: SocialPlatform; accountId?: string; pageId?: string; thumbUrl?: string;
   }) {
     return this.prisma.socialDraft.create({
       data: {
         user_id: userId, title: dto.title, message: dto.message,
         media_urls: dto.mediaUrls || [], platform: dto.platform,
         account_id: dto.accountId, page_id: dto.pageId,
+        thumb_url: dto.thumbUrl || null,
         updated_at: new Date(),
       },
     });
@@ -29,7 +30,7 @@ export class DraftsService {
 
   async update(id: string, userId: string, dto: {
     title?: string; message?: string; mediaUrls?: string[];
-    platform?: SocialPlatform; accountId?: string;
+    platform?: SocialPlatform; accountId?: string; thumbUrl?: string;
   }) {
     await this.findOne(id, userId);
     const data: any = { updated_at: new Date() };
@@ -38,6 +39,7 @@ export class DraftsService {
     if (dto.mediaUrls !== undefined) data.media_urls = dto.mediaUrls;
     if (dto.platform !== undefined) data.platform = dto.platform;
     if (dto.accountId !== undefined) data.account_id = dto.accountId;
+    if (dto.thumbUrl !== undefined) data.thumb_url = dto.thumbUrl || null;
     return this.prisma.socialDraft.update({ where: { id }, data });
   }
 

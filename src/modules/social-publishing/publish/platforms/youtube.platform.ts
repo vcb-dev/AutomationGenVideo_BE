@@ -7,6 +7,7 @@ export class YoutubePublisher {
 
   async publish(token: string, opts: {
     title: string; description?: string; privacy?: string; mediaUrls: string[];
+    thumbUrl?: string;
     refreshToken?: string; tokenExpiresAt?: Date;
     onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
   }): Promise<{ videoId: string; url: string }> {
@@ -84,6 +85,30 @@ export class YoutubePublisher {
 
     const videoId = uploadRes.data.id;
     if (!videoId) throw new Error('YouTube: upload thành công nhưng không nhận được video ID');
+
+    // Upload thumbnail nếu có
+    if (opts.thumbUrl) {
+      try {
+        const thumbRes = await axios.get(opts.thumbUrl, { responseType: 'stream', timeout: 30000 });
+        const contentType = thumbRes.headers['content-type'] || 'image/jpeg';
+        await axios.post(
+          `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}&uploadType=media`,
+          thumbRes.data,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': contentType,
+            },
+            timeout: 60000,
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+          },
+        );
+        this.logger.log(`[YouTube] Thumbnail đã được upload cho video ${videoId}`);
+      } catch (e: any) {
+        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${e.message}`);
+      }
+    }
 
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
   }

@@ -69,7 +69,11 @@ export class ZaloPublisher {
       throw new Error(`Zalo article create failed: ${JSON.stringify(articleRes.data)}`);
     }
 
-    const articleId = String(articleRes.data?.data?.token || articleRes.data?.data?.article_id || 'unknown');
+    const rawId = articleRes.data?.data?.token || articleRes.data?.data?.article_id;
+    if (!rawId) {
+      throw new Error(`Zalo article created (error=0) nhưng thiếu token/article_id trong response: ${JSON.stringify(articleRes.data)}`);
+    }
+    const articleId = String(rawId);
     return { articleId };
   }
 }

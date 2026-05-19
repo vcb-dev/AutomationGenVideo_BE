@@ -81,7 +81,7 @@ export class TiktokPublisher {
 
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
-      const r = await axios.head(urlOrPath);
+      const r = await axios.head(urlOrPath, { timeout: 15000 });
       const size = parseInt(r.headers['content-length'] || '0');
       if (!size) throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath} (Content-Length thiếu)`);
       return size;
