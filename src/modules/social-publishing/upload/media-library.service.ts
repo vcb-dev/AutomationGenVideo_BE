@@ -284,7 +284,7 @@ export class MediaLibraryService {
 
       // Tự xóa file preview sau 5 phút
       setTimeout(() => {
-        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch {}
+        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch (e: any) { this.logger.warn(`[Library] Không xóa được preview file ${previewName}: ${e.message}`); }
       }, 5 * 60 * 1000);
 
       const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
