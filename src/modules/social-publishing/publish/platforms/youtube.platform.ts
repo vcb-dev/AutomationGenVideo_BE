@@ -78,9 +78,8 @@ export class YoutubePublisher {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       });
-    } catch (err) {
+    } finally {
       try { videoStream?.data?.destroy(); } catch {}
-      throw err;
     }
 
     const videoId = uploadRes.data.id;

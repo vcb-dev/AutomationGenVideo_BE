@@ -718,9 +718,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 return { synced: 0 };
             }
 
-            // Load users for role and team lookup
+            // Load users for role and team lookup (chỉ active, giới hạn 5000)
             const sysUsers = await this.prisma.user.findMany({
-                select: { full_name: true, employee_id: true, email: true, team: true, roles: true }
+                where: { is_active: true },
+                select: { full_name: true, employee_id: true, email: true, team: true, roles: true },
+                take: 5000,
             });
             const dbUsersMap = new Map<string, any>();
             sysUsers.forEach(u => {
@@ -1211,6 +1213,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         const users = await this.prisma.user.findMany({
             orderBy: { created_at: 'desc' },
             select: { id: true, email: true, full_name: true, team: true, roles: true, employee_status: true, employee_id: true, image_url: true, created_at: true, updated_at: true },
+            take: 3000,
         });
 
         return users.map(u => ({
@@ -1901,7 +1904,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             }
         }
 
-        const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true } });
+        const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true }, take: 5000 });
         const inactiveLarkIds = allCh.filter((ch) => !isLarkChannelActiveStatus(ch.status)).map((ch) => ch.id);
         if (inactiveLarkIds.length > 0) {
             try {
