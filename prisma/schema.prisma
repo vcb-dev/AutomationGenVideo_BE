@@ -45,6 +45,7 @@ model User {
   reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                  Video[]
   social_accounts         SocialAccount[]
+  social_posts            SocialPost[]
 
   @@index([email])
   @@index([roles])
@@ -1177,9 +1178,11 @@ model SocialPost {
   next_retry_at DateTime?
   result        Json?
   error_msg     String?
+  thumb_url     String?
   created_at    DateTime         @default(now())
   updated_at    DateTime         @updatedAt
   account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([account_id])
@@ -1216,6 +1219,7 @@ model SocialDraft {
   platform    SocialPlatform?
   account_id  String?
   page_id     String?
+  thumb_url   String?
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 

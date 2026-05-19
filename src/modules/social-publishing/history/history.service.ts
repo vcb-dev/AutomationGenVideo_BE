@@ -7,10 +7,19 @@ export interface HistoryFilter {
   employeeId?: string;
 }
 
-const PRIVILEGED_ROLES = ['ADMIN', 'MANAGER', 'LEADER'];
+const ADMIN_ROLES  = ['ADMIN', 'MANAGER'];
+const LEADER_ROLES = ['LEADER'];
+
+function isAdmin(roles: string[]): boolean {
+  return roles.some(r => ADMIN_ROLES.includes(r));
+}
+
+function isLeader(roles: string[]): boolean {
+  return !isAdmin(roles) && roles.some(r => LEADER_ROLES.includes(r));
+}
 
 function isPrivileged(roles: string[]): boolean {
-  return roles.some(r => PRIVILEGED_ROLES.includes(r));
+  return isAdmin(roles) || isLeader(roles);
 }
 
 @Injectable()
@@ -18,11 +27,25 @@ export class HistoryService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Resolve danh sách user_id cần filter:
-   * - MEMBER       → chỉ chính họ
-   * - ADMIN/MANAGER/LEADER + employeeId → chỉ nhân viên đó
-   * - ADMIN/MANAGER/LEADER + team       → tất cả user trong team
-   * - ADMIN/MANAGER/LEADER + không filter → undefined (không lọc = tất cả)
+   * Lấy team của người gọi (dùng cho LEADER).
+   */
+  private async getCallerTeam(callerId: string): Promise<string | null> {
+    const caller = await this.prisma.user.findUnique({
+      where: { id: callerId },
+      select: { team: true },
+    });
+    return caller?.team ?? null;
+  }
+
+  /**
+   * Resolve danh sách user_id cần filter theo role:
+   * - MEMBER/EDITOR/CONTENT → chỉ chính họ
+   * - ADMIN/MANAGER + employeeId → chỉ nhân viên đó
+   * - ADMIN/MANAGER + team       → tất cả user trong team
+   * - ADMIN/MANAGER (không filter) → tất cả (undefined)
+   * - LEADER + employeeId → chỉ nhân viên đó (trong team mình)
+   * - LEADER + team       → team đó (chỉ nếu là team mình, không thì team mình)
+   * - LEADER (không filter) → tất cả user trong team mình
    */
   private async resolveUserIds(
     callerId: string,
@@ -33,6 +56,34 @@ export class HistoryService {
       return { in: [callerId] };
     }
 
+    // LEADER: mặc định giới hạn trong team mình
+    if (isLeader(callerRoles)) {
+      const leaderTeam = await this.getCallerTeam(callerId);
+
+      // Filter theo employeeId — chỉ cho phép nếu nhân viên đó thuộc team của LEADER
+      if (filter.employeeId) {
+        const employee = await this.prisma.user.findUnique({
+          where: { id: filter.employeeId },
+          select: { team: true },
+        });
+        if (!employee || employee.team !== leaderTeam) {
+          throw new ForbiddenException('Không có quyền xem lịch sử của nhân viên ngoài team');
+        }
+        return { in: [filter.employeeId] };
+      }
+
+      // Filter theo team (LEADER chỉ thấy team mình)
+      const teamToFilter = filter.team || leaderTeam;
+      if (!teamToFilter) return { in: [callerId] };
+
+      const users = await this.prisma.user.findMany({
+        where: { team: teamToFilter, is_active: true },
+        select: { id: true },
+      });
+      return { in: users.map(u => u.id) };
+    }
+
+    // ADMIN / MANAGER
     if (filter.employeeId) {
       return { in: [filter.employeeId] };
     }
@@ -45,7 +96,7 @@ export class HistoryService {
       return { in: users.map(u => u.id) };
     }
 
-    return undefined; // không lọc → trả tất cả
+    return undefined; // admin không filter → thấy tất cả
   }
 
   async findAll(userId: string, callerRoles: string[], filter: HistoryFilter = {}, limit = 50) {
@@ -56,6 +107,7 @@ export class HistoryService {
       take: limit,
       include: {
         account: { select: { name: true, username: true, avatar_url: true, platform: true } },
+        user:    { select: { id: true, full_name: true, team: true, image_url: true } },
       },
     });
   }
@@ -105,12 +157,21 @@ export class HistoryService {
   }
 
   /** Danh sách nhân viên để filter (chỉ ADMIN/MANAGER/LEADER) */
-  async getMembers(_callerId: string, callerRoles: string[], teamFilter?: string) {
+  async getMembers(callerId: string, callerRoles: string[], teamFilter?: string) {
     if (!isPrivileged(callerRoles)) {
       throw new ForbiddenException('Không có quyền xem danh sách thành viên');
     }
+
     const where: any = { is_active: true };
-    if (teamFilter) where.team = teamFilter;
+
+    // LEADER chỉ thấy team mình (hoặc team đang filter — nhưng vẫn là team mình)
+    if (isLeader(callerRoles)) {
+      const leaderTeam = await this.getCallerTeam(callerId);
+      where.team = teamFilter && teamFilter === leaderTeam ? teamFilter : leaderTeam;
+    } else if (teamFilter) {
+      where.team = teamFilter;
+    }
+
     return this.prisma.user.findMany({
       where,
       select: {
@@ -126,8 +187,15 @@ export class HistoryService {
   }
 
   /** Danh sách team duy nhất (chỉ ADMIN/MANAGER/LEADER) */
-  async getTeams(_callerId: string, callerRoles: string[]) {
+  async getTeams(callerId: string, callerRoles: string[]) {
     if (!isPrivileged(callerRoles)) return [];
+
+    // LEADER chỉ thấy team mình
+    if (isLeader(callerRoles)) {
+      const leaderTeam = await this.getCallerTeam(callerId);
+      return leaderTeam ? [leaderTeam] : [];
+    }
+
     const rows = await this.prisma.user.findMany({
       where: { is_active: true, team: { not: null } },
       select: { team: true },

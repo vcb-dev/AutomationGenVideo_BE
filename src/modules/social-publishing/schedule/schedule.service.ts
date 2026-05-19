@@ -26,7 +26,7 @@ export class ScheduleService {
 
   async create(userId: string, dto: {
     accountId: string; message: string; mediaUrls?: string[];
-    pageId?: string; privacy?: string; scheduledAt: string;
+    pageId?: string; privacy?: string; scheduledAt: string; thumbUrl?: string;
   }) {
     const scheduledAt = new Date(dto.scheduledAt);
     if (isNaN(scheduledAt.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601 (vd: 2025-05-18T10:00:00+07:00)');
@@ -44,6 +44,7 @@ export class ScheduleService {
         media_urls:   dto.mediaUrls ?? [],
         page_id:      dto.pageId,
         privacy:      dto.privacy,
+        thumb_url:    dto.thumbUrl || null,
         scheduled_at: scheduledAt,
         source:       SocialPostSource.SCHEDULED,
         status:       SocialPostStatus.PENDING,

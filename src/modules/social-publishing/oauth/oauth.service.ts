@@ -115,6 +115,12 @@ export class OAuthService {
       throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
     }
 
+    // Verify platform trong state phải khớp với platform trong URL — ngăn CSRF variant
+    if (decoded.platform && decoded.platform !== platform) {
+      this.logger.error(`[OAuth] Platform mismatch: state=${decoded.platform}, callback=${platform}`);
+      throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
+    }
+
     const { userId, codeVerifier } = decoded;
     let result: any;
 

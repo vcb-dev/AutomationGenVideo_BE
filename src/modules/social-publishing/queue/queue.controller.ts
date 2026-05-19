@@ -23,6 +23,9 @@ class EnqueueJobItemDto {
 
   @IsOptional() @IsString()
   pageId?: string;
+
+  @IsOptional() @IsString()
+  thumbUrl?: string;
 }
 
 class EnqueueBodyDto {

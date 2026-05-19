@@ -22,6 +22,7 @@ export interface EnqueueJobDto {
   mediaUrls?: string[];
   privacy?: string;
   pageId?: string;
+  thumbUrl?: string;
 }
 
 export interface JobStatus {
@@ -58,6 +59,7 @@ export class QueueService {
             media_urls: job.mediaUrls ?? [],
             privacy:    job.privacy,
             page_id:    job.pageId,
+            thumb_url:  job.thumbUrl || null,
             scheduled_at: now,
             updated_at:   now,
           },

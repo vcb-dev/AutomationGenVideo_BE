@@ -11,6 +11,7 @@ class CreateScheduledPostDto {
   @IsOptional() @IsString() pageId?: string;
   @IsOptional() @IsString() privacy?: string;
   @IsString() scheduledAt: string;
+  @IsOptional() @IsString() thumbUrl?: string;
 }
 
 class UpdateScheduledPostDto {

@@ -26,7 +26,7 @@ export class ChunkedUploadController {
   @ApiOperation({ summary: 'Create Google Drive resumable upload session' })
   async init(@Body() body: { filename: string; mimetype: string; totalSize: number }, @Request() req: any) {
     if (!body.filename || !body.mimetype || !body.totalSize) throw new BadRequestException('Thieu filename, mimetype hoac totalSize');
-    if (body.totalSize >= 2 * 1024 * 1024 * 1024) throw new BadRequestException('File vuot qua gioi han 2GB');
+    if (body.totalSize > 2 * 1024 * 1024 * 1024) throw new BadRequestException('File vuot qua gioi han 2GB');
     if (!UploadService.ALLOWED_MIME_RE.test(body.mimetype)) throw new BadRequestException(`Loai file khong ho tro: ${body.mimetype}`);
     if (!this.googleDrive.isAvailable()) throw new BadRequestException('Google Drive storage chua duoc cau hinh');
 

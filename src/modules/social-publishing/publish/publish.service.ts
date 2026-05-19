@@ -211,6 +211,7 @@ export class PublishService {
         extraData,
         accountId: post.account_id,
         platformId: account.platform_id,
+        thumbUrl: post.thumb_url || undefined,
       });
       return result;
     } finally {
@@ -311,7 +312,8 @@ export class PublishService {
     privacy?: string;
     extraData?: any;
     accountId?: string;
-    platformId?: string;   // account.platform_id — luôn chính xác
+    platformId?: string;
+    thumbUrl?: string;
   }) {
     const extra = opts.extraData || {};
 
@@ -363,6 +365,7 @@ export class PublishService {
           description: opts.message,
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
+          thumbUrl: opts.thumbUrl,
           refreshToken,
           tokenExpiresAt: ytAccount?.token_expires_at ?? undefined,
           onTokenRefreshed: opts.accountId ? async (newToken: string, expiresAt: Date) => {
