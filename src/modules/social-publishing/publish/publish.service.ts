@@ -64,13 +64,16 @@ export class PublishService {
     return resultUrls;
   }
 
-  private async prepareMediaUrlsForPublishing(mediaUrls: string[]): Promise<{ urls: string[]; tempFiles: string[] }> {
+  private async prepareMediaUrlsForPublishing(mediaUrls: string[], platform?: SocialPlatform): Promise<{ urls: string[]; tempFiles: string[] }> {
     if (!mediaUrls || !mediaUrls.length) return { urls: [], tempFiles: [] };
 
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
     if (!fs.existsSync(uploadBase)) fs.mkdirSync(uploadBase, { recursive: true });
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+
+    // IG/Threads dùng video_url → Meta server tự fetch. Không cần download về backend.
+    const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM || platform === SocialPlatform.THREADS;
 
     // Song song hóa tất cả download — tránh chờ tuần tự khi có nhiều ảnh/video
     const results = await Promise.all(mediaUrls.map(async (url) => {
@@ -83,6 +86,13 @@ export class PublishService {
             if (m) fileId = m[1];
           }
           if (fileId) {
+            if (useDirectDriveUrl) {
+              // IG/Threads: dùng Drive URL trực tiếp, Meta sẽ tự fetch — tránh giới hạn 32MB Cloud Run
+              // confirm=t bypass trang "virus scan" của Google Drive với file lớn
+              const driveDirectUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${fileId}`;
+              this.logger.log(`[PrepareMedia] Drive fileId=${fileId} → dùng direct URL cho ${platform}`);
+              return { url: driveDirectUrl, tempFile: null };
+            }
             const urlLower = url.toLowerCase();
             const ext = urlLower.includes('.mp4') ? '.mp4'
               : urlLower.includes('.gif') ? '.gif'
@@ -124,9 +134,9 @@ export class PublishService {
 
     this.logger.log(`[PublishNow] ${account.platform} "${account.name}" | platformId=${account.platform_id} | igUserId=${extraData?.igUserId} | pageId=${extraData?.pageId} | mediaUrls=${JSON.stringify(dto.mediaUrls)}`);
 
-    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
+    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
                            account.platform === SocialPlatform.THREADS;
-    const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || []);
+    const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
 
@@ -180,9 +190,9 @@ export class PublishService {
     const token = this.crypto.decrypt(account.access_token_enc);
     const extraData = account.extra_data as any;
 
-    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
+    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
                            account.platform === SocialPlatform.THREADS;
-    const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || []);
+    const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
 
