@@ -72,9 +72,9 @@ export class HistoryService {
         return { in: [filter.employeeId] };
       }
 
-      // Filter theo team (LEADER chỉ thấy team mình)
-      const teamToFilter = filter.team || leaderTeam;
-      if (!teamToFilter) return { in: [callerId] };
+      // Filter theo team — LEADER chỉ thấy team mình, bỏ qua filter.team từ client
+      const teamToFilter = leaderTeam;
+      if (!teamToFilter) return { in: [callerId] }; // leader không có team → chỉ thấy bản thân
 
       const users = await this.prisma.user.findMany({
         where: { team: teamToFilter, is_active: true },

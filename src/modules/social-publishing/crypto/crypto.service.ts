@@ -34,6 +34,8 @@ export class CryptoService implements OnModuleInit {
     if (!process.env.SOCIAL_TOKEN_SALT) {
       this.logger.warn('⚠️  SOCIAL_TOKEN_SALT chưa được đặt — đang dùng salt mặc định. Hãy đặt SOCIAL_TOKEN_SALT trong .env.');
     }
+    // Pre-compute fallback keys at startup to avoid blocking the event loop on first decrypt failure
+    void this.fallbackKeys;
   }
 
   private get key(): Buffer {

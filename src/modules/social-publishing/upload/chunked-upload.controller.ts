@@ -172,7 +172,9 @@ export class ChunkedUploadController {
 
     const file = await this.googleDrive.getFile(driveFileId, true);
     const size = file.size || session.size;
-    if (size < session.size) {
+    // Chỉ reject khi Drive trả về size > 0 nhưng nhỏ hơn expected (incomplete upload).
+    // size = 0 nghĩa là Drive chưa report size (file nhỏ / vừa hoàn thành) — coi là OK.
+    if (size > 0 && size < session.size) {
       await this.prisma.socialDriveUploadSession.update({
         where: { id: session.id },
         data: { status: 'UPLOADING', uploaded_bytes: size, error_msg: 'Drive file size is smaller than expected' },

@@ -12,14 +12,40 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+type PreparedMedia = { url: string; tempFile: string | null };
+
+function extractDriveFileId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const id = u.searchParams.get('id');
+    if (id) return id;
+  } catch {}
+  const match = url.match(/\/file\/d\/([^/?#]+)/);
+  return match?.[1] || null;
+}
+
+function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
+  if (mimetype === 'image/jpeg' || mimetype === 'image/jpg') return '.jpg';
+  if (mimetype === 'image/png') return '.png';
+  if (mimetype === 'image/gif') return '.gif';
+  if (mimetype === 'image/webp') return '.webp';
+  if (mimetype === 'video/mp4') return '.mp4';
+  return fallback;
+}
+
+function ensureExt(filename: string, ext: string): string {
+  return path.extname(filename) ? filename : `${filename}${ext}`;
+}
 
 @Injectable()
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
+  private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -72,44 +98,55 @@ export class PublishService {
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    // IG/Threads dùng video_url → Meta server tự fetch. Không cần download về backend.
-    const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM || platform === SocialPlatform.THREADS;
+    // IG/Threads/YouTube use direct Drive URLs to avoid Cloud Run download/transcode.
+    const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM
+      || platform === SocialPlatform.THREADS
+      || platform === SocialPlatform.YOUTUBE;
 
-    // Song song hóa tất cả download — tránh chờ tuần tự khi có nhiều ảnh/video
-    const results = await Promise.all(mediaUrls.map(async (url) => {
+    const results = await Promise.all(mediaUrls.map(async (url): Promise<PreparedMedia> => {
       if (url.includes('drive.google.com') || url.includes('docs.google.com') || url.includes('googleusercontent')) {
         try {
-          const u = new URL(url);
-          let fileId = u.searchParams.get('id');
-          if (!fileId && url.includes('/file/d/')) {
-            const m = url.match(/\/file\/d\/([^/]+)/);
-            if (m) fileId = m[1];
-          }
+          const fileId = extractDriveFileId(url);
           if (fileId) {
+            const media = await (this.prisma as any).socialUploadedFile?.findFirst?.({
+              where: { OR: [{ drive_file_id: fileId }, { url }] },
+              select: { filename: true, originalname: true, mimetype: true },
+            }).catch(() => null);
+            const filename = ensureExt(
+              media?.filename || media?.originalname || `media_${fileId}`,
+              extensionForMime(media?.mimetype, '.mp4'),
+            );
+
             if (useDirectDriveUrl) {
-              // IG/Threads: dùng Drive URL trực tiếp, Meta sẽ tự fetch — tránh giới hạn 32MB Cloud Run
-              // confirm=t bypass trang "virus scan" của Google Drive với file lớn
-              const driveDirectUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${fileId}`;
-              this.logger.log(`[PrepareMedia] Drive fileId=${fileId} → dùng direct URL cho ${platform}`);
+              const driveDirectUrl = this.googleDrive.buildDownloadUrl(fileId, filename);
+              this.logger.log(`[PrepareMedia] Drive fileId=${fileId} -> direct URL cho ${platform} (${filename})`);
               return { url: driveDirectUrl, tempFile: null };
             }
-            const urlLower = url.toLowerCase();
-            const ext = urlLower.includes('.mp4') ? '.mp4'
-              : urlLower.includes('.gif') ? '.gif'
-              : urlLower.includes('.png') ? '.png'
-              : urlLower.includes('.webp') ? '.webp'
-              : (urlLower.includes('.jpg') || urlLower.includes('.jpeg') || urlLower.includes('thumbnail')) ? '.jpg'
-              : '.mp4';
+
+            const cacheKey = `${fileId}:${extensionForMime(media?.mimetype, path.extname(filename) || '.mp4')}`;
+            if (this.driveLocalCache.has(cacheKey)) {
+              this.logger.log(`[PrepareMedia] Cache hit Drive fileId=${fileId}`);
+              return this.driveLocalCache.get(cacheKey)!;
+            }
+
+            const ext = extensionForMime(media?.mimetype, path.extname(filename) || '.mp4');
             const localName = `gd_${Date.now()}_${Math.random().toString(36).slice(2)}_${fileId}${ext}`;
             const localPath = path.join(uploadBase, localName);
-            this.logger.log(`[PrepareMedia] Tải Drive fileId=${fileId} → ${localName}`);
-            await this.googleDrive.downloadFileToLocal(fileId, localPath);
-            const localMediaUrl = `${base}/api/social/media/${localName}`;
-            this.logger.log(`[PrepareMedia] ✓ ${localName}`);
-            return { url: localMediaUrl, tempFile: localPath };
+            this.logger.log(`[PrepareMedia] Download Drive fileId=${fileId} -> ${localName}`);
+            const downloadPromise = this.googleDrive.downloadFileToLocal(fileId, localPath).then(() => {
+              const localMediaUrl = `${base}/api/social/media/${localName}`;
+              this.logger.log(`[PrepareMedia] OK ${localName}`);
+              setTimeout(() => this.driveLocalCache.delete(cacheKey), 10 * 60 * 1000);
+              return { url: localMediaUrl, tempFile: localPath };
+            }).catch((err: any) => {
+              this.driveLocalCache.delete(cacheKey); // xóa ngay để lần sau retry được
+              throw err;
+            });
+            this.driveLocalCache.set(cacheKey, downloadPromise);
+            return downloadPromise;
           }
         } catch (err: any) {
-          this.logger.warn(`[PrepareMedia] Lỗi tải Drive URL ${url}: ${err.message}`);
+          this.logger.warn(`[PrepareMedia] Drive URL failed ${url}: ${err.message}`);
         }
       }
       return { url, tempFile: null };
@@ -281,8 +318,16 @@ export class PublishService {
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
-      const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -map 0:v:0 -map 0:a:0 -c:v libx264 -preset ultrafast -threads 0 -profile:v high -crf 23 -maxrate 8M -bufsize 16M -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 128k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
-      await execAsync(cmd, { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      await execFileAsync(ffmpegPath, [
+        '-y', '-i', inputPath,
+        '-map', '0:v:0', '-map', '0:a:0',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '0',
+        '-profile:v', 'high', '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
+        '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+        '-map_metadata', '-1', '-movflags', '+faststart',
+        outputPath,
+      ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
 
       if (!fs.existsSync(outputPath)) {
         this.logger.warn(`[Transcode] File output không tồn tại sau transcode: ${outputPath}`);

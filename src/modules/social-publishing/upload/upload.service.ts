@@ -22,7 +22,13 @@ export class UploadService {
     const ext = (mimeType ? UploadService.MIME_EXT_MAP[mimeType] : null)
       || path.extname(originalname).toLowerCase()
       || '.bin';
-    return `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+    const base = path.basename(originalname, path.extname(originalname))
+      .normalize('NFC')
+      .replace(/[\\/:*?"<>|]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120) || 'media';
+    return `${base}${ext}`;
   }
 
   async saveBuffer(buffer: Buffer, filename: string, mimetype: string, user?: any): Promise<string> {

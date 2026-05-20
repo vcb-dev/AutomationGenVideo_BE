@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
+function isVideoUrl(url: string): boolean {
+  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
+}
+
 @Injectable()
 export class ThreadsPublisher {
   private readonly logger = new Logger(ThreadsPublisher.name);
@@ -17,7 +21,7 @@ export class ThreadsPublisher {
     }
 
     if (mediaUrls.length === 1) {
-      const isVideo = /\.mp4(\?|$)/i.test(mediaUrls[0]);
+      const isVideo = isVideoUrl(mediaUrls[0]);
       const cid = await this.createContainer(userId, token, {
         text, mediaType: isVideo ? 'VIDEO' : 'IMAGE',
         mediaUrl: mediaUrls[0],
@@ -28,12 +32,12 @@ export class ThreadsPublisher {
 
     // Carousel
     const childIds = await Promise.all(mediaUrls.map((url) => {
-      const isVid = /\.mp4(\?|$)/i.test(url);
+      const isVid = isVideoUrl(url);
       return this.createContainer(userId, token, {
         mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
       });
     }));
-    for (const id of childIds) await this.waitForContainer(id, token);
+    await Promise.all(childIds.map(id => this.waitForContainer(id, token)));
     const cid = await this.createContainer(userId, token, { text, mediaType: 'CAROUSEL', children: childIds });
     await this.waitForContainer(cid, token);
     return this.publishContainer(userId, token, cid);
@@ -50,8 +54,15 @@ export class ThreadsPublisher {
     }
     if (opts.isCarouselItem) params.is_carousel_item = true;
     if (opts.children) params.children = opts.children.join(',');
-    const res = await axios.post(`${this.BASE}/${userId}/threads`, params);
-    return res.data.id;
+    try {
+      const res = await axios.post(`${this.BASE}/${userId}/threads`, params, { timeout: 30000 });
+      this.logger.log(`[Threads] Container created: ${res.data.id}`);
+      return res.data.id;
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      this.logger.error(`[Threads] createContainer failed (${err.response?.status}): ${detail}`);
+      throw new Error(`Threads createContainer (HTTP ${err.response?.status || 'unknown'}): ${detail}`);
+    }
   }
 
   private async waitForContainer(containerId: string, token: string, maxMs = 180000) {
@@ -84,9 +95,15 @@ export class ThreadsPublisher {
   }
 
   private async publishContainer(userId: string, token: string, containerId: string): Promise<{ postId: string }> {
-    const res = await axios.post(`${this.BASE}/${userId}/threads_publish`, {
-      creation_id: containerId, access_token: token,
-    });
-    return { postId: res.data.id };
+    try {
+      const res = await axios.post(`${this.BASE}/${userId}/threads_publish`, {
+        creation_id: containerId, access_token: token,
+      }, { timeout: 30000 });
+      return { postId: res.data.id };
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      this.logger.error(`[Threads] publishContainer failed (${err.response?.status}): ${detail}`);
+      throw new Error(`Threads publishContainer (HTTP ${err.response?.status || 'unknown'}): ${detail}`);
+    }
   }
 }

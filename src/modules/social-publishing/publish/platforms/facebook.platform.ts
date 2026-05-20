@@ -2,12 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as FormData from 'form-data';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 @Injectable()
 export class FacebookPublisher {
@@ -130,9 +130,12 @@ export class FacebookPublisher {
 
           if (ffmpegPath) {
             this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
-            const cmd = `"${ffmpegPath}" -ss 00:00:00 -i "${localFilePath}" -vframes 1 -q:v 2 -f image2 -`;
-            const { stdout } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any);
-            buffer = stdout;
+            const { stdout } = await execFileAsync(
+              ffmpegPath,
+              ['-ss', '00:00:00', '-i', localFilePath, '-vframes', '1', '-q:v', '2', '-f', 'image2', '-'],
+              { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any,
+            );
+            buffer = stdout as unknown as Buffer;
           }
         }
 
@@ -172,24 +175,23 @@ export class FacebookPublisher {
     }
 
     // ── Multiple images → Carousel ─────────────────────────────────
-    // Bước 1: upload từng ảnh dưới dạng unpublished
+    // Bước 1: upload song song các ảnh dưới dạng unpublished
+    const photoResults = await Promise.allSettled(
+      opts.mediaUrls.map(url =>
+        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }),
+      ),
+    );
     const photoIds: string[] = [];
-    for (const url of opts.mediaUrls) {
-      try {
-        const r = await axios.post(`${this.BASE}/${targetId}/photos`, {
-          url,
-          published: false,
-          access_token: pageToken,
-        });
-        if (r.data?.id) {
-          photoIds.push(r.data.id);
-        } else {
-          this.logger.warn(`[FB] Photo upload returned no id for url: ${url}`);
-        }
-      } catch (err: any) {
-        this.logger.warn(`[FB] Photo upload failed: ${err.response?.data?.error?.message || err.message}`);
+    photoResults.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value.data?.id) {
+        photoIds.push(r.value.data.id);
+      } else {
+        const reason = r.status === 'rejected'
+          ? (r.reason?.response?.data?.error?.message || r.reason?.message)
+          : 'no id returned';
+        this.logger.warn(`[FB] Photo upload failed for url[${i}]: ${reason}`);
       }
-    }
+    });
     if (photoIds.length === 0) throw new Error('Tất cả ảnh upload thất bại');
 
     // Bước 2: post carousel
