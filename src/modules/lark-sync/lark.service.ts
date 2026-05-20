@@ -4081,7 +4081,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (!nameKey) return;
 
                     const perm = employeeMap.get(nameKey);
-                    const inferredEmail = perm?.email ? String(perm.email).toLowerCase().trim() : null;
+                    const inferredEmail = (t.email ? String(t.email).toLowerCase().trim() : null) || (perm?.email ? String(perm.email).toLowerCase().trim() : null);
 
                     const mergeTraffic = (existing: any, current: any) => {
                         const res = { ...existing };
