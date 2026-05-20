@@ -102,6 +102,7 @@ export class QueueService {
         },
         orderBy: { scheduled_at: 'asc' },
         select: { id: true, platform: true },
+        take: 1000, // cap để tránh load toàn bộ bảng khi có nhiều jobs pending
       });
       for (const p of allPendingQueue) {
         if (!queueByPlatform[p.platform]) queueByPlatform[p.platform] = [];

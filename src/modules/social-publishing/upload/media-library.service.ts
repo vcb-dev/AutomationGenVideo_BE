@@ -1,13 +1,13 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from './google-drive-storage.service';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { UPLOAD_DIR } from './upload.service';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const TABLE_NOT_FOUND = ['P2021', 'P2022', 'P2010'];
 
@@ -27,6 +27,24 @@ function modelReady(prisma: any): boolean {
 const EMPTY_LIST = { items: [], total: 0, page: 1, limit: 20, pages: 0 };
 const EMPTY_STATS = { count: 0, totalBytes: 0, totalMB: 0 };
 
+function safeDriveFilename(originalname: string, fallbackExt: string): string {
+  const ext = path.extname(originalname).toLowerCase() || fallbackExt;
+  const base = path.basename(originalname, path.extname(originalname))
+    .normalize('NFC')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || 'media';
+  return `${base}${ext}`;
+}
+
+function thumbFilenameFor(videoFilename: string): string {
+  const base = path.basename(videoFilename, path.extname(videoFilename))
+    .replace(/^thumb[_\s-]*/i, '')
+    .slice(0, 120) || 'video';
+  return `thumb_${base}.jpg`;
+}
+
 @Injectable()
 export class MediaLibraryService {
   private readonly logger = new Logger(MediaLibraryService.name);
@@ -43,12 +61,18 @@ export class MediaLibraryService {
     return null;
   }
 
-  async uploadAndStore(userId: string, filePath: string, opts: { originalname: string; mimetype: string }, user?: any) {
+  async uploadAndStore(
+    userId: string,
+    filePath: string,
+    opts: { originalname: string; mimetype: string; isThumbnail?: boolean; thumbFor?: string },
+    user?: any,
+  ) {
     const isVideo = opts.mimetype.startsWith('video/');
     const ffmpegPath = this.resolveFFmpegPath();
     const ext = path.extname(opts.originalname).toLowerCase() || (isVideo ? '.mp4' : '.jpg');
-    const baseName = `lib_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const filename = `${baseName}${ext}`;
+    const filename = opts.isThumbnail
+      ? thumbFilenameFor(opts.thumbFor || opts.originalname)
+      : safeDriveFilename(opts.originalname, ext);
     let fileSize: number;
     try {
       fileSize = fs.statSync(filePath).size;
@@ -68,7 +92,13 @@ export class MediaLibraryService {
     if (!this.googleDrive.isAvailable()) {
       throw new Error('Google Drive storage chua duoc cau hinh');
     }
-    const uploaded = await this.googleDrive.uploadFromPath(filePath, filename, opts.mimetype, user);
+    const uploaded = await this.googleDrive.uploadFromPath(
+      filePath,
+      filename,
+      opts.mimetype,
+      user,
+      opts.isThumbnail ? { subfolder: 'thumb' } : undefined,
+    );
     url = uploaded.url;
     storage = 'google_drive';
     drive_file_id = uploaded.fileId;
@@ -78,12 +108,12 @@ export class MediaLibraryService {
     let thumbnail_url: string | null = null;
     let thumbnail_drive_file_id: string | null = null;
     if (isVideo && ffmpegPath) {
-      const thumbName = `thumb_${baseName}.jpg`;
+      const thumbName = thumbFilenameFor(filename);
       const thumbPath = path.join(UPLOAD_DIR, thumbName);
       try {
-        await execAsync(`"${ffmpegPath}" -y -ss 0 -i "${filePath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
+        await execFileAsync(ffmpegPath, ['-y', '-ss', '0', '-i', filePath, '-vframes', '1', '-q:v', '2', thumbPath], { timeout: 30_000 });
         if (fs.existsSync(thumbPath)) {
-          const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
+          const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
           thumbnail_url = uploadedThumb.url;
           thumbnail_drive_file_id = uploadedThumb.fileId;
           try { fs.unlinkSync(thumbPath); } catch {}
@@ -117,20 +147,19 @@ export class MediaLibraryService {
 
     try {
       const tempVideoPath = path.join(UPLOAD_DIR, `dl_${Date.now()}_${driveFileId}.mp4`);
-      const baseNoExt = path.basename(baseFilename, path.extname(baseFilename));
-      const thumbName = `thumb_${Date.now()}_${baseNoExt}.jpg`;
+      const thumbName = thumbFilenameFor(baseFilename);
       const thumbPath = path.join(UPLOAD_DIR, thumbName);
 
       this.logger.log(`[Library] Downloading Drive video ${driveFileId} to extract thumbnail...`);
       await this.googleDrive.downloadFileToLocal(driveFileId, tempVideoPath);
 
       this.logger.log(`[Library] Extracting frame 1s with ffmpeg...`);
-      await execAsync(`"${ffmpegPath}" -y -ss 00:00:01 -i "${tempVideoPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { timeout: 30_000 });
+      await execFileAsync(ffmpegPath, ['-y', '-ss', '00:00:01', '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', thumbPath], { timeout: 30_000 });
 
       let result: { url: string; fileId: string } | null = null;
       if (fs.existsSync(thumbPath)) {
         this.logger.log(`[Library] Uploading thumbnail to Google Drive...`);
-        const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
+        const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
         result = { url: uploadedThumb.url, fileId: uploadedThumb.fileId };
         this.logger.log(`[Library] Created Drive thumbnail: ${result.url}`);
         try { fs.unlinkSync(thumbPath); } catch {}
@@ -271,8 +300,9 @@ export class MediaLibraryService {
       this.logger.log(`[Library] Download video ${file.drive_file_id} để preview frame tại ${ts}s`);
       await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
 
-      await execAsync(
-        `"${ffmpegPath}" -y -ss ${ts} -i "${tempVideoPath}" -vframes 1 -q:v 2 "${previewPath}"`,
+      await execFileAsync(
+        ffmpegPath,
+        ['-y', '-ss', String(ts), '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', previewPath],
         { timeout: 60_000 },
       );
 
@@ -314,17 +344,17 @@ export class MediaLibraryService {
     if (!ffmpegPath) throw new BadRequestException('FFmpeg chưa được cài đặt trên server');
 
     const ts = Math.max(0, Math.floor(timeSeconds));
-    const baseNoExt = path.basename(file.filename, path.extname(file.filename));
     const tempVideoPath = path.join(UPLOAD_DIR, `dl_thumb_${Date.now()}_${file.drive_file_id}.mp4`);
-    const thumbName = `thumb_custom_${Date.now()}_${baseNoExt}.jpg`;
+    const thumbName = thumbFilenameFor(file.filename);
     const thumbPath = path.join(UPLOAD_DIR, thumbName);
 
     try {
       this.logger.log(`[Library] Download video ${file.drive_file_id} để set thumbnail tại ${ts}s`);
       await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
 
-      await execAsync(
-        `"${ffmpegPath}" -y -ss ${ts} -i "${tempVideoPath}" -vframes 1 -q:v 2 "${thumbPath}"`,
+      await execFileAsync(
+        ffmpegPath,
+        ['-y', '-ss', String(ts), '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', thumbPath],
         { timeout: 60_000 },
       );
 
@@ -333,7 +363,7 @@ export class MediaLibraryService {
       }
 
       this.logger.log(`[Library] Upload thumbnail custom lên Drive: ${thumbName}`);
-      const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user);
+      const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
 
       // Cập nhật DB TRƯỚC — chỉ xóa Drive cũ sau khi DB update thành công
       // (tránh trường hợp DB lỗi → mất thumbnail cũ mà không có cái mới)

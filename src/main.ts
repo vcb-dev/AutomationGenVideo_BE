@@ -21,7 +21,14 @@ async function bootstrap() {
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
   }));
-  app.use(compression({ level: 6, threshold: 1024 }));
+  app.use(compression({
+    level: 6,
+    threshold: 1024,
+    filter: (req, res) => {
+      if (req.url.startsWith('/api/social/media/')) return false;
+      return compression.filter(req, res);
+    },
+  }));
 
   const expressInstance = app.getHttpAdapter().getInstance();
   if (typeof expressInstance.set === "function") {

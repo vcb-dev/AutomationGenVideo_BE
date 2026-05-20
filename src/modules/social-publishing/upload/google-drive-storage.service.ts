@@ -42,6 +42,7 @@ export interface GoogleDriveResumableStatus {
 export class GoogleDriveStorageService {
   private readonly logger = new Logger(GoogleDriveStorageService.name);
   private cachedToken: { token: string; expiresAt: number } | null = null;
+  private tokenPending: Promise<string> | null = null;
   private folderCache = new Map<string, string>();
 
   isAvailable(): boolean {
@@ -58,7 +59,7 @@ export class GoogleDriveStorageService {
     );
   }
 
-  async resolveTargetFolder(user?: any): Promise<string> {
+  async resolveTargetFolder(user?: any, subfolder?: string): Promise<string> {
     const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
     // Use Vietnam timezone (ICT, UTC+7) for folder date to match business hours
     const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
@@ -70,10 +71,10 @@ export class GoogleDriveStorageService {
     if (user && (user.full_name || user.email)) {
       const folderName = user.full_name || user.email;
       const userFolderId = await this.getOrCreateFolder(dateFolderId, folderName);
-      return userFolderId;
+      return subfolder ? this.getOrCreateFolder(userFolderId, subfolder) : userFolderId;
     }
 
-    return dateFolderId;
+    return subfolder ? this.getOrCreateFolder(dateFolderId, subfolder) : dateFolderId;
   }
 
   private folderPending = new Map<string, Promise<string>>();
@@ -144,21 +145,28 @@ export class GoogleDriveStorageService {
     }
   }
 
-  async uploadFromPath(filePath: string, filename: string, mimetype: string, user?: any): Promise<GoogleDriveUploadResult> {
+  async uploadFromPath(
+    filePath: string,
+    filename: string,
+    mimetype: string,
+    user?: any,
+    opts?: { subfolder?: string; displayName?: string },
+  ): Promise<GoogleDriveUploadResult> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
-    const folderId = await this.resolveTargetFolder(user);
+    const driveName = opts?.displayName || filename;
+    const folderId = await this.resolveTargetFolder(user, opts?.subfolder);
     const token = await this.getAccessToken();
 
     const form = new FormData();
     form.append('metadata', JSON.stringify({
-      name: filename,
+      name: driveName,
       parents: [folderId],
       mimeType: mimetype,
     }), { contentType: 'application/json' });
-    form.append('media', fs.createReadStream(filePath), { filename, contentType: mimetype });
+    form.append('media', fs.createReadStream(filePath), { filename: driveName, contentType: mimetype });
 
     const uploadRes = await axios.post(
       DRIVE_UPLOAD_URL,
@@ -181,8 +189,8 @@ export class GoogleDriveStorageService {
       await this.makePublic(fileId, token);
     }
 
-    const directUrl = this.buildDownloadUrl(fileId, filename);
-    this.logger.log(`[GoogleDrive] Uploaded ${filename} -> ${fileId}`);
+    const directUrl = this.buildDownloadUrl(fileId, driveName);
+    this.logger.log(`[GoogleDrive] Uploaded ${driveName} -> ${fileId}`);
 
     return {
       fileId,
@@ -363,9 +371,10 @@ export class GoogleDriveStorageService {
     }
   }
 
-  private buildDownloadUrl(fileId: string, filename?: string): string {
+  buildDownloadUrl(fileId: string, filename?: string): string {
     const params = new URLSearchParams({
       export: 'download',
+      confirm: 't',
       id: fileId,
     });
     if (filename) params.set('filename', filename);
@@ -380,7 +389,13 @@ export class GoogleDriveStorageService {
     if (this.cachedToken && this.cachedToken.expiresAt > Date.now() + 60_000) {
       return this.cachedToken.token;
     }
+    // Prevent concurrent token fetches: all callers wait on the same in-flight request
+    if (this.tokenPending) return this.tokenPending;
+    this.tokenPending = this._fetchAccessToken().finally(() => { this.tokenPending = null; });
+    return this.tokenPending;
+  }
 
+  private async _fetchAccessToken(): Promise<string> {
     const serviceAccount = this.getServiceAccountCredentials();
     if (serviceAccount) {
       const nowSeconds = Math.floor(Date.now() / 1000);

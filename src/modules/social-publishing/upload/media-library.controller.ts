@@ -62,11 +62,19 @@ export class MediaLibraryController {
       },
     }),
   )
-  async upload(@UploadedFile() file: Express.Multer.File, @Request() req: any) {
+  async upload(
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req: any,
+    @Query('type') type?: string,
+    @Query('thumbFor') thumbFor?: string,
+  ) {
     if (!file) throw new BadRequestException('Không có file nào được upload');
     this.logger.log(`[Library] Upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
     const result = await this.library.uploadAndStore(req.user.id, file.path, {
-      originalname: file.originalname, mimetype: file.mimetype,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      isThumbnail: type === 'thumb',
+      thumbFor,
     }, req.user);
     return { success: true, file: result };
   }

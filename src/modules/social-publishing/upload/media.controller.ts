@@ -44,9 +44,13 @@ export class MediaController {
     }
 
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('ngrok-skip-browser-warning', 'true');
     res.setHeader('Content-Type', contentType);
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.setHeader('Content-Encoding', 'identity');
+    res.setHeader('X-Accel-Buffering', 'no');
+    req.setTimeout(10 * 60 * 1000);
+    res.setTimeout(10 * 60 * 1000);
 
     const rangeHeader = req.headers['range'];
 
@@ -73,7 +77,6 @@ export class MediaController {
       rangeStream.pipe(res);
     } else {
       res.setHeader('Content-Length', fileSize);
-      res.setHeader('Cache-Control', 'public, max-age=86400');
       res.status(200);
       const fullStream = fs.createReadStream(filePath);
       fullStream.on('error', (err) => {
