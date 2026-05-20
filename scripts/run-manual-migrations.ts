@@ -1,4 +1,3 @@
-
 import { PrismaClient } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -9,12 +8,7 @@ async function runSqlFile(filePath: string) {
   console.log(`Running SQL file: ${filePath}`);
   const sql = fs.readFileSync(filePath, 'utf8');
   
-  // Split by semicolon but watch out for triggers/functions if any
-  // For these simple migrations, splitting by semicolon might be okay, 
-  // but Prisma's $executeRawUnsafe can take the whole block if it's multiple statements.
   try {
-    // Some drivers fail on multiple statements in one call. 
-    // We'll try running the whole thing first.
     await prisma.$executeRawUnsafe(sql);
     console.log(`Successfully executed ${filePath}`);
   } catch (error) {
@@ -40,9 +34,7 @@ async function runSqlFile(filePath: string) {
 
 async function main() {
   const files = [
-    'prisma/migrations/manual_add_google_drive_media_fields.sql',
-    'prisma/migrations/manual_add_social_publishing.sql',
-    'prisma/migrations/manual_drop_social_media_files.sql'
+    'scripts/manual_update.sql'
   ];
 
   for (const file of files) {
