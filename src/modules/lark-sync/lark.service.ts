@@ -2658,7 +2658,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 const nameKey = cleanName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
                 const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
 
-                const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
+                let larkUserId = null;
+                if (kpiData.employee_data) {
+                    const empArr = Array.isArray(kpiData.employee_data) ? kpiData.employee_data : [kpiData.employee_data];
+                    if (empArr[0]?.id) larkUserId = String(empArr[0].id).trim();
+                }
+
+                const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) ||
+                                 (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
+                                 dbUsersMap.get(nameKey);
                 if (sysMatch) {
                     // Role comes from Users table (handled in getUserActivityReports)
                     // We also fetch current employee_status to skip resigned users.
@@ -3018,7 +3026,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
                     const nameKey = normalizeNameKey(cleanName);
                     const empIdKey = kpiData.employee_id ? String(kpiData.employee_id).trim() : null;
-                    const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || dbUsersMap.get(nameKey);
+                    let larkUserId = null;
+                    if (kpiData.employee_data) {
+                        const empArr = Array.isArray(kpiData.employee_data) ? kpiData.employee_data : [kpiData.employee_data];
+                        if (empArr[0]?.id) larkUserId = String(empArr[0].id).trim();
+                    }
+
+                    const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) ||
+                                     (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
+                                     dbUsersMap.get(nameKey);
                     if (sysMatch) {
                         // Team strictly follows Lark source (unless it's null/empty, but usually it's set).
                         // Role and user-specific attributes stay in Users table.
@@ -3629,7 +3645,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 // Role: from users table. Team: from users table (authoritative over Lark).
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
-                    select: { email: true, full_name: true, team: true, image_url: true, roles: true, employee_id: true }
+                    select: { email: true, full_name: true, team: true, image_url: true, roles: true, employee_id: true, employee_data: true }
                 });
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
@@ -3689,6 +3705,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             roles: userRoles,
                             role: resolvedRole,
                             employee_position: null,
+                            employee_data: u.employee_data || null,
                         });
                     }
                 }
@@ -4291,10 +4308,27 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     });
                 }
 
+                const larkUserIdMatchMap = new Map<string, any>();
+                employees.forEach(emp => {
+                    if (emp.employee_id) {
+                        larkUserIdMatchMap.set(String(emp.employee_id).trim(), emp);
+                    }
+                });
+
                 kpiData.forEach(kpi => {
                     const nameKey = kpi.name ? normName(kpi.name) : null;
                     const emailKey = kpi.email?.toLowerCase().trim();
-                    const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+                    
+                    let larkUserId = null;
+                    if (kpi.employee_data) {
+                        const empArr = Array.isArray(kpi.employee_data) ? kpi.employee_data : [kpi.employee_data];
+                        if (empArr[0]?.id) larkUserId = String(empArr[0].id).trim();
+                    }
+
+                    const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) ||
+                                     (larkUserId ? larkUserIdMatchMap.get(larkUserId) : null) ||
+                                     (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+
                     const pKey = authUser
                         ? (authUser.email?.toLowerCase().trim() || normName(authUser.full_name))
                         : (emailKey || nameKey || `unknown_k_${kpi.id}`);
@@ -4315,6 +4349,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (!kpisForAggregation.has(pmk)) {
                         kpisForAggregation.set(pmk, {
                             ...kpi,
+                            name: authUser?.full_name || kpi.name,
+                            email: authUser?.email || kpi.email,
                             role: authUser?.role || 'member',
                             image_url: authUser?.image_url || kpi.image_url,
                             status: authUser?.status || 'on',
