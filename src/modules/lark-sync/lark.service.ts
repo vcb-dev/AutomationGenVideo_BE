@@ -4724,6 +4724,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         // Stable monthly traffic/revenue for the Summary Cards:
                         traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
                         revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
+                        revenueToday: (reportKpi ? Number(reportKpi.revenue_day || 0) : 0) + incrementalRevenue,
                         task_progress: reportKpi ? {
                             task_auto: reportKpi.task_auto || 0,
                             task_new: reportKpi.task_new || 0,
@@ -4891,6 +4892,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             completed_month: 0,
                             traffic_range: 0,
                             revenue_range: 0,
+                            revenueToday: answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0,
                             task_progress: { task_auto: 0, task_new: 0, kpi_status: 'N/A' },
                             traffic_month: 0,
                             revenue_month: 0,
@@ -4989,6 +4991,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         existing.completed_month += r.completed_month;
                         existing.traffic_month += r.traffic_month;
                         existing.revenue_month += r.revenue_month;
+                        existing.revenueToday = (existing.revenueToday || 0) + (r.revenueToday || 0);
 
                         // TARGETS: Use latest or max, DO NOT SUM
                         // If we have an exact day match in one of the records, prioritize its kpi_day
