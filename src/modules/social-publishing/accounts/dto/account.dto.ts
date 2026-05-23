@@ -33,3 +33,27 @@ export class GetPagesQueryDto {
   @IsBoolean()
   refresh?: boolean;
 }
+
+export class AddManualInstagramAccountDto {
+  @ApiProperty({ description: 'Tên tài khoản Instagram' })
+  @IsString()
+  name: string;
+
+  @ApiProperty({ description: 'Tên người dùng Instagram' })
+  @IsString()
+  username: string;
+
+  @ApiProperty({ description: 'Access token Instagram' })
+  @IsString()
+  access_token: string;
+
+  @ApiPropertyOptional({ description: 'ID tài khoản cha (Facebook) - tuỳ chọn' })
+  @IsOptional()
+  @IsString()
+  parent_id?: string;
+
+  @ApiPropertyOptional({ description: 'URL ảnh đại diện' })
+  @IsOptional()
+  @IsString()
+  avatar_url?: string;
+}

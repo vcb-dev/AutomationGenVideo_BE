@@ -360,6 +360,86 @@ export class AccountsService implements OnModuleDestroy {
     }));
   }
 
+  /**
+   * Xác thực token Instagram có hiệu lực không
+   * Sử dụng cho cả instagram_business (token của page) và instagram_direct (token của user)
+   */
+  async validateInstagramToken(token: string): Promise<{ userId: string; username?: string }> {
+    try {
+      // Thử lấy thông tin user từ Instagram API
+      const res = await axios.get('https://graph.instagram.com/v21.0/me', {
+        params: { fields: 'id,username', access_token: token },
+        timeout: 10000,
+      });
+      return { userId: res.data.id, username: res.data.username };
+    } catch (err: any) {
+      const detail = err.response?.data?.error?.message || err.message;
+      this.logger.error(`validateInstagramToken failed: ${detail}`);
+      throw new Error(`Token Instagram không hợp lệ: ${detail}`);
+    }
+  }
+
+  /**
+   * Thêm tài khoản Instagram thủ công (không liên kết qua Facebook)
+   * Loại: instagram_direct
+   */
+  async addManualInstagramAccount(userId: string, data: {
+    name: string;
+    username: string;
+    access_token: string;
+    parent_id?: string;
+    avatar_url?: string;
+  }): Promise<any> {
+    this.logger.log(`[ManualIG] Thêm tài khoản Instagram thủ công: ${data.username}`);
+
+    // Xác thực token
+    const tokenInfo = await this.validateInstagramToken(data.access_token);
+
+    // Nếu có parent_id, kiểm tra parent account tồn tại
+    if (data.parent_id) {
+      await this.findOne(data.parent_id, userId);
+    }
+
+    // Lưu tài khoản Instagram
+    const account = await this.saveAccount(userId, {
+      platform: SocialPlatform.INSTAGRAM,
+      platformId: tokenInfo.userId,
+      name: data.name,
+      username: data.username,
+      avatarUrl: data.avatar_url,
+      accessToken: data.access_token,
+      parentId: data.parent_id || null,
+      extraData: {
+        type: 'instagram_direct', // Loại: direct, không qua Facebook API
+        igUserId: tokenInfo.userId,
+        isManual: true, // Đánh dấu là thêm thủ công
+        addedAt: new Date().toISOString(),
+      },
+    });
+
+    this.logger.log(`[ManualIG] ✅ Đã thêm tài khoản Instagram: ${account.name} (${account.username})`);
+    return { success: true, account: this.sanitize(account) };
+  }
+
+  /**
+   * Lấy danh sách tài khoản Instagram thủ công (instagram_direct) của user
+   */
+  async getManualInstagramAccounts(userId: string): Promise<any[]> {
+    const accounts = await this.prisma.socialAccount.findMany({
+      where: {
+        user_id: userId,
+        platform: SocialPlatform.INSTAGRAM,
+        is_active: true,
+        extra_data: {
+          path: ['type'],
+          equals: 'instagram_direct',
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+    return accounts.map(a => this.sanitize(a));
+  }
+
   private sanitize(account: any) {
     const { access_token_enc, refresh_token_enc, ...rest } = account;
     const now = Date.now();
@@ -372,3 +452,4 @@ export class AccountsService implements OnModuleDestroy {
     };
   }
 }
+
