@@ -62,8 +62,8 @@ export class TrackedChannelsService {
         display_name: createDto.display_name,
         avatar_url: createDto.avatar_url,
         total_followers: createDto.total_followers,
-        total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : undefined,
-        total_views: createDto.total_views ? BigInt(createDto.total_views) : undefined,
+        total_likes: createDto.total_likes !== undefined ? BigInt(createDto.total_likes) : undefined,
+        total_views: createDto.total_views !== undefined ? BigInt(createDto.total_views) : undefined,
         total_videos: createDto.total_videos,
         posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate,
@@ -316,8 +316,8 @@ export class TrackedChannelsService {
       where: { id },
       data: {
         ...updateDto,
-        total_likes: updateDto.total_likes ? BigInt(updateDto.total_likes) : undefined,
-        total_views: updateDto.total_views ? BigInt(updateDto.total_views) : undefined,
+        total_likes: updateDto.total_likes !== undefined ? BigInt(updateDto.total_likes) : undefined,
+        total_views: updateDto.total_views !== undefined ? BigInt(updateDto.total_views) : undefined,
         last_synced_at: new Date(),
       } as any,
     });
