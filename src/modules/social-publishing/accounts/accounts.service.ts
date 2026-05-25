@@ -27,17 +27,40 @@ export class AccountsService implements OnModuleDestroy {
 
   async findAll(userId: string) {
     const accounts = await this.prisma.socialAccount.findMany({
-      where: { user_id: userId, is_active: true },
+      where: {
+        is_active: true,
+        OR: [
+          { user_id: userId },
+          { is_shared: true } as any,
+        ],
+      },
       orderBy: { created_at: 'desc' },
     });
     return accounts.map((a) => this.sanitize(a));
   }
 
+  /** Tìm account — cho phép truy cập shared accounts (dùng trong publish flow) */
   async findOne(id: string, userId: string) {
+    const account = await this.prisma.socialAccount.findFirst({
+      where: {
+        id,
+        is_active: true,
+        OR: [
+          { user_id: userId },
+          { is_shared: true } as any,
+        ],
+      },
+    });
+    if (!account) throw new NotFoundException('Social account not found');
+    return account;
+  }
+
+  /** Tìm account — chỉ chủ sở hữu (dùng cho disconnect, sync, save-page) */
+  private async findOneOwned(id: string, userId: string) {
     const account = await this.prisma.socialAccount.findFirst({
       where: { id, user_id: userId, is_active: true },
     });
-    if (!account) throw new NotFoundException('Social account not found');
+    if (!account) throw new NotFoundException('Social account not found or you are not the owner');
     return account;
   }
 
@@ -85,7 +108,7 @@ export class AccountsService implements OnModuleDestroy {
   }
 
   async disconnect(id: string, userId: string) {
-    await this.findOne(id, userId);
+    await this.findOneOwned(id, userId);
 
     // Tắt account chính
     await this.prisma.socialAccount.update({
@@ -114,7 +137,7 @@ export class AccountsService implements OnModuleDestroy {
   }
 
   async getDecryptedToken(id: string, userId: string): Promise<string> {
-    const account = await this.findOne(id, userId);
+    const account = await this.findOneOwned(id, userId);
     return this.crypto.decrypt(account.access_token_enc);
   }
 
@@ -126,7 +149,7 @@ export class AccountsService implements OnModuleDestroy {
       return cached.data;
     }
 
-    const account = await this.findOne(accountId, userId);
+    const account = await this.findOneOwned(accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
 
     try {
@@ -166,7 +189,7 @@ export class AccountsService implements OnModuleDestroy {
 
   /** Fetch pages trực tiếp từ API (không qua cache) — dùng nội bộ cho sync token và auto-save */
   private async fetchFacebookPagesWithTokens(accountId: string, userId: string) {
-    const account = await this.findOne(accountId, userId);
+    const account = await this.findOneOwned(accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
     const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
       params: {
@@ -229,8 +252,8 @@ export class AccountsService implements OnModuleDestroy {
     igUsername?: string;
     igPicture?: string;
   }) {
-    // Validate parent account tồn tại
-    await this.findOne(opts.parentAccountId, userId);
+    // Validate parent account tồn tại và user là owner
+    await this.findOneOwned(opts.parentAccountId, userId);
 
     // Lưu Page
     const pageAccount = await this.saveAccount(userId, {
@@ -395,9 +418,9 @@ export class AccountsService implements OnModuleDestroy {
     // Xác thực token
     const tokenInfo = await this.validateInstagramToken(data.access_token);
 
-    // Nếu có parent_id, kiểm tra parent account tồn tại
+    // Nếu có parent_id, kiểm tra parent account tồn tại và user là owner
     if (data.parent_id) {
-      await this.findOne(data.parent_id, userId);
+      await this.findOneOwned(data.parent_id, userId);
     }
 
     // Lưu tài khoản Instagram
@@ -438,6 +461,36 @@ export class AccountsService implements OnModuleDestroy {
       orderBy: { created_at: 'desc' },
     });
     return accounts.map(a => this.sanitize(a));
+  }
+
+  /**
+   * Bật/tắt chia sẻ account cho toàn bộ hệ thống.
+   * Khi is_shared = true → mọi user đều thấy và dùng được account này để publish.
+   * Chỉ chủ sở hữu (owner) mới được thay đổi.
+   */
+  async setShared(id: string, userId: string, isShared: boolean): Promise<{ success: boolean; is_shared: boolean }> {
+    await this.findOneOwned(id, userId);
+
+    await this.prisma.socialAccount.update({
+      where: { id },
+      data: { is_shared: isShared } as any,
+    });
+
+    // Cập nhật luôn các account con (via parent_id)
+    await this.prisma.socialAccount.updateMany({
+      where: { parent_id: id },
+      data: { is_shared: isShared } as any,
+    });
+
+    // Cập nhật account con cũ (via extra_data.parentAccountId)
+    await this.prisma.$executeRaw`
+      UPDATE social_accounts
+      SET is_shared = ${isShared}
+      WHERE extra_data->>'parentAccountId' = ${id}
+    `;
+
+    this.logger.log(`[setShared] Account ${id} is_shared = ${isShared} (bao gồm tất cả account con)`);
+    return { success: true, is_shared: isShared };
   }
 
   private sanitize(account: any) {

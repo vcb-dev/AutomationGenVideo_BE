@@ -124,17 +124,31 @@ export class TrackedChannelsService {
   async findAllByUser(userId: string, platform?: string, team?: string) {
     if (team) {
       // Single-query path: JOIN tracked_channels → huyk_channels on lark_channel_id = id
-      const platformFilter = platform ? `AND tc.platform = ${platform.toUpperCase()}` : '';
-      const rows = await this.prisma.$queryRaw<any[]>`
-        SELECT tc.*
-        FROM tracked_channels tc
-        JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-        WHERE tc.user_id = ${userId}
-          AND tc.is_active = true
-          AND hc.team_traffic ILIKE ${'%' + team + '%'}
-          ${platformFilter}
-        ORDER BY tc.created_at DESC
-      `;
+      // Dùng 2 query riêng thay vì string interpolation để tránh lỗi parameterized SQL
+      const likeParam = '%' + team + '%';
+      let rows: any[];
+      if (platform) {
+        rows = await this.prisma.$queryRaw<any[]>`
+          SELECT tc.*
+          FROM tracked_channels tc
+          JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
+          WHERE tc.user_id = ${userId}
+            AND tc.is_active = true
+            AND hc.team_traffic ILIKE ${likeParam}
+            AND tc.platform::text = ${platform.toUpperCase()}
+          ORDER BY tc.created_at DESC
+        `;
+      } else {
+        rows = await this.prisma.$queryRaw<any[]>`
+          SELECT tc.*
+          FROM tracked_channels tc
+          JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
+          WHERE tc.user_id = ${userId}
+            AND tc.is_active = true
+            AND hc.team_traffic ILIKE ${likeParam}
+          ORDER BY tc.created_at DESC
+        `;
+      }
       return rows.map((ch) => ({
         ...ch,
         total_likes: Number(ch.total_likes ?? 0),
@@ -303,9 +317,9 @@ export class TrackedChannelsService {
       const data = await response.json();
       return data;
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error checking channel:', error);
-      throw new Error(`Failed to check channel: ${error.message}`);
+      throw new Error(`Failed to check channel: ${error?.message || error}`);
     }
   }
 
