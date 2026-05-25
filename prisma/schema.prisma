@@ -1146,6 +1146,7 @@ model SocialAccount {
   /// Dữ liệu bổ sung tuỳ platform: { pageId, pageToken, igUserId, channelId, … }
   extra_data              Json?
   is_active               Boolean        @default(true)
+  is_shared               Boolean        @default(false)
   created_at              DateTime       @default(now())
   updated_at              DateTime       @updatedAt
   user                    User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
@@ -1158,6 +1159,7 @@ model SocialAccount {
   @@index([platform])
   @@index([parent_id])
   @@index([is_active])
+  @@index([is_shared])
   @@index([token_expires_at])
   @@index([is_active, token_expires_at])
   @@map("social_accounts")
