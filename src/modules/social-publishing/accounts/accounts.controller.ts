@@ -16,6 +16,12 @@ export class AccountsController {
     return this.accountsService.findAll(req.user.id);
   }
 
+  @Get('expiring')
+  @ApiOperation({ summary: 'Lấy danh sách account sắp hết hạn token (trong 7 ngày)' })
+  getExpiring(@Request() req) {
+    return this.accountsService.getExpiringAccounts(req.user.id);
+  }
+
   @Get(':id/pages')
   @ApiOperation({ summary: 'Lấy Facebook Pages + Instagram liên kết (cache 5 phút)' })
   getPages(
@@ -46,6 +52,14 @@ export class AccountsController {
       parentAccountId,
       ...body,
     });
+  }
+
+  @Post(':id/sync-pages')
+  @ApiOperation({ summary: 'Đồng bộ lại Page Token cho tất cả Facebook Pages + Instagram liên kết' })
+  async syncPages(@Param('id') id: string, @Request() req) {
+    await this.accountsService.syncFacebookChildrenTokens(id, req.user.id);
+    await this.accountsService.autoSaveFacebookPages(id, req.user.id);
+    return { success: true, message: 'Đã đồng bộ token cho tất cả Pages/Instagram liên kết' };
   }
 
   @Delete(':id')

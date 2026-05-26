@@ -8,6 +8,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
+# Skip Chromium download during dependency installation
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
 # Install all dependencies (including devDependencies for building)
 RUN npm ci
 
@@ -18,10 +21,13 @@ RUN npx prisma generate
 COPY . .
 RUN npm run build
 
+# Prune devDependencies to keep only production dependencies in node_modules
+RUN npm prune --omit=dev && npm cache clean --force
+
 # Stage 2: Runtime
 FROM node:20-alpine
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl ffmpeg
 
 WORKDIR /app
 
@@ -29,12 +35,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install only production dependencies and clean cache
-RUN npm ci --omit=dev && npm cache clean --force
-
-# Copy generated Prisma client from builder stage
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+# Copy the pruned node_modules from builder stage
+COPY --from=builder /app/node_modules ./node_modules
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist

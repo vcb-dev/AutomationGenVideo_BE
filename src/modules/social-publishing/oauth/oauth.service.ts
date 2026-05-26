@@ -115,6 +115,12 @@ export class OAuthService {
       throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
     }
 
+    // Verify platform trong state phải khớp với platform trong URL — ngăn CSRF variant
+    if (decoded.platform && decoded.platform !== platform) {
+      this.logger.error(`[OAuth] Platform mismatch: state=${decoded.platform}, callback=${platform}`);
+      throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
+    }
+
     const { userId, codeVerifier } = decoded;
     let result: any;
 
@@ -151,8 +157,10 @@ export class OAuthService {
 
     if (platform === 'FACEBOOK') {
       // Chạy ngầm — không await để không làm chậm response callback
-      this.accounts.syncFacebookChildrenTokens(saved.id, userId).catch(() => {});
-      this.accounts.autoSaveFacebookPages(saved.id, userId).catch(() => {});
+      this.accounts.syncFacebookChildrenTokens(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] syncFacebookChildrenTokens failed for ${saved.id}: ${err.message}`));
+      this.accounts.autoSaveFacebookPages(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] autoSaveFacebookPages failed for ${saved.id}: ${err.message}`));
     }
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);

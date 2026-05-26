@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+
+// Upload
 import { UploadController } from './upload/upload.controller';
 import { UploadService } from './upload/upload.service';
 import { MediaController } from './upload/media.controller';
-import { SupabaseStorageService } from './upload/supabase-storage.service';
+import { GoogleDriveStorageService } from './upload/google-drive-storage.service';
+import { MediaLibraryController } from './upload/media-library.controller';
+import { MediaLibraryService } from './upload/media-library.service';
+import { ChunkedUploadController } from './upload/chunked-upload.controller';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -49,11 +54,16 @@ import { HistoryService } from './history/history.service';
 import { DraftsController } from './drafts/drafts.controller';
 import { DraftsService } from './drafts/drafts.service';
 
+// Hashtag
+import { HashtagController } from './hashtag/hashtag.controller';
+
 @Module({
   imports: [PrismaModule, MulterModule.register()],
   controllers: [
     UploadController,
     MediaController,
+    MediaLibraryController,
+    ChunkedUploadController,
     AccountsController,
     OAuthController,
     PublishController,
@@ -61,12 +71,14 @@ import { DraftsService } from './drafts/drafts.service';
     QueueController,
     HistoryController,
     DraftsController,
+    HashtagController,
   ],
   providers: [
     // Core
     CryptoService,
-    SupabaseStorageService,
+    GoogleDriveStorageService,
     UploadService,
+    MediaLibraryService,
     // Accounts
     AccountsService,
     // OAuth

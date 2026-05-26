@@ -71,7 +71,7 @@ async function main() {
         return {
             id: r.record_id, 
             employee_id: parseLarkValue(f['ID nhân viên']), 
-            name: parseLarkValue(f['Tên'] || f['Nhân viên']),
+            name: parseLarkValue(f['Nhân viên'] || f['Tên']),
             tag: parseLarkValue(f['TAG']), 
             team: parseLarkValue(f['Team']), 
             image_url: f['Hình ảnh']?.[0]?.url,
@@ -115,8 +115,8 @@ async function main() {
         await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS sync_lark_kpi_buffer`);
         await prisma.$executeRawUnsafe(`CREATE UNLOGGED TABLE sync_lark_kpi_buffer (LIKE "lark_kpi" INCLUDING ALL)`);
 
-        // Step 2: Insert into temp table in chunks of 200 (Still using chunks but TEMP is 10x faster)
-        const CHUNK_SIZE = 200;
+        // Step 2: Insert into temp table in large chunks
+        const CHUNK_SIZE = 1000;
         for (let i = 0; i < kpiData.length; i += CHUNK_SIZE) {
             const chunk = kpiData.slice(i, i + CHUNK_SIZE);
             const values = chunk.map(r => `(${esc(r.id)},${esc(r.employee_id)},${esc(r.name)},${esc(r.tag)},${esc(r.team)},${esc(r.image_url)},${esc(r.kpi_day)},${esc(r.kpi_month)},${esc(r.kpii_status)},${esc(r.completed_day)},${esc(r.completed_month)},${esc(r.task_new)},${esc(r.task_new_month)},${esc(r.task_auto)},${esc(r.task_auto_month)},${esc(r.task_creative)},${esc(r.revenue_month)},${esc(r.traffic_month)},${esc(r.report_date)},${esc(r.month)},${esc(r.state)},${esc(r.link_image)},NOW(),NOW())`).join(',');

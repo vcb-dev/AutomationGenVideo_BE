@@ -2,16 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as FormData from 'form-data';
+import { PrismaService } from '../../../../common/prisma/prisma.service';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 @Injectable()
 export class FacebookPublisher {
   private readonly logger = new Logger(FacebookPublisher.name);
   private readonly BASE = 'https://graph.facebook.com/v21.0';
+
+  constructor(private readonly prisma: PrismaService) {}
 
   async publish(token: string, opts: {
     message: string;
@@ -48,7 +51,7 @@ export class FacebookPublisher {
     }
 
     const firstMedia = opts.mediaUrls[0];
-    const isVideo = /\.(mp4|mov|avi|mkv|webm)(\?|$)/i.test(firstMedia);
+    const isVideo = /\.mp4(\?|$)/i.test(firstMedia);
 
     // ── Video ──────────────────────────────────────────────────────
     if (isVideo) {
@@ -59,7 +62,9 @@ export class FacebookPublisher {
         // Multipart upload trực tiếp từ disk — không cần URL công khai, không phụ thuộc ngrok/catbox
         this.logger.log(`[FB] Uploading video via multipart from disk: ${localFilePath}`);
         const form = new FormData();
-        form.append('source', fs.createReadStream(localFilePath), { filename: 'video.mp4', contentType: 'video/mp4' });
+        const videoReadStream = fs.createReadStream(localFilePath);
+        videoReadStream.on('error', (err) => this.logger.error(`[FB] Video stream error: ${err.message}`));
+        form.append('source', videoReadStream, { filename: 'video.mp4', contentType: 'video/mp4' });
         form.append('description', opts.message);
         form.append('access_token', pageToken);
         if (privacyParam) form.append('privacy', privacyParam);
@@ -84,27 +89,55 @@ export class FacebookPublisher {
         videoId = res.data.id;
       }
 
-      // ── TỰ ĐỘNG TRÍCH XUẤT ẢNH BÌA (FRAME ĐẦU) & ĐẶT LÀM THUMBNAIL ──
+      // ── TỰ ĐỘNG LẤY ẢNH BÌA TỪ DB HOẶC LOCAL FILE ──
       try {
-        const ffmpegPath = process.env.FFMPEG_PATH;
-        if (!ffmpegPath) {
-          this.logger.warn('[FB] FFMPEG_PATH chưa được cấu hình — bỏ qua bước set thumbnail');
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
-        }
-        if (!fs.existsSync(ffmpegPath)) {
-          this.logger.warn(`[FB] ffmpeg không tồn tại tại: ${ffmpegPath} — bỏ qua bước set thumbnail`);
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
+        let buffer: Buffer | null = null;
+        
+        // 1. Cố gắng lấy thumbnail_url từ DB (vì local file thường đã bị xoá)
+        try {
+          const filename = firstMedia.split('/').pop()?.split('?')[0];
+          if (filename) {
+            let cleanId = filename;
+            if (cleanId.startsWith('gd_') && cleanId.includes('_')) {
+              cleanId = cleanId.split('_').slice(2).join('_').replace(/\.mp4$/i, '');
+            } else if (cleanId.includes('_')) {
+              cleanId = cleanId.split('_').slice(1).join('_').replace(/\.mp4$/i, '');
+            }
+            const uploadedFile = await this.prisma.socialUploadedFile.findFirst({
+              where: {
+                OR: [
+                  { filename },
+                  { drive_file_id: cleanId },
+                  { url: firstMedia }
+                ]
+              }
+            });
+            if (uploadedFile && uploadedFile.thumbnail_url) {
+              this.logger.log(`[FB] Tải thumbnail từ URL trong DB: ${uploadedFile.thumbnail_url}`);
+              const res = await axios.get(uploadedFile.thumbnail_url, { responseType: 'arraybuffer', timeout: 15000 });
+              buffer = Buffer.from(res.data);
+            }
+          }
+        } catch (e: any) {
+          this.logger.warn(`[FB] Lỗi khi lấy thumbnail từ DB: ${e.message}`);
         }
 
-        // Chỉ trích xuất thumbnail từ file local để tránh command injection với external URL
-        if (!localFilePath) {
-          this.logger.log('[FB] Bỏ qua thumbnail vì không có local file');
-          return { postId: videoId, url: `https://facebook.com/${videoId}` };
-        }
-        this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
+        // 2. Nếu DB không có, dùng FFmpeg cắt file local (nếu còn giữ trên disk)
+        if (!buffer && localFilePath) {
+          const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
+            ? process.env.FFMPEG_PATH
+            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
 
-        const cmd = `"${ffmpegPath}" -ss 00:00:00 -i "${localFilePath}" -vframes 1 -q:v 2 -f image2 -`;
-        const { stdout: buffer } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any);
+          if (ffmpegPath) {
+            this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
+            const { stdout } = await execFileAsync(
+              ffmpegPath,
+              ['-ss', '00:00:00', '-i', localFilePath, '-vframes', '1', '-q:v', '2', '-f', 'image2', '-'],
+              { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any,
+            );
+            buffer = stdout as unknown as Buffer;
+          }
+        }
 
         if (buffer && buffer.length > 0) {
           const thumbForm = new FormData();
@@ -117,6 +150,8 @@ export class FacebookPublisher {
             params: { access_token: pageToken },
           });
           this.logger.log(`[FB] Successfully set custom thumbnail for video ${videoId}`);
+        } else {
+          this.logger.warn('[FB] Không có buffer thumbnail để upload (không có file local lẫn DB)');
         }
       } catch (err: any) {
         this.logger.warn(`[FB] Failed to set custom thumbnail: ${err.message}`);
@@ -140,24 +175,23 @@ export class FacebookPublisher {
     }
 
     // ── Multiple images → Carousel ─────────────────────────────────
-    // Bước 1: upload từng ảnh dưới dạng unpublished
+    // Bước 1: upload song song các ảnh dưới dạng unpublished
+    const photoResults = await Promise.allSettled(
+      opts.mediaUrls.map(url =>
+        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }),
+      ),
+    );
     const photoIds: string[] = [];
-    for (const url of opts.mediaUrls) {
-      try {
-        const r = await axios.post(`${this.BASE}/${targetId}/photos`, {
-          url,
-          published: false,
-          access_token: pageToken,
-        });
-        if (r.data?.id) {
-          photoIds.push(r.data.id);
-        } else {
-          this.logger.warn(`[FB] Photo upload returned no id for url: ${url}`);
-        }
-      } catch (err: any) {
-        this.logger.warn(`[FB] Photo upload failed: ${err.response?.data?.error?.message || err.message}`);
+    photoResults.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value.data?.id) {
+        photoIds.push(r.value.data.id);
+      } else {
+        const reason = r.status === 'rejected'
+          ? (r.reason?.response?.data?.error?.message || r.reason?.message)
+          : 'no id returned';
+        this.logger.warn(`[FB] Photo upload failed for url[${i}]: ${reason}`);
       }
-    }
+    });
     if (photoIds.length === 0) throw new Error('Tất cả ảnh upload thất bại');
 
     // Bước 2: post carousel

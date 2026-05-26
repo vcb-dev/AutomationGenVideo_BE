@@ -49,8 +49,8 @@ export class TiktokPublisher {
     const finalStatus = await this.pollStatus(token, publish_id);
     this.logger.log(`[TikTok] Final status: ${finalStatus}`);
 
-    if (finalStatus === 'FAILED') {
-      throw new Error('TikTok publishing failed');
+    if (finalStatus !== 'PUBLISH_COMPLETE') {
+      throw new Error(`TikTok publishing failed (status=${finalStatus})`);
     }
 
     return { publishId: publish_id, status: finalStatus };
@@ -69,7 +69,11 @@ export class TiktokPublisher {
         this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
         if (['PUBLISH_COMPLETE', 'FAILED'].includes(status)) return status;
       } catch (err: any) {
-        this.logger.warn(`[TikTok] Poll error: ${err.message}`);
+        const httpStatus = err.response?.status;
+        if (httpStatus && httpStatus >= 400 && httpStatus < 500) {
+          throw new Error(`TikTok poll thất bại vĩnh viễn (HTTP ${httpStatus}): ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
+        }
+        this.logger.warn(`[TikTok] Poll error (retrying): ${err.message}`);
       }
     }
     return 'TIMEOUT';
@@ -77,10 +81,21 @@ export class TiktokPublisher {
 
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
+<<<<<<< HEAD
       const r = await axios.head(urlOrPath);
       return parseInt(String(r.headers['content-length'] || '0'));
+=======
+      const r = await axios.head(urlOrPath, { timeout: 15000 });
+      const size = parseInt(r.headers['content-length'] || '0');
+      if (!size) throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath} (Content-Length thiếu)`);
+      return size;
     }
-    return fs.statSync(urlOrPath).size;
+    try {
+      return fs.statSync(urlOrPath).size;
+    } catch (e: any) {
+      throw new Error(`TikTok: không đọc được file local ${urlOrPath}: ${e.message}`);
+>>>>>>> 69492a5c3e3cd7c1fa7f6c2aa6b99ceb04ef657b
+    }
   }
 
   private async uploadChunks(videoUrl: string, uploadUrl: string, fileSize: number) {

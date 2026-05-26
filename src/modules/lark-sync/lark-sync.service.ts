@@ -136,21 +136,23 @@ export class LarkSyncService implements OnApplicationBootstrap {
         }
 
         this.syncLock = true;
-        this.logger.log('⏰ Master Lark Sync triggered (Starting All Fast Sync Scripts)');
+        this.logger.log('⏰ Master Lark Sync triggered');
 
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execPromise = util.promisify(exec);
+        const run = async (name: string, fn: () => Promise<any>) => {
+            try {
+                const result = await fn();
+                this.logger.log(`✅ ${name}: ${result?.synced ?? result?.count ?? 'done'}`);
+            } catch (err) {
+                this.logger.error(`❌ ${name} failed: ${err.message}`);
+            }
+        };
 
         try {
-            this.logger.log('🚀 Running: npm run sync:all:fast...');
-            const { stdout } = await execPromise('npm run sync:all:fast');
-            this.logger.log(`✅ Master Sync Output:\n${stdout}`);
+            await run('Channel sync',    () => this.larkService.syncChannelData());
+            await run('KPI sync',        () => this.larkService.syncKPIData());
+            await run('KPI DoDa sync',   () => this.larkService.syncKPIDoDaData());
+            await run('DoDa channel',    () => this.larkService.syncDoDaChannelData());
             this.logger.log('🎉 MASTER SYNC COMPLETED SUCCESSFULLY!');
-        } catch (err) {
-            this.logger.error(`❌ Master Sync failed: ${err.message}`);
-            if (err.stdout) this.logger.error(`Stdout: ${err.stdout}`);
-            if (err.stderr) this.logger.error(`Stderr: ${err.stderr}`);
         } finally {
             this.syncLock = false;
         }

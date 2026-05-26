@@ -31,7 +31,7 @@ export class YoutubeOAuthStrategy {
       code,
     }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
-    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const { access_token, refresh_token, expires_in = 3600 } = tokenRes.data;
 
     const profileRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${access_token}` },

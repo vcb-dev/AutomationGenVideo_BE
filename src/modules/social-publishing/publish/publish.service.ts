@@ -2,70 +2,74 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { CryptoService } from '../crypto/crypto.service';
-import { SupabaseStorageService } from '../upload/supabase-storage.service';
 import { FacebookPublisher } from './platforms/facebook.platform';
 import { InstagramPublisher } from './platforms/instagram.platform';
 import { TiktokPublisher } from './platforms/tiktok.platform';
 import { ThreadsPublisher } from './platforms/threads.platform';
 import { YoutubePublisher } from './platforms/youtube.platform';
 import { ZaloPublisher } from './platforms/zalo.platform';
+import { GoogleDriveStorageService } from '../upload/google-drive-storage.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
-import axios from 'axios';
-import * as FormData from 'form-data';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+type PreparedMedia = { url: string; tempFile: string | null };
+
+function extractDriveFileId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const id = u.searchParams.get('id');
+    if (id) return id;
+  } catch {}
+  const match = url.match(/\/file\/d\/([^/?#]+)/);
+  return match?.[1] || null;
+}
+
+function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
+  if (mimetype === 'image/jpeg' || mimetype === 'image/jpg') return '.jpg';
+  if (mimetype === 'image/png') return '.png';
+  if (mimetype === 'image/gif') return '.gif';
+  if (mimetype === 'image/webp') return '.webp';
+  if (mimetype === 'video/mp4') return '.mp4';
+  return fallback;
+}
+
+function ensureExt(filename: string, ext: string): string {
+  return path.extname(filename) ? filename : `${filename}${ext}`;
+}
 
 @Injectable()
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
+  private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
     private readonly crypto: CryptoService,
-    private readonly supabase: SupabaseStorageService,
     private readonly fb: FacebookPublisher,
     private readonly ig: InstagramPublisher,
     private readonly tt: TiktokPublisher,
     private readonly threads: ThreadsPublisher,
     private readonly yt: YoutubePublisher,
     private readonly zalo: ZaloPublisher,
+    private readonly googleDrive: GoogleDriveStorageService,
   ) {}
 
-  private async makeUrlsPublic(mediaUrls: string[], platform?: SocialPlatform): Promise<string[]> {
+  private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
 
     const publicBaseUrl = process.env.PUBLIC_BASE_URL;
-    const useCatboxForIgThreads = process.env.USE_CATBOX_FOR_IG_THREADS !== 'false';
-
     const resultUrls: string[] = [];
 
     for (const url of mediaUrls) {
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         try {
           const localUrl = new URL(url);
-          
-          if ((platform === SocialPlatform.INSTAGRAM || platform === SocialPlatform.THREADS) && useCatboxForIgThreads) {
-            const filename = localUrl.pathname.split('/').pop()!;
-            const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            const filePath = path.join(uploadBase, filename);
-            
-            if (fs.existsSync(filePath)) {
-              try {
-                const catboxUrl = await this.uploadToCatbox(filePath);
-                this.logger.log(`[makeUrlsPublic] ${url} → Catbox: ${catboxUrl}`);
-                resultUrls.push(catboxUrl);
-                continue;
-              } catch (err) {
-                this.logger.warn(`[makeUrlsPublic] Catbox upload failed, fallback to PUBLIC_BASE_URL`);
-              }
-            }
-          }
-
           if (!publicBaseUrl) {
             this.logger.warn('[makeUrlsPublic] PUBLIC_BASE_URL chưa được cấu hình — localhost URLs sẽ không được convert');
             resultUrls.push(url);
@@ -86,6 +90,74 @@ export class PublishService {
     return resultUrls;
   }
 
+  private async prepareMediaUrlsForPublishing(mediaUrls: string[], platform?: SocialPlatform): Promise<{ urls: string[]; tempFiles: string[] }> {
+    if (!mediaUrls || !mediaUrls.length) return { urls: [], tempFiles: [] };
+
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    if (!fs.existsSync(uploadBase)) fs.mkdirSync(uploadBase, { recursive: true });
+
+    const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+
+    // IG/Threads/YouTube use direct Drive URLs to avoid Cloud Run download/transcode.
+    const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM
+      || platform === SocialPlatform.THREADS
+      || platform === SocialPlatform.YOUTUBE;
+
+    const results = await Promise.all(mediaUrls.map(async (url): Promise<PreparedMedia> => {
+      if (url.includes('drive.google.com') || url.includes('docs.google.com') || url.includes('googleusercontent')) {
+        try {
+          const fileId = extractDriveFileId(url);
+          if (fileId) {
+            const media = await (this.prisma as any).socialUploadedFile?.findFirst?.({
+              where: { OR: [{ drive_file_id: fileId }, { url }] },
+              select: { filename: true, originalname: true, mimetype: true },
+            }).catch(() => null);
+            const filename = ensureExt(
+              media?.filename || media?.originalname || `media_${fileId}`,
+              extensionForMime(media?.mimetype, '.mp4'),
+            );
+
+            if (useDirectDriveUrl) {
+              const driveDirectUrl = this.googleDrive.buildDownloadUrl(fileId, filename);
+              this.logger.log(`[PrepareMedia] Drive fileId=${fileId} -> direct URL cho ${platform} (${filename})`);
+              return { url: driveDirectUrl, tempFile: null };
+            }
+
+            const cacheKey = `${fileId}:${extensionForMime(media?.mimetype, path.extname(filename) || '.mp4')}`;
+            if (this.driveLocalCache.has(cacheKey)) {
+              this.logger.log(`[PrepareMedia] Cache hit Drive fileId=${fileId}`);
+              return this.driveLocalCache.get(cacheKey)!;
+            }
+
+            const ext = extensionForMime(media?.mimetype, path.extname(filename) || '.mp4');
+            const localName = `gd_${Date.now()}_${Math.random().toString(36).slice(2)}_${fileId}${ext}`;
+            const localPath = path.join(uploadBase, localName);
+            this.logger.log(`[PrepareMedia] Download Drive fileId=${fileId} -> ${localName}`);
+            const downloadPromise = this.googleDrive.downloadFileToLocal(fileId, localPath).then(() => {
+              const localMediaUrl = `${base}/api/social/media/${localName}`;
+              this.logger.log(`[PrepareMedia] OK ${localName}`);
+              setTimeout(() => this.driveLocalCache.delete(cacheKey), 10 * 60 * 1000);
+              return { url: localMediaUrl, tempFile: localPath };
+            }).catch((err: any) => {
+              this.driveLocalCache.delete(cacheKey); // xóa ngay để lần sau retry được
+              throw err;
+            });
+            this.driveLocalCache.set(cacheKey, downloadPromise);
+            return downloadPromise;
+          }
+        } catch (err: any) {
+          this.logger.warn(`[PrepareMedia] Drive URL failed ${url}: ${err.message}`);
+        }
+      }
+      return { url, tempFile: null };
+    }));
+
+    return {
+      urls:      results.map(r => r.url),
+      tempFiles: results.map(r => r.tempFile).filter((f): f is string => f !== null),
+    };
+  }
+
   async publishNow(userId: string, dto: {
     accountId: string;
     message: string;
@@ -99,11 +171,11 @@ export class PublishService {
 
     this.logger.log(`[PublishNow] ${account.platform} "${account.name}" | platformId=${account.platform_id} | igUserId=${extraData?.igUserId} | pageId=${extraData?.pageId} | mediaUrls=${JSON.stringify(dto.mediaUrls)}`);
 
-    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
-                           account.platform === SocialPlatform.THREADS || 
-                           account.platform === SocialPlatform.FACEBOOK;
-    let inputMediaUrls = dto.mediaUrls || [];
-    const transcodedFiles: string[] = [];
+    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
+                           account.platform === SocialPlatform.THREADS;
+    const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
+    let inputMediaUrls = prep.urls;
+    const transcodedFiles: string[] = [...prep.tempFiles];
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
@@ -112,8 +184,8 @@ export class PublishService {
           try {
             const fname = new URL(newUrl).pathname.split('/').pop()!;
             const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            transcodedFiles.push(path.join(base, fname));
-          } catch {}
+            if (fname) transcodedFiles.push(path.join(base, fname));
+          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
         }
       });
       inputMediaUrls = results;
@@ -142,7 +214,7 @@ export class PublishService {
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
-    this.archiveMediaAsync(saved.id, dto.mediaUrls || []);
+    this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
     this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
   }
@@ -155,11 +227,11 @@ export class PublishService {
     const token = this.crypto.decrypt(account.access_token_enc);
     const extraData = account.extra_data as any;
 
-    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM || 
-                           account.platform === SocialPlatform.THREADS || 
-                           account.platform === SocialPlatform.FACEBOOK;
-    let inputMediaUrls = post.media_urls || [];
-    const transcodedFiles: string[] = [];
+    const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
+                           account.platform === SocialPlatform.THREADS;
+    const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
+    let inputMediaUrls = prep.urls;
+    const transcodedFiles: string[] = [...prep.tempFiles];
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
@@ -168,8 +240,8 @@ export class PublishService {
           try {
             const fname = new URL(newUrl).pathname.split('/').pop()!;
             const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            transcodedFiles.push(path.join(base, fname));
-          } catch {}
+            if (fname) transcodedFiles.push(path.join(base, fname));
+          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
         }
       });
       inputMediaUrls = results;
@@ -177,25 +249,29 @@ export class PublishService {
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
 
-    const result = await this.dispatchPublish(account.platform, token, {
-      message: post.message,
-      mediaUrls: publicMediaUrls,
-      pageId: post.page_id || extraData?.pageId,
-      privacy: post.privacy,
-      extraData,
-      accountId: post.account_id,
-      platformId: account.platform_id,
-    });
-    this.scheduleCleanupTranscoded(transcodedFiles);
-    return result;
+    try {
+      const result = await this.dispatchPublish(account.platform, token, {
+        message: post.message,
+        mediaUrls: publicMediaUrls,
+        pageId: post.page_id || extraData?.pageId,
+        privacy: post.privacy,
+        extraData,
+        accountId: post.account_id,
+        platformId: account.platform_id,
+        thumbUrl: post.thumb_url || undefined,
+      });
+      return result;
+    } finally {
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   // Cache: sourceUrl → Promise<transcodedUrl> — tránh transcode 2 lần khi IG + Threads cùng dùng 1 video
   private readonly transcodeCache = new Map<string, Promise<string>>();
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
-    if (!localUrl.includes('localhost') && !localUrl.includes('127.0.0.1')) return Promise.resolve(localUrl);
-    if (!/\.(mp4|mov|avi|mkv|webm)(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
+    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
@@ -212,17 +288,19 @@ export class PublishService {
     return promise;
   }
 
-  private async _doTranscode(localUrl: string): Promise<string> {
-    const ffmpegPath = process.env.FFMPEG_PATH;
-    if (!ffmpegPath) {
-      this.logger.warn('[Transcode] FFMPEG_PATH chưa cấu hình, bỏ qua transcode');
-      return localUrl;
-    }
+  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
+  private resolveFFmpegPath(): string | null {
+    const fromEnv = process.env.FFMPEG_PATH;
+    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+    // Fallback: ffmpeg đã cài qua apk/apt trong Docker
+    if (fs.existsSync('/usr/bin/ffmpeg')) return '/usr/bin/ffmpeg';
+    this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
+    return null;
+  }
 
-    if (!fs.existsSync(ffmpegPath)) {
-      this.logger.warn(`[Transcode] ffmpeg không tồn tại tại ${ffmpegPath}`);
-      return localUrl;
-    }
+  private async _doTranscode(localUrl: string): Promise<string> {
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) return localUrl;
 
     try {
       const urlObj = new URL(localUrl);
@@ -240,8 +318,16 @@ export class PublishService {
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
-      const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -map 0:v:0 -map 0:a:0 -c:v libx264 -profile:v high -crf 20 -maxrate 8M -bufsize 16M -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 128k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
-      await execAsync(cmd, { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      await execFileAsync(ffmpegPath, [
+        '-y', '-i', inputPath,
+        '-map', '0:v:0', '-map', '0:a:0',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '0',
+        '-profile:v', 'high', '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
+        '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+        '-map_metadata', '-1', '-movflags', '+faststart',
+        outputPath,
+      ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
 
       if (!fs.existsSync(outputPath)) {
         this.logger.warn(`[Transcode] File output không tồn tại sau transcode: ${outputPath}`);
@@ -250,8 +336,9 @@ export class PublishService {
       const outputSize = fs.statSync(outputPath).size;
       this.logger.log(`[Transcode] Hoàn thành ${transcodedName} trong ${((Date.now() - start) / 1000).toFixed(1)}s | size: ${(outputSize / 1024 / 1024).toFixed(1)}MB`);
 
-      const port = process.env.PORT || 3000;
-      return `http://127.0.0.1:${port}/api/social/media/${transcodedName}`;
+      // Cloud Run: dùng PUBLIC_BASE_URL thay vì 127.0.0.1 (sẽ được convert bởi makeUrlsPublic)
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return `${base}/api/social/media/${transcodedName}`;
     } catch (err: any) {
       this.logger.warn(`[Transcode] Thất bại: ${err.message} — dùng file gốc`);
       return localUrl;
@@ -262,7 +349,7 @@ export class PublishService {
     if (!filePaths.length) return;
     setTimeout(() => {
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch {}
+        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }
@@ -280,7 +367,8 @@ export class PublishService {
     privacy?: string;
     extraData?: any;
     accountId?: string;
-    platformId?: string;   // account.platform_id — luôn chính xác
+    platformId?: string;
+    thumbUrl?: string;
   }) {
     const extra = opts.extraData || {};
 
@@ -326,12 +414,15 @@ export class PublishService {
 
       case SocialPlatform.YOUTUBE: {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
+        const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
           title: opts.message.substring(0, 100),
           description: opts.message,
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
+          thumbUrl: opts.thumbUrl,
           refreshToken,
+          tokenExpiresAt: ytAccount?.token_expires_at ?? undefined,
           onTokenRefreshed: opts.accountId ? async (newToken: string, expiresAt: Date) => {
             try {
               const encryptedToken = this.crypto.encrypt(newToken);
@@ -375,153 +466,64 @@ export class PublishService {
     });
   }
 
-  private async uploadToCatbox(filePath: string): Promise<string> {
-    const MAX_ATTEMPTS = 3;
-    let lastErr: Error = new Error('Catbox: no attempts made');
+  /**
+   * Đăng bài bất đồng bộ — trả về ngay postId, worker xử lý trong ≤10 giây.
+   * Dùng khi FE muốn UX nhanh, sau đó poll GET /social/publish/:postId để lấy kết quả.
+   */
+  async publishAsync(userId: string, dto: {
+    accountId: string; message: string; mediaUrls?: string[];
+    pageId?: string; privacy?: string;
+  }) {
+    const account = await this.accounts.findOne(dto.accountId, userId);
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const form = new FormData();
-      form.append('reqtype', 'fileupload');
-      form.append('fileToUpload', fs.createReadStream(filePath));
+    const post = await this.prisma.socialPost.create({
+      data: {
+        user_id:      userId,
+        account_id:   dto.accountId,
+        platform:     account.platform,
+        message:      dto.message,
+        media_urls:   dto.mediaUrls ?? [],
+        page_id:      dto.pageId,
+        privacy:      dto.privacy,
+        scheduled_at: new Date(), // đến hạn ngay lập tức
+        source:       SocialPostSource.IMMEDIATE,
+        status:       SocialPostStatus.PENDING,
+        updated_at:   new Date(),
+      },
+    });
 
-      try {
-        this.logger.log(`[Catbox] Uploading ${path.basename(filePath)}... (attempt ${attempt}/${MAX_ATTEMPTS})`);
-        const res = await axios.post('https://catbox.moe/user/api.php', form, {
-          headers: form.getHeaders(),
-          timeout: 60000,
-        });
-        if (res.data && typeof res.data === 'string' && res.data.startsWith('http')) {
-          this.logger.log(`[Catbox] Uploaded successfully: ${res.data.trim()}`);
-          return res.data.trim();
-        }
-        throw new Error(`Invalid response from Catbox: ${res.data}`);
-      } catch (err: any) {
-        lastErr = err;
-        this.logger.warn(`[Catbox] Attempt ${attempt}/${MAX_ATTEMPTS} failed: ${err.message}`);
-        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 2000 * attempt));
-      }
-    }
-
-    this.logger.error(`[Catbox] All ${MAX_ATTEMPTS} attempts exhausted`);
-    throw lastErr;
+    this.logger.log(`[PublishAsync] Queued post ${post.id} (${account.platform}) — worker sẽ xử lý trong ≤10s`);
+    return { postId: post.id, status: 'PENDING', platform: account.platform };
   }
 
-  /**
-   * Nén video sau khi đăng thành công, lưu binary thẳng vào DB (social_media_files),
-   * sau đó xóa toàn bộ file local — LUÔN xóa dù nén thành công hay thất bại.
-   */
+  /** Lấy trạng thái 1 post (dùng để poll sau publishAsync) */
+  async getPostStatus(postId: string, userId: string) {
+    const post = await this.prisma.socialPost.findFirst({
+      where: { id: postId, user_id: userId },
+      select: { id: true, status: true, platform: true, result: true, error_msg: true, executed_at: true },
+    });
+    if (!post) throw new BadRequestException('Post không tồn tại');
+    return post;
+  }
+
   public async archiveMediaAsync(postId: string, mediaUrls: string[]): Promise<void> {
     if (!mediaUrls?.length) return;
 
-    const ffmpegPath = process.env.FFMPEG_PATH;
-    const ffmpegAvailable = !!(ffmpegPath && fs.existsSync(ffmpegPath));
-    if (!ffmpegAvailable) {
-      this.logger.warn('[Archive] FFMPEG_PATH không khả dụng — lưu file gốc vào DB không nén');
-    }
-
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-    const updatedUrls: string[] = [];
-    let hasChange = false;
 
     for (const url of mediaUrls) {
-      if (!url.includes('/api/social/media/')) {
-        updatedUrls.push(url);
-        continue;
-      }
+      if (!url.includes('/api/social/media/')) continue;
 
       const filename = url.split('/api/social/media/').pop()!.split('?')[0];
       const inputPath = path.join(uploadBase, filename);
 
-      // Ảnh: xóa local ngay, không lưu DB
-      if (!/\.(mp4|mov|avi|mkv|webm)$/i.test(filename)) {
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        updatedUrls.push(url);
-        continue;
-      }
-
-      if (!fs.existsSync(inputPath)) {
-        updatedUrls.push(url);
-        continue;
-      }
-
-      const beforeSize = fs.statSync(inputPath).size;
-      const baseName = path.basename(filename, path.extname(filename));
-      const archiveName = `arc_${Date.now()}_${baseName}.mp4`;
-      const outputPath = path.join(uploadBase, archiveName);
-
-      let finalPath = inputPath;
-      let finalName = filename;
-
-      // Thử nén nếu ffmpeg có sẵn
-      if (ffmpegAvailable) {
-        try {
-          this.logger.log(`[Archive] Nén ${filename} (${(beforeSize / 1024 / 1024).toFixed(1)} MB)...`);
-          const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c:v libx264 -profile:v main -crf 28 -maxrate 4M -bufsize 8M -vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" -r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${outputPath}"`;
-          await execAsync(cmd, { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
-
-          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size < beforeSize) {
-            const afterSize = fs.statSync(outputPath).size;
-            const ratio = Math.round((1 - afterSize / beforeSize) * 100);
-            this.logger.log(`[Archive] Nén xong: ${(beforeSize / 1024 / 1024).toFixed(1)}MB → ${(afterSize / 1024 / 1024).toFixed(1)}MB (-${ratio}%)`);
-            finalPath = outputPath;
-            finalName = archiveName;
-          } else {
-            this.logger.log(`[Archive] Nén không hiệu quả — dùng file gốc`);
-            try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-          }
-        } catch (err: any) {
-          this.logger.warn(`[Archive] Nén thất bại: ${err.message} — dùng file gốc`);
-          try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-        }
-      }
-
-      // Lưu file sau khi nén rồi xóa local
       try {
-        const finalSize = fs.statSync(finalPath).size;
-        const buffer = fs.readFileSync(finalPath);
-        let archivedUrl: string;
-
-        if (this.supabase.isAvailable()) {
-          // Supabase: upload lên cloud, trả về public URL — không cần lưu binary vào DB
-          archivedUrl = await this.supabase.upload(buffer, finalName, 'video/mp4');
-          this.logger.log(`[Archive] ✅ Supabase: ${finalName} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
-        } else {
-          // Fallback: lưu binary vào DB
-          const mediaFile = await this.prisma.socialMediaFile.create({
-            data: { post_id: postId, filename: finalName, mimetype: 'video/mp4', size: finalSize, data: buffer },
-          });
-          const urlBase = url.substring(0, url.indexOf('/api/social/media/'));
-          archivedUrl = `${urlBase}/api/social/media/${finalName}`;
-          this.logger.log(`[Archive] ✅ DB: id=${mediaFile.id} | ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+        if (fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+          this.logger.log(`[Archive] Deleted local temp media for post ${postId}: ${filename}`);
         }
-
-        // Xóa file local sau khi đã lưu
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        if (finalPath !== inputPath) {
-          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
-        }
-
-        updatedUrls.push(archivedUrl);
-        hasChange = true;
       } catch (err: any) {
-        this.logger.error(`[Archive] Lưu thất bại cho ${filename}: ${err.message} — xóa file local`);
-        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
-        if (finalPath !== inputPath) {
-          try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
-        }
-        updatedUrls.push(url);
-      }
-    }
-
-    if (hasChange) {
-      try {
-        await this.prisma.socialPost.update({
-          where: { id: postId },
-          data: { media_urls: updatedUrls, updated_at: new Date() },
-        });
-        this.logger.log(`[Archive] Cập nhật media_urls post ${postId}`);
-      } catch (err: any) {
-        this.logger.warn(`[Archive] Không cập nhật DB được: ${err.message}`);
+        this.logger.warn(`[Archive] Could not delete local temp media ${filename}: ${err.message}`);
       }
     }
   }

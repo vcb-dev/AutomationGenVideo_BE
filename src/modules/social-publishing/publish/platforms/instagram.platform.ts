@@ -16,6 +16,10 @@ import axios from 'axios';
 const FB_BASE = 'https://graph.facebook.com/v21.0';
 const IG_BASE = 'https://graph.instagram.com/v21.0';
 
+function isVideoUrl(url: string): boolean {
+  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
+}
+
 @Injectable()
 export class InstagramPublisher {
   private readonly logger = new Logger(InstagramPublisher.name);
@@ -33,7 +37,7 @@ export class InstagramPublisher {
 
     if (mediaUrls.length === 0) throw new Error('Instagram yêu cầu ít nhất 1 media');
 
-    const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(mediaUrls[0]);
+    const isVideo = isVideoUrl(mediaUrls[0]);
 
     // ── Single media ──────────────────────────────────────────────────────────
     if (mediaUrls.length === 1) {
@@ -54,11 +58,11 @@ export class InstagramPublisher {
         this.createContainer(base, igUserId, token, {
           mediaUrl: url,
           isCarouselItem: true,
-          isVideo: /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(url),
+          isVideo: isVideoUrl(url),
         }),
       ),
     );
-    for (const id of childIds) await this.waitForContainer(base, igUserId, token, id);
+    await Promise.all(childIds.map(id => this.waitForContainer(base, igUserId, token, id)));
 
     const parentId = await this.createContainer(base, igUserId, token, {
       caption, children: childIds, isCarousel: true,
@@ -115,7 +119,7 @@ export class InstagramPublisher {
 
   private async waitForContainer(
     base: string,
-    igUserId: string,
+    _igUserId: string,
     token: string,
     containerId: string,
     maxMs = 180000,

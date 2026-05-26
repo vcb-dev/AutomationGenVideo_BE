@@ -46,11 +46,14 @@ model User {
   reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                  Video[]
   social_accounts         SocialAccount[]
+  social_posts            SocialPost[]
 
   @@index([email])
   @@index([roles])
   @@index([manager_id])
   @@index([team_leader_id])
+  @@index([is_active])
+  @@index([team])
   @@map("users")
 }
 
@@ -1156,6 +1159,8 @@ model SocialAccount {
   @@index([platform])
   @@index([parent_id])
   @@index([is_active])
+  @@index([token_expires_at])
+  @@index([is_active, token_expires_at])
   @@map("social_accounts")
 }
 
@@ -1178,9 +1183,11 @@ model SocialPost {
   next_retry_at DateTime?
   result        Json?
   error_msg     String?
+  thumb_url     String?
   created_at    DateTime         @default(now())
   updated_at    DateTime         @updatedAt
   account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([account_id])
@@ -1188,26 +1195,11 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([updated_at])
   @@index([status, scheduled_at])
+  @@index([status, source, updated_at])
   @@map("social_posts")
 
-  media_files   SocialMediaFile[]
-}
-
-/// Video/ảnh đã đăng — lưu binary trực tiếp vào DB sau khi nén xong, xóa file local
-model SocialMediaFile {
-  id         String      @id @default(uuid())
-  post_id    String?
-  filename   String      @unique
-  mimetype   String      @default("video/mp4")
-  size       Int
-  data       Bytes
-  created_at DateTime    @default(now())
-  post       SocialPost? @relation(fields: [post_id], references: [id], onDelete: SetNull)
-
-  @@index([post_id])
-  @@index([filename])
-  @@map("social_media_files")
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
@@ -1234,6 +1226,7 @@ model SocialDraft {
   platform    SocialPlatform?
   account_id  String?
   page_id     String?
+  thumb_url   String?
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 
@@ -1241,6 +1234,7 @@ model SocialDraft {
   @@map("social_drafts")
 }
 
+<<<<<<< HEAD
 /// Phiên chat với VCB Assistant
 model ChatConversation {
   id               String        @id @default(uuid())
@@ -1380,4 +1374,46 @@ model TelegramReportConfig {
 
   @@index([user_email])
   @@map("telegram_report_config")
+=======
+/// Media Library file metadata only. Binary content is stored in Google Drive.
+model SocialUploadedFile {
+  id           String   @id @default(uuid())
+  user_id      String
+  filename     String
+  originalname String
+  mimetype     String
+  size         Int
+  url           String
+  thumbnail_url String?
+  storage       String   @default("google_drive")
+  drive_file_id String?
+  drive_web_view_url String?
+  thumbnail_drive_file_id String?
+  created_at   DateTime @default(now())
+
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+  @@map("social_uploaded_files")
+}
+
+model SocialDriveUploadSession {
+  id           String   @id
+  user_id      String
+  filename     String
+  originalname String
+  mimetype     String
+  size         Int
+  upload_url   String   @db.Text
+  drive_file_id String?
+  uploaded_bytes Int      @default(0)
+  status       String   @default("PENDING")
+  error_msg    String?
+  expires_at   DateTime?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+  @@map("social_drive_upload_sessions")
+>>>>>>> 69492a5c3e3cd7c1fa7f6c2aa6b99ceb04ef657b
 }

@@ -1,18 +1,29 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
 
 @Injectable()
-export class AccountsService {
+export class AccountsService implements OnModuleDestroy {
   private readonly logger = new Logger(AccountsService.name);
   private readonly pagesCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private readonly pagesCacheCleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, val] of this.pagesCache.entries()) {
+      if (val.expiresAt <= now) this.pagesCache.delete(key);
+    }
+  }, 60_000);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
   ) {}
+
+  onModuleDestroy() {
+    clearInterval(this.pagesCacheCleanupInterval);
+  }
 
   async findAll(userId: string) {
     const accounts = await this.prisma.socialAccount.findMany({
@@ -193,7 +204,12 @@ export class AccountsService {
             igPicture: p.instagram_business_account?.profile_picture_url,
           });
           savedCount++;
-        } catch { /* bỏ qua nếu page đã tồn tại */ }
+        } catch (e: any) {
+          // Bỏ qua unique constraint (page đã tồn tại); log các lỗi khác để debug
+          if (!e?.message?.includes('Unique constraint') && !e?.message?.includes('unique')) {
+            this.logger.warn(`[AutoSave] Lỗi lưu page ${p.id}: ${e.message}`);
+          }
+        }
       }
       this.logger.log(`[AutoSave] ✅ Đã lưu ${savedCount}/${pages.length} Pages cho account ${accountId}`);
     } catch (err: any) {
@@ -269,8 +285,9 @@ export class AccountsService {
         const encryptedToken = this.crypto.encrypt(p.access_token);
 
         // Cập nhật Token cho Page
+        // Không lọc theo parent_id vì account cũ có thể chỉ có extra_data.parentAccountId
         const fbAccs = await this.prisma.socialAccount.findMany({
-          where: { user_id: userId, platform: SocialPlatform.FACEBOOK, platform_id: `page_${p.id}`, parent_id: parentId }
+          where: { user_id: userId, platform: SocialPlatform.FACEBOOK, platform_id: `page_${p.id}` }
         });
         for (const acc of fbAccs) {
           // Xóa pageToken khỏi extra_data — token chỉ lưu trong access_token_enc
@@ -284,8 +301,9 @@ export class AccountsService {
 
         // Cập nhật Token cho Instagram liên kết (nếu có)
         if (p.instagram_business_account) {
+          // Không lọc theo parent_id vì account cũ có thể chỉ có extra_data.parentAccountId
           const igAccs = await this.prisma.socialAccount.findMany({
-            where: { user_id: userId, platform: SocialPlatform.INSTAGRAM, platform_id: p.instagram_business_account.id, parent_id: parentId }
+            where: { user_id: userId, platform: SocialPlatform.INSTAGRAM, platform_id: p.instagram_business_account.id }
           });
           for (const acc of igAccs) {
             const { pageToken: _pt, ...safeExtra } = (acc.extra_data as any) || {};
@@ -303,8 +321,54 @@ export class AccountsService {
     }
   }
 
+  /** Chạy mỗi ngày lúc 9h: cảnh báo token sắp hết hạn, vô hiệu hoá token đã hết hạn */
+  @Cron(CronExpression.EVERY_DAY_AT_9AM)
+  async checkExpiringTokens() {
+    const now = new Date();
+    const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const expired = await this.prisma.socialAccount.updateMany({
+      where: { is_active: true, token_expires_at: { not: null, lt: now } },
+      data: { is_active: false, updated_at: now },
+    });
+    if (expired.count > 0)
+      this.logger.warn(`[TokenExpiry] Đã vô hiệu hoá ${expired.count} account hết hạn token`);
+
+    const expiring = await this.prisma.socialAccount.findMany({
+      where: { is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
+      select: { id: true, name: true, platform: true, token_expires_at: true, user_id: true },
+    });
+
+    for (const acc of expiring) {
+      const daysLeft = Math.ceil((acc.token_expires_at!.getTime() - now.getTime()) / 86400000);
+      this.logger.warn(`[TokenExpiry] ⚠️ ${acc.platform} "${acc.name}" hết hạn trong ${daysLeft} ngày (user: ${acc.user_id})`);
+    }
+    this.logger.log(`[TokenExpiry] Kiểm tra xong — ${expiring.length} account sắp hết hạn`);
+  }
+
+  async getExpiringAccounts(userId: string) {
+    const now = new Date();
+    const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const accounts = await this.prisma.socialAccount.findMany({
+      where: { user_id: userId, is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
+      select: { id: true, name: true, platform: true, avatar_url: true, token_expires_at: true },
+      orderBy: { token_expires_at: 'asc' },
+    });
+    return accounts.map(a => ({
+      ...a,
+      days_until_expiry: Math.ceil((a.token_expires_at!.getTime() - now.getTime()) / 86400000),
+    }));
+  }
+
   private sanitize(account: any) {
     const { access_token_enc, refresh_token_enc, ...rest } = account;
-    return rest;
+    const now = Date.now();
+    const expiresAt = rest.token_expires_at ? new Date(rest.token_expires_at).getTime() : null;
+    const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / 86400000) : null;
+    return {
+      ...rest,
+      token_expires_soon: daysLeft !== null && daysLeft <= 7,
+      token_expires_in_days: daysLeft,
+    };
   }
 }
