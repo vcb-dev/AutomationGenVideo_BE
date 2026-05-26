@@ -207,18 +207,12 @@ export class ScheduleService {
       Object.entries(claimedPerPlatform).map(([p, n]) => `${p}:${n}`).join(', '),
     );
 
-<<<<<<< HEAD
-    // 4. Chạy song song tất cả job đã claim
-    await Promise.all(claimedPosts.map(post => this.executePost(post)));
-  } // end _doCheckAndExecute
-=======
     // 4. Chạy tuần tự theo nhóm để tránh quá tải RAM (Heavy Jobs Control)
     for (let i = 0; i < claimedPosts.length; i += MAX_HEAVY_JOBS) {
       const chunk = claimedPosts.slice(i, i + MAX_HEAVY_JOBS);
       await Promise.all(chunk.map(post => this.executePost(post)));
     }
-  }
->>>>>>> 69492a5c3e3cd7c1fa7f6c2aa6b99ceb04ef657b
+  } // end _doCheckAndExecute
 
   private async executePost(post: any) {
     // Idempotency: nếu đã có result → đã publish thành công nhưng DB update bị fail trước đó

@@ -1234,7 +1234,6 @@ model SocialDraft {
   @@map("social_drafts")
 }
 
-<<<<<<< HEAD
 /// Phiên chat với VCB Assistant
 model ChatConversation {
   id               String        @id @default(uuid())
@@ -1374,7 +1373,8 @@ model TelegramReportConfig {
 
   @@index([user_email])
   @@map("telegram_report_config")
-=======
+}
+
 /// Media Library file metadata only. Binary content is stored in Google Drive.
 model SocialUploadedFile {
   id           String   @id @default(uuid())
@@ -1415,5 +1415,4 @@ model SocialDriveUploadSession {
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_drive_upload_sessions")
->>>>>>> 69492a5c3e3cd7c1fa7f6c2aa6b99ceb04ef657b
 }
