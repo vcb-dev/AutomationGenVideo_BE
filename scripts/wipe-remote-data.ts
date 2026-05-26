@@ -1,41 +1,48 @@
-import { PrismaClient } from '@prisma/client';
 import * as dotenv from 'dotenv';
+import { deleteTableInBatches, getRemoteDbUrl, withRemoteClient } from './lib/remote-prisma';
+
 dotenv.config();
 
 async function main() {
-  const serverUrl = process.env.SERVER_DATABASE_URL;
-  if (!serverUrl) {
+  if (!process.env.SERVER_DATABASE_URL) {
     console.error('Missing SERVER_DATABASE_URL');
     process.exit(1);
   }
 
-  const serverUrlWithLimit = serverUrl.includes('?') 
-    ? `${serverUrl}&connection_limit=1` 
-    : `${serverUrl}?connection_limit=1`;
-
-  const server = new PrismaClient({ datasources: { db: { url: serverUrlWithLimit } } });
-
-  console.log('⚠️  WIPING DATA ON REMOTE SERVER...');
+  const serverUrl = getRemoteDbUrl(true);
+  console.log('⚠️  WIPING REMOTE (users + channels — KPI tables cleared by sync scripts)...');
 
   try {
-    // Wipe all main tables for a fresh sync
-    const userCount = await server.user.deleteMany({});
-    console.log(`✅ Wiped Users: ${userCount.count} records`);
+    await withRemoteClient(serverUrl, async (prisma) => {
+      console.log('🔗 Connected');
+      for (const t of [
+        'sync_lark_kpi_buffer',
+        'sync_lark_kpi_doda_editor_buffer',
+        'sync_channels_buffer',
+      ]) {
+        console.log(`   → DROP ${t}...`);
+        await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS ${t}`);
+        console.log(`   ✅ ${t}`);
+      }
+    });
 
-    const channelCount = await server.channel.deleteMany({});
-    console.log(`✅ Wiped Channels: ${channelCount.count} records`);
+    console.log('   → DELETE huyk_channels (batched)...');
+    const channels = await deleteTableInBatches(serverUrl, 'huyk_channels', 200, (n) =>
+      console.log(`      … ${n} rows`),
+    );
+    console.log(`   ✅ huyk_channels (${channels} rows)`);
 
-    const kpiCount = await (server as any).larkKPI.deleteMany({});
-    console.log(`✅ Wiped LarkKPI: ${kpiCount.count} records`);
+    console.log('   → DELETE users (batched)...');
+    const users = await deleteTableInBatches(serverUrl, 'users', 100, (n) =>
+      console.log(`      … ${n} rows`),
+    );
+    console.log(`   ✅ users (${users} rows)`);
 
-    const dodaCount = await (server as any).larkKpiDoDaEditor.deleteMany({});
-    console.log(`✅ Wiped LarkKPI DoDa: ${dodaCount.count} records`);
-
-    console.log('--- ALL DATA WIPED ---');
+    console.log('--- WIPE DONE (lark_kpi* cleared by force-sync-kpi scripts) ---');
   } catch (error) {
     console.error('❌ Wipe failed:', error);
-  } finally {
-    await server.$disconnect();
+    console.error('💡 Ctrl+C → docker stop BE production → chạy lại.');
+    process.exit(1);
   }
 }
 

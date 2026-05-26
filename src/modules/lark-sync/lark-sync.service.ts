@@ -4,6 +4,7 @@ import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
 import { PrismaClient } from '@prisma/client';
+import { buildScopedPrismaDbUrl } from '../../common/prisma/build-prisma-db-url';
 
 @Injectable()
 export class LarkSyncService implements OnApplicationBootstrap {
@@ -15,7 +16,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
      * with LarkService cron. Default OFF to keep one single source-of-truth flow.
      */
     private readonly legacySyncEnabled =
-        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'true').toLowerCase() === 'true';
+        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'false').toLowerCase() === 'true';
 
     constructor(
         private readonly prisma: PrismaService,
@@ -39,7 +40,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
 
         if (!this.remotePrismaClient) {
             this.remotePrismaClient = new PrismaClient({
-                datasources: { db: { url: serverUrl } },
+                datasources: { db: { url: buildScopedPrismaDbUrl(serverUrl) } },
             });
             this.logger.log('[LarkSync] Direct-to-server mode enabled for HR sync.');
         }

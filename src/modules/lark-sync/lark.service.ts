@@ -9,6 +9,7 @@ import { Prisma, PrismaClient, UserRole } from '@prisma/client';
 import { resolveTrackedUsername } from './channel-to-tracked.util';
 import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { buildScopedPrismaDbUrl } from '../../common/prisma/build-prisma-db-url';
 
 /** Chuẩn hóa cột trạng thái kênh Lark — chỉ "Đang hoạt động" (sau chuẩn hóa) được coi là active. */
 function normalizeLarkChannelActivityStatus(status: string | null | undefined): string {
@@ -111,6 +112,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     /** Bảng KPI Đồ Da tách riêng theo Người edit + Ngày edit. */
     private get prismaLarkKpiDoDaEditor() {
         return (this.prisma as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+    }
+
+    /** Remote/direct Prisma — connection_limit=1 để không chiếm pool PgBouncer. */
+    private createRemotePrismaClient(url: string): PrismaClient {
+        return new PrismaClient({ datasources: { db: { url: buildScopedPrismaDbUrl(url) } } });
     }
 
     /** Merge team strings while preserving all unique teams. */
@@ -291,7 +297,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async mirrorLarkKpiSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const maxRetries = this.getMirrorRetryCount();
         const CHUNK = 400;
         try {
@@ -316,7 +322,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async mirrorLarkKpiDoDaSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const delegate = (remote as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate | undefined }).larkKpiDoDa;
         if (!delegate) {
             await remote.$disconnect().catch(() => undefined);
@@ -347,7 +353,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async mirrorLarkKpiDoDaEditorSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const delegate = (remote as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
         if (!delegate) {
             await remote.$disconnect().catch(() => undefined);
@@ -388,7 +394,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async mirrorChannelSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url || !this.shouldMirrorChannels()) return 0;
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const maxRetries = this.getMirrorRetryCount();
         const CHUNK = 400;
         try {
@@ -414,7 +420,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
     private async mirrorDoDaChannelSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url || !this.shouldMirrorChannels()) return 0;
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const maxRetries = this.getMirrorRetryCount();
         const CHUNK = 400;
         try {
@@ -457,7 +463,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
         const CHUNK = 400;
         const maxRetries = this.getMirrorRetryCount();
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
         const remoteDoDa = (remote as unknown as { larkKpiDoDa?: Prisma.LarkKPIDelegate }).larkKpiDoDa;
         const remoteDoDaEditor = (remote as unknown as { larkKpiDoDaEditor?: any }).larkKpiDoDaEditor;
 
@@ -554,7 +560,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
 
         const CHUNK = 400;
         const maxRetries = this.getMirrorRetryCount();
-        const remote = new PrismaClient({ datasources: { db: { url } } });
+        const remote = this.createRemotePrismaClient(url);
 
         try {
             const rows = await remote.larkKPI.findMany();
@@ -2589,7 +2595,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
         const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
-        const targetClient = directDbUrl ? new PrismaClient({ datasources: { db: { url: directDbUrl } } }) : null;
+        const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
         const targetLarkKPI = targetClient ? targetClient.larkKPI : this.prisma.larkKPI;
         const targetUsers = targetClient ? targetClient.user : this.prisma.user;
         const isOnStatus = (raw: unknown): boolean => {
@@ -2731,13 +2737,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     );
                 }
 
-                // Execute drop and re-insert in a single atomic transaction. 
-                // This guarantees zero downtime on the frontend because queries overlap with the snapshot.
-                const clientToUse = targetClient || this.prisma;
-                await clientToUse.$transaction([
-                    targetLarkKPI.deleteMany({}),
-                    ...createQueries
-                ]);
+                // PgBouncer transaction mode: không bọc deleteMany + createMany trong 1 $transaction (giữ slot quá lâu).
+                await targetLarkKPI.deleteMany({});
+                for (const q of createQueries) {
+                    await q;
+                }
 
                 syncedCount = kpiRecordsToInsert.length;
             }
@@ -2779,7 +2783,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         const KPI_MIN_DATE_KEY = this.getKpiDoDaMinDateKey();
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
         const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
-        const targetClient = directDbUrl ? new PrismaClient({ datasources: { db: { url: directDbUrl } } }) : null;
+        const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
         const targetUsers = targetClient ? targetClient.user : this.prisma.user;
         const targetDoDa = targetClient
             ? (targetClient as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate | undefined }).larkKpiDoDa
@@ -3641,11 +3645,32 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 const looseNameKey = (val: string | null | undefined) => normName(val || '').replace(/[^a-z0-9]/g, '');
                 const isDoDaTeamFilter = normalizeTeamKey(dbTeamFilter) === normalizeTeamKey('Đồ Da');
 
+                const isActiveEmployeeStatus = (raw: unknown): boolean => {
+                    const st = String(raw || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/đ/g, 'd')
+                        .trim();
+                    if (!st) return true;
+                    return !st.includes('nghi') && !st.includes('off') && !st.includes('khoa');
+                };
+
                 // users.team → checklist (lark_reports). lark_kpi.team → hiệu suất (performance).
-                // Role: from users table.
+                // Role + employee_status: from users table.
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
-                    select: { email: true, full_name: true, team: true, image_url: true, roles: true, employee_id: true, employee_data: true }
+                    select: {
+                        email: true,
+                        full_name: true,
+                        team: true,
+                        image_url: true,
+                        roles: true,
+                        employee_id: true,
+                        employee_data: true,
+                        employee_status: true,
+                        employee_position: true,
+                    },
                 });
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
@@ -3700,11 +3725,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             email: email || null,
                             team: u.team || null,
                             image_url: (u as any).image_url || null,
-                            employee_status: 'ON',
-                            status: 'on',
+                            employee_status: u.employee_status || 'ON',
+                            status: String(u.employee_status || 'ON').toLowerCase(),
                             roles: userRoles,
                             role: resolvedRole,
-                            employee_position: null,
+                            employee_position: u.employee_position || null,
                             employee_data: u.employee_data || null,
                         });
                     }
@@ -4013,10 +4038,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 });
 
                 // FILTER: Loại bỏ những người đã "Nghỉ việc" / "OFF" khỏi team list active
-                const activeEmployees = employees.filter((emp: any) => {
-                    const st = (emp.employee_status || emp.status || '').toLowerCase().trim();
-                    return !st.includes('nghỉ') && !st.includes('off') && !st.includes('khóa');
-                });
+                const activeEmployees = employees.filter((emp: any) =>
+                    isActiveEmployeeStatus(emp.employee_status || emp.status),
+                );
                 const duplicateNameCounts = new Map<string, number>();
                 activeEmployees.forEach((emp: any) => {
                     const nk = normName(emp.full_name);
@@ -4274,11 +4298,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         ? `${pKey}_T${mInfo.monthNum}_${mInfo.year}`
                         : `${pKey}_${teamNorm}_T${mInfo.monthNum}_${mInfo.year}`;
 
-                // --- 1. Checklist roster: seed from users.team (full team list for lark_reports) ---
+                // --- 1. Checklist roster: seed from users.team (chỉ nhân viên ON / đang hoạt động) ---
                 const kpisForAggregation = new Map<string, any>();
                 if (selectedSingleDay) {
                     const monthInfo = monthsInRange[0];
-                    employees.forEach((emp) => {
+                    activeEmployees.forEach((emp) => {
                         const empEmail = emp.email?.toLowerCase().trim();
                         const empNameKey = normName(emp.full_name);
                         const checklistTeams = splitTeamList(emp.team);
@@ -4303,6 +4327,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                             role: emp.role || 'member',
                             image_url: emp.image_url,
                             status: emp.status || 'on',
+                            employee_status: emp.employee_status || 'ON',
                             kpi_day: 0,
                             kpi_month: 0,
                             completed_day: 0,
@@ -4313,7 +4338,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         });
                     });
 
-                    // --- 2. Hiệu suất roster: seed from lark_kpi.team on the selected day ---
+                    // --- 2. Hiệu suất: bổ sung từ lark_kpi.team (chỉ khi user còn ON trong bảng users) ---
                     for (const kpi of targetDayKpis) {
                         const kTeam = String(kpi.team || '').trim();
                         if (!kTeam) continue;
@@ -4324,9 +4349,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         const authUser =
                             (kEmail ? emailKeyMatchMap.get(kEmail) : null) ||
                             (kName ? nameKeyMatchMap.get(kName) : null);
-                        const pKey = authUser
-                            ? (authUser.email?.toLowerCase().trim() || normName(authUser.full_name))
-                            : (kEmail || kName || `unknown_k_${kpi.id}`);
+                        if (!authUser || !isActiveEmployeeStatus(authUser.employee_status || authUser.status)) {
+                            continue;
+                        }
+
+                        const pKey = authUser.email?.toLowerCase().trim() || normName(authUser.full_name);
                         if (!pKey) continue;
 
                         const pmk = getAggKey(pKey, normalizeTeamKey(kTeam), monthInfo);
@@ -4527,6 +4554,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     // --- EXPLICIT OVERRIDE: Merge "Chung Đỗ" into "Đỗ Đăng Chung" ---
                     if (!authoritativeUser && (nameKey === 'chung do' || emailKey === 'dochung2741@gmail.com')) {
                         authoritativeUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
+                    }
+
+                    if (authoritativeUser && !isActiveEmployeeStatus(authoritativeUser.employee_status || authoritativeUser.status)) {
+                        return;
                     }
 
                     const pKey = authoritativeUser
