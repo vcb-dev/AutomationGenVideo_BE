@@ -855,7 +855,10 @@ export class AiIntegrationService {
       );
       return data;
     } catch (err) {
-      this.logger.error(`[AI Analytics ERROR] ${err.message}`);
+      this.logger.error(`[AI Analytics ERROR] Message: ${err.message}`);
+      if (err.response) {
+        this.logger.error(`[AI Analytics ERROR] Status: ${err.response.status}, Data: ${JSON.stringify(err.response.data)}`);
+      }
       return { message: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', dashboard: null, suggestions: [] };
     }
   }
