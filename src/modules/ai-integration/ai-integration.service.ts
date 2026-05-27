@@ -847,7 +847,7 @@ export class AiIntegrationService {
         this.httpService.post(
           `${this.aiServiceUrl}/api/chat/analytics/`,
           { message, history },
-          { timeout: 120000 },  // 120s timeout — đủ cho 2 lần gọi DeepSeek (mỗi lần 55s)
+          { timeout: 120000 },   // 120s timeout cho Agentic Workflow
         ).pipe(catchError((err: AxiosError) => {
           this.logger.error(`[AI Analytics] Python service error: ${err.message}`);
           throw err;

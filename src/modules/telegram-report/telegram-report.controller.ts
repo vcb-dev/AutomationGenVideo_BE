@@ -23,6 +23,7 @@ export class TelegramReportController {
     schedule: string;
     formats: string[];
     report_types: string[];
+    period_reports: string[];
     is_active: boolean;
   }) {
     return this.svc.saveConfig(req.user.id, req.user.email, body);

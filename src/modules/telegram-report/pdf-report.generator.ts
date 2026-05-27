@@ -2,23 +2,24 @@ import * as PDFDocument from 'pdfkit';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// ─── Colors ──────────────────────────────────────────────────────────────────
+// ─── Colors — professional, low-saturation palette ───────────────────────────
 const C = {
-  primary:   '#1E1B4B',   // deep indigo
-  accent:    '#7C3AED',   // violet
-  gold:      '#D97706',   // amber
-  green:     '#059669',
-  red:       '#DC2626',
-  blue:      '#2563EB',
-  teal:      '#0D9488',
-  gray1:     '#111827',
+  primary:   '#1E3A5F',   // deep navy
+  accent:    '#2D6A9F',   // calm blue (was bright violet)
+  gold:      '#9B7D4B',   // warm bronze (was amber)
+  green:     '#2D7D5A',   // muted emerald
+  red:       '#B05252',   // muted red
+  blue:      '#2D6A9F',   // calm blue
+  teal:      '#357A7A',   // muted teal
+  gray1:     '#1A2433',   // near-black navy
   gray2:     '#374151',
   gray3:     '#6B7280',
   gray4:     '#D1D5DB',
-  gray5:     '#F9FAFB',
+  gray5:     '#F4F6F8',   // very light cool gray
   white:     '#FFFFFF',
-  rowAlt:    '#F5F3FF',
-  rowAlt2:   '#EFF6FF',
+  rowAlt:    '#EEF2F6',   // light blue-gray (was purple-tinted)
+  rowAlt2:   '#EAF0F5',   // slightly darker blue-gray
+  headerBg:  '#EEF2F6',   // section header background
 };
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
@@ -76,21 +77,21 @@ export class PdfReportGenerator {
     const { year, month } = d;
 
     // Cover
-    this._cover(`BAO CAO TRAFFIC\nTHANG ${month}/${year}`, C.teal);
+    this._cover(`BÁO CÁO TRAFFIC\nTHÁNG ${month}/${year}`, C.teal);
     this.doc.addPage();
 
-    // S1: Tong quan
-    this._sectionHeader('1. TONG QUAN HIEU SUAT', C.teal);
+    // S1: Tổng quan
+    this._sectionHeader('1. TỔNG QUAN HIỆU SUẤT', C.teal);
     this._kpiGrid([
-      { label: 'Tong luot xem', value: this._f(d.totalViews),     sub: this._delta(d.totalViews, d.prevTotalViews) },
-      { label: 'Team Viet Nam', value: this._f(d.vnViews),         sub: this._delta(d.vnViews, d.prevVnViews) },
-      { label: 'Team Global',   value: this._f(d.globalViews),     sub: this._delta(d.globalViews, d.prevGlobalViews) },
-      { label: 'Tong video',    value: this._f(d.totalVideos),     sub: this._delta(d.totalVideos, d.prevTotalVideos) },
+      { label: 'Tổng lượt xem', value: this._f(d.totalViews),  sub: this._delta(d.totalViews, d.prevTotalViews) },
+      { label: 'Team Việt Nam', value: this._f(d.vnViews),      sub: this._delta(d.vnViews, d.prevVnViews) },
+      { label: 'Team Global',   value: this._f(d.globalViews),  sub: this._delta(d.globalViews, d.prevGlobalViews) },
+      { label: 'Tổng video',    value: this._f(d.totalVideos),  sub: this._delta(d.totalVideos, d.prevTotalVideos) },
     ], C.teal);
     this.doc.moveDown(0.5);
 
     // S2: Platform
-    this._sectionHeader('2. PHAN BO THEO NEN TANG', C.blue);
+    this._sectionHeader('2. PHÂN BỔ THEO NỀN TẢNG', C.blue);
     if (d.byPlatform.length > 0) {
       this._platformTable(d.byPlatform, d.totalViews);
       this._barChart(d.byPlatform.map(r => ({ label: r.platform, value: this._n(r.views) })), C.blue);
@@ -98,14 +99,14 @@ export class PdfReportGenerator {
     this.doc.addPage();
 
     // S3: Team
-    this._sectionHeader('3. TRAFFIC THEO TEAM & KHU VUC', C.accent);
+    this._sectionHeader('3. TRAFFIC THEO TEAM & KHU VỰC', C.accent);
     this._table(
-      ['Market', 'Team', 'Platform', 'Luot xem', '% Tong', 'Videos', 'Followers'],
-      [50, 100, 65, 80, 50, 55, 70],
+      ['Thị trường', 'Team', 'Nền tảng', 'Lượt xem', '% Tổng', 'Videos', 'Followers'],
+      [65, 95, 65, 75, 50, 55, 65],
       d.byTeam.map((r, _, arr) => {
         const tot = arr.reduce((a: number, x: any) => a + this._n(x.views), 0);
         return [
-          this._isGlobal(r.team) ? 'Global' : 'Viet Nam',
+          this._isGlobal(r.team) ? 'Global' : 'Việt Nam',
           r.team || 'N/A', r.platform || '',
           this._f(r.views),
           tot > 0 ? ((this._n(r.views)/tot)*100).toFixed(1) + '%' : '0%',
@@ -118,7 +119,7 @@ export class PdfReportGenerator {
     // S4: Content types A1-A5
     if (d.contentTypes.length > 0) {
       this.doc.moveDown(0.5);
-      this._sectionHeader('4. PHAN BO THEO LOAI NOI DUNG (A1-A5)', C.gold);
+      this._sectionHeader('4. PHÂN BỔ THEO LOẠI NỘI DUNG (A1-A5)', C.gold);
       const ctMap: Record<string, {videos: number; views: number}> = {};
       for (const r of d.contentTypes) {
         if (!ctMap[r.ct]) ctMap[r.ct] = { videos: 0, views: 0 };
@@ -126,7 +127,7 @@ export class PdfReportGenerator {
         ctMap[r.ct].views  += this._n(r.views);
       }
       this._table(
-        ['Loai', 'So video', 'Tong views', 'View/Video'],
+        ['Loại', 'Số video', 'Tổng views', 'View/Video'],
         [60, 80, 100, 90],
         Object.entries(ctMap).sort(([a],[b]) => a<b?-1:1).map(([ct, v]) => [
           ct, String(v.videos), this._f(v.views),
@@ -143,9 +144,9 @@ export class PdfReportGenerator {
     this.doc.addPage();
 
     // S5: Top channels
-    this._sectionHeader('5. KENH NOI BAT', C.blue);
+    this._sectionHeader('5. KÊNH NỔI BẬT', C.blue);
     this._table(
-      ['#', 'Kenh', 'Platform', 'Team', 'Luot xem'],
+      ['#', 'Kênh', 'Nền tảng', 'Team', 'Lượt xem'],
       [25, 160, 60, 80, 90],
       d.topChannels.slice(0, 10).map((r, i) => [
         String(i + 1), (r.channel_name || '').slice(0, 28),
@@ -156,9 +157,9 @@ export class PdfReportGenerator {
 
     // S6: Top 10 views
     this.doc.moveDown(0.5);
-    this._sectionHeader('6. TOP 10 VIDEO NHIEU VIEWS NHAT', C.green);
+    this._sectionHeader('6. TOP 10 VIDEO NHIỀU VIEWS NHẤT', C.green);
     this._table(
-      ['#', 'Title', 'Kenh', 'Team', 'Views', 'Likes', 'CMT'],
+      ['#', 'Tiêu đề', 'Kênh', 'Team', 'Views', 'Likes', 'CMT'],
       [22, 140, 75, 65, 55, 45, 45],
       d.topViews.map((r, i) => [
         String(i + 1), (r.title || '').slice(0, 28),
@@ -171,9 +172,9 @@ export class PdfReportGenerator {
     this.doc.addPage();
 
     // S7: Top 10 comments
-    this._sectionHeader('7. TOP 10 VIDEO NHIEU COMMENT NHAT', C.primary);
+    this._sectionHeader('7. TOP 10 VIDEO NHIỀU COMMENT NHẤT', C.primary);
     this._table(
-      ['#', 'Title', 'Kenh', 'Team', 'CMT', 'Views'],
+      ['#', 'Tiêu đề', 'Kênh', 'Team', 'CMT', 'Views'],
       [22, 150, 80, 65, 55, 75],
       d.topCmts.map((r, i) => [
         String(i + 1), (r.title || '').slice(0, 30),
@@ -186,9 +187,9 @@ export class PdfReportGenerator {
     // S8: Top SKUs
     if (d.topSkus.length > 0) {
       this.doc.moveDown(0.5);
-      this._sectionHeader('8. TOP SKU NHIEU VIDEO NHAT', C.gold);
+      this._sectionHeader('8. TOP SKU NHIỀU VIDEO NHẤT', C.gold);
       this._table(
-        ['SKU', 'So video', 'Tong views', 'Teams'],
+        ['SKU', 'Số video', 'Tổng views', 'Teams'],
         [60, 70, 90, 220],
         d.topSkus.slice(0, 10).map(r => [
           r.sku, String(this._n(r.videos)), this._f(r.views),
@@ -200,8 +201,8 @@ export class PdfReportGenerator {
 
     this.doc.addPage();
 
-    // S9: Nhan xet & De xuat
-    this._sectionHeader('9. NHAN XET & DE XUAT', C.accent);
+    // S9: Nhận xét & Đề xuất
+    this._sectionHeader('9. NHẬN XÉT & ĐỀ XUẤT', C.accent);
     this._recommendations(d, 'traffic');
   }
 
@@ -212,15 +213,15 @@ export class PdfReportGenerator {
   private _buildAds(d: ReportData) {
     const { year, month } = d;
     const BM = { great: 18000, good: 25000, avg: 40000 };
-    const cpmLabel = (c: number) => c <= BM.great ? 'Xuat sac' : c <= BM.good ? 'Tot' : c <= BM.avg ? 'Trung binh' : 'Can toi uu';
-    const cpmColor = (c: number) => c <= BM.great ? C.green : c <= BM.good ? C.gold : c <= BM.avg ? '#F59E0B' : C.red;
+    const cpmLabel = (c: number) => c <= BM.great ? 'Xuất sắc' : c <= BM.good ? 'Tốt' : c <= BM.avg ? 'Trung bình' : 'Cần tối ưu';
+    const cpmColor = (c: number) => c <= BM.great ? C.green : c <= BM.good ? C.gold : c <= BM.avg ? '#A0823A' : C.red;
 
     // Cover
-    this._cover(`BAO CAO QUANG CAO\nTHANG ${month}/${year}`, C.accent);
+    this._cover(`BÁO CÁO QUẢNG CÁO\nTHÁNG ${month}/${year}`, C.accent);
     this.doc.addPage();
 
-    // S1: Tong quan
-    this._sectionHeader('1. TONG QUAN CHI PHI QUANG CAO', C.accent);
+    // S1: Tổng quan
+    this._sectionHeader('1. TỔNG QUAN CHI PHÍ QUẢNG CÁO', C.accent);
     const ts = (d.adsTeam || []).reduce((a: number, r: any) => a + this._n(r.spend), 0);
     const tm = (d.adsTeam || []).reduce((a: number, r: any) => a + this._n(r.mess), 0);
     const tl = (d.adsTeam || []).reduce((a: number, r: any) => a + this._n(r.likes), 0);
@@ -230,41 +231,42 @@ export class PdfReportGenerator {
     const glS = (d.adsTeam || []).filter((r: any) => this._isGlobal(r.team)).reduce((a: number, r: any) => a + this._n(r.spend), 0);
 
     this._kpiGrid([
-      { label: 'Tong chi phi',   value: this._f(ts) + ' VND',  sub: `VN: ${this._f(vnS)} | GL: ${this._f(glS)}` },
-      { label: 'Tin nhan (Mess)', value: this._f(tm),            sub: `CPMess: ${this._f(cpm)} VND` },
-      { label: 'Like Page',      value: this._f(tl) },
-      { label: 'Tuong tac',      value: this._f(te) },
+      { label: 'Tổng chi phí',    value: this._f(ts) + ' VND',  sub: `VN: ${this._f(vnS)} | GL: ${this._f(glS)}` },
+      { label: 'Tin nhắn (Mess)', value: this._f(tm),            sub: `CPMess: ${this._f(cpm)} VND` },
+      { label: 'Like Page',       value: this._f(tl) },
+      { label: 'Tương tác',       value: this._f(te) },
     ], C.accent);
 
-    // Benchmark box — vẽ tại vị trí y cố định, sau đó set y xuống dưới hộp
+    // Benchmark box
     this.doc.moveDown(0.4);
     const bColor = cpmColor(cpm);
     const bLabel = cpmLabel(cpm);
     const boxY = this.doc.y;
     const boxH = 26;
-    this.doc.roundedRect(this.L, boxY, this.W, boxH, 4).fill(bColor);
-    this.doc.fillColor(C.white).font(this.fontBold).fontSize(9)
+    // Use a muted background for the benchmark box
+    this.doc.roundedRect(this.L, boxY, this.W, boxH, 4).fill(C.gray5).stroke(bColor);
+    this.doc.fillColor(bColor).font(this.fontBold).fontSize(9)
       .text(
-        `DANH GIA CPMESS: ${bLabel.toUpperCase()}  (${this._f(cpm)} VND)  |  Benchmark: <18K Xuat sac | 18-25K Tot | 25-40K TB | >40K Can toi uu`,
+        `ĐÁNH GIÁ CPMESS: ${bLabel.toUpperCase()}  (${this._f(cpm)} VND)  |  Benchmark: <18K Xuất sắc | 18-25K Tốt | 25-40K TB | >40K Cần tối ưu`,
         this.L + 8, boxY + 8,
         { width: this.W - 16, align: 'center', lineBreak: false },
       );
     this.doc.y = boxY + boxH + 10;
     this.doc.fillColor(C.gray1);
 
-    // S2: Theo thi truong
-    this._sectionHeader('2. PHAN BO THEO THI TRUONG', C.blue);
+    // S2: Phân bổ theo thị trường
+    this._sectionHeader('2. PHÂN BỔ THEO THỊ TRƯỜNG', C.blue);
     const mktData: Record<string, {sp: number; ms: number; ims: number}> = {
-      'Viet Nam': {sp:0, ms:0, ims:0}, 'Global': {sp:0, ms:0, ims:0},
+      'Việt Nam': {sp:0, ms:0, ims:0}, 'Global': {sp:0, ms:0, ims:0},
     };
     for (const r of (d.adsTeam || [])) {
-      const mk = this._isGlobal(r.team) ? 'Global' : 'Viet Nam';
+      const mk = this._isGlobal(r.team) ? 'Global' : 'Việt Nam';
       mktData[mk].sp  += this._n(r.spend);
       mktData[mk].ms  += this._n(r.mess);
       mktData[mk].ims += this._n(r.impr);
     }
     this._table(
-      ['Thi truong', 'Chi phi (VND)', 'Mess', 'Hien thi', 'CPMess', '% Chi phi', 'Danh gia'],
+      ['Thị trường', 'Chi phí (VND)', 'Tin nhắn', 'Hiển thị', 'CPMess', '% Chi phí', 'Đánh giá'],
       [70, 95, 60, 70, 70, 60, 90],
       Object.entries(mktData).map(([mk, v]) => {
         const cpmMk = v.ms > 0 ? Math.round(v.sp / v.ms) : 0;
@@ -275,14 +277,14 @@ export class PdfReportGenerator {
       C.blue,
     );
     this._barChart([
-      { label: 'Viet Nam', value: mktData['Viet Nam'].sp },
+      { label: 'Việt Nam', value: mktData['Việt Nam'].sp },
       { label: 'Global',   value: mktData['Global'].sp },
     ], C.blue);
 
     this.doc.addPage();
 
-    // S3: Theo loai camp
-    this._sectionHeader('3. PHAN TICH THEO LOAI CHIEN DICH', C.gold);
+    // S3: Theo loại chiến dịch
+    this._sectionHeader('3. PHÂN TÍCH THEO LOẠI CHIẾN DỊCH', C.gold);
     const ctSpend: Record<string, {sp:number; ms:number; camps:number}> = {};
     for (const c of (d.adsCamps || [])) {
       const ct = this._campType(c);
@@ -292,7 +294,7 @@ export class PdfReportGenerator {
       ctSpend[ct].camps++;
     }
     this._table(
-      ['Loai camp', 'So campaign', 'Chi phi', 'Tin nhan', 'CPMess', 'Danh gia'],
+      ['Loại camp', 'Số campaign', 'Chi phí', 'Tin nhắn', 'CPMess', 'Đánh giá'],
       [90, 80, 100, 70, 70, 100],
       Object.entries(ctSpend).map(([ct, v]) => {
         const cpmCt = v.ms > 0 ? Math.round(v.sp / v.ms) : 0;
@@ -305,11 +307,11 @@ export class PdfReportGenerator {
       C.gold,
     );
 
-    // S4: Chi tiet team
-    this._sectionHeader('4. CHI TIET THEO TEAM', C.primary);
+    // S4: Chi tiết theo team
+    this._sectionHeader('4. CHI TIẾT THEO TEAM', C.primary);
     this._table(
-      ['Market', 'Team', 'Chi phi', 'Mess', 'Hien thi', 'CPMess', 'Danh gia'],
-      [55, 95, 90, 55, 65, 65, 90],
+      ['Thị trường', 'Team', 'Chi phí', 'Tin nhắn', 'Hiển thị', 'CPMess', 'Đánh giá'],
+      [65, 90, 90, 55, 65, 55, 90],
       (d.adsTeam || []).map((r: any) => {
         const cpmR = this._n(r.mess) > 0 ? Math.round(this._n(r.spend) / this._n(r.mess)) : 0;
         return [
@@ -327,8 +329,8 @@ export class PdfReportGenerator {
 
     this.doc.addPage();
 
-    // S5: Nhan xet
-    this._sectionHeader('5. NHAN XET & DE XUAT', C.accent);
+    // S5: Nhận xét
+    this._sectionHeader('5. NHẬN XÉT & ĐỀ XUẤT', C.accent);
     this._recommendations(d, 'ads');
   }
 
@@ -339,45 +341,59 @@ export class PdfReportGenerator {
     const PW = doc.page.width;
     const PH = doc.page.height;
 
-    // Background gradient (solid approximation)
-    doc.rect(0, 0, PW, PH).fill('#F8F7FF');
-    doc.rect(0, 0, PW, PH * 0.45).fill(color);
+    // Clean light background
+    doc.rect(0, 0, PW, PH).fill('#FAFBFC');
+    // Thin top accent strip
+    doc.rect(0, 0, PW, 6).fill(color);
+    // Subtle bottom footer strip
+    doc.rect(0, PH - 36, PW, 36).fill('#F0F2F5');
 
-    // Logo area
+    // Logo
     const logoPath = path.join(__dirname, '..', '..', '..', '..', 'public', 'images', 'ai-avatar.png');
+    const logoY = 60;
     if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, PW / 2 - 40, 60, { width: 80, height: 80 });
+      doc.image(logoPath, PW / 2 - 32, logoY, { width: 64, height: 64 });
     }
 
-    // Title
-    doc.fillColor(C.white).font(this.fontBold).fontSize(24)
-      .text(title, 60, fs.existsSync(logoPath) ? 160 : 120, { align: 'center', width: PW - 120 });
+    // Company name
+    const nameY = fs.existsSync(logoPath) ? logoY + 78 : 70;
+    doc.fillColor(color).font(this.fontBold).fontSize(10)
+      .text('VCB STUDIO', 60, nameY, { align: 'center', width: PW - 120 });
+
+    // Short accent line under company name
+    doc.moveTo(PW / 2 - 40, nameY + 16).lineTo(PW / 2 + 40, nameY + 16)
+      .lineWidth(1.5).strokeColor(color).stroke();
+
+    // Main title
+    doc.fillColor(C.primary).font(this.fontBold).fontSize(22)
+      .text(title, 60, nameY + 28, { align: 'center', width: PW - 120 });
 
     // Divider
-    const dY = PH * 0.45 + 30;
-    doc.moveTo(60, dY).lineTo(PW - 60, dY).lineWidth(1).strokeColor(color).stroke();
-
-    // Company name
-    doc.fillColor(color).font(this.fontBold).fontSize(14)
-      .text('VCB STUDIO', 60, dY + 20, { align: 'center', width: PW - 120 });
+    const lineCount = title.split('\n').length;
+    const dY = nameY + 28 + lineCount * 30 + 16;
+    doc.moveTo(this.L + 50, dY).lineTo(PW - this.L - 50, dY)
+      .lineWidth(0.5).strokeColor(C.gray4).stroke();
 
     // Generated date
-    doc.fillColor(C.gray3).font(this.fontReg).fontSize(10)
-      .text(`Generated: ${new Date().toLocaleString('vi-VN')}`, 60, dY + 50, { align: 'center', width: PW - 120 });
+    doc.fillColor(C.gray3).font(this.fontReg).fontSize(9)
+      .text(`Tạo lúc: ${new Date().toLocaleString('vi-VN')}`, 60, dY + 14, { align: 'center', width: PW - 120 });
 
-    // Bottom info box
-    doc.roundedRect(60, PH - 100, PW - 120, 60, 6).fill(color);
-    doc.fillColor(C.white).font(this.fontReg).fontSize(8)
-      .text('Bao cao nay duoc tao tu dong boi VCB Studio AI.\nDu lieu lay tu database VCB Studio.', 80, PH - 85, { align: 'center', width: PW - 160 });
+    // Footer text on bottom strip
+    doc.fillColor(C.gray3).font(this.fontReg).fontSize(7.5)
+      .text('Báo cáo được tạo tự động bởi VCB Studio AI. Dữ liệu lấy từ database VCB Studio.', 60, PH - 24, { align: 'center', width: PW - 120 });
   }
 
   private _sectionHeader(title: string, color: string) {
     const doc = this.doc;
     if (doc.y > doc.page.height - 120) { doc.addPage(); }
-    const y = doc.y + 4;
-    doc.rect(this.L, y, this.W, 22).fill(color);
-    doc.fillColor(C.white).font(this.fontBold).fontSize(10)
-      .text(title, this.L + 8, y + 5, { width: this.W - 16 });
+    const y = doc.y + 6;
+    // Light background — not the saturated color
+    doc.rect(this.L, y, this.W, 22).fill(C.headerBg);
+    // Narrow colored left accent bar (4 px)
+    doc.rect(this.L, y, 4, 22).fill(color);
+    // Dark text (readable without white-on-color)
+    doc.fillColor(C.primary).font(this.fontBold).fontSize(10)
+      .text(title, this.L + 12, y + 5, { width: this.W - 20 });
     doc.fillColor(C.gray1).moveDown(0.4);
   }
 
@@ -387,16 +403,16 @@ export class PdfReportGenerator {
     const y0 = doc.y;
     items.forEach(({ label, value, sub }, i) => {
       const x = this.L + i * cw;
-      doc.roundedRect(x, y0, cw - 6, 52, 4).fill(C.gray5).stroke(C.gray4);
-      // Colored top bar
-      doc.rect(x, y0, cw - 6, 4).fill(color);
-      doc.fillColor(color).font(this.fontBold).fontSize(14)
+      doc.roundedRect(x, y0, cw - 6, 52, 3).fill(C.gray5).stroke(C.gray4);
+      // Thin colored top accent
+      doc.rect(x, y0, cw - 6, 3).fill(color);
+      doc.fillColor(C.primary).font(this.fontBold).fontSize(13)
         .text(value, x + 4, y0 + 10, { width: cw - 14, align: 'center' });
       doc.fillColor(C.gray3).font(this.fontReg).fontSize(7)
         .text(label, x + 4, y0 + 28, { width: cw - 14, align: 'center' });
       if (sub) {
-        const isNeg = sub.includes('Giam') || sub.includes('-');
-        const isPos = sub.includes('Tang') || sub.includes('+');
+        const isNeg = sub.includes('Giảm') || sub.includes('-');
+        const isPos = sub.includes('Tăng') || sub.includes('+');
         doc.fillColor(isPos ? C.green : isNeg ? C.red : C.gray3).fontSize(6.5)
           .text(sub, x + 4, y0 + 40, { width: cw - 14, align: 'center' });
       }
@@ -408,10 +424,10 @@ export class PdfReportGenerator {
     const doc = this.doc;
     const totalW = widths.reduce((a, b) => a + b, 0);
 
-    // Header
+    // Header — muted: use primary color background (dark but not saturated)
     let y = doc.y + 4;
     if (y > doc.page.height - 60) { doc.addPage(); y = 50; }
-    doc.rect(this.L, y, totalW, 18).fill(hColor);
+    doc.rect(this.L, y, totalW, 18).fill(C.primary);
     doc.fillColor(C.white).font(this.fontBold).fontSize(7.5);
     let x = this.L;
     headers.forEach((h, i) => { doc.text(h, x + 3, y + 4, { width: widths[i] - 6 }); x += widths[i]; });
@@ -425,13 +441,12 @@ export class PdfReportGenerator {
       doc.fillColor(C.gray1).font(this.fontReg).fontSize(6.5);
       x = this.L;
       row.forEach((cell, ci) => {
-        // Color code evaluation cells
         const txt = String(cell);
         let fc = C.gray1;
-        if (txt === 'Xuat sac') fc = C.green;
-        else if (txt === 'Tot') fc = '#15803D';
-        else if (txt === 'Trung binh') fc = C.gold;
-        else if (txt === 'Can toi uu') fc = C.red;
+        if (txt === 'Xuất sắc') fc = C.green;
+        else if (txt === 'Tốt') fc = '#2D7D5A';
+        else if (txt === 'Trung bình') fc = C.gold;
+        else if (txt === 'Cần tối ưu') fc = C.red;
         doc.fillColor(fc).text(txt.slice(0, 36), x + 3, y + 3, { width: widths[ci] - 6 });
         doc.fillColor(C.gray1);
         x += widths[ci];
@@ -446,7 +461,7 @@ export class PdfReportGenerator {
 
   private _platformTable(rows: any[], totalViews: number) {
     this._table(
-      ['Nen tang', 'Luot xem', 'Ty trong', 'So video', 'Nhan xet'],
+      ['Nền tảng', 'Lượt xem', 'Tỷ trọng', 'Số video', 'Nhận xét'],
       [80, 90, 60, 70, 155],
       rows.map(r => {
         const pct = totalViews > 0 ? ((this._n(r.views) / totalViews) * 100).toFixed(1) + '%' : '0%';
@@ -469,21 +484,21 @@ export class PdfReportGenerator {
     const y0 = doc.y + 8;
     const baseY = y0 + chartH;
 
-    // Axis
-    doc.moveTo(this.L, y0).lineTo(this.L, baseY).lineWidth(1).strokeColor(C.gray4).stroke();
-    doc.moveTo(this.L, baseY).lineTo(this.L + chartW, baseY).lineWidth(1).stroke();
+    // Axes
+    doc.moveTo(this.L, y0).lineTo(this.L, baseY).lineWidth(0.5).strokeColor(C.gray4).stroke();
+    doc.moveTo(this.L, baseY).lineTo(this.L + chartW, baseY).lineWidth(0.5).stroke();
 
-    // Bars
+    // Bars — slightly translucent feel via a lighter secondary fill
     items.forEach((item, i) => {
       const bH = Math.max(2, (item.value / maxVal) * chartH);
       const bX = this.L + 10 + i * (barW + 8);
       const bY = baseY - bH;
 
-      // Bar with slight gradient effect
       doc.rect(bX, bY, barW, bH).fill(color);
-      doc.rect(bX, bY, barW, Math.min(4, bH)).fillOpacity(0.3).fill(C.white).fillOpacity(1);
+      // Subtle top highlight
+      doc.rect(bX, bY, barW, Math.min(3, bH)).fillOpacity(0.2).fill(C.white).fillOpacity(1);
 
-      // Value label on top
+      // Value label
       doc.fillColor(C.gray2).font(this.fontReg).fontSize(5.5)
         .text(this._f(item.value), bX - 2, bY - 9, { width: barW + 4, align: 'center' });
 
@@ -503,8 +518,8 @@ export class PdfReportGenerator {
       const total = d.totalViews || 0;
       const glPct = total > 0 ? ((d.globalViews || 0) / total * 100) : 0;
       items.push({
-        icon: '✓', title: 'Diem manh',
-        body: `Tong luot xem ${this._f(total)}. Global chiem ${glPct.toFixed(1)}% tong traffic.`,
+        icon: '✓', title: 'Điểm mạnh',
+        body: `Tổng lượt xem ${this._f(total)}. Global chiếm ${glPct.toFixed(1)}% tổng traffic.`,
         color: C.green,
       });
       if (d.contentTypes.length > 0) {
@@ -512,14 +527,14 @@ export class PdfReportGenerator {
         for (const r of d.contentTypes) ctMap[r.ct] = (ctMap[r.ct]||0) + this._n(r.views);
         const topCt = Object.entries(ctMap).sort(([,a],[,b])=>b-a)[0];
         items.push({
-          icon: '★', title: 'Content hieu qua nhat',
-          body: `${topCt?.[0] || 'A1'} dang co view cao nhat. Nen tang uu tien san xuat loai nay.`,
+          icon: '★', title: 'Content hiệu quả nhất',
+          body: `${topCt?.[0] || 'A1'} đang có view cao nhất. Nên ưu tiên sản xuất loại nội dung này.`,
           color: C.gold,
         });
       }
       items.push({
-        icon: '→', title: 'De xuat thang toi',
-        body: '1. Duy tri momentum Facebook. 2. Tang REELs Global. 3. Phan tich A1-A5 de optimize content mix. 4. Theo doi kenh co view/video cao de scale.',
+        icon: '→', title: 'Đề xuất tháng tới',
+        body: '1. Duy trì momentum Facebook. 2. Tăng REELs Global. 3. Phân tích A1-A5 để optimize content mix. 4. Theo dõi kênh có view/video cao để scale.',
         color: C.blue,
       });
     } else {
@@ -527,18 +542,18 @@ export class PdfReportGenerator {
       const tm = (d.adsTeam || []).reduce((a: number, r: any) => a + this._n(r.mess), 0);
       const cpm = tm > 0 ? Math.round(ts / tm) : 0;
       items.push({
-        icon: '✓', title: 'Ket qua',
-        body: `Tong chi phi ${this._f(ts)} VND, CPMess ${this._f(cpm)} VND — ${cpm <= 18000 ? 'Xuat sac' : cpm <= 25000 ? 'Tot' : cpm <= 40000 ? 'Trung binh' : 'Can toi uu'}`,
+        icon: '✓', title: 'Kết quả',
+        body: `Tổng chi phí ${this._f(ts)} VND, CPMess ${this._f(cpm)} VND — ${cpm <= 18000 ? 'Xuất sắc' : cpm <= 25000 ? 'Tốt' : cpm <= 40000 ? 'Trung bình' : 'Cần tối ưu'}`,
         color: cpm <= 25000 ? C.green : C.gold,
       });
       items.push({
-        icon: '!', title: 'Luu y',
-        body: 'Benchmark: CPMess <18K Xuat sac | 18-25K Tot | 25-40K Trung binh | >40K Can toi uu. Camp co CPMess cao nen review creative va targeting.',
+        icon: '!', title: 'Lưu ý',
+        body: 'Benchmark: CPMess <18K Xuất sắc | 18-25K Tốt | 25-40K Trung bình | >40K Cần tối ưu. Camp có CPMess cao nên review creative và targeting.',
         color: C.gold,
       });
       items.push({
-        icon: '→', title: 'De xuat',
-        body: '1. Scale budget cho camp co CPMess thap nhat. 2. Pause hoac refresh creative cho camp >40K CPMess. 3. A/B test content type A1 vs A4.',
+        icon: '→', title: 'Đề xuất',
+        body: '1. Scale budget cho camp có CPMess thấp nhất. 2. Pause hoặc refresh creative cho camp >40K CPMess. 3. A/B test content type A1 vs A4.',
         color: C.blue,
       });
     }
@@ -546,7 +561,8 @@ export class PdfReportGenerator {
     items.forEach(item => {
       if (doc.y > doc.page.height - 80) doc.addPage();
       const y0 = doc.y + 4;
-      doc.roundedRect(this.L, y0, this.W, 52, 4).fill(C.gray5).stroke(C.gray4);
+      doc.roundedRect(this.L, y0, this.W, 52, 3).fill(C.gray5).stroke(C.gray4);
+      // Narrow left accent strip instead of full-width colored header
       doc.rect(this.L, y0, 4, 52).fill(item.color);
       doc.fillColor(item.color).font(this.fontBold).fontSize(10).text(item.title, this.L + 14, y0 + 8);
       doc.fillColor(C.gray2).font(this.fontReg).fontSize(8).text(item.body, this.L + 14, y0 + 24, { width: this.W - 24 });
@@ -581,7 +597,7 @@ export class PdfReportGenerator {
     if (!prev || !cur) return '';
     const pct = ((cur - prev) / prev * 100);
     const sign = pct >= 0 ? '+' : '';
-    return `${sign}${pct.toFixed(1)}% so thang truoc`;
+    return `${sign}${pct.toFixed(1)}% so với tháng trước`;
   }
 
   private _isGlobal(team: string): boolean {
@@ -591,17 +607,17 @@ export class PdfReportGenerator {
   private _campType(c: any): string {
     const s = (c.camp_type || c.campaign_name || '').toLowerCase();
     if (s.includes('like page') || s.includes('likepage')) return 'Like Page';
-    if (s.includes('tuong tac') || s.includes('tương tác')) return 'Tuong Tac';
+    if (s.includes('tuong tac') || s.includes('tương tác')) return 'Tương Tác';
     if (s.includes('mess')) return 'Mess';
-    return 'Khac';
+    return 'Khác';
   }
 
   private _platformNote(p: string): string {
     const notes: Record<string, string> = {
-      facebook:  'Nen tang chu luc, traffic cao',
-      tiktok:    'Viral content, uu tien REEL',
-      instagram: 'Tiem nang cao, tang dau tu REEL',
-      youtube:   'Kenh dai han, can SEO content',
+      facebook:  'Nền tảng chủ lực, traffic cao',
+      tiktok:    'Viral content, ưu tiên REEL',
+      instagram: 'Tiềm năng cao, tăng đầu tư REEL',
+      youtube:   'Kênh dài hạn, cần SEO content',
     };
     return notes[(p||'').toLowerCase()] || '';
   }

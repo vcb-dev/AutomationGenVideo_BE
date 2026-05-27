@@ -1339,6 +1339,42 @@ model SocialVideoReport {
   @@map("social_video_report")
 }
 
+/// Số liệu traffic đã chốt cuối tháng — chạy lock_monthly_report.py ngày 7 hàng tháng
+/// Giải quyết vấn đề video cuối tháng chưa kịp tích lũy view trước khi báo cáo
+model SocialVideoSnapshot {
+  id              String    @id @default(uuid())
+  platform        String                         // youtube | facebook | instagram | tiktok
+  post_id         String
+  channel_name    String?
+  username        String?
+  owner           String?
+  team            String?
+  title           String?   @db.Text
+
+  // Số liệu ĐÃ CHỐT — bất biến sau khi lock
+  views_locked     BigInt   @default(0)
+  likes_locked     BigInt   @default(0)
+  comments_locked  BigInt   @default(0)
+  shares_locked    BigInt   @default(0)
+  followers_locked BigInt   @default(0)
+
+  published_at    DateTime?                      // Ngày đăng gốc của video
+
+  // Tháng báo cáo (= tháng video published)
+  report_year     Int
+  report_month    Int
+
+  // Thời điểm chốt (ví dụ: 07/05 cho báo cáo tháng 4)
+  locked_at       DateTime  @default(now())
+
+  @@unique([platform, post_id, report_year, report_month])
+  @@index([report_year, report_month])
+  @@index([team, report_year, report_month])
+  @@index([platform, report_year, report_month])
+  @@index([owner])
+  @@map("social_video_snapshot")
+}
+
 model BusinessChannelConnection {
   id               String    @id @default(uuid())
   channel_name     String
@@ -1367,9 +1403,10 @@ model TelegramReportConfig {
   bot_token    String
   chat_id      String
   schedule     String   @default("0 8 * * *")
-  formats      String[] @default(["text"])
-  report_types String[] @default(["ads","traffic"])
-  is_active    Boolean  @default(true)
+  formats        String[] @default(["text"])
+  report_types   String[] @default(["ads","traffic"])
+  period_reports String[] @default(["monthly"])
+  is_active      Boolean  @default(true)
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 
