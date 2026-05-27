@@ -91,6 +91,7 @@ export class ChatHistoryController {
     return {
       message: aiResponse.message,
       dashboard: aiResponse.dashboard ?? null,
+      suggestions: aiResponse.suggestions ?? [],
       id: aiMsg.id,
     };
   }

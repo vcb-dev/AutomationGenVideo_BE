@@ -847,7 +847,7 @@ export class AiIntegrationService {
         this.httpService.post(
           `${this.aiServiceUrl}/api/chat/analytics/`,
           { message, history },
-          { timeout: 60000 },   // 60s timeout — đủ cho 2 lần gọi DeepSeek
+          { timeout: 120000 },  // 120s timeout — đủ cho 2 lần gọi DeepSeek (mỗi lần 55s)
         ).pipe(catchError((err: AxiosError) => {
           this.logger.error(`[AI Analytics] Python service error: ${err.message}`);
           throw err;
@@ -856,7 +856,7 @@ export class AiIntegrationService {
       return data;
     } catch (err) {
       this.logger.error(`[AI Analytics ERROR] ${err.message}`);
-      return { reply: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', type: 'chat' };
+      return { message: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', dashboard: null, suggestions: [] };
     }
   }
 

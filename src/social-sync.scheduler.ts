@@ -13,7 +13,7 @@ function runSocialSync(): void {
     else console.log('[Scheduler] Social Sync hoàn tất.', stdout.slice(0, 200));
   });
 
-  exec(`${PYTHON} ${path.join(AI_DIR, 'cron_ads_sync.py')}`, (err, stdout) => {
+  exec(`${PYTHON} ${path.join(AI_DIR, ' c')}`, (err, stdout) => {
     if (err) console.error('[Scheduler] Lỗi Ads Sync:', err.message);
     else console.log('[Scheduler] Ads Sync hoàn tất.', stdout.slice(0, 200));
   });

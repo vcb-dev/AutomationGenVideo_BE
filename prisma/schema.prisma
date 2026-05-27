@@ -1301,6 +1301,7 @@ model AdsCampaignStats {
   @@index([year, month])
   @@index([camp_type, year, month])
   @@index([content_type, year, month])
+  @@index([owner])
   @@map("ads_campaign_stats")
 }
 
@@ -1334,6 +1335,7 @@ model SocialVideoReport {
   @@index([username, year, month])
   @@index([team, year, month])
   @@index([year, month])
+  @@index([owner])
   @@map("social_video_report")
 }
 
