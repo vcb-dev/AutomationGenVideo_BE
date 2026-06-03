@@ -2,9 +2,13 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import * as bcrypt from 'bcrypt';
 import { PrismaClient } from '@prisma/client';
 import { buildScopedPrismaDbUrl } from '../../common/prisma/build-prisma-db-url';
+
+const execAsync = promisify(exec);
 
 @Injectable()
 export class LarkSyncService implements OnApplicationBootstrap {
@@ -130,7 +134,6 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // ──────────────────────────────────────────────────────────────────────────
     @Cron('0 0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async unifiedSync() {
-        if (!this.legacySyncEnabled) return;
         if (this.syncLock) {
             this.logger.warn('⏭️ Master sync skipped — another sync is in progress');
             return;
@@ -153,7 +156,55 @@ export class LarkSyncService implements OnApplicationBootstrap {
             await run('KPI sync',        () => this.larkService.syncKPIData());
             await run('KPI DoDa sync',   () => this.larkService.syncKPIDoDaData());
             await run('DoDa channel',    () => this.larkService.syncDoDaChannelData());
+            
+            // Clear KPI pagination cache after sync
+            this.larkService.invalidateKPICache();
+            
             this.logger.log('🎉 MASTER SYNC COMPLETED SUCCESSFULLY!');
+        } finally {
+            this.syncLock = false;
+        }
+    }
+
+    @Cron('0 10 */3 * * *', { name: 'sync-all-fast-script', timeZone: 'Asia/Ho_Chi_Minh' })
+    async runSyncAllFastScript() {
+        const enabled = String(process.env.LARK_ENABLE_SYNC_ALL_FAST_CRON ?? 'true').toLowerCase();
+        if (enabled === '0' || enabled === 'false' || enabled === 'no') {
+            this.logger.log('[sync:all:fast cron] disabled by LARK_ENABLE_SYNC_ALL_FAST_CRON');
+            return;
+        }
+
+        if (this.syncLock) {
+            this.logger.warn('[sync:all:fast cron] skipped — another sync is in progress');
+            return;
+        }
+
+        this.syncLock = true;
+        const cwd = process.cwd();
+        this.logger.log('[sync:all:fast cron] starting package script execution');
+
+        try {
+            const { stdout, stderr } = await execAsync('npm run sync:all:fast', {
+                cwd,
+                env: process.env,
+                maxBuffer: 1024 * 1024 * 10,
+            });
+
+            if (stdout?.trim()) {
+                this.logger.log(`[sync:all:fast cron][stdout]\n${stdout.trim()}`);
+            }
+            if (stderr?.trim()) {
+                this.logger.warn(`[sync:all:fast cron][stderr]\n${stderr.trim()}`);
+            }
+
+            this.logger.log('[sync:all:fast cron] completed successfully');
+        } catch (error: any) {
+            this.logger.error(
+                `[sync:all:fast cron] failed: ${error?.message || error}`,
+                error?.stack,
+            );
+            if (error?.stdout) this.logger.error(`[sync:all:fast cron][stdout]\n${error.stdout}`);
+            if (error?.stderr) this.logger.error(`[sync:all:fast cron][stderr]\n${error.stderr}`);
         } finally {
             this.syncLock = false;
         }
