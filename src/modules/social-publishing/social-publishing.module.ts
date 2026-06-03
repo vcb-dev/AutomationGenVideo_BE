@@ -106,6 +106,6 @@ import { HashtagController } from './hashtag/hashtag.controller';
     // Drafts
     DraftsService,
   ],
-  exports: [AccountsService, PublishService],
+  exports: [AccountsService, PublishService, GoogleDriveStorageService],
 })
 export class SocialPublishingModule {}
