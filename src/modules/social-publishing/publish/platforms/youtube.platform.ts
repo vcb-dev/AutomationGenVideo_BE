@@ -42,10 +42,38 @@ export class YoutubePublisher {
       status: { privacyStatus },
     };
 
-    // HEAD request để lấy file size
-    const headRes = await axios.head(videoUrl).catch(() => null);
-    const rawContentLength = headRes?.headers?.['content-length'];
-    const fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+    // Lấy file size (thử HEAD trước, nếu không được thì fallback sang GET Range)
+    let fileSize = 0;
+    try {
+      const headRes = await axios.head(videoUrl, { timeout: 15000 });
+      const rawContentLength = headRes?.headers?.['content-length'];
+      fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+    } catch (e: any) {
+      this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
+    }
+
+    if (fileSize === 0) {
+      try {
+        const getRangeRes = await axios.get(videoUrl, {
+          headers: { Range: 'bytes=0-0' },
+          timeout: 15000,
+        });
+        const contentRange = getRangeRes.headers['content-range'];
+        if (contentRange) {
+          fileSize = parseInt(contentRange.split('/').pop() || '0', 10);
+        }
+        if (fileSize === 0) {
+          const rawContentLength = getRangeRes.headers['content-length'];
+          fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+        }
+      } catch (e: any) {
+        this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
+      }
+    }
+
+    if (fileSize === 0) {
+      throw new Error(`YouTube: không lấy được kích thước file từ URL ${videoUrl}`);
+    }
 
     // Initiate resumable upload session
     const initRes = await axios.post(
@@ -56,7 +84,7 @@ export class YoutubePublisher {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
           'X-Upload-Content-Type': 'video/mp4',
-          ...(fileSize > 0 && { 'X-Upload-Content-Length': fileSize }),
+          'X-Upload-Content-Length': fileSize,
         },
       },
     );
