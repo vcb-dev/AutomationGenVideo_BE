@@ -7,10 +7,12 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { CacheService } from "../../common/cache/cache.service";
+import { GoogleDriveStorageService } from "../social-publishing/upload/google-drive-storage.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
+import * as fs from "fs";
 import { LarkService } from "../lark-sync/lark.service";
 
 // Helper: check if roles array contains a staff role (MEMBER)
@@ -35,6 +37,7 @@ export class UsersService {
     private prisma: PrismaService,
     private larkService: LarkService,
     private cacheService: CacheService,
+    private googleDrive: GoogleDriveStorageService,
   ) { }
 
   private userCacheKey(id: string) { return `user:id:${id}`; }
@@ -540,6 +543,87 @@ export class UsersService {
       message: 'Manager assigned successfully',
       user: updatedUser,
     };
+  }
 
+  /**
+   * Upload avatar for user and store in Google Drive (portraits bucket)
+   * Returns the permanent URL
+   */
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    this.logger.log(`[UploadAvatar] User ${userId} uploading avatar: ${file.originalname}`);
+
+    // Validate user exists
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, full_name: true, image_url: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (!this.googleDrive.isAvailable()) {
+      throw new BadRequestException('Google Drive storage is not configured');
+    }
+
+    try {
+      // Generate clean filename
+      const timestamp = Date.now();
+      const ext = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
+      const cleanName = user.email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `avatar_${cleanName}_${timestamp}.${ext}`;
+
+      // Upload to Google Drive
+      const uploaded = await this.googleDrive.uploadFromPath(
+        file.path,
+        filename,
+        file.mimetype,
+        { id: userId, email: user.email }
+      );
+
+      // Update user record with new avatar URL
+      const updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data: { 
+          image_url: uploaded.url,
+          last_app_update_at: new Date(),
+        },
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          image_url: true,
+        },
+      });
+
+      // Invalidate cache
+      this.cacheService.invalidate(this.userCacheKey(userId));
+      this.cacheService.invalidate(this.userEmailCacheKey(user.email));
+
+      this.logger.log(`[UploadAvatar] ✅ Avatar uploaded successfully for user ${userId}: ${uploaded.url}`);
+
+      // Clean up temp file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        this.logger.warn(`[UploadAvatar] Failed to delete temp file ${file.path}: ${err}`);
+      }
+
+      return {
+        success: true,
+        image_url: uploaded.url,
+        message: 'Avatar uploaded successfully',
+        user: updatedUser,
+      };
+    } catch (error) {
+      this.logger.error(`[UploadAvatar] ❌ Failed to upload avatar for user ${userId}:`, error);
+
+      // Clean up temp file on error
+      try {
+        fs.unlinkSync(file.path);
+      } catch {}
+
+      throw new BadRequestException(`Failed to upload avatar: ${error.message}`);
+    }
   }
 }
