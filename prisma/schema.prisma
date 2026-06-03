@@ -6,6 +6,12 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  
+  // Connection pooling is configured via:
+  // 1. DATABASE_URL parameters: connection_limit, pool_timeout
+  // 2. PgBouncer (already enabled with pgbouncer=true)
+  // 3. Prisma Client pool configuration (see prisma.service.ts)
+  // Requirements: 2.5, 8.6 - Pool settings: min=10, max=100, idleTimeoutMillis=30000
 }
 
 /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe

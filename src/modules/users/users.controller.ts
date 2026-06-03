@@ -11,23 +11,32 @@ import {
   UseInterceptors,
   Request,
   Query,
+  UploadedFile,
+  BadRequestException,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { diskStorage } from "multer";
 import { SkipThrottle } from "@nestjs/throttler";
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
 } from "@nestjs/swagger";
 import { UsersService } from "./users.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
 import { GetEditorStatsQueryDto, MyEditorsResponseDto } from "./dto/editor-stats.dto";
+import { UploadAvatarDto } from "./dto/upload-avatar.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "@prisma/client";
+import * as path from "path";
+import * as fs from "fs";
 
 @ApiTags("users")
 @Controller("users")
@@ -146,5 +155,58 @@ export class UsersController {
   })
   async selectManager(@Request() req, @Param("managerId") managerId: string) {
     return this.usersService.selectManager(req.user.id, managerId);
+  }
+
+  @Post("upload-avatar")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Upload avatar for current user" })
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({ type: UploadAvatarDto })
+  @ApiResponse({
+    status: 200,
+    description: "Avatar uploaded successfully",
+    schema: {
+      properties: {
+        success: { type: "boolean" },
+        image_url: { type: "string" },
+        message: { type: "string" },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: "Invalid file type or size" })
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: (_req, _file, cb) => {
+          const uploadDir = path.join(process.cwd(), "uploads", "avatars");
+          if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+          }
+          cb(null, uploadDir);
+        },
+        filename: (_req, file, cb) => {
+          const ext = path.extname(file.originalname).toLowerCase();
+          const filename = `avatar_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+          cb(null, filename);
+        },
+      }),
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+      fileFilter: (_req, file, cb) => {
+        const allowedMimeTypes = /^image\/(jpeg|jpg|png|webp)$/;
+        if (allowedMimeTypes.test(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new BadRequestException(`File type not supported: ${file.mimetype}. Only JPEG, PNG, WebP allowed.`), false);
+        }
+      },
+    })
+  )
+  async uploadAvatar(@UploadedFile() file: Express.Multer.File, @Request() req: any) {
+    if (!file) {
+      throw new BadRequestException("No file uploaded");
+    }
+
+    return this.usersService.uploadAvatar(req.user.id, file);
   }
 }
