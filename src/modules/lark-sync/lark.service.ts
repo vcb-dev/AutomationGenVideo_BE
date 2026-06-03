@@ -1,5 +1,5 @@
 
-import { Injectable, Logger, OnModuleInit, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -23,7 +23,7 @@ function isLarkChannelActiveStatus(status: string | null | undefined): boolean {
 }
 
 @Injectable()
-export class LarkService implements OnModuleInit, OnApplicationBootstrap {
+export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
     private readonly logger = new Logger(LarkService.name);
     private accessToken: string;
     private tokenExpiresAt: number;
@@ -114,9 +114,38 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         return (this.prisma as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
     }
 
+    private remotePrismaClients = new Map<string, PrismaClient>();
+
     /** Remote/direct Prisma — connection_limit=1 để không chiếm pool PgBouncer. */
     private createRemotePrismaClient(url: string): PrismaClient {
-        return new PrismaClient({ datasources: { db: { url: buildScopedPrismaDbUrl(url) } } });
+        let client = this.remotePrismaClients.get(url);
+        if (!client) {
+            client = new PrismaClient({ datasources: { db: { url: buildScopedPrismaDbUrl(url) } } });
+            // Override $disconnect to make it a no-op so functions calling it in finally blocks don't kill the engine
+            const originalDisconnect = client.$disconnect.bind(client);
+            client.$disconnect = async () => {
+                // Do nothing to keep connection engine alive
+                return;
+            };
+            // Store the original disconnect to close it on shutdown
+            (client as any).__originalDisconnect = originalDisconnect;
+            this.remotePrismaClients.set(url, client);
+            this.logger.log(`Created and cached remote PrismaClient for URL: ${url.replace(/:[^:@]+@/, ':***@')}`);
+        }
+        return client;
+    }
+
+    async onModuleDestroy() {
+        for (const [url, client] of this.remotePrismaClients.entries()) {
+            const originalDisconnect = (client as any).__originalDisconnect;
+            if (originalDisconnect) {
+                await originalDisconnect().catch((e: any) => 
+                    this.logger.warn(`Failed to disconnect cached remote PrismaClient: ${e.message}`)
+                );
+            }
+        }
+        this.remotePrismaClients.clear();
+        this.logger.log('All cached remote PrismaClients disconnected.');
     }
 
     /** Merge team strings while preserving all unique teams. */
@@ -864,39 +893,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             };
         };
 
-        // #region agent log
-        try {
-            const keys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
-            const evidenceCounts = keys.reduce((acc: any, k) => {
-                const v = (platformEvidences as any)?.[k];
-                acc[k] = Array.isArray(v) ? v.length : 0;
-                return acc;
-            }, {} as Record<string, number>);
-            const positiveTrafficPlatforms = keys.filter((k) => {
-                const v = (traffic as any)?.[k];
-                return v && Number(v) > 0;
-            });
-            fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    location: 'lark.service.ts:submitTrafficReport',
-                    message: 'traffic report received (evidence optional)',
-                    data: {
-                        reportDate,
-                        positiveTrafficPlatforms,
-                        evidenceCounts,
-                        hasTrafficDetails: !!(payload as any)?.trafficDetails,
-                    },
-                    timestamp: Date.now(),
-                    hypothesisId: 'H2',
-                    runId: 'post-fix',
-                }),
-            }).catch(() => { });
-        } catch {
-            // ignore
-        }
-        // #endregion
+
 
         // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
 
@@ -2812,9 +2809,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 throw new Error('KPI DoDa sync aborted: no records fetched from Lark, skip replacing local table.');
             }
 
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H1', location: 'lark.service.ts:syncKPIDoDaData:beforeDeleteMany', message: 'KPI DoDa about to deleteMany lark_kpi_do_da', data: { recordCount: records.length }, timestamp: Date.now() }) }).catch(() => { });
-            // #endregion
+
 
             let syncedCount = 0;
             let skippedBeforeMinDate = 0;
@@ -3120,9 +3115,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 `[KPI DoDa] Synced ${syncedCount} rows into ${isDoDaEditKpiTable ? 'lark_kpi_do_da_editor' : 'lark_kpi_do_da'} (skipped ${skippedBeforeMinDate} outside [${KPI_MIN_DATE_KEY} .. ${KPI_MAX_DATE_KEY}]).`,
             );
             this.invalidateActivityCache();
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H1', location: 'lark.service.ts:syncKPIDoDaData:success', message: 'KPI DoDa sync completed', data: { syncedCount, runId: 'post-fix' }, timestamp: Date.now() }) }).catch(() => { });
-            // #endregion
+
             return {
                 synced: syncedCount,
                 total: records.length,
@@ -3133,10 +3126,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
             };
         } catch (error) {
             this.logger.error('[KPI DoDa] Sync failed', error);
-            // #region agent log
-            const pe = error as { code?: string; meta?: unknown; message?: string };
-            fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H1', location: 'lark.service.ts:syncKPIDoDaData:catch', message: 'KPI DoDa sync error', data: { code: pe?.code, meta: pe?.meta, errMsg: pe?.message?.slice?.(0, 200) }, timestamp: Date.now() }) }).catch(() => { });
-            // #endregion
+
             throw error;
         } finally {
             if (targetClient) {
@@ -3370,10 +3360,58 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         };
     }
 
-    // Get all KPI data from DB
-    async getKPIData() {
-        return this.prisma.larkKPI.findMany({
-            orderBy: { report_date: 'desc' }
+    // Get all KPI data from DB with caching and pagination
+    async getKPIData(page: number = 1, pageSize: number = 50) {
+        // Clamp values to prevent abuse
+        const pageNum = Math.max(1, page);
+        const size = Math.min(100, Math.max(10, pageSize));
+        const skip = (pageNum - 1) * size;
+
+        // Use cache key that includes pagination
+        const cacheKey = `kpi:paginated:${pageNum}:${size}`;
+        
+        // 10 minute TTL for KPI data
+        const KPI_CACHE_TTL_MS = 10 * 60 * 1000;
+
+        return this.cacheService.get(cacheKey, KPI_CACHE_TTL_MS, async () => {
+            this.logger.log(`[KPI] Fetching from DB - page ${pageNum}, size ${size}`);
+            
+            // Fetch both data and total count in parallel
+            const [data, total] = await Promise.all([
+                this.prisma.larkKPI.findMany({
+                    orderBy: { report_date: 'desc' },
+                    skip,
+                    take: size,
+                    select: {
+                        id: true,
+                        employee_id: true,
+                        name: true,
+                        team: true,
+                        kpi_month: true,
+                        completed_month: true,
+                        revenue_month: true,
+                        traffic_month: true,
+                        kpi_progress_month: true,
+                        report_date: true,
+                        month: true,
+                        state: true,
+                        tag: true,
+                    }
+                }),
+                this.prisma.larkKPI.count()
+            ]);
+
+            return {
+                data,
+                pagination: {
+                    page: pageNum,
+                    pageSize: size,
+                    total,
+                    totalPages: Math.ceil(total / size),
+                    hasMore: pageNum * size < total,
+                },
+                timestamp: new Date().toISOString(),
+            };
         });
     }
 
@@ -3394,11 +3432,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         this.cacheService.invalidate('activity:');
     }
 
+    // Clear KPI pagination cache after sync to ensure fresh data
+    invalidateKPICache() {
+        this.logger.log('🗑️ Invalidating KPI pagination cache...');
+        this.cacheService.invalidate('kpi:paginated:');
+        this.cacheService.invalidate('kpi:total:count');
+        this.logger.log('✅ KPI cache invalidated');
+    }
+
     // Get combined user activity reports (LarkReport + LarkKPI)
     async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string; timeType?: string }) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H1', location: 'lark.service.ts:getUserActivityReports:entry', message: 'Entered user activity', data: { date: filters?.date || null, startDate: filters?.startDate || null, endDate: filters?.endDate || null, team: filters?.team || 'All', timeType: filters?.timeType || null }, timestamp: Date.now() }) }).catch(() => { });
-        // #endregion
         // ─── PERF: Shared cache key (không include email) ────────────────────────────
         // Trước đây: mỗi user có cache riêng → 70 users = 70 queries nặng song song.
         // Sau: dataset (nặng) được cache CHUNG cho tất cả users cùng filter.
@@ -3410,28 +3453,31 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
         // Step 1: Resolve role/team for this user.
         // Source of truth for leader/admin role is users table.
         let requesterRole = 'member';
-        let requesterTeam = null;
+        let requesterTeam: string | null = null;
         if (filters?.requesterEmail) {
             const roleData = await this.cacheService.get(roleCacheKey, this.activityRoleCacheTtlMs, async () => {
                 const sysUser = await this.prisma.user.findFirst({
                     where: { email: { equals: filters.requesterEmail, mode: 'insensitive' } },
                     select: { roles: true, team: true },
                 });
-                const recentKpis = await this.prisma.larkKPI.findMany({
-                    where: { OR: [{ state: { not: 'off' } }, { state: null }] },
-                    select: { team: true, employee_data: true, report_date: true },
-                    orderBy: { report_date: 'desc' },
-                    take: 5000,
-                });
-                const requesterEmail = filters.requesterEmail.toLowerCase().trim();
-                const matched = recentKpis.find((kpi: any) => this.extractEmailFromKpi(kpi) === requesterEmail);
                 let role = 'member';
                 if (sysUser?.roles && sysUser.roles.length > 0) {
                     if (sysUser.roles.includes(UserRole.ADMIN)) role = 'admin';
                     else if (sysUser.roles.includes(UserRole.MANAGER)) role = 'manager';
                     else if (sysUser.roles.some((r) => r === ('LEADER' as any))) role = 'leader';
                 }
-                const team = sysUser?.team || matched?.team || null;
+                let team = sysUser?.team || null;
+                if (!team) {
+                    const recentKpis = await this.prisma.larkKPI.findMany({
+                        where: { OR: [{ state: { not: 'off' } }, { state: null }] },
+                        select: { team: true, employee_data: true },
+                        orderBy: { report_date: 'desc' },
+                        take: 100,
+                    });
+                    const requesterEmail = filters.requesterEmail.toLowerCase().trim();
+                    const matched = recentKpis.find((kpi: any) => this.extractEmailFromKpi(kpi) === requesterEmail);
+                    team = matched?.team || null;
+                }
 
                 return { role, team };
             });
@@ -3578,9 +3624,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 this.logger.debug(
                     `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist/traffic/report_kpi VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H2', location: 'lark.service.ts:getUserActivityReports:kpiDateMap', message: 'Bitable KPI = perf day only; checklist = D+1 window', data: { uiDate: selectedSingleDay || null, dataDayStart: dataDayStartStr, dataDayEnd: dataDayEndStr, larkKpiStart: larkKpiStartOfDay.toISOString(), larkKpiEnd: larkKpiEndOfDay.toISOString(), memberStart: memberReportStart.toISOString(), memberEnd: memberReportEnd.toISOString() }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
 
                 whereClause.date = {
                     gte: memberReportStart,
@@ -3806,34 +3850,101 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     ],
                 } : {};
 
-                // Sequential fetch: Only use 1 connection at a time for stability
-                const reports = await this.prisma.larkReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } });
-
-                const standardKpis = await this.prisma.larkKPI.findMany({
-                    where: {
-                        OR: [
-                            { month: { in: monthsInRange.flatMap(m => m.formats) } },
-                            {
-                                month: null,
-                                report_date: {
-                                    gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
-                                    lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
-                                }
-                            },
-                        ],
-                        report_date: { gte: new Date('2026-03-01T00:00:00Z') },
-                        // Safely omitted state: 'off' DB filter to include nullable rows (downstream in-memory isResigned handles filtering)
-                    }
-                });
-
-                const dodaKpisRaw = await this.prismaLarkKpiDoDaEditor.findMany({
-                    where: {
-                        report_date: {
-                            gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
-                            lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                // Concurrent fetch for maximum speed
+                const [
+                    reports,
+                    standardKpis,
+                    dodaKpisRaw,
+                    allChannelsInDb,
+                    dailyReportKpis,
+                    monthlyReportKpis,
+                    allTrafficInDb,
+                    reportOutstandings,
+                    totalKpiCount,
+                    reportsUnfilteredCount
+                ] = await Promise.all([
+                    this.prisma.larkReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } }),
+                    this.prisma.larkKPI.findMany({
+                        where: {
+                            OR: [
+                                { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                                {
+                                    month: null,
+                                    report_date: {
+                                        gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
+                                        lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                                    }
+                                },
+                            ],
+                            report_date: { gte: new Date('2026-03-01T00:00:00Z') },
                         },
-                    },
-                });
+                        select: {
+                            id: true,
+                            employee_id: true,
+                            name: true,
+                            tag: true,
+                            team: true,
+                            image_url: true,
+                            kpi_day: true,
+                            kpi_month: true,
+                            kpii_status: true,
+                            kpi_day_percent: true,
+                            completed_day: true,
+                            completed_month: true,
+                            task_new: true,
+                            task_new_month: true,
+                            task_auto: true,
+                            task_auto_month: true,
+                            task_creative: true,
+                            content_win_new: true,
+                            revenue_month: true,
+                            traffic_month: true,
+                            target_revenue_month: true,
+                            target_traffic_month: true,
+                            kpi_progress_month: true,
+                            employee_status: true,
+                            state: true,
+                            employee_data: true,
+                            report_date: true,
+                            month: true,
+                            link_image: true,
+                        }
+                    }),
+                    this.prismaLarkKpiDoDaEditor.findMany({
+                        where: {
+                            report_date: {
+                                gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
+                                lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                            },
+                        },
+                    }),
+                    this.prisma.channel.findMany({
+                        where: { status: 'Đang hoạt động' },
+                        select: { owner: true, team_traffic: true }
+                    }),
+                    (this.prisma as any).larkReportKPI.findMany({
+                        where: {
+                            report_date: { gte: memberReportStart, lte: memberReportEnd },
+                        }
+                    }),
+                    (this.prisma as any).larkReportKPI.findMany({
+                        where: {
+                            report_date: {
+                                gte: getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start,
+                                lte: getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end
+                            },
+                        }
+                    }),
+                    this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
+                    this.prisma.$queryRawUnsafe(`
+                        SELECT * FROM "report_outstanding"
+                        WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%' 
+                          AND "content" IS NOT NULL AND "content" != '' AND "content" != '-'
+                        ORDER BY "date" DESC, "created_at" DESC LIMIT 200
+                    `),
+                    this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
+                    this.prisma.larkReport.count({ where: whereClause })
+                ]);
 
                 const dodaKpis = (dodaKpisRaw as any[]).map((r: any) => {
                     const normEditorName = normName(r.editor_name || '');
@@ -3868,46 +3979,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     };
                 }).filter(Boolean);
 
-                const allKpiInDbRaw: any[] = [...standardKpis, ...dodaKpis];
-
-
-
-                const allChannelsInDb = await this.prisma.channel.findMany({ where: { status: 'Đang hoạt động' } });
+                const allKpiInDb: any[] = [...standardKpis, ...dodaKpis];
                 const permissions: any[] = [];
-
-                // Batch 2: KPIs and auxiliary data - also sequential
-                const dailyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
-                    where: {
-                        report_date: { gte: memberReportStart, lte: memberReportEnd },
-                    }
-                });
-
-                const monthlyReportKpis = await (this.prisma as any).larkReportKPI.findMany({
-                    where: {
-                        report_date: {
-                            gte: getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start,
-                            lte: getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end
-                        },
-                    }
-                });
-
-                const allTrafficInDb = await this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } });
-
-                const reportOutstandings = await this.prisma.$queryRawUnsafe(`
-                    SELECT * FROM "report_outstanding"
-                    WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%' 
-                      AND "content" IS NOT NULL AND "content" != '' AND "content" != '-'
-                    ORDER BY "date" DESC, "created_at" DESC LIMIT 200
-                `);
-
-                const totalKpiCount = await this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } });
-
-
-                const allKpiInDb = allKpiInDbRaw;
-
-                const reportsUnfilteredCount = await this.prisma.larkReport.count({
-                    where: whereClause,
-                });
 
                 if (isDoDaTeamFilter) {
                     // For DoDa filter, force avatar enrichment from users table.
@@ -3937,12 +4010,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     }
                 }
 
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H3', location: 'lark.service.ts:getUserActivityReports:afterFetch', message: 'Fetched base datasets', data: { reports: reports.length, kpisRaw: allKpiInDb.length, employees: employees.length, dailyReportKpis: dailyReportKpis.length, monthlyReportKpis: monthlyReportKpis.length, selectedTeam: filters?.team || 'All', useDbTeamFilter }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H8', location: 'lark.service.ts:getUserActivityReports:reportFilterGap', message: 'Compare report counts with/without team DB filter', data: { selectedTeam: filters?.team || 'All', reportsFilteredCount: reports.length, reportsUnfilteredCount, useDbTeamFilter }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
                 const multiTeamUsersDebug = employees
                     .filter((u: any) => String(u?.team || '').includes(','))
                     .slice(0, 8)
@@ -3956,9 +4024,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         });
                         return { email: u.email, name: u.full_name, team: u.team, hasReport };
                     });
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H6', location: 'lark.service.ts:getUserActivityReports:multiTeamReportCoverage', message: 'Multi-team users report coverage in fetched reports', data: { selectedTeam: filters?.team || 'All', multiTeamUsersDebug }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
 
                 // Filter KPIs that match ANY month in range (Secondary JS filter for safety with complex digits)
                 let kpiData = allKpiInDb.filter(k => {
@@ -4002,16 +4068,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                     if (kEmail) personPerformanceTeamMap.set(kEmail, kTeam);
                     if (kName) personPerformanceTeamMap.set(kName, kTeam);
                 }
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-date-debug-v1', hypothesisId: 'H-date-window', location: 'lark.service.ts:getUserActivityReports:targetDayKpis', message: 'Computed target-day KPI rows from lark_kpi', data: { selectedSingleDay, uiStart: uiDayStartStr, uiEnd: uiDayEndStr, larkKpiStart: larkKpiStartOfDay.toISOString(), larkKpiEnd: larkKpiEndOfDay.toISOString(), kpiDataCount: kpiData.length, targetDayKpisCount: targetDayKpis.length, teamFilter: filters?.team || 'All' }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
                 const globalIndoOrDaiLoanKpis = kpiData.filter((k: any) => {
                     const t = String(k?.team || '').toLowerCase();
                     return t.includes('global - indo') || t.includes('global-indo') || t.includes('global indo') || t.includes('global - đài') || t.includes('global - dai') || t.includes('global đài') || t.includes('global dai');
                 });
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H4', location: 'lark.service.ts:getUserActivityReports:kpiFilterResult', message: 'Filtered KPI dataset', data: { kpiDataCount: kpiData.length, targetDayKpis: targetDayKpis.length, globalIndoOrDaiLoanKpis: globalIndoOrDaiLoanKpis.length, sampleTargetKpiDate: targetDayKpis[0]?.report_date || null }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
 
                 this.logger.debug(`[Optimization] Parallel fetch completed. Reports: ${reports.length}, KPIs: ${kpiData.length}`);
 
@@ -5127,9 +5189,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         preGroupDupStats.duplicateRowsWithNonZeroDaily += rows.length;
                     }
                 });
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H-kpi-grouping', location: 'lark.service.ts:getUserActivityReports:preGroupDupStats', message: 'Pre-group duplicate person keys and daily KPI risk', data: { teamFilter: filters?.team || 'All', ...preGroupDupStats, totalRows: allResults.filter(r => r !== null).length }, timestamp: Date.now(), runId: 'team-kpi-debug-v1' }) }).catch(() => { });
-                // #endregion
+
 
                 // --- NEW: Group by Person to aggregate stats across months if viewing range ---
                 const groupedResults = new Map();
@@ -5254,18 +5314,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                 }
                 const preGroupNonZeroDaily = allResults.filter((r: any) => r !== null && (Number(r?.kpi_day || 0) > 0 || Number(r?.completed_day || 0) > 0)).length;
                 const postGroupNonZeroDaily = allValidResults.filter((r: any) => Number(r?.kpi_day || 0) > 0 || Number(r?.completed_day || 0) > 0).length;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: 'H-kpi-grouping', location: 'lark.service.ts:getUserActivityReports:postGroupDailyCounts', message: 'Compare non-zero daily KPI rows pre/post grouping', data: { teamFilter: filters?.team || 'All', preGroupNonZeroDaily, postGroupNonZeroDaily, groupedCount: allValidResults.length }, timestamp: Date.now(), runId: 'team-kpi-debug-v1' }) }).catch(() => { });
-                // #endregion
+
                 const teamBuckets = allValidResults.reduce((acc: any, r: any) => {
                     const team = String(r?.team || 'Khác');
                     acc[team] = (acc[team] || 0) + 1;
                     return acc;
                 }, {});
                 const zeroDailyCount = allValidResults.filter((r: any) => Number(r?.kpi_day || 0) === 0 && Number(r?.completed_day || 0) === 0).length;
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H5', location: 'lark.service.ts:getUserActivityReports:finalResults', message: 'Built final results after grouping', data: { allValidResults: allValidResults.length, zeroDailyCount, teamBuckets }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
                 const multiTeamResultDebug = allValidResults
                     .filter((r: any) => String(r?.team || '').includes(','))
                     .slice(0, 8)
@@ -5276,9 +5332,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap {
                         checklistMarked: !!(r.checklist && Object.values(r.checklist).some(Boolean)),
                         status: r.status,
                     }));
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/50a1c944-63a6-4094-af64-9a73a105402a', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId: 'kpi-team-debug-1', hypothesisId: 'H7', location: 'lark.service.ts:getUserActivityReports:multiTeamFinalCards', message: 'Final cards for multi-team members', data: { selectedTeam: filters?.team || 'All', multiTeamResultDebug }, timestamp: Date.now() }) }).catch(() => { });
-                // #endregion
+
 
                 // Phân tách dữ liệu Báo cáo và BXH
                 const combinedResults = allValidResults.filter(r => r.isAuthorizedForReport);
