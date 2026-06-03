@@ -81,9 +81,35 @@ export class TiktokPublisher {
 
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
-      const r = await axios.head(urlOrPath, { timeout: 15000 });
-      const size = parseInt(r.headers['content-length'] || '0');
-      if (!size) throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath} (Content-Length thiếu)`);
+      let size = 0;
+      try {
+        const r = await axios.head(urlOrPath, { timeout: 15000 });
+        size = parseInt(r.headers['content-length'] || '0', 10);
+      } catch (e: any) {
+        this.logger.warn(`[TikTok] HEAD request failed: ${e.message}, trying GET Range fallback...`);
+      }
+
+      if (size === 0) {
+        try {
+          const r = await axios.get(urlOrPath, {
+            headers: { Range: 'bytes=0-0' },
+            timeout: 15000,
+          });
+          const contentRange = r.headers['content-range'];
+          if (contentRange) {
+            size = parseInt(contentRange.split('/').pop() || '0', 10);
+          }
+          if (size === 0) {
+            size = parseInt(r.headers['content-length'] || '0', 10);
+          }
+        } catch (e: any) {
+          this.logger.error(`[TikTok] Fallback GET Range request failed: ${e.message}`);
+        }
+      }
+
+      if (!size) {
+        throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath}`);
+      }
       return size;
     }
     try {
