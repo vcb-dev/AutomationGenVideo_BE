@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
@@ -6,7 +6,7 @@ import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
 
 @Injectable()
-export class AccountsService implements OnModuleDestroy {
+export class AccountsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AccountsService.name);
   private readonly pagesCache = new Map<string, { data: any[]; expiresAt: number }>();
   private readonly pagesCacheCleanupInterval = setInterval(() => {
@@ -20,6 +20,15 @@ export class AccountsService implements OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.prisma.$executeRaw`UPDATE social_accounts SET is_shared = true WHERE is_active = true AND is_shared = false`;
+      this.logger.log('[onModuleInit] Đã cập nhật is_shared = true cho tất cả accounts cũ');
+    } catch (err: any) {
+      this.logger.warn(`[onModuleInit] Bỏ qua cập nhật is_shared: ${err.message}`);
+    }
+  }
 
   onModuleDestroy() {
     clearInterval(this.pagesCacheCleanupInterval);
@@ -75,6 +84,7 @@ export class AccountsService implements OnModuleDestroy {
     tokenExpiresAt?: Date;
     parentId?: string;
     extraData?: Record<string, any>;
+    isShared?: boolean;
   }) {
     const existing = await this.prisma.socialAccount.findFirst({
       where: { user_id: userId, platform: data.platform, platform_id: data.platformId },
@@ -90,6 +100,7 @@ export class AccountsService implements OnModuleDestroy {
       parent_id: data.parentId || null,
       extra_data: data.extraData || {},
       is_active: true,
+      is_shared: data.isShared ?? true,
       updated_at: new Date(),
     };
 
