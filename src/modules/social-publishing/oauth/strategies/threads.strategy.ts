@@ -2,15 +2,24 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
 
+function buildRedirectUri(envVar: string, platform: string): string {
+  if (process.env[envVar]) return process.env[envVar]!;
+  const base = (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000/api')
+    .replace(/\/api$/, '');
+  return `${base}/api/social/oauth/${platform}/callback`;
+}
+
 @Injectable()
 export class ThreadsOAuthStrategy {
   readonly platform = SocialPlatform.THREADS;
   private readonly logger = new Logger(ThreadsOAuthStrategy.name);
 
+  private get redirectUri() { return buildRedirectUri('THREADS_REDIRECT_URI', 'threads'); }
+
   getAuthUrl(state: string): string {
     const appId = process.env.THREADS_APP_ID;
     if (!appId) throw new Error('THREADS_APP_ID chưa được cấu hình trong .env');
-    const redirectUri = process.env.THREADS_REDIRECT_URI!;
+    const redirectUri = this.redirectUri;
     const params = new URLSearchParams({
       client_id: appId,
       redirect_uri: redirectUri,
@@ -28,7 +37,7 @@ export class ThreadsOAuthStrategy {
     const appId = process.env.THREADS_APP_ID;
     const appSecret = process.env.THREADS_APP_SECRET;
     if (!appId || !appSecret) throw new Error('THREADS_APP_ID hoặc THREADS_APP_SECRET chưa được cấu hình trong .env');
-    const redirectUri = process.env.THREADS_REDIRECT_URI!;
+    const redirectUri = this.redirectUri;
 
     const form = new URLSearchParams({
       client_id: appId, client_secret: appSecret,
