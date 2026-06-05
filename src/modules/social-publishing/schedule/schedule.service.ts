@@ -32,7 +32,13 @@ export class ScheduleService {
     if (isNaN(scheduledAt.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601 (vd: 2025-05-18T10:00:00+07:00)');
     if (scheduledAt <= new Date()) throw new BadRequestException('scheduledAt phải là thời điểm trong tương lai');
 
-    const account = await this.prisma.socialAccount.findFirst({ where: { id: dto.accountId, user_id: userId, is_active: true } });
+    const account = await this.prisma.socialAccount.findFirst({
+      where: {
+        id: dto.accountId,
+        is_active: true,
+        OR: [{ user_id: userId }, { is_shared: true } as any],
+      },
+    });
     if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
 
     return this.prisma.socialPost.create({
