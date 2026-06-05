@@ -346,6 +346,40 @@ BEGIN
 END $$;
 
 -- ----------------------------------------------------------
+-- 12. Sửa cột/index bị thiếu cho Social Publishing (social_accounts / social_posts)
+-- ----------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables 
+    WHERE table_schema = 'public' AND table_name = 'social_accounts'
+  ) THEN
+    ALTER TABLE "social_accounts" ADD COLUMN IF NOT EXISTS "is_shared" BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE "social_accounts" ADD COLUMN IF NOT EXISTS "parent_id" TEXT;
+    
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.table_constraints 
+      WHERE constraint_name = 'social_accounts_parent_id_fkey'
+    ) THEN
+      ALTER TABLE "social_accounts" ADD CONSTRAINT "social_accounts_parent_id_fkey" FOREIGN KEY ("parent_id") REFERENCES "social_accounts"("id") ON DELETE SET NULL;
+    END IF;
+    
+    CREATE INDEX IF NOT EXISTS "social_accounts_parent_id_idx"  ON "social_accounts"("parent_id");
+    CREATE INDEX IF NOT EXISTS "social_accounts_is_shared_idx"  ON "social_accounts"("is_shared");
+    CREATE INDEX IF NOT EXISTS "social_accounts_token_expires_at_idx" ON "social_accounts"("token_expires_at");
+    CREATE INDEX IF NOT EXISTS "social_accounts_is_active_token_expires_at_idx" ON "social_accounts"("is_active", "token_expires_at");
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables 
+    WHERE table_schema = 'public' AND table_name = 'social_posts'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS "social_posts_status_scheduled_at_idx" ON "social_posts"("status", "scheduled_at");
+    CREATE INDEX IF NOT EXISTS "social_posts_status_source_updated_at_idx" ON "social_posts"("status", "source", "updated_at");
+  END IF;
+END $$;
+
+-- ----------------------------------------------------------
 -- XONG – Chạy tiếp:
 --   POST /api/lark/sync-users    ← đồng bộ nhân viên từ Lark
 --   POST /api/lark/sync-channel  ← đồng bộ kênh từ Lark
