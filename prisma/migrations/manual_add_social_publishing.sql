@@ -16,17 +16,24 @@ CREATE TABLE "social_accounts" (
   "access_token_enc"   TEXT NOT NULL,
   "refresh_token_enc"  TEXT,
   "token_expires_at"   TIMESTAMPTZ,
+  "parent_id"          TEXT,
   "extra_data"         JSONB,
   "is_active"          BOOLEAN NOT NULL DEFAULT true,
+  "is_shared"          BOOLEAN NOT NULL DEFAULT false,
   "created_at"         TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updated_at"         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT "social_accounts_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "social_accounts_user_id_platform_platform_id_key" UNIQUE ("user_id", "platform", "platform_id"),
-  CONSTRAINT "social_accounts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
+  CONSTRAINT "social_accounts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE,
+  CONSTRAINT "social_accounts_parent_id_fkey" FOREIGN KEY ("parent_id") REFERENCES "social_accounts"("id") ON DELETE SET NULL
 );
 CREATE INDEX "social_accounts_user_id_idx"    ON "social_accounts"("user_id");
 CREATE INDEX "social_accounts_platform_idx"   ON "social_accounts"("platform");
+CREATE INDEX "social_accounts_parent_id_idx"  ON "social_accounts"("parent_id");
 CREATE INDEX "social_accounts_is_active_idx"  ON "social_accounts"("is_active");
+CREATE INDEX "social_accounts_is_shared_idx"  ON "social_accounts"("is_shared");
+CREATE INDEX "social_accounts_token_expires_at_idx" ON "social_accounts"("token_expires_at");
+CREATE INDEX "social_accounts_is_active_token_expires_at_idx" ON "social_accounts"("is_active", "token_expires_at");
 
 CREATE TABLE "social_posts" (
   "id"            TEXT NOT NULL DEFAULT gen_random_uuid()::text,
@@ -55,6 +62,8 @@ CREATE INDEX "social_posts_account_id_idx"   ON "social_posts"("account_id");
 CREATE INDEX "social_posts_status_idx"       ON "social_posts"("status");
 CREATE INDEX "social_posts_source_idx"       ON "social_posts"("source");
 CREATE INDEX "social_posts_scheduled_at_idx" ON "social_posts"("scheduled_at");
+CREATE INDEX "social_posts_status_scheduled_at_idx" ON "social_posts"("status", "scheduled_at");
+CREATE INDEX "social_posts_status_source_updated_at_idx" ON "social_posts"("status", "source", "updated_at");
 
 CREATE TABLE "social_drafts" (
   "id"         TEXT NOT NULL DEFAULT gen_random_uuid()::text,
