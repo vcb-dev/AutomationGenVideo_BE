@@ -2401,9 +2401,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         NOT: { email: { endsWith: '@employee.vcb.internal' } },
                     },
                 });
+                const byEmail = employeeData.email
+                    ? await this.prisma.user.findFirst({
+                        where: {
+                            email: { equals: employeeData.email.trim(), mode: 'insensitive' },
+                            NOT: { email: { endsWith: '@employee.vcb.internal' } },
+                        },
+                    })
+                    : null;
 
-                // Priority: record-ID match > employee_id match > name match
-                const target = byRecord || byEmpId || byName;
+                // Priority: record-ID match > employee_id match > name match > email match
+                const target = byRecord || byEmpId || byName || byEmail;
 
                 if (!target) {
                     this.logger.debug(`Skipping synthetic email creation for employee: ${employeeData.name}`);
