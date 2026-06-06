@@ -59,23 +59,7 @@ export class FacebookPublisher {
       let videoId: string;
 
       if (localFilePath) {
-        // Multipart upload trực tiếp từ disk — không cần URL công khai, không phụ thuộc ngrok/catbox
-        this.logger.log(`[FB] Uploading video via multipart from disk: ${localFilePath}`);
-        const form = new FormData();
-        const videoReadStream = fs.createReadStream(localFilePath);
-        videoReadStream.on('error', (err) => this.logger.error(`[FB] Video stream error: ${err.message}`));
-        form.append('source', videoReadStream, { filename: 'video.mp4', contentType: 'video/mp4' });
-        form.append('description', opts.message);
-        form.append('access_token', pageToken);
-        if (privacyParam) form.append('privacy', privacyParam);
-
-        const res = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
-          headers: form.getHeaders(),
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          timeout: 600000,
-        });
-        videoId = res.data.id;
+        videoId = await this.uploadVideoResumable(localFilePath, targetId, pageToken, opts.message, privacyParam);
       } else {
         // Fallback: file_url cho external URLs (catbox, CDN, ...)
         this.logger.log(`[FB] Uploading video via file_url: ${firstMedia}`);
@@ -205,6 +189,68 @@ export class FacebookPublisher {
     const res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody);
     const id = res.data.id;
     return { postId: id, url: `https://facebook.com/${id}` };
+  }
+
+  private async uploadVideoResumable(
+    localFilePath: string,
+    targetId: string,
+    pageToken: string,
+    description: string,
+    privacyParam?: string,
+  ): Promise<string> {
+    const fileSize = fs.statSync(localFilePath).size;
+    this.logger.log(`[FB] Resumable upload start: ${localFilePath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    // Phase 1: Start — Facebook trả về session + video_id
+    const startRes = await axios.post(`${this.BASE}/${targetId}/videos`, null, {
+      params: { upload_phase: 'start', file_size: fileSize, access_token: pageToken },
+    });
+    const { upload_session_id, video_id } = startRes.data;
+    let currentStart: number = parseInt(startRes.data.start_offset, 10);
+    let currentEnd: number = parseInt(startRes.data.end_offset, 10);
+    this.logger.log(`[FB] Session=${upload_session_id}, videoId=${video_id}`);
+
+    // Phase 2: Transfer — upload từng chunk theo offset Facebook chỉ định
+    const fd = fs.openSync(localFilePath, 'r');
+    try {
+      while (currentStart < fileSize) {
+        const chunkSize = currentEnd - currentStart;
+        const buffer = Buffer.alloc(chunkSize);
+        fs.readSync(fd, buffer, 0, chunkSize, currentStart);
+
+        const form = new FormData();
+        form.append('upload_phase', 'transfer');
+        form.append('upload_session_id', upload_session_id);
+        form.append('start_offset', String(currentStart));
+        form.append('access_token', pageToken);
+        form.append('video_file_chunk', buffer, { filename: 'chunk.mp4', contentType: 'video/mp4' });
+
+        this.logger.log(`[FB] Chunk ${currentStart}-${currentEnd} / ${fileSize}`);
+        const transferRes = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
+          headers: form.getHeaders(),
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 120000,
+        });
+        currentStart = parseInt(transferRes.data.start_offset, 10);
+        currentEnd = parseInt(transferRes.data.end_offset, 10);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    // Phase 3: Finish — gửi metadata, Facebook xử lý video
+    const finishBody: any = {
+      upload_phase: 'finish',
+      upload_session_id,
+      description,
+      access_token: pageToken,
+    };
+    if (privacyParam) finishBody.privacy = privacyParam;
+    await axios.post(`${this.BASE}/${targetId}/videos`, finishBody);
+
+    this.logger.log(`[FB] Resumable upload complete: videoId=${video_id}`);
+    return video_id;
   }
 
   private resolveLocalFilePath(mediaUrl: string): string | null {
