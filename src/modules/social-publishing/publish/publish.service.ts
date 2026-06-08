@@ -318,9 +318,10 @@ export class PublishService {
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
+      // '-map 0:a:0?' — dấu '?' làm audio map optional: không crash nếu video không có audio
       await execFileAsync(ffmpegPath, [
         '-y', '-i', inputPath,
-        '-map', '0:v:0', '-map', '0:a:0',
+        '-map', '0:v:0', '-map', '0:a:0?',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '0',
         '-profile:v', 'high', '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
         '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
@@ -514,7 +515,8 @@ export class PublishService {
     for (const url of mediaUrls) {
       if (!url.includes('/api/social/media/')) continue;
 
-      const filename = url.split('/api/social/media/').pop()!.split('?')[0];
+      const rawName = url.split('/api/social/media/').pop()!.split('?')[0];
+      const filename = path.basename(rawName); // chống path traversal: mediaUrls do user cung cấp
       const inputPath = path.join(uploadBase, filename);
 
       try {

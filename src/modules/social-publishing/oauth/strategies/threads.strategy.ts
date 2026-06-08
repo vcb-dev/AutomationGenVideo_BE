@@ -46,17 +46,20 @@ export class ThreadsOAuthStrategy {
     try {
       const shortRes = await axios.post('https://graph.threads.net/oauth/access_token', form.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 15000,
       });
       const { access_token: shortToken } = shortRes.data;
 
       const longRes = await axios.get('https://graph.threads.net/access_token', {
         params: { grant_type: 'th_exchange_token', client_secret: appSecret, access_token: shortToken },
+        timeout: 15000,
       });
       const accessToken = longRes.data.access_token;
       const expiresIn = longRes.data.expires_in || 5184000;
 
       const profileRes = await axios.get('https://graph.threads.net/v1.0/me', {
         params: { access_token: accessToken, fields: 'id,username,threads_profile_picture_url' },
+        timeout: 15000,
       });
       const p = profileRes.data;
 

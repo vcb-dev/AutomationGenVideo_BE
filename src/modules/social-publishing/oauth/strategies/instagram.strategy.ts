@@ -42,18 +42,21 @@ export class InstagramOAuthStrategy {
 
     const shortRes = await axios.post('https://api.instagram.com/oauth/access_token', form.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
     });
     const { access_token: shortToken, user_id } = shortRes.data;
 
     // Long-lived token
     const longRes = await axios.get('https://graph.instagram.com/access_token', {
       params: { grant_type: 'ig_exchange_token', client_secret: appSecret, access_token: shortToken },
+      timeout: 15000,
     });
     const accessToken = longRes.data.access_token;
     const expiresIn = longRes.data.expires_in || 5184000;
 
     const profileRes = await axios.get(`https://graph.instagram.com/v21.0/${user_id}`, {
       params: { access_token: accessToken, fields: 'id,username,name,profile_picture_url' },
+      timeout: 15000,
     });
     const p = profileRes.data;
 

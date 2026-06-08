@@ -25,6 +25,7 @@ export class ZaloPublisher {
         thumbForm.append('file', Buffer.from(thumbRes.data), { filename: 'thumbnail.jpg', contentType: 'image/jpeg' });
         const thumbUpload = await axios.post('https://openapi.zalo.me/v2.0/oa/upload/image', thumbForm, {
           headers: { ...headers, ...thumbForm.getHeaders() },
+          timeout: 30000,
         });
         if (thumbUpload.data?.error === 0) {
           thumbnailUrl = thumbUpload.data?.data?.url;
@@ -42,6 +43,9 @@ export class ZaloPublisher {
         videoForm.append('file', videoStream.data, { filename: 'video.mp4', contentType: 'video/mp4' });
         const videoUpload = await axios.post('https://openapi.zalo.me/v2.0/oa/upload/video', videoForm, {
           headers: { ...headers, ...videoForm.getHeaders() },
+          timeout: 300000,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
         });
         if (videoUpload.data?.error === 0) {
           videoToken = videoUpload.data?.data?.token;
@@ -63,7 +67,7 @@ export class ZaloPublisher {
     if (videoToken) articleBody.video_id = videoToken;
     if (thumbnailUrl) articleBody.avatar = thumbnailUrl;
 
-    const articleRes = await axios.post('https://openapi.zalo.me/v2.0/article/create', articleBody, { headers });
+    const articleRes = await axios.post('https://openapi.zalo.me/v2.0/article/create', articleBody, { headers, timeout: 30000 });
 
     if (articleRes.data?.error !== 0) {
       throw new Error(`Zalo article create failed: ${JSON.stringify(articleRes.data)}`);

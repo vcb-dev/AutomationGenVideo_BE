@@ -73,30 +73,30 @@ export class LarkSyncService implements OnApplicationBootstrap {
         // 1. Chạy Unified Sync (Wipe + HR + KPI)
         try {
             await this.unifiedSync();
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Unified Sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Unified Sync failed: ${err?.message ?? err}`);
         }
 
         // 2. Chạy Đồ Da (vì Đồ Da có logic riêng)
         try {
             const kpiDd = await this.larkService.syncKPIDoDaData();
             this.logger.log(`✅ Bootstrap KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message ?? err}`);
         }
 
         // 3. Chạy Permissions & Channels
         try {
             await this.larkService.syncPermissionData();
             this.logger.log('✅ Bootstrap Permission sync completed');
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message ?? err}`);
         }
         try {
             const doda = await this.larkService.syncDoDaChannelData();
             this.logger.log(`✅ Bootstrap Do Da channel sync: ${doda?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message ?? err}`);
         }
         this.logger.log('🎉 Bootstrap sync finished!');
     }
@@ -116,14 +116,14 @@ export class LarkSyncService implements OnApplicationBootstrap {
         try {
             const kpiDd = await this.larkService.syncKPIDoDaData();
             this.logger.log(`✅ KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ KPI Đồ Da sync failed: ${err.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ KPI Đồ Da sync failed: ${err?.message ?? err}`);
         }
         try {
             const doda = await this.larkService.syncDoDaChannelData();
             this.logger.log(`✅ Do Da channel sync: ${doda?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Do Da channel sync failed: ${err.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Do Da channel sync failed: ${err?.message ?? err}`);
         }
         this.syncLock = false;
     }
@@ -146,8 +146,8 @@ export class LarkSyncService implements OnApplicationBootstrap {
             try {
                 const result = await fn();
                 this.logger.log(`✅ ${name}: ${result?.synced ?? result?.count ?? 'done'}`);
-            } catch (err) {
-                this.logger.error(`❌ ${name} failed: ${err.message}`);
+            } catch (err: any) {
+                this.logger.error(`❌ ${name} failed: ${err?.message ?? err}`);
             }
         };
 

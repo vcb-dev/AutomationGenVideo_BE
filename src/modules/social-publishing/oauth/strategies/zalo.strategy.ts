@@ -73,6 +73,7 @@ export class ZaloOAuthStrategy {
           'Content-Type': 'application/x-www-form-urlencoded',
           'secret_key': process.env.ZALO_APP_SECRET!,
         },
+        timeout: 15000,
       },
     );
 
@@ -87,6 +88,7 @@ export class ZaloOAuthStrategy {
     try {
       const oaRes = await axios.get('https://openapi.zalo.me/v2.0/oa/getoa', {
         headers: { access_token },
+        timeout: 10000,
       });
       if (oaRes.data?.error === 0) {
         const oa = oaRes.data?.data || {};

@@ -187,10 +187,15 @@ export class ChunkedUploadController {
     let thumbnailDriveId: string | null = null;
 
     if (mimetype.startsWith('video/')) {
-      const res = await this.library.extractAndUploadThumbnail(file.fileId, session.filename, req.user);
-      if (res) {
-        thumbnailUrl = res.url;
-        thumbnailDriveId = res.fileId;
+      try {
+        const res = await this.library.extractAndUploadThumbnail(file.fileId, session.filename, req.user);
+        if (res) {
+          thumbnailUrl = res.url;
+          thumbnailDriveId = res.fileId;
+        }
+      } catch (thumbErr: any) {
+        // Thumbnail extraction thất bại không nên làm fail toàn bộ upload
+        this.logger.warn(`[finishUpload] extractAndUploadThumbnail failed for ${file.fileId}: ${thumbErr.message}`);
       }
     }
 

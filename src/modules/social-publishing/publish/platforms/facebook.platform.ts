@@ -45,7 +45,7 @@ export class FacebookPublisher {
       };
       if (privacyParam) body.privacy = privacyParam;
 
-      const res = await axios.post(`${this.BASE}/${targetId}/feed`, body);
+      const res = await axios.post(`${this.BASE}/${targetId}/feed`, body, { timeout: 60000 });
       const id = res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
@@ -69,7 +69,7 @@ export class FacebookPublisher {
           access_token: pageToken,
         };
         if (privacyParam) body.privacy = privacyParam;
-        const res = await axios.post(`${this.BASE}/${targetId}/videos`, body);
+        const res = await axios.post(`${this.BASE}/${targetId}/videos`, body, { timeout: 60000 });
         videoId = res.data.id;
       }
 
@@ -132,6 +132,7 @@ export class FacebookPublisher {
           await axios.post(`${this.BASE}/${videoId}/thumbnails`, thumbForm, {
             headers: thumbForm.getHeaders(),
             params: { access_token: pageToken },
+            timeout: 60000,
           });
           this.logger.log(`[FB] Successfully set custom thumbnail for video ${videoId}`);
         } else {
@@ -153,7 +154,7 @@ export class FacebookPublisher {
       };
       if (privacyParam) body.privacy = privacyParam;
 
-      const res = await axios.post(`${this.BASE}/${targetId}/photos`, body);
+      const res = await axios.post(`${this.BASE}/${targetId}/photos`, body, { timeout: 60000 });
       const id = res.data.post_id || res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
@@ -162,7 +163,7 @@ export class FacebookPublisher {
     // Bước 1: upload song song các ảnh dưới dạng unpublished
     const photoResults = await Promise.allSettled(
       opts.mediaUrls.map(url =>
-        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }),
+        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }, { timeout: 60000 }),
       ),
     );
     const photoIds: string[] = [];
@@ -186,7 +187,7 @@ export class FacebookPublisher {
     };
     if (privacyParam) feedBody.privacy = privacyParam;
 
-    const res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody);
+    const res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody, { timeout: 60000 });
     const id = res.data.id;
     return { postId: id, url: `https://facebook.com/${id}` };
   }
@@ -204,6 +205,7 @@ export class FacebookPublisher {
     // Phase 1: Start — Facebook trả về session + video_id
     const startRes = await axios.post(`${this.BASE}/${targetId}/videos`, null, {
       params: { upload_phase: 'start', file_size: fileSize, access_token: pageToken },
+      timeout: 60000,
     });
     const { upload_session_id, video_id } = startRes.data;
     let currentStart: number = parseInt(startRes.data.start_offset, 10);
@@ -247,7 +249,7 @@ export class FacebookPublisher {
       access_token: pageToken,
     };
     if (privacyParam) finishBody.privacy = privacyParam;
-    await axios.post(`${this.BASE}/${targetId}/videos`, finishBody);
+    await axios.post(`${this.BASE}/${targetId}/videos`, finishBody, { timeout: 60000 });
 
     this.logger.log(`[FB] Resumable upload complete: videoId=${video_id}`);
     return video_id;

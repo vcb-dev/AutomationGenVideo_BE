@@ -61,7 +61,7 @@ export class TiktokOAuthStrategy {
         redirect_uri: this.redirectUri,
         code_verifier: codeVerifier,
       }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
     );
 
     const { access_token, refresh_token, expires_in, open_id } = res.data;
@@ -70,6 +70,7 @@ export class TiktokOAuthStrategy {
     const profileRes = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
       params: { fields: 'open_id,union_id,avatar_url,display_name' },
       headers: { Authorization: `Bearer ${access_token}` },
+      timeout: 15000,
     });
     const u = profileRes.data.data?.user || {};
 

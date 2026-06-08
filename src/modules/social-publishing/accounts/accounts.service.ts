@@ -170,6 +170,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
           fields: 'id,name,access_token,picture,instagram_business_account{id,name,username,profile_picture_url}',
           limit: 100,
         },
+        timeout: 15000,
       });
 
       // Cache chỉ lưu metadata (không có access_token) để tránh token nằm trong RAM lâu
@@ -208,6 +209,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
         fields: 'id,name,access_token,picture,instagram_business_account{id,name,username,profile_picture_url}',
         limit: 100,
       },
+      timeout: 15000,
     });
     return (res.data.data || []) as Array<{
       id: string;

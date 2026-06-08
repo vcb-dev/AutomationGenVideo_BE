@@ -12,35 +12,52 @@ export class ThreadsPublisher {
 
   async publish(token: string, opts: {
     text: string; mediaUrls?: string[]; userId: string;
-  }): Promise<{ postId: string }> {
+  }): Promise<{ postId: string; url?: string }> {
     const { userId, text, mediaUrls } = opts;
+    let result: { postId: string };
 
     if (!mediaUrls?.length) {
       const cid = await this.createContainer(userId, token, { text, mediaType: 'TEXT' });
-      return this.publishContainer(userId, token, cid);
-    }
-
-    if (mediaUrls.length === 1) {
+      result = await this.publishContainer(userId, token, cid);
+    } else if (mediaUrls.length === 1) {
       const isVideo = isVideoUrl(mediaUrls[0]);
       const cid = await this.createContainer(userId, token, {
         text, mediaType: isVideo ? 'VIDEO' : 'IMAGE',
         mediaUrl: mediaUrls[0],
       });
       await this.waitForContainer(cid, token);
-      return this.publishContainer(userId, token, cid);
+      result = await this.publishContainer(userId, token, cid);
+    } else {
+      // Carousel
+      const childIds = await Promise.all(mediaUrls.map((url) => {
+        const isVid = isVideoUrl(url);
+        return this.createContainer(userId, token, {
+          mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
+        });
+      }));
+      await Promise.all(childIds.map(id => this.waitForContainer(id, token)));
+      const cid = await this.createContainer(userId, token, { text, mediaType: 'CAROUSEL', children: childIds });
+      await this.waitForContainer(cid, token);
+      result = await this.publishContainer(userId, token, cid);
     }
 
-    // Carousel
-    const childIds = await Promise.all(mediaUrls.map((url) => {
-      const isVid = isVideoUrl(url);
-      return this.createContainer(userId, token, {
-        mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
+    // Lấy permalink bài vừa đăng
+    const url = await this.getPermalink(result.postId, token);
+    this.logger.log(`[Threads] Published postId=${result.postId} url=${url ?? 'N/A'}`);
+    return { ...result, ...(url ? { url } : {}) };
+  }
+
+  private async getPermalink(postId: string, token: string): Promise<string | undefined> {
+    try {
+      const res = await axios.get(`${this.BASE}/${postId}`, {
+        params: { fields: 'permalink', access_token: token },
+        timeout: 10000,
       });
-    }));
-    await Promise.all(childIds.map(id => this.waitForContainer(id, token)));
-    const cid = await this.createContainer(userId, token, { text, mediaType: 'CAROUSEL', children: childIds });
-    await this.waitForContainer(cid, token);
-    return this.publishContainer(userId, token, cid);
+      return res.data.permalink ?? undefined;
+    } catch (err: any) {
+      this.logger.warn(`[Threads] Không lấy được permalink cho ${postId}: ${err.message}`);
+      return undefined;
+    }
   }
 
   private async createContainer(userId: string, token: string, opts: {

@@ -50,6 +50,8 @@ export class UploadService {
   /** Upload thẳng từ disk path (dùng với diskStorage — tránh load file vào RAM) */
   async saveFromDisk(filePath: string, filename: string, mimetype: string, user?: any): Promise<string> {
     if (!this.googleDrive.isAvailable()) {
+      // Xóa temp file trước khi throw để tránh disk leak
+      try { fs.unlinkSync(filePath); } catch {}
       throw new BadRequestException('Google Drive storage chua duoc cau hinh');
     }
     try {
