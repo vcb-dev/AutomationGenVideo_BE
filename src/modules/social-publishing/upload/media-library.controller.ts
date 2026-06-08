@@ -25,7 +25,9 @@ export class MediaLibraryController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   list(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '20') {
-    return this.library.list(req.user.id, Number(page), Number(limit));
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    return this.library.list(req.user.id, p, l);
   }
 
   @Get('stats')

@@ -34,12 +34,14 @@ export class FacebookOAuthStrategy {
     // 1. Short-lived token
     const shortRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
       params: { client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, redirect_uri: this.redirectUri, code },
+      timeout: 15000,
     });
     const shortToken = shortRes.data.access_token;
 
     // 2. Long-lived token (60 ngày)
     const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
       params: { grant_type: 'fb_exchange_token', client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, fb_exchange_token: shortToken },
+      timeout: 15000,
     });
     const accessToken = longRes.data.access_token;
     const expiresIn = longRes.data.expires_in || 5184000; // 60 days default
@@ -47,6 +49,7 @@ export class FacebookOAuthStrategy {
     // 3. Profile
     const profileRes = await axios.get('https://graph.facebook.com/v21.0/me', {
       params: { access_token: accessToken, fields: 'id,name,picture.type(large)' },
+      timeout: 15000,
     });
     const p = profileRes.data;
 

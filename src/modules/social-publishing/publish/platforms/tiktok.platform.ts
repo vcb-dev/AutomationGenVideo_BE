@@ -35,7 +35,7 @@ export class TiktokPublisher {
           total_chunk_count: totalChunks,
         },
       },
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' } },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
     );
 
     const { publish_id, upload_url } = initRes.data.data;
@@ -63,7 +63,7 @@ export class TiktokPublisher {
         const res = await axios.post(
           'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
           { publish_id: publishId },
-          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' } },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
         );
         const status = res.data?.data?.status;
         this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
@@ -130,6 +130,7 @@ export class TiktokPublisher {
         const r = await axios.get(videoUrl, {
           responseType: 'arraybuffer',
           headers: { Range: `bytes=${start}-${end}` },
+          timeout: 60000,
         });
         chunk = Buffer.from(r.data);
       } else {
@@ -149,6 +150,9 @@ export class TiktokPublisher {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Content-Length': chunk.length,
         },
+        timeout: 120000, // 2 phút per chunk
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
       });
 
       this.logger.log(`[TikTok] Chunk ${chunkIndex + 1} uploaded (${start}-${end}/${fileSize})`);

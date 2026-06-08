@@ -41,12 +41,13 @@ export class YoutubeOAuthStrategy {
       redirect_uri: this.redirectUri,
       grant_type: 'authorization_code',
       code,
-    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 });
 
     const { access_token, refresh_token, expires_in = 3600 } = tokenRes.data;
 
     const profileRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${access_token}` },
+      timeout: 15000,
     });
     const u = profileRes.data;
 
@@ -54,6 +55,7 @@ export class YoutubeOAuthStrategy {
     const channelRes = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
       params: { part: 'snippet', mine: true },
       headers: { Authorization: `Bearer ${access_token}` },
+      timeout: 15000,
     });
     const channel = channelRes.data.items?.[0];
 
@@ -74,7 +76,7 @@ export class YoutubeOAuthStrategy {
       client_secret: process.env.YT_CLIENT_SECRET!,
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 });
 
     return {
       accessToken: res.data.access_token,

@@ -50,12 +50,14 @@ export class HashtagController {
   async suggest(@Body() body: { message: string; platform?: string; industry?: string }) {
     const { message, platform, industry = 'kim hoàn trang sức' } = body;
     if (!message?.trim()) return { hashtags: BRAND_HASHTAGS.slice(0, 10), source: 'keyword' };
+    // Giới hạn 5000 ký tự để tránh DoS qua AI service
+    const safeMessage = message.slice(0, 5000);
 
     const aiUrl = process.env.AI_SERVICE_URL;
     if (aiUrl) {
       try {
         const res = await axios.post(`${aiUrl}/api/content/generate/`, {
-          video_description: message, content_type: 'A1', industry, brand_name: 'Viễn Chí Bảo',
+          video_description: safeMessage, content_type: 'A1', industry, brand_name: 'Viễn Chí Bảo',
           additional_context: `Hãy CHỈ TRẢ VỀ danh sách 15-20 hashtag phù hợp cho bài ${platform || 'Facebook/Instagram'}, mỗi hashtag bắt đầu bằng #, cách nhau bởi dấu cách, KHÔNG giải thích.`,
         }, { timeout: 8000 });
         const content: string = res.data?.content || res.data?.generated_content || '';
@@ -64,6 +66,6 @@ export class HashtagController {
       } catch (e: any) { /* AI service không khả dụng, fallback sang keyword */ }
     }
 
-    return { hashtags: extractHashtagsFromText(message), source: 'keyword' };
+    return { hashtags: extractHashtagsFromText(safeMessage), source: 'keyword' };
   }
 }

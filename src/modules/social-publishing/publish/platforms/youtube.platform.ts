@@ -86,6 +86,7 @@ export class YoutubePublisher {
           'X-Upload-Content-Type': 'video/mp4',
           'X-Upload-Content-Length': fileSize,
         },
+        timeout: 30000,
       },
     );
     const uploadUrl = initRes.headers.location;
@@ -149,7 +150,7 @@ export class YoutubePublisher {
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
     );
     return {
       accessToken: res.data.access_token,
