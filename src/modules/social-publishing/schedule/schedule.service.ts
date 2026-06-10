@@ -129,11 +129,11 @@ export class ScheduleService {
   @Cron('*/10 * * * * *')
   async checkAndExecute() {
     const now        = new Date();
-    const claimUntil = new Date(Date.now() + 10 * 60 * 1000); // claim 10 phút
+    // Video lớn cần download từ Drive + upload lên MXH → có thể mất 20-30 phút
+    const claimUntil = new Date(Date.now() + 40 * 60 * 1000); // claim 40 phút
 
-    // 1. Đếm số job đang xử lý (đã claim gần đây ≤ 10 phút) theo platform
-    // Chỉ đếm job có next_retry_at trong vòng 10 phút tới — tránh đếm nhầm job đang chờ retry delay dài hơn
-    const claimWindow = new Date(Date.now() + 10 * 60 * 1000);
+    // 1. Đếm số job đang xử lý (đã claim gần đây ≤ 40 phút) theo platform
+    const claimWindow = new Date(Date.now() + 40 * 60 * 1000);
     const inFlightRows = await this.prisma.socialPost.groupBy({
       by: ['platform'],
       where: {
