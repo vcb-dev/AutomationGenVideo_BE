@@ -146,10 +146,10 @@ export class QueueService {
   /** Thống kê hàng chờ hiện tại (cho admin) */
   async getQueueStats() {
     const now = new Date();
-    // Cửa sổ claim phải khớp với `claimUntil`/`claimWindow` (10 phút) trong
+    // Cửa sổ claim phải khớp với `claimUntil`/`claimWindow` (40 phút) trong
     // schedule.service.ts::checkAndExecute — nếu không, job đang chờ retry
     // delay dài hơn (vd. backoff hàng giờ sau khi fail) sẽ bị đếm nhầm là "processing"
-    const claimWindow = new Date(now.getTime() + 10 * 60 * 1000);
+    const claimWindow = new Date(now.getTime() + 40 * 60 * 1000);
     const [pending, inFlight] = await Promise.all([
       this.prisma.socialPost.groupBy({
         by: ['platform'],

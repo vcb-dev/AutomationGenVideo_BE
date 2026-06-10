@@ -103,7 +103,7 @@ export class HistoryService {
     const userIdFilter = await this.resolveUserIds(userId, callerRoles, filter);
     return this.prisma.socialPost.findMany({
       where: { ...(userIdFilter ? { user_id: userIdFilter } : {}) },
-      orderBy: { created_at: 'desc' },
+      orderBy: [{ executed_at: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }],
       take: limit,
       include: {
         account: { select: { name: true, username: true, avatar_url: true, platform: true } },
