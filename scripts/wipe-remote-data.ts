@@ -1,5 +1,5 @@
 import * as dotenv from 'dotenv';
-import { deleteTableInBatches, getRemoteDbUrl, withRemoteClient } from './lib/remote-prisma';
+import { getRemoteDbUrl, withRemoteClient } from './lib/remote-prisma';
 
 dotenv.config();
 
@@ -10,7 +10,7 @@ async function main() {
   }
 
   const serverUrl = getRemoteDbUrl(true);
-  console.log('⚠️  WIPING REMOTE (users + channels — KPI tables cleared by sync scripts)...');
+  console.log('🧹 Clearing sync buffer tables (users/channels/social giữ nguyên)...');
 
   try {
     await withRemoteClient(serverUrl, async (prisma) => {
@@ -26,22 +26,9 @@ async function main() {
       }
     });
 
-    console.log('   → DELETE huyk_channels (batched)...');
-    const channels = await deleteTableInBatches(serverUrl, 'huyk_channels', 200, (n) =>
-      console.log(`      … ${n} rows`),
-    );
-    console.log(`   ✅ huyk_channels (${channels} rows)`);
-
-    console.log('   → DELETE users (batched)...');
-    const users = await deleteTableInBatches(serverUrl, 'users', 100, (n) =>
-      console.log(`      … ${n} rows`),
-    );
-    console.log(`   ✅ users (${users} rows)`);
-
-    console.log('--- WIPE DONE (lark_kpi* cleared by force-sync-kpi scripts) ---');
+    console.log('--- DONE (sync scripts sẽ tự update/replace data) ---');
   } catch (error) {
-    console.error('❌ Wipe failed:', error);
-    console.error('💡 Ctrl+C → docker stop BE production → chạy lại.');
+    console.error('❌ Failed:', error);
     process.exit(1);
   }
 }
