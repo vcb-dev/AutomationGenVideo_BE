@@ -98,10 +98,18 @@ export class PublishService {
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    // IG/Threads/YouTube use direct Drive URLs to avoid Cloud Run download/transcode.
+    // Các platform này nhận Drive URL trực tiếp — server không cần download trước.
+    // - IG/Threads/YouTube: đã dùng direct URL từ trước
+    // - FACEBOOK: dùng file_url → FB server tự download từ Drive
+    // - ZALO: stream từ Drive URL (tránh pre-download 30-120s)
+    // TIKTOK giữ nguyên download-to-disk vì đọc disk nhanh hơn HTTP Range requests.
     const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM
       || platform === SocialPlatform.THREADS
-      || platform === SocialPlatform.YOUTUBE;
+      || platform === SocialPlatform.YOUTUBE
+      || platform === SocialPlatform.FACEBOOK
+      || platform === SocialPlatform.ZALO;
+
+    this.logger.log(`[PrepareMedia] platform=${platform} useDirectDriveUrl=${useDirectDriveUrl} driveAvailable=${this.googleDrive.isAvailable()} urls=${JSON.stringify(mediaUrls)}`);
 
     const results = await Promise.all(mediaUrls.map(async (url): Promise<PreparedMedia> => {
       if (url.includes('drive.google.com') || url.includes('docs.google.com') || url.includes('googleusercontent')) {
@@ -221,8 +229,12 @@ export class PublishService {
 
   /** Gọi bởi ScheduleService */
   async executeScheduled(post: any) {
+    this.logger.log(`[ExecuteScheduled] postId=${post.id} platform=${post.platform} accountId=${post.account_id} mediaUrls=${JSON.stringify(post.media_urls)}`);
     const account = await this.prisma.socialAccount.findUnique({ where: { id: post.account_id } });
-    if (!account || !account.is_active) throw new Error('Account không tồn tại hoặc đã bị ngắt kết nối');
+    if (!account || !account.is_active) {
+      this.logger.error(`[ExecuteScheduled] ❌ postId=${post.id} — account=${post.account_id} không tồn tại hoặc đã ngắt kết nối`);
+      throw new Error('Account không tồn tại hoặc đã bị ngắt kết nối');
+    }
 
     const token = this.crypto.decrypt(account.access_token_enc);
     const extraData = account.extra_data as any;
@@ -248,6 +260,7 @@ export class PublishService {
     }
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
+    this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
 
     try {
       const result = await this.dispatchPublish(account.platform, token, {
@@ -260,7 +273,12 @@ export class PublishService {
         platformId: account.platform_id,
         thumbUrl: post.thumb_url || undefined,
       });
+      this.logger.log(`[ExecuteScheduled] ✅ postId=${post.id} ${account.platform} "${account.name}" đăng thành công`);
       return result;
+    } catch (err: any) {
+      const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      this.logger.error(`[ExecuteScheduled] ❌ postId=${post.id} ${account.platform} "${account.name}": ${apiErr}`, err.stack);
+      throw err;
     } finally {
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
@@ -493,7 +511,7 @@ export class PublishService {
       },
     });
 
-    this.logger.log(`[PublishAsync] Queued post ${post.id} (${account.platform}) — worker sẽ xử lý trong ≤10s`);
+    this.logger.log(`[PublishAsync] Queued post ${post.id} (${account.platform}) — worker sẽ xử lý ngay`);
     return { postId: post.id, status: 'PENDING', platform: account.platform };
   }
 

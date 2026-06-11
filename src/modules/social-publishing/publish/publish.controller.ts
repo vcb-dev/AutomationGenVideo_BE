@@ -3,6 +3,7 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { IsString, IsArray, IsOptional } from 'class-validator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PublishService } from './publish.service';
+import { ScheduleService } from '../schedule/schedule.service';
 
 class PublishDto {
   @IsString() accountId: string;
@@ -17,7 +18,10 @@ class PublishDto {
 @UseGuards(JwtAuthGuard)
 @Controller('social/publish')
 export class PublishController {
-  constructor(private readonly publishService: PublishService) {}
+  constructor(
+    private readonly publishService: PublishService,
+    private readonly scheduleService: ScheduleService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Đăng bài ngay lập tức lên MXH (sync — chờ đến khi xong)' })
@@ -26,9 +30,12 @@ export class PublishController {
   }
 
   @Post('async')
-  @ApiOperation({ summary: 'Đăng bài bất đồng bộ — trả về postId ngay, worker xử lý trong ≤10 giây' })
-  publishAsync(@Body() dto: PublishDto, @Request() req) {
-    return this.publishService.publishAsync(req.user.id, dto);
+  @ApiOperation({ summary: 'Đăng bài bất đồng bộ — trả về postId ngay, worker xử lý ngay lập tức' })
+  async publishAsync(@Body() dto: PublishDto, @Request() req) {
+    const result = await this.publishService.publishAsync(req.user.id, dto);
+    // Kích hoạt worker ngay sau khi tạo job — không chờ cron 5s
+    this.scheduleService.triggerNow();
+    return result;
   }
 
   @Get(':postId')
