@@ -1,6 +1,6 @@
 import {
   Controller, Post, UseGuards, UseInterceptors,
-  UploadedFiles, BadRequestException, Request
+  UploadedFiles, BadRequestException, Request, Logger,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -15,6 +15,8 @@ import { UploadService, UPLOAD_DIR } from './upload.service';
 @UseGuards(JwtAuthGuard)
 @Controller('social/upload')
 export class UploadController {
+  private readonly logger = new Logger(UploadController.name);
+
   constructor(private readonly uploadService: UploadService) {}
 
   @Post('media')
@@ -44,14 +46,28 @@ export class UploadController {
     }),
   )
   async uploadMedia(@UploadedFiles() files: Express.Multer.File[], @Request() req: any) {
-    if (!files?.length) throw new BadRequestException('Không có file nào được upload');
+    const userId = req.user?.id || 'unknown';
+    if (!files?.length) {
+      this.logger.warn(`[Upload] userId=${userId} — request không có file nào`);
+      throw new BadRequestException('Không có file nào được upload');
+    }
+
+    this.logger.log(`[Upload] userId=${userId} — nhận ${files.length} file: ${files.map(f => `${f.originalname} (${(f.size / 1024 / 1024).toFixed(2)}MB, ${f.mimetype})`).join(', ')}`);
+
     const urls = await Promise.all(files.map(async (f) => {
       const filename = this.uploadService.generateFilename(f.originalname, f.mimetype);
-      // Đọc từ disk path thay vì f.buffer (không còn trong memory với diskStorage)
-      const url = await this.uploadService.saveFromDisk(f.path, filename, f.mimetype, req.user);
-      return { url, filename, originalname: f.originalname, mimetype: f.mimetype, size: f.size };
+      this.logger.log(`[Upload] Bắt đầu upload lên Drive: ${filename} (${(f.size / 1024 / 1024).toFixed(2)}MB)`);
+      try {
+        const url = await this.uploadService.saveFromDisk(f.path, filename, f.mimetype, req.user);
+        this.logger.log(`[Upload] ✅ Hoàn thành: ${filename} → ${url}`);
+        return { url, filename, originalname: f.originalname, mimetype: f.mimetype, size: f.size };
+      } catch (err: any) {
+        this.logger.error(`[Upload] ❌ Lỗi upload ${filename}: ${err.message}`, err.stack);
+        throw err;
+      }
     }));
 
+    this.logger.log(`[Upload] userId=${userId} — hoàn thành ${urls.length} file`);
     return { success: true, urls };
   }
 }

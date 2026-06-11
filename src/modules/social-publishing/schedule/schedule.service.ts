@@ -124,9 +124,18 @@ export class ScheduleService {
     });
   }
 
-  // ─── WORKER: chạy mỗi 10 giây ───────────────────────────────────────────────
+  // ─── WORKER: chạy mỗi 5 giây ────────────────────────────────────────────────
 
-  @Cron('*/10 * * * * *')
+  /** Trigger worker ngay lập tức (non-blocking) — gọi sau khi enqueue mới để giảm độ trễ */
+  triggerNow(): void {
+    setImmediate(() =>
+      this.checkAndExecute().catch((err: any) =>
+        this.logger.warn(`[Worker] triggerNow error: ${err?.message}`),
+      ),
+    );
+  }
+
+  @Cron('*/5 * * * * *')
   async checkAndExecute() {
     const now        = new Date();
     // Video lớn cần download từ Drive + upload lên MXH → có thể mất 20-30 phút
@@ -249,8 +258,10 @@ export class ScheduleService {
         .catch((err: any) => this.logger.warn(`[Worker] archiveMediaAsync failed for ${post.id}: ${err.message}`));
       this.logger.log(`[Worker] ✅ Post ${post.id} (${post.platform}) completed`);
     } catch (err: any) {
-      this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack: ${err.stack?.split('\n')[1]?.trim() ?? ''}`);
+      const stackLines = (err.stack || '').split('\n').slice(0, 6).join('\n  ');
+      this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack:\n  ${stackLines}`);
       const retryCount = (post.retry_count ?? 0) + 1;
+      const errorWithStack = `${err.message} | stack: ${(err.stack || '').split('\n').slice(1, 4).join(' | ')}`;
       try {
         if (retryCount >= MAX_RETRIES) {
           await this.prisma.socialPost.updateMany({
@@ -258,7 +269,7 @@ export class ScheduleService {
             data: {
               status:        SocialPostStatus.FAILED,
               retry_count:   retryCount,
-              error_msg:     err.message,
+              error_msg:     errorWithStack,
               updated_at:    new Date(),
               next_retry_at: null,
             },
