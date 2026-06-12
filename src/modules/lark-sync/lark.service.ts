@@ -1648,11 +1648,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     /** Chuẩn hóa tên để so khớp owner Channel ↔ full_name User / Họ tên bảng Permission */
     private normalizeOwnerName(s: string | null | undefined): string {
         return (s || '')
-            .normalize('NFC')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/đ/g, 'd')
+            .replace(/Đ/g, 'd')
             .trim()
             .toLowerCase()
             .replace(/\s+/g, ' ');
     }
+
 
     /**
      * Đọc huyk_channels (đã sync từ Lark) → tạo/cập nhật tracked_channels theo email hoặc owner khớp user.
