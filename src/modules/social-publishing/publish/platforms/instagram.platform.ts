@@ -145,7 +145,7 @@ export class InstagramPublisher {
   ) {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 2000));
       try {
         const res = await axios.get(`${base}/${containerId}`, {
           params: { fields: 'status_code,status', access_token: token },
