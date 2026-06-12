@@ -8,6 +8,16 @@ import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service
 const MAX_RETRIES = 3;
 const MAX_HEAVY_JOBS = 5;
 
+function extractDriveFileId(url: string): string | null {
+  if (!url) return null;
+  try {
+    const id = new URL(url).searchParams.get('id');
+    if (id) return id;
+  } catch {}
+  const m = url.match(/\/file\/d\/([^/?#]+)/);
+  return m?.[1] || null;
+}
+
 /** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
 function retryDelayMs(attempt: number): number {
   return Math.min(5 * Math.pow(3, attempt - 1) * 60 * 1000, 2 * 60 * 60 * 1000);
@@ -41,6 +51,18 @@ export class ScheduleService {
     });
     if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
 
+    let thumbUrl = dto.thumbUrl || null;
+    if (!thumbUrl && dto.mediaUrls?.length) {
+      const fileId = extractDriveFileId(dto.mediaUrls[0]);
+      if (fileId) {
+        const uploaded = await (this.prisma as any).socialUploadedFile?.findFirst?.({
+          where: { OR: [{ drive_file_id: fileId }, { url: dto.mediaUrls[0] }] },
+          select: { thumbnail_url: true },
+        }).catch(() => null);
+        thumbUrl = uploaded?.thumbnail_url ?? null;
+      }
+    }
+
     return this.prisma.socialPost.create({
       data: {
         user_id:      userId,
@@ -50,7 +72,7 @@ export class ScheduleService {
         media_urls:   dto.mediaUrls ?? [],
         page_id:      dto.pageId,
         privacy:      dto.privacy,
-        thumb_url:    dto.thumbUrl || null,
+        thumb_url:    thumbUrl,
         scheduled_at: scheduledAt,
         source:       SocialPostSource.SCHEDULED,
         status:       SocialPostStatus.PENDING,
@@ -248,6 +270,8 @@ export class ScheduleService {
           executed_at:   new Date(),
           updated_at:    new Date(),
           next_retry_at: null,
+          error_msg:     null,
+          retry_count:   0,
         },
       });
       if (updated.count === 0) {

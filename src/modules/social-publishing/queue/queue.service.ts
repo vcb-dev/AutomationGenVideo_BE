@@ -2,6 +2,16 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 
+function extractDriveFileId(url: string): string | null {
+  if (!url) return null;
+  try {
+    const id = new URL(url).searchParams.get('id');
+    if (id) return id;
+  } catch {}
+  const m = url.match(/\/file\/d\/([^/?#]+)/);
+  return m?.[1] || null;
+}
+
 /** Số job tối đa chạy đồng thời trên mỗi platform */
 export const PLATFORM_CONCURRENCY: Record<string, number> = {
   FACEBOOK:  6,
@@ -66,9 +76,26 @@ export class QueueService {
       }
     }
 
+    // Batch-lookup thumbnails cho các job chưa có thumbUrl
+    const thumbCache = new Map<string, string>();
+    const urlsNeedingThumb = [...new Set(
+      jobs.filter(j => !j.thumbUrl && j.mediaUrls?.length).map(j => j.mediaUrls![0]),
+    )];
+    for (const url of urlsNeedingThumb) {
+      const fileId = extractDriveFileId(url);
+      if (fileId) {
+        const uploaded = await (this.prisma as any).socialUploadedFile?.findFirst?.({
+          where: { OR: [{ drive_file_id: fileId }, { url }] },
+          select: { thumbnail_url: true },
+        }).catch(() => null);
+        if (uploaded?.thumbnail_url) thumbCache.set(url, uploaded.thumbnail_url);
+      }
+    }
+
     const created = await Promise.all(
       jobs.map(job => {
         const account = accountById.get(job.accountId)!;
+        const thumbUrl = job.thumbUrl || thumbCache.get(job.mediaUrls?.[0] || '') || null;
         return this.prisma.socialPost.create({
           data: {
             user_id:    userId,
@@ -80,7 +107,7 @@ export class QueueService {
             media_urls: job.mediaUrls ?? [],
             privacy:    job.privacy,
             page_id:    job.pageId,
-            thumb_url:  job.thumbUrl || null,
+            thumb_url:  thumbUrl,
             scheduled_at: now,
             updated_at:   now,
           },
