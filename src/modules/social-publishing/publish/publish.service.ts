@@ -98,15 +98,12 @@ export class PublishService {
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    // Các platform này nhận Drive URL trực tiếp — server không cần download trước.
-    // - IG/Threads/YouTube: đã dùng direct URL từ trước
-    // - FACEBOOK: dùng file_url → FB server tự download từ Drive
-    // - ZALO: stream từ Drive URL (tránh pre-download 30-120s)
-    // TIKTOK giữ nguyên download-to-disk vì đọc disk nhanh hơn HTTP Range requests.
-    const useDirectDriveUrl = platform === SocialPlatform.INSTAGRAM
-      || platform === SocialPlatform.THREADS
+    // FACEBOOK và INSTAGRAM phải download về local trước:
+    // - FB dùng uploadVideoResumable (binary) → không cần public URL
+    // - IG tạo container từ URL server nội bộ → cần PUBLIC_BASE_URL accessible
+    // Các platform khác vẫn dùng direct URL để tránh pre-download.
+    const useDirectDriveUrl = platform === SocialPlatform.THREADS
       || platform === SocialPlatform.YOUTUBE
-      || platform === SocialPlatform.FACEBOOK
       || platform === SocialPlatform.ZALO;
 
     this.logger.log(`[PrepareMedia] platform=${platform} useDirectDriveUrl=${useDirectDriveUrl} driveAvailable=${this.googleDrive.isAvailable()} urls=${JSON.stringify(mediaUrls)}`);
