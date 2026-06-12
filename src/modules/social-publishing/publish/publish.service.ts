@@ -90,6 +90,20 @@ export class PublishService {
     return resultUrls;
   }
 
+  /** Khởi động download Drive trước (non-blocking) để sẵn sàng trong cache khi executePost chạy */
+  preWarmDownloads(posts: { platform: string; media_urls: string[] }[]): void {
+    for (const post of posts) {
+      if (!post.media_urls?.length) continue;
+      const platform = post.platform as SocialPlatform;
+      const useDirectDriveUrl = platform === SocialPlatform.THREADS
+        || platform === SocialPlatform.YOUTUBE
+        || platform === SocialPlatform.ZALO;
+      if (useDirectDriveUrl) continue;
+      this.prepareMediaUrlsForPublishing(post.media_urls, platform)
+        .catch((err: any) => this.logger.warn(`[PreWarm] ${post.platform}: ${err.message}`));
+    }
+  }
+
   private async prepareMediaUrlsForPublishing(mediaUrls: string[], platform?: SocialPlatform): Promise<{ urls: string[]; tempFiles: string[] }> {
     if (!mediaUrls || !mediaUrls.length) return { urls: [], tempFiles: [] };
 

@@ -199,26 +199,32 @@ export class FacebookPublisher {
     this.logger.log(`[FB] Session=${upload_session_id}, videoId=${video_id}`);
 
     const fd = fs.openSync(localFilePath, 'r');
+    let chunkBuf = Buffer.allocUnsafe(Math.max(currentEnd - currentStart, 4 * 1024 * 1024));
     try {
       while (currentStart < fileSize) {
         const chunkSize = currentEnd - currentStart;
-        const buffer = Buffer.alloc(chunkSize);
-        fs.readSync(fd, buffer, 0, chunkSize, currentStart);
+        if (chunkSize > chunkBuf.length) chunkBuf = Buffer.allocUnsafe(chunkSize);
+        const buf = chunkBuf.subarray(0, chunkSize);
+        fs.readSync(fd, buf, 0, chunkSize, currentStart);
 
         const form = new FormData();
         form.append('upload_phase', 'transfer');
         form.append('upload_session_id', upload_session_id);
         form.append('start_offset', String(currentStart));
         form.append('access_token', pageToken);
-        form.append('video_file_chunk', buffer, { filename: 'chunk.mp4', contentType: 'video/mp4' });
+        form.append('video_file_chunk', buf, { filename: 'chunk.mp4', contentType: 'video/mp4' });
 
-        this.logger.log(`[FB] Chunk ${currentStart}-${currentEnd} / ${fileSize}`);
+        const pct = ((currentStart / fileSize) * 100).toFixed(0);
+        this.logger.log(`[FB] Chunk ${pct}% (${(currentStart / 1024 / 1024).toFixed(1)}-${(currentEnd / 1024 / 1024).toFixed(1)} MB)`);
+        const t0 = Date.now();
         const transferRes = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
           headers: form.getHeaders(),
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          timeout: 120000,
+          timeout: 180000,
         });
+        const mbps = (chunkSize / 1024 / 1024 / ((Date.now() - t0) / 1000)).toFixed(1);
+        this.logger.log(`[FB] Chunk done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${mbps} MB/s)`);
         currentStart = parseInt(transferRes.data.start_offset, 10);
         currentEnd = parseInt(transferRes.data.end_offset, 10);
       }

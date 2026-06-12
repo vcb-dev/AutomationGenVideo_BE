@@ -233,7 +233,13 @@ export class ScheduleService {
       Object.entries(claimedPerPlatform).map(([p, n]) => `${p}:${n}`).join(', '),
     );
 
-    // 4. Chạy tuần tự theo nhóm để tránh quá tải RAM (Heavy Jobs Control)
+    // 4. Pre-warm: khởi động download Drive cho tất cả posts ngay bây giờ (non-blocking)
+    // → chunk 2, 3... sẽ tìm thấy file đã download sẵn trong cache khi đến lượt
+    this.publishService.preWarmDownloads(
+      claimedPosts.map(p => ({ platform: p.platform, media_urls: (p.media_urls as string[]) ?? [] })),
+    );
+
+    // 5. Chạy tuần tự theo nhóm để tránh quá tải RAM (Heavy Jobs Control)
     for (let i = 0; i < claimedPosts.length; i += MAX_HEAVY_JOBS) {
       const chunk = claimedPosts.slice(i, i + MAX_HEAVY_JOBS);
       await Promise.all(chunk.map(post => this.executePost(post)));
