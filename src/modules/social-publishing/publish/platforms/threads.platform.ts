@@ -85,7 +85,7 @@ export class ThreadsPublisher {
   private async waitForContainer(containerId: string, token: string, maxMs = 180000) {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
       try {
         const res = await axios.get(`${this.BASE}/${containerId}`, {
           params: { fields: 'status,error_message', access_token: token },

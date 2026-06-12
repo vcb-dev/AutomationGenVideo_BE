@@ -95,8 +95,7 @@ export class PublishService {
     for (const post of posts) {
       if (!post.media_urls?.length) continue;
       const platform = post.platform as SocialPlatform;
-      const useDirectDriveUrl = platform === SocialPlatform.THREADS
-        || platform === SocialPlatform.YOUTUBE
+      const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE
         || platform === SocialPlatform.ZALO;
       if (useDirectDriveUrl) continue;
       this.prepareMediaUrlsForPublishing(post.media_urls, platform)
@@ -112,12 +111,14 @@ export class PublishService {
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    // FACEBOOK và INSTAGRAM phải download về local trước:
-    // - FB dùng uploadVideoResumable (binary) → không cần public URL
-    // - IG tạo container từ URL server nội bộ → cần PUBLIC_BASE_URL accessible
-    // Các platform khác vẫn dùng direct URL để tránh pre-download.
-    const useDirectDriveUrl = platform === SocialPlatform.THREADS
-      || platform === SocialPlatform.YOUTUBE
+    // YouTube và Zalo tự stream từ Drive URL (server BE download, không qua server của platform)
+    // → dùng direct URL để tiết kiệm disk + giữ nguyên chất lượng gốc.
+    //
+    // Facebook, Instagram, Threads: server của platform tải từ Drive URL
+    // → Drive có thể chặn hoặc redirect IP lạ → download về /tmp/ trước.
+    // Threads đặc biệt còn cần transcode (needsTranscode=true) — transcode chỉ hoạt động
+    // khi URL là /api/social/media/ (local), nếu dùng Drive URL trực tiếp thì transcode bị bỏ qua.
+    const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE
       || platform === SocialPlatform.ZALO;
 
     this.logger.log(`[PrepareMedia] platform=${platform} useDirectDriveUrl=${useDirectDriveUrl} driveAvailable=${this.googleDrive.isAvailable()} urls=${JSON.stringify(mediaUrls)}`);
