@@ -3828,26 +3828,37 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 const nameKeyMatchMap = new Map<string, any>();
                 employees.forEach(emp => {
                     if (emp.email) emailKeyMatchMap.set(emp.email.toLowerCase().trim(), emp);
-                    if (emp.full_name) nameKeyMatchMap.set(normName(emp.full_name), emp);
-                    
-                    // Also index by all names in employee_data (Lark aliases)
+                    if (emp.full_name) {
+                        nameKeyMatchMap.set(normName(emp.full_name), emp);
+                        nameKeyMatchMap.set(compactNameKey(emp.full_name), emp);
+                    }
+                });
+
+                // Second pass: Lark aliases and swapped names (only write if key doesn't conflict with any official user's full name)
+                employees.forEach(emp => {
                     const larkData = (emp as any).employee_data || [];
                     if (Array.isArray(larkData)) {
                         larkData.forEach((d: any) => {
                             if (d.name) {
-                                nameKeyMatchMap.set(normName(d.name), emp);
-                                nameKeyMatchMap.set(compactNameKey(d.name), emp);
+                                const k1 = normName(d.name);
+                                const k2 = compactNameKey(d.name);
+                                if (!nameKeyMatchMap.has(k1)) nameKeyMatchMap.set(k1, emp);
+                                if (!nameKeyMatchMap.has(k2)) nameKeyMatchMap.set(k2, emp);
                             }
                             if (d.en_name) {
-                                nameKeyMatchMap.set(normName(d.en_name), emp);
-                                nameKeyMatchMap.set(compactNameKey(d.en_name), emp);
+                                const k1 = normName(d.en_name);
+                                const k2 = compactNameKey(d.en_name);
+                                if (!nameKeyMatchMap.has(k1)) nameKeyMatchMap.set(k1, emp);
+                                if (!nameKeyMatchMap.has(k2)) nameKeyMatchMap.set(k2, emp);
                             }
                             // Some people swap First/Last names in Lark
                             const parts = String(d.name || '').split(' ');
                             if (parts.length === 2) {
                                 const swapped = `${parts[1]} ${parts[0]}`;
-                                nameKeyMatchMap.set(normName(swapped), emp);
-                                nameKeyMatchMap.set(compactNameKey(swapped), emp);
+                                const k1 = normName(swapped);
+                                const k2 = compactNameKey(swapped);
+                                if (!nameKeyMatchMap.has(k1)) nameKeyMatchMap.set(k1, emp);
+                                if (!nameKeyMatchMap.has(k2)) nameKeyMatchMap.set(k2, emp);
                             }
                         });
                     }
