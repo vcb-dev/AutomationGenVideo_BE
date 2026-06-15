@@ -1477,10 +1477,23 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             const normalizedOwner = this.normalizeOwnerName(ch.owner);
             let matchedEmail = nameToEmail.get(normalizedOwner);
 
-            // Fallback: try partial match (owner contains user name or vice versa)
+            // Fallback 1: partial match (owner contains user name or vice versa)
             if (!matchedEmail) {
                 for (const [normalizedName, email] of nameToEmail) {
                     if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
+                        matchedEmail = email;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback 2: sorted-words match — xử lý trường hợp tên bị đảo thứ tự
+            // vd: "Nhâm Đoàn" (Lark) vs "Đoàn Nhâm" (System) → sort → cùng = "doan nham"
+            if (!matchedEmail) {
+                const sortedOwner = normalizedOwner.split(' ').sort().join(' ');
+                for (const [normalizedName, email] of nameToEmail) {
+                    const sortedName = normalizedName.split(' ').sort().join(' ');
+                    if (sortedOwner === sortedName) {
                         matchedEmail = email;
                         break;
                     }
