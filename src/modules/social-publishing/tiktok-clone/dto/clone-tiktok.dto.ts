@@ -1,9 +1,10 @@
-import { IsString, IsArray, IsOptional, IsUrl, ArrayNotEmpty } from 'class-validator';
+import { IsString, IsArray, IsOptional, IsUrl, ArrayNotEmpty, IsNotEmpty } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CloneTiktokDto {
   @ApiProperty({ description: 'URL video TikTok cần clone (vd: https://www.tiktok.com/@user/video/123)' })
-  @IsString()
+  @IsUrl({}, { message: 'tiktokUrl phải là URL TikTok hợp lệ' })
+  @IsNotEmpty()
   tiktokUrl: string;
 
   @ApiProperty({ description: 'Caption cho bài đăng Facebook' })
