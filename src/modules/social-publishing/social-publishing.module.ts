@@ -57,6 +57,13 @@ import { DraftsService } from './drafts/drafts.service';
 // Hashtag
 import { HashtagController } from './hashtag/hashtag.controller';
 
+// TikTok Clone
+import { TiktokCloneController } from './tiktok-clone/tiktok-clone.controller';
+import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
+
+// Extension serve (public — no auth)
+import { ExtensionController } from './extension/extension.controller';
+
 @Module({
   imports: [PrismaModule, MulterModule.register()],
   controllers: [
@@ -72,6 +79,8 @@ import { HashtagController } from './hashtag/hashtag.controller';
     HistoryController,
     DraftsController,
     HashtagController,
+    TiktokCloneController,
+    ExtensionController,
   ],
   providers: [
     // Core
@@ -105,6 +114,8 @@ import { HashtagController } from './hashtag/hashtag.controller';
     HistoryService,
     // Drafts
     DraftsService,
+    // TikTok Clone
+    TiktokCloneService,
   ],
   exports: [AccountsService, PublishService, GoogleDriveStorageService],
 })
