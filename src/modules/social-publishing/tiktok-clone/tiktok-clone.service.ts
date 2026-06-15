@@ -151,12 +151,12 @@ export class TiktokCloneService {
     }
   }
 
-  /** Tìm đệ quy một key trong object JSON */
-  private deepFind(obj: any, key: string): string | null {
-    if (!obj || typeof obj !== 'object') return null;
+  /** Tìm đệ quy một key trong object JSON (giới hạn depth 10 tránh chậm với JSON lớn) */
+  private deepFind(obj: any, key: string, depth = 0): string | null {
+    if (depth > 10 || !obj || typeof obj !== 'object') return null;
     if (key in obj && typeof obj[key] === 'string' && obj[key].includes('http')) return obj[key];
     for (const v of Object.values(obj)) {
-      const found = this.deepFind(v, key);
+      const found = this.deepFind(v, key, depth + 1);
       if (found) return found;
     }
     return null;
