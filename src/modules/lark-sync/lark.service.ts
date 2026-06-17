@@ -1332,7 +1332,42 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
             const channelsToInsert: any[] = [];
             let skippedTeam = 0;
-            
+
+            // Pre-load users để resolve email từ owner name ngay trong vòng lặp,
+            // vì Lark Person field không trả .email qua API.
+            const allUsers = await this.prisma.user.findMany({
+                where: { is_active: true },
+                select: { email: true, full_name: true },
+            });
+            // Map 1: exact normalized name → email (ưu tiên cao nhất)
+            const exactNameToEmail = new Map<string, string>();
+            // Map 2: sorted-words → email, chỉ dùng khi key là DUY NHẤT
+            // (tránh "Chung Đoàn" và "Đoàn Chung" cùng sort thành "chung doan" → gán nhầm)
+            const sortedKeyCount = new Map<string, number>();
+            const sortedToEmail = new Map<string, string>();
+            for (const u of allUsers) {
+                if (!u.full_name || !u.email) continue;
+                const norm = this.normalizeOwnerName(u.full_name);
+                if (!exactNameToEmail.has(norm)) exactNameToEmail.set(norm, u.email);
+                const sorted = norm.split(' ').sort().join(' ');
+                if (sorted !== norm) {
+                    sortedKeyCount.set(sorted, (sortedKeyCount.get(sorted) ?? 0) + 1);
+                    sortedToEmail.set(sorted, u.email);
+                }
+            }
+            const resolveEmailFromOwner = (ownerName: string): string | null => {
+                if (!ownerName) return null;
+                const norm = this.normalizeOwnerName(ownerName);
+                // Ưu tiên 1: khớp chính xác
+                if (exactNameToEmail.has(norm)) return exactNameToEmail.get(norm)!;
+                // Ưu tiên 2: sorted-words fallback — chỉ dùng nếu key đó duy nhất 1 người
+                const sorted = norm.split(' ').sort().join(' ');
+                if ((sortedKeyCount.get(sorted) ?? 0) === 1 && sortedToEmail.has(sorted)) {
+                    return sortedToEmail.get(sorted)!;
+                }
+                return null;
+            };
+
             for (const record of records) {
                 const f = record.fields;
 
@@ -1378,9 +1413,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     ) || 'Đang hoạt động',
                     team_traffic: teamTraffic,
                     owner,
+                    // Lark Person field không trả .email qua API → resolve từ Users table
                     email: extractEmail(f['Nhân viên traffic xây kênh'])
                         || extractEmail(f['NV traffic xây kênh'])
-                        || null,
+                        || resolveEmailFromOwner(owner),
                 };
 
                 channelsToInsert.push(data);
@@ -1477,10 +1513,23 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             const normalizedOwner = this.normalizeOwnerName(ch.owner);
             let matchedEmail = nameToEmail.get(normalizedOwner);
 
-            // Fallback: try partial match (owner contains user name or vice versa)
+            // Fallback 1: partial match (owner contains user name or vice versa)
             if (!matchedEmail) {
                 for (const [normalizedName, email] of nameToEmail) {
                     if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
+                        matchedEmail = email;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback 2: sorted-words match — xử lý trường hợp tên bị đảo thứ tự
+            // vd: "Nhâm Đoàn" (Lark) vs "Đoàn Nhâm" (System) → sort → cùng = "doan nham"
+            if (!matchedEmail) {
+                const sortedOwner = normalizedOwner.split(' ').sort().join(' ');
+                for (const [normalizedName, email] of nameToEmail) {
+                    const sortedName = normalizedName.split(' ').sort().join(' ');
+                    if (sortedOwner === sortedName) {
                         matchedEmail = email;
                         break;
                     }
@@ -5526,7 +5575,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     vn: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn }
                 };
 
-                const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
+                const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global- Thái Lan 1', 'Global- Thái Lan 2', 'Global Đài Loan'];
                 const vnTeamNames = ['Team K0', 'Team K1', 'Team K2', 'AFF 01', 'Team ADS', 'MEDIA CHUNG'];
 
                 // Use task-based volumes for the group contributions to match the summary cards
