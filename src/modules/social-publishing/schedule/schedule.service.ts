@@ -26,6 +26,7 @@ function retryDelayMs(attempt: number): number {
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
+  private isExecuting = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -159,17 +160,26 @@ export class ScheduleService {
 
   @Cron('*/5 * * * * *')
   async checkAndExecute() {
+    if (this.isExecuting) return;
+    this.isExecuting = true;
+    try {
+      await this._doCheckAndExecute();
+    } finally {
+      this.isExecuting = false;
+    }
+  }
+
+  private async _doCheckAndExecute() {
     const now        = new Date();
     // Video lớn cần download từ Drive + upload lên MXH → có thể mất 20-30 phút
     const claimUntil = new Date(Date.now() + 40 * 60 * 1000); // claim 40 phút
 
     // 1. Đếm số job đang xử lý (đã claim gần đây ≤ 40 phút) theo platform
-    const claimWindow = new Date(Date.now() + 40 * 60 * 1000);
     const inFlightRows = await this.prisma.socialPost.groupBy({
       by: ['platform'],
       where: {
         status:        SocialPostStatus.PENDING,
-        next_retry_at: { gt: now, lte: claimWindow },
+        next_retry_at: { gt: now, lte: claimUntil },
       },
       _count: { platform: true },
     });

@@ -5575,7 +5575,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     vn: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn }
                 };
 
-                const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global Đài Loan'];
+                const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global- Thái Lan 1', 'Global- Thái Lan 2', 'Global Đài Loan'];
                 const vnTeamNames = ['Team K0', 'Team K1', 'Team K2', 'AFF 01', 'Team ADS', 'MEDIA CHUNG'];
 
                 // Use task-based volumes for the group contributions to match the summary cards
