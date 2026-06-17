@@ -2785,20 +2785,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 const CHUNK = 2000;
                 this.logger.log(`[KPI] Transactionally replacing ${kpiRecordsToInsert.length} records...`);
 
-                const createQueries = [];
-                for (let i = 0; i < kpiRecordsToInsert.length; i += CHUNK) {
-                    createQueries.push(
-                        targetLarkKPI.createMany({
-                            data: kpiRecordsToInsert.slice(i, i + CHUNK),
-                            skipDuplicates: true
-                        })
-                    );
-                }
-
-                // PgBouncer transaction mode: không bọc deleteMany + createMany trong 1 $transaction (giữ slot quá lâu).
+                // PgBouncer transaction mode: Xóa toàn bộ trước
                 await targetLarkKPI.deleteMany({});
-                for (const q of createQueries) {
-                    await q;
+                
+                // Sau đó ghi mới tuần tự (sequential) để tránh chiếm dụng quá nhiều slot kết nối của PgBouncer cùng lúc
+                for (let i = 0; i < kpiRecordsToInsert.length; i += CHUNK) {
+                    await targetLarkKPI.createMany({
+                        data: kpiRecordsToInsert.slice(i, i + CHUNK),
+                        skipDuplicates: true
+                    });
                 }
 
                 syncedCount = kpiRecordsToInsert.length;
@@ -7256,23 +7251,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
             const allData = records.map(r => this.mapRecordToListTask(r));
 
-            // Use an atomic transaction with deleteMany + createMany for maximum speed
-            // This replaces 10,000 upsert queries (which take 18 mins) with 3 queries (taking ~100ms)
-            const CHUNK = 3000;
-            const createQueries = [];
-            for (let i = 0; i < allData.length; i += CHUNK) {
-                createQueries.push(
-                    this.prisma.larkListTask.createMany({
-                        data: allData.slice(i, i + CHUNK),
-                        skipDuplicates: true
-                    })
-                );
-            }
+            // Xóa dữ liệu cũ trước
+            await this.prisma.larkListTask.deleteMany({});
 
-            await this.prisma.$transaction([
-                this.prisma.larkListTask.deleteMany({}),
-                ...createQueries
-            ]);
+            // Ghi mới tuần tự theo chunk để tránh nghẽn pool kết nối của PgBouncer
+            const CHUNK = 3000;
+            for (let i = 0; i < allData.length; i += CHUNK) {
+                await this.prisma.larkListTask.createMany({
+                    data: allData.slice(i, i + CHUNK),
+                    skipDuplicates: true
+                });
+            }
 
             let syncedCount = allData.length;
 
