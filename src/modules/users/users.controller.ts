@@ -90,6 +90,59 @@ export class UsersController {
     return this.usersService.getMyEditors(req.user.id, query.platform);
   }
 
+  @Get("team-members")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get team members based on caller role (HR management)" })
+  @ApiResponse({ status: 200, description: "List of team members" })
+  async getTeamMembers(@Request() req) {
+    return this.usersService.getTeamMembers(req.user.id, req.user.roles);
+  }
+
+  @Post("hr")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Create user (HR management — scope by role)" })
+  @ApiResponse({ status: 201, description: "User created", type: UserResponseDto })
+  @ApiResponse({ status: 409, description: "Email already exists" })
+  async createHR(@Request() req, @Body() createUserDto: CreateUserDto) {
+    const user = await this.usersService.createHR(req.user.id, req.user.roles, createUserDto);
+    return new UserResponseDto(user);
+  }
+
+  @Patch(":id/hr")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Update user (HR management — scope by role)" })
+  @ApiResponse({ status: 200, description: "User updated", type: UserResponseDto })
+  async updateHR(@Request() req, @Param("id") id: string, @Body() updateUserDto: UpdateUserDto) {
+    const user = await this.usersService.updateHR(req.user.id, req.user.roles, id, updateUserDto);
+    return new UserResponseDto(user);
+  }
+
+  @Patch(":id/deactivate")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Deactivate user (soft delete — scope by role)" })
+  @ApiResponse({ status: 200, description: "User deactivated" })
+  async deactivate(@Request() req, @Param("id") id: string) {
+    return this.usersService.deactivate(req.user.id, req.user.roles, id);
+  }
+
+  @Patch(":id/reactivate")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Reactivate user (scope by role)" })
+  @ApiResponse({ status: 200, description: "User reactivated" })
+  async reactivate(@Request() req, @Param("id") id: string) {
+    return this.usersService.reactivate(req.user.id, req.user.roles, id);
+  }
+
   @Get(":id")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
