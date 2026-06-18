@@ -1058,7 +1058,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const { email, name, team, reportDate, userEmail, userName, userTeam } = payload;
 
         const normalizedEmail = (email || userEmail || '').trim().toLowerCase();
-        const dateObj = reportDate ? new Date(reportDate) : new Date();
+        // Normalize to VN noon UTC (05:00 UTC = 12:00 Asia/Ho_Chi_Minh) so both VN and UTC
+        // sides see the same calendar day, preventing off-by-one date display bugs.
+        const dateObj = this.toVietnamNoonUtc(reportDate ? new Date(reportDate) : new Date());
 
         // Check for existing user to get fallback values
         const userRec = await this.prisma.user.findFirst({
@@ -1114,13 +1116,13 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             }
         }
 
-        // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update hoặc bỏ qua
+        // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update.
+        // Không lọc theo team — cùng 1 người chỉ có 1 checklist/ngày dù team thay đổi.
         const existing = await this.prisma.larkReport.findFirst({
             where: {
                 date: { gte: bounds.start, lte: bounds.end },
-                team: finalTeam ? { equals: finalTeam, mode: 'insensitive' as any } : undefined,
                 OR: [
-                    { email: { equals: normalizedEmail, mode: 'insensitive' as any } },
+                    ...(normalizedEmail ? [{ email: { equals: normalizedEmail, mode: 'insensitive' as any } }] : []),
                     { name: { equals: finalName, mode: 'insensitive' as any } }
                 ]
             },
@@ -1150,6 +1152,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         return {
             success: true,
             message: existing ? 'Cập nhật báo cáo thành công' : 'Gửi báo cáo thành công',
+            alreadySubmitted: !!existing,
             id: reportId
         };
     }
@@ -1910,7 +1913,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                             is_active: true,
                         } as any,
                     });
-                });
+                }, { timeout: 30_000 });
                 stats.imported++;
                 if (needsApifyEnrich) {
                     const ek = `${user!.id}|${identity.platform}|${identity.username}`;
@@ -3917,7 +3920,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     ],
                 } : {};
 
-                // Concurrent fetch for maximum speed
+                // Fetch in 2 sequential batches to cap peak concurrent connections (pool_size=8).
+                // Running all 10 queries at once × N concurrent users exhausts PgBouncer pool.
                 const [
                     reports,
                     standardKpis,
@@ -3925,10 +3929,6 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     allChannelsInDb,
                     dailyReportKpis,
                     monthlyReportKpis,
-                    allTrafficInDb,
-                    reportOutstandings,
-                    totalKpiCount,
-                    reportsUnfilteredCount
                 ] = await Promise.all([
                     this.prisma.larkReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } }),
                     this.prisma.larkKPI.findMany({
@@ -4002,15 +4002,23 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                             },
                         }
                     }),
+                ]);
+
+                const [
+                    allTrafficInDb,
+                    reportOutstandings,
+                    totalKpiCount,
+                    reportsUnfilteredCount,
+                ] = await Promise.all([
                     this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
-                        WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%' 
+                        WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%'
                           AND "content" IS NOT NULL AND "content" != '' AND "content" != '-'
                         ORDER BY "date" DESC, "created_at" DESC LIMIT 200
                     `),
                     this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
-                    this.prisma.larkReport.count({ where: whereClause })
+                    this.prisma.larkReport.count({ where: whereClause }),
                 ]);
 
                 const dodaKpis = (dodaKpisRaw as any[]).map((r: any) => {
@@ -4135,12 +4143,6 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     if (kEmail) personPerformanceTeamMap.set(kEmail, kTeam);
                     if (kName) personPerformanceTeamMap.set(kName, kTeam);
                 }
-
-                const globalIndoOrDaiLoanKpis = kpiData.filter((k: any) => {
-                    const t = String(k?.team || '').toLowerCase();
-                    return t.includes('global - indo') || t.includes('global-indo') || t.includes('global indo') || t.includes('global - đài') || t.includes('global - dai') || t.includes('global đài') || t.includes('global dai');
-                });
-
 
                 this.logger.debug(`[Optimization] Parallel fetch completed. Reports: ${reports.length}, KPIs: ${kpiData.length}`);
 
