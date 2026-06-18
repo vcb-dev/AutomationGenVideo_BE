@@ -45,6 +45,24 @@ model User {
   reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                  Video[]
   social_accounts         SocialAccount[]
+  teams_leading             Team[]           @relation("TeamLeaderOf")
+  team_membership           TeamMember?      @relation("TeamMembershipOf")
+  editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
+  editor_approvals_reviewed EditorApproval[] @relation("EditorApprovalBy")
+  editor_kpis               EditorKpi[]      @relation("EditorKpiOf")
+  editor_kpis_set           EditorKpi[]      @relation("EditorKpiSetBy")
+  editor_weekend_kpis       EditorWeekendKpi[] @relation("EditorWeekendKpiOf")
+  editor_weekend_kpis_set   EditorWeekendKpi[] @relation("EditorWeekendKpiSetBy")
+  team_kpis_created         TeamKpi[]        @relation("TeamKpiCreatedBy")
+  products_added            Product[]        @relation("ProductAddedBy")
+  team_products_added       TeamProduct[]    @relation("TeamProductAddedBy")
+  team_contents_added       TeamContent[]    @relation("TeamContentAddedBy")
+  contents_added            Content[]        @relation("ContentAddedBy")
+  sources_added             Source[]         @relation("SourceAddedBy")
+  tasks_assigned            Task[]           @relation("TaskAssignee")
+  tasks_reviewed            Task[]           @relation("TaskReviewer")
+  task_assignments          TaskAssignment[] @relation("AssignmentUser")
+  notifications             Notification[]   @relation("NotificationOf")
 
   @@index([email])
   @@index([roles])
@@ -1255,4 +1273,469 @@ model SocialUploadedFile {
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_uploaded_files")
+}
+
+// ─────────────────────────────────────────────
+//  TASK AUTO-ASSIGNMENT MODULE (v3 additive)
+// ─────────────────────────────────────────────
+
+enum TaskStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AssignmentRunStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum ContentUsageStatus {
+  AVAILABLE
+  IN_TASK
+  USED
+  ARCHIVED
+}
+
+enum ContentMarket {
+  GLOBAL
+  VIETNAM
+}
+
+enum SourceType {
+  PRODUCT_STOCK
+  COLLECTED
+  OUTRO
+  WORKSHOP
+  HUYK
+}
+
+enum KpiAllocationType {
+  CONTENT_LINE
+  PRODUCT_LINE
+}
+
+enum AssignmentOutcome {
+  COMPLETED
+  OVERDUE
+  REASSIGNED
+  CANCELLED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Team {
+  id         String   @id @default(uuid())
+  name       String   @unique
+  leader_id  String?
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  leader    User?        @relation("TeamLeaderOf", fields: [leader_id], references: [id])
+  members   TeamMember[]
+  team_kpis TeamKpi[]
+  tasks     Task[]
+  products  TeamProduct[]
+  contents  TeamContent[]
+
+  @@index([leader_id])
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  team_id   String
+  user_id   String   @unique
+  joined_at DateTime @default(now())
+
+  team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([team_id])
+  @@map("team_members")
+}
+
+model TeamProduct {
+  id          String   @id @default(uuid())
+  team_id     String
+  product_id  String
+  added_by_id String
+  added_at    DateTime @default(now())
+
+  team       Team    @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  added_by   User    @relation("TeamProductAddedBy", fields: [added_by_id], references: [id])
+
+  @@unique([team_id, product_id])
+  @@index([team_id])
+  @@map("team_products")
+}
+
+model TeamContent {
+  id          String   @id @default(uuid())
+  team_id     String
+  content_id  String
+  added_by_id String
+  added_at    DateTime @default(now())
+
+  team       Team    @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  content    Content @relation(fields: [content_id], references: [id], onDelete: Cascade)
+  added_by   User    @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
+
+  @@unique([team_id, content_id])
+  @@index([team_id])
+  @@map("team_contents")
+}
+
+model EditorApproval {
+  id             String         @id @default(uuid())
+  user_id        String
+  status         ApprovalStatus @default(PENDING)
+  approved_by_id String?
+  approved_at    DateTime?
+  note           String?
+  created_at     DateTime       @default(now())
+
+  user        User  @relation("EditorApprovalOf", fields: [user_id], references: [id], onDelete: Cascade)
+  approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
+
+  @@index([user_id, status])
+  @@map("editor_approvals")
+}
+
+model TeamKpi {
+  id            String   @id @default(uuid())
+  team_id       String
+  month         String
+  note          String?
+  created_by_id String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  team        Team                @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  created_by  User                @relation("TeamKpiCreatedBy", fields: [created_by_id], references: [id])
+  allocations TeamKpiAllocation[]
+
+  @@unique([team_id, month])
+  @@index([month])
+  @@map("team_kpis")
+}
+
+model TeamKpiAllocation {
+  id              String            @id @default(uuid())
+  team_kpi_id     String
+  type            KpiAllocationType
+  content_line_id String?
+  product_line_id String?
+  percent         Float
+
+  team_kpi     TeamKpi      @relation(fields: [team_kpi_id], references: [id], onDelete: Cascade)
+  content_line ContentLine? @relation(fields: [content_line_id], references: [id])
+  product_line ProductLine? @relation(fields: [product_line_id], references: [id])
+
+  @@index([team_kpi_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
+  @@map("team_kpi_allocations")
+}
+
+model EditorKpi {
+  id           String   @id @default(uuid())
+  user_id      String
+  month        String
+  kpi_day      Int      @default(0)
+  kpi_weekend  Int      @default(0)
+  kpi_extra    Int      @default(0)
+  kpi_creative Int      @default(0)
+  total_target Int      @default(0)
+  set_by_id    String
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  user   User @relation("EditorKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  set_by User @relation("EditorKpiSetBy", fields: [set_by_id], references: [id])
+
+  @@unique([user_id, month])
+  @@index([month])
+  @@index([user_id])
+  @@map("editor_kpis")
+}
+
+model ContentLine {
+  id   String @id @default(uuid())
+  name String @unique
+
+  contents    Content[]
+  tasks       Task[]
+  allocations TeamKpiAllocation[]
+
+  @@map("content_lines")
+}
+
+model ProductLine {
+  id   String @id @default(uuid())
+  name String @unique
+
+  products    Product[]
+  allocations TeamKpiAllocation[]
+
+  @@map("product_lines")
+}
+
+model Material {
+  id   String @id @default(uuid())
+  name String @unique
+
+  products Product[]
+
+  @@map("materials")
+}
+
+model Product {
+  id              String   @id @default(uuid())
+  sku             String   @unique
+  name            String
+  image_url       String?
+  image_urls      String[] @default([])
+  price           Decimal? @db.Decimal(15, 2)
+  market          String?
+  price_segment   String?
+  priority_score  Int      @default(0)
+  material_id     String?
+  product_line_id String?
+  added_by_id     String
+  lark_record_id  String?  @unique
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  material       Material?       @relation(fields: [material_id], references: [id])
+  product_line   ProductLine?    @relation(fields: [product_line_id], references: [id])
+  added_by       User            @relation("ProductAddedBy", fields: [added_by_id], references: [id])
+  sources        Source[]
+  tasks          Task[]
+  team_products  TeamProduct[]
+
+  @@index([product_line_id])
+  @@index([priority_score(sort: Desc)])
+  @@map("products")
+}
+
+model Content {
+  id                  String             @id @default(uuid())
+  market              ContentMarket      @default(VIETNAM)
+  title               String?
+  body                String?
+  script              String?
+  file_content_url    String?
+  voice_url           String?
+  voice_id            BigInt?
+  content_line_id     String?
+  status              ContentUsageStatus @default(AVAILABLE)
+  view_count          BigInt             @default(0)
+  approved_content_id String?
+  added_by_id         String
+  lark_record_id      String?            @unique
+  created_at          DateTime           @default(now())
+  updated_at          DateTime           @updatedAt
+
+  content_line  ContentLine?     @relation(fields: [content_line_id], references: [id])
+  added_by      User             @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  tasks         Task[]
+  team_contents TeamContent[]
+
+  @@index([status])
+  @@index([content_line_id, status])
+  @@index([added_by_id])
+  @@map("contents")
+}
+
+model Source {
+  id             String     @id @default(uuid())
+  type           SourceType
+  name           String
+  link           String
+  code           String?
+  product_id     String?
+  added_by_id    String
+  lark_record_id String?    @unique
+  is_active      Boolean    @default(true)
+  created_at     DateTime   @default(now())
+  updated_at     DateTime   @updatedAt
+
+  product     Product? @relation(fields: [product_id], references: [id])
+  added_by    User     @relation("SourceAddedBy", fields: [added_by_id], references: [id])
+  tasks_outro Task[]   @relation("TaskSourceOutro")
+  tasks_extra Task[]   @relation("TaskSourceExtra")
+
+  @@index([type, is_active])
+  @@index([product_id])
+  /// persistPairings: findFirst({ where: { product_id, type: OUTRO, is_active: true } })
+  @@index([product_id, type, is_active])
+  @@map("sources")
+}
+
+
+model Task {
+  id                 String     @id @default(uuid())
+  team_id            String
+  content_id         String?
+  product_id         String?
+  content_line_id    String?
+  source_outro_id    String?
+  source_extra_id    String?
+  status             TaskStatus @default(PENDING)
+  assignee_id        String?
+  assigned_at        DateTime?
+  deadline           DateTime?
+  is_auto            Boolean    @default(false)
+  is_extra           Boolean    @default(false)
+  run_id             String?
+  result_url         String?    @db.Text
+  submitted_at       DateTime?
+  reviewed_by_id     String?
+  reviewed_at        DateTime?
+  reject_reason      String?    @db.Text
+  lark_record_id     String?    @unique
+  created_at         DateTime   @default(now())
+  updated_at         DateTime   @updatedAt
+
+  team            Team             @relation(fields: [team_id], references: [id])
+  content         Content?         @relation(fields: [content_id], references: [id])
+  product         Product?         @relation(fields: [product_id], references: [id])
+  content_line    ContentLine?     @relation(fields: [content_line_id], references: [id])
+  source_outro    Source?          @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
+  source_extra    Source?          @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
+  assignee        User?            @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  reviewed_by     User?            @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
+  run             AssignmentRun?   @relation(fields: [run_id], references: [id])
+  assignments     TaskAssignment[]
+  notifications   Notification[]
+  pending_video   TaskPendingVideo?
+
+  @@index([status])
+  @@index([team_id, status])
+  @@index([assignee_id, status])
+  @@index([deadline])
+  @@index([deadline, status])
+  @@index([run_id])
+  /// Hot path: KPI count query per editor (assignedThisMonth)
+  @@index([assignee_id, is_extra, assigned_at])
+  /// Hot path: getEditorExistingPairs — lọc tasks đã gán theo editor + loại
+  @@index([assignee_id, is_extra])
+  @@map("tasks")
+}
+
+model TaskPendingVideo {
+  id           String   @id @default(uuid())
+  task_id      String   @unique
+  uploader_id  String
+  filename     String
+  originalname String
+  mimetype     String
+  size         BigInt
+  url          String
+  storage      String   @default("local")
+  created_at   DateTime @default(now())
+
+  task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
+
+  @@map("task_pending_videos")
+}
+
+
+model TaskAssignment {
+  id          String             @id @default(uuid())
+  task_id     String
+  user_id     String
+  assigned_at DateTime           @default(now())
+  deadline    DateTime
+  outcome     AssignmentOutcome?
+  run_id      String?
+  note        String?
+
+  task Task           @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  user User           @relation("AssignmentUser", fields: [user_id], references: [id])
+  run  AssignmentRun? @relation(fields: [run_id], references: [id])
+
+  @@index([task_id])
+  @@index([user_id, assigned_at])
+  @@index([run_id])
+  @@map("task_assignments")
+}
+
+model AssignmentRun {
+  id             String              @id @default(uuid())
+  run_at         DateTime            @default(now())
+  status         AssignmentRunStatus @default(RUNNING)
+  total_assigned Int                 @default(0)
+  total_skipped  Int                 @default(0)
+  details        Json?
+  error_msg      String?
+  finished_at    DateTime?
+
+  tasks       Task[]
+  assignments TaskAssignment[]
+
+  @@index([run_at(sort: Desc)])
+  /// cronCheck: findFirst({ where: { status: DONE, run_at: { gte, lte } } })
+  @@index([status, run_at(sort: Desc)])
+  @@map("assignment_runs")
+}
+
+model AutoAssignSetting {
+  id              Int      @id @default(1)
+  schedule_time   String   @default("17:00")
+  timezone        String   @default("Asia/Ho_Chi_Minh")
+  weekend_enabled Boolean  @default(true)
+  is_active       Boolean  @default(true)
+  updated_by      String?
+  updated_at      DateTime @updatedAt
+
+  @@map("auto_assign_settings")
+}
+
+model EditorWeekendKpi {
+  id         String   @id @default(uuid())
+  user_id    String
+  date       String   // YYYY-MM-DD (chỉ Chủ nhật)
+  kpi        Int      @default(0)
+  set_by_id  String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user   User @relation("EditorWeekendKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  set_by User @relation("EditorWeekendKpiSetBy", fields: [set_by_id], references: [id])
+
+  @@unique([user_id, date])
+  @@index([date])
+  @@map("editor_weekend_kpis")
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  user_id    String
+  type       String
+  title      String
+  body       String?
+  task_id    String?
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  user User  @relation("NotificationOf", fields: [user_id], references: [id], onDelete: Cascade)
+  task Task? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, is_read])
+  @@index([created_at(sort: Desc)])
+  @@map("notifications")
 }

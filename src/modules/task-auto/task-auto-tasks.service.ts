@@ -1,0 +1,395 @@
+import {
+  Injectable, NotFoundException, ForbiddenException, BadRequestException,
+} from '@nestjs/common'
+import { PrismaService } from '../../common/prisma/prisma.service'
+import {
+  CreateTaskDto, UpdateTaskDto, QueryTaskDto, SubmitTaskDto, ReviewTaskDto,
+} from './dto/task.dto'
+
+@Injectable()
+export class TaskAutoTasksService {
+  constructor(private prisma: PrismaService) {}
+
+  private taskInclude = {
+    team: { select: { id: true, name: true } },
+    content: { select: { id: true, title: true, market: true, status: true } },
+    product: { select: { id: true, name: true, sku: true } },
+    content_line: { select: { id: true, name: true } },
+    assignee: { select: { id: true, full_name: true, email: true } },
+    reviewed_by: { select: { id: true, full_name: true } },
+    source_outro: { select: { id: true, name: true, type: true } },
+    source_extra: { select: { id: true, name: true, type: true } },
+    pending_video: true,
+  }
+
+  async findAll(q: QueryTaskDto) {
+    const where: any = {}
+
+    if (q.status) where.status = q.status
+    if (q.team_id) where.team_id = q.team_id
+    if (q.assignee_id) where.assignee_id = q.assignee_id
+    if (q.task_type === 'auto')   { where.is_auto = true;  where.is_extra = false }
+    if (q.task_type === 'extra')  { where.is_extra = true }
+    if (q.task_type === 'manual') { where.is_auto = false }
+    if (q.deadline_date) {
+      // Lọc theo ngày deadline (UTC+7 Vietnam)
+      where.deadline = {
+        gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
+        lte: new Date(`${q.deadline_date}T23:59:59.999+07:00`),
+      }
+    } else if (q.month) {
+      const start = new Date(`${q.month}-01`)
+      const end = new Date(start.getFullYear(), start.getMonth() + 1, 1)
+      where.created_at = { gte: start, lt: end }
+    }
+    if (q.search) {
+      where.content = { title: { contains: q.search, mode: 'insensitive' } }
+    }
+
+    const page = q.page ?? 1
+    const limit = q.limit ?? 20
+    const skip = (page - 1) * limit
+
+    const [data, total] = await Promise.all([
+      this.prisma.task.findMany({
+        where,
+        include: this.taskInclude,
+        orderBy: [{ created_at: 'desc' }],
+        skip,
+        take: limit,
+      }),
+      this.prisma.task.count({ where }),
+    ])
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) }
+  }
+
+  async findOne(id: string) {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      include: {
+        ...this.taskInclude,
+        assignments: {
+          include: { user: { select: { id: true, full_name: true, email: true } } },
+          orderBy: { assigned_at: 'desc' },
+        },
+        notifications: { take: 5, orderBy: { created_at: 'desc' } },
+      },
+    })
+    if (!task) throw new NotFoundException('Task not found')
+    return task
+  }
+
+  async create(dto: CreateTaskDto, creatorId: string) {
+    const [team, content] = await Promise.all([
+      this.prisma.team.findUnique({ where: { id: dto.team_id } }),
+      this.prisma.content.findUnique({
+        where: { id: dto.content_id },
+        select: { id: true, content_line_id: true },
+      }),
+    ])
+    if (!team) throw new NotFoundException('Team not found')
+    if (!content) throw new NotFoundException('Content not found')
+
+    // Nếu có assignee + product: kiểm tra editor chưa có task với cặp này
+    if (dto.assignee_id && dto.product_id) {
+      const duplicate = await this.prisma.task.findFirst({
+        where: {
+          assignee_id: dto.assignee_id,
+          content_id: dto.content_id,
+          product_id: dto.product_id,
+        },
+        select: { id: true },
+      })
+      if (duplicate) {
+        throw new BadRequestException('Editor này đã có task với cặp content + sản phẩm này')
+      }
+    }
+
+    const task = await this.prisma.task.create({
+      data: {
+        team_id: dto.team_id,
+        content_id: dto.content_id,
+        product_id: dto.product_id ?? null,
+        content_line_id: dto.content_line_id ?? content.content_line_id,
+        source_outro_id: dto.source_outro_id,
+        source_extra_id: dto.source_extra_id,
+        assignee_id: dto.assignee_id,
+        deadline: dto.deadline ? new Date(dto.deadline) : undefined,
+        status: dto.assignee_id ? 'ASSIGNED' : 'PENDING',
+        assigned_at: dto.assignee_id ? new Date() : undefined,
+      },
+      include: this.taskInclude,
+    })
+
+    if (dto.assignee_id) {
+      await this.notify(dto.assignee_id, 'TASK_ASSIGNED', 'Task mới được giao', task.id)
+    }
+    return task
+  }
+
+  async update(id: string, dto: UpdateTaskDto, userId: string, roles: string[]) {
+    const task = await this.prisma.task.findUnique({ where: { id } })
+    if (!task) throw new NotFoundException('Task not found')
+
+    const isPrivileged = roles.some(r => ['ADMIN', 'MANAGER', 'LEADER'].includes(r))
+    const isAssignee = task.assignee_id === userId
+
+    // Status transition guards
+    if (dto.status) {
+      const allowed = this.allowedTransition(task.status, dto.status, isPrivileged, isAssignee)
+      if (!allowed) {
+        throw new ForbiddenException(`Cannot move from ${task.status} to ${dto.status}`)
+      }
+    }
+
+    const data: any = { ...dto }
+    if (dto.deadline) data.deadline = new Date(dto.deadline)
+    if (dto.assignee_id !== undefined) {
+      data.assigned_at = dto.assignee_id ? new Date() : null
+    }
+    if (dto.status === 'SUBMITTED') data.submitted_at = new Date()
+    if (dto.status === 'APPROVED' || dto.status === 'REJECTED') {
+      data.reviewed_by_id = userId
+      data.reviewed_at = new Date()
+    }
+    if (dto.status === 'CANCELLED' && !isPrivileged) {
+      throw new ForbiddenException('Only ADMIN/MANAGER/LEADER can cancel tasks')
+    }
+
+    const updated = await this.prisma.task.update({
+      where: { id },
+      data,
+      include: this.taskInclude,
+    })
+
+    // Notifications
+    if (dto.status === 'SUBMITTED' && task.assignee_id) {
+      const team = await this.prisma.team.findUnique({
+        where: { id: task.team_id }, select: { leader_id: true },
+      })
+      if (team?.leader_id) {
+        await this.notify(team.leader_id, 'TASK_SUBMITTED', 'Task đã được nộp', id)
+      }
+    }
+    if (dto.status === 'APPROVED' && task.assignee_id) {
+      await this.notify(task.assignee_id, 'TASK_APPROVED', 'Task của bạn đã được duyệt', id)
+    }
+    if (dto.status === 'REJECTED' && task.assignee_id) {
+      await this.notify(task.assignee_id, 'TASK_REJECTED', 'Task của bạn bị từ chối', id)
+    }
+
+    return updated
+  }
+
+  async submit(id: string, dto: SubmitTaskDto, userId: string) {
+    const task = await this.prisma.task.findUnique({ where: { id } })
+    if (!task) throw new NotFoundException('Task not found')
+    if (task.assignee_id !== userId) throw new ForbiddenException('Not your task')
+    if (!['ASSIGNED', 'IN_PROGRESS'].includes(task.status)) {
+      throw new BadRequestException('Task is not in a submittable state')
+    }
+
+    const updated = await this.prisma.task.update({
+      where: { id },
+      data: { status: 'SUBMITTED', submitted_at: new Date(), result_url: dto.result_url },
+      include: this.taskInclude,
+    })
+
+    const team = await this.prisma.team.findUnique({
+      where: { id: task.team_id }, select: { leader_id: true },
+    })
+    if (team?.leader_id) {
+      await this.notify(team.leader_id, 'TASK_SUBMITTED', 'Task đã được nộp', id)
+    }
+
+    return updated
+  }
+
+  async review(id: string, dto: ReviewTaskDto, reviewerId: string) {
+    const task = await this.prisma.task.findUnique({ where: { id } })
+    if (!task) throw new NotFoundException('Task not found')
+    if (task.status !== 'SUBMITTED') {
+      throw new BadRequestException('Task is not in SUBMITTED state')
+    }
+
+    const updated = await this.prisma.task.update({
+      where: { id },
+      data: {
+        status: dto.action,
+        reviewed_by_id: reviewerId,
+        reviewed_at: new Date(),
+        reject_reason: dto.reject_reason,
+      },
+      include: this.taskInclude,
+    })
+
+    if (task.assignee_id) {
+      const title = dto.action === 'APPROVED' ? 'Task đã được duyệt' : 'Task bị từ chối'
+      await this.notify(task.assignee_id, `TASK_${dto.action}`, title, id)
+    }
+
+    return updated
+  }
+
+  async getDashboard(userId: string, roles: string[]) {
+    const isAdminOrManager = roles.includes('ADMIN') || roles.includes('MANAGER')
+    const isLeaderOnly = roles.includes('LEADER') && !isAdminOrManager
+    if (isAdminOrManager) return this.getGlobalDashboard()
+    if (isLeaderOnly) return this.getLeaderDashboard(userId)
+    return this.getPersonalDashboard(userId)
+  }
+
+  private async getGlobalDashboard() {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000)
+
+    const [tasksByStatus, todayDeadline, overdue, monthlyCompleted, contentCounts, totalEditors, approvedEditors, pendingApprovals] =
+      await Promise.all([
+        this.prisma.task.groupBy({ by: ['status'], _count: { id: true } }),
+        this.prisma.task.count({ where: { deadline: { gte: todayStart, lt: todayEnd }, status: { notIn: ['APPROVED', 'CANCELLED'] } } }),
+        this.prisma.task.count({ where: { deadline: { lt: now }, status: { notIn: ['APPROVED', 'CANCELLED'] } } }),
+        this.prisma.task.count({ where: { status: 'APPROVED', reviewed_at: { gte: monthStart, lt: monthEnd } } }),
+        this.prisma.content.groupBy({ by: ['status'], _count: { id: true } }),
+        this.prisma.user.count({ where: { is_active: true } }),
+        this.prisma.editorApproval.count({ where: { status: 'APPROVED' } }),
+        this.prisma.editorApproval.count({ where: { status: 'PENDING' } }),
+      ])
+
+    const taskMap = Object.fromEntries(tasksByStatus.map(r => [r.status.toLowerCase(), r._count.id]))
+    const contentMap = Object.fromEntries(contentCounts.map(r => [r.status.toLowerCase(), r._count.id]))
+
+    return {
+      scope: 'global' as const,
+      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      today_deadline: todayDeadline,
+      overdue,
+      monthly_completed: monthlyCompleted,
+      contents: { available: contentMap['available'] ?? 0, in_task: contentMap['in_task'] ?? 0, used: contentMap['used'] ?? 0, archived: contentMap['archived'] ?? 0 },
+      editors: { total: totalEditors, approved: approvedEditors, pending_approval: pendingApprovals },
+    }
+  }
+
+  private async getLeaderDashboard(leaderId: string) {
+    const now = new Date()
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+    const team = await this.prisma.team.findFirst({
+      where: { leader_id: leaderId },
+      include: { members: { include: { user: { select: { id: true, full_name: true, email: true } } } } },
+    })
+
+    if (!team) return { scope: 'team' as const, team: null, tasks: { total: 0 }, members: [], kpi: null }
+
+    const memberIds = team.members.map(m => m.user_id)
+
+    const [tasksByStatus, memberTaskRows, editorKpis] = await Promise.all([
+      this.prisma.task.groupBy({ by: ['status'], where: { team_id: team.id }, _count: { id: true } }),
+      this.prisma.task.groupBy({
+        by: ['assignee_id', 'status'],
+        where: { assignee_id: { in: memberIds }, status: { notIn: ['CANCELLED'] } },
+        _count: { id: true },
+      }),
+      this.prisma.editorKpi.findMany({ where: { user_id: { in: memberIds }, month: currentMonth } }),
+    ])
+
+    const taskMap = Object.fromEntries(tasksByStatus.map(r => [r.status.toLowerCase(), r._count.id]))
+
+    const memberStats: Record<string, Record<string, number>> = {}
+    for (const r of memberTaskRows) {
+      const uid = r.assignee_id!
+      if (!memberStats[uid]) memberStats[uid] = {}
+      memberStats[uid][r.status.toLowerCase()] = r._count.id
+    }
+
+    const kpiByUser = Object.fromEntries(editorKpis.map(k => [k.user_id, k.total_target]))
+
+    const members = team.members.map(m => ({
+      user_id: m.user_id,
+      full_name: m.user?.full_name ?? '',
+      email: m.user?.email ?? '',
+      pending: memberStats[m.user_id]?.['pending'] ?? 0,
+      in_progress: memberStats[m.user_id]?.['in_progress'] ?? 0,
+      submitted: memberStats[m.user_id]?.['submitted'] ?? 0,
+      approved: memberStats[m.user_id]?.['approved'] ?? 0,
+      kpi_target: kpiByUser[m.user_id] ?? 0,
+    }))
+
+    const kpiTotal = editorKpis.reduce((s, k) => s + k.total_target, 0)
+    const kpiCompleted = taskMap['approved'] ?? 0
+
+    return {
+      scope: 'team' as const,
+      team: { id: team.id, name: team.name, member_count: team.members.length },
+      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      members,
+      kpi: { month: currentMonth, total_target: kpiTotal, completed: kpiCompleted },
+    }
+  }
+
+  private async getPersonalDashboard(userId: string) {
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000)
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+    const [tasksByStatus, todayDeadline, overdue, myKpi] = await Promise.all([
+      this.prisma.task.groupBy({ by: ['status'], where: { assignee_id: userId }, _count: { id: true } }),
+      this.prisma.task.count({ where: { assignee_id: userId, deadline: { gte: todayStart, lt: todayEnd }, status: { notIn: ['APPROVED', 'CANCELLED'] } } }),
+      this.prisma.task.count({ where: { assignee_id: userId, deadline: { lt: now }, status: { notIn: ['APPROVED', 'CANCELLED'] } } }),
+      this.prisma.editorKpi.findUnique({ where: { user_id_month: { user_id: userId, month: currentMonth } } }),
+    ])
+
+    const taskMap = Object.fromEntries(tasksByStatus.map(r => [r.status.toLowerCase(), r._count.id]))
+    const completed = taskMap['approved'] ?? 0
+
+    return {
+      scope: 'personal' as const,
+      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      today_deadline: todayDeadline,
+      overdue,
+      kpi: myKpi
+        ? { month: myKpi.month, kpi_day: myKpi.kpi_day, kpi_weekend: myKpi.kpi_weekend, kpi_extra: myKpi.kpi_extra, total_target: myKpi.total_target, completed }
+        : null,
+    }
+  }
+
+  async remove(id: string) {
+    const task = await this.prisma.task.findUnique({ where: { id } })
+    if (!task) throw new NotFoundException('Task not found')
+    if (['APPROVED', 'IN_PROGRESS'].includes(task.status)) {
+      throw new BadRequestException('Cannot delete a task in this state')
+    }
+
+    await this.prisma.task.delete({ where: { id } })
+    return { success: true }
+  }
+
+  private allowedTransition(
+    from: string, to: string, isPrivileged: boolean, isAssignee: boolean,
+  ): boolean {
+    const TRANSITIONS: Record<string, string[]> = {
+      PENDING: ['ASSIGNED', 'CANCELLED'],
+      ASSIGNED: ['IN_PROGRESS', 'SUBMITTED', 'CANCELLED'],
+      IN_PROGRESS: ['SUBMITTED', 'CANCELLED'],
+      SUBMITTED: ['APPROVED', 'REJECTED'],
+      REJECTED: ['ASSIGNED', 'IN_PROGRESS', 'CANCELLED'],
+      APPROVED: [],
+      CANCELLED: [],
+    }
+    const allowed = TRANSITIONS[from] ?? []
+    if (!allowed.includes(to)) return false
+    if (['APPROVED', 'REJECTED'].includes(to) && !isPrivileged) return false
+    if (to === 'CANCELLED' && !isPrivileged) return false
+    return true
+  }
+
+  private async notify(userId: string, type: string, title: string, taskId: string) {
+    await this.prisma.notification.create({
+      data: { user_id: userId, type, title, task_id: taskId },
+    }).catch(() => null)
+  }
+}
