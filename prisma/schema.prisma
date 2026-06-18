@@ -690,7 +690,7 @@ model ReportOutstanding {
 }
 
 model Channel {
-  id           String   @id
+  id           String   @id @default(uuid())
   name         String
   platform     String?
   channel_id   String?

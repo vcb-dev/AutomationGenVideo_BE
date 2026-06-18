@@ -26,6 +26,7 @@ async function bootstrap() {
   const expressInstance = app.getHttpAdapter().getInstance();
   if (typeof expressInstance.set === "function") {
     expressInstance.set("trust proxy", true);
+    expressInstance.set("etag", false);
   }
 
   // Global validation pipe
