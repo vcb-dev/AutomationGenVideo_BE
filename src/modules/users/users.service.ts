@@ -227,7 +227,7 @@ export class UsersService {
       const result = await tx.user.update({
         where: { id },
         data: {
-          ...updateUserDto,
+          ...updateData,
           last_app_update_at: new Date(),
         },
         select: {

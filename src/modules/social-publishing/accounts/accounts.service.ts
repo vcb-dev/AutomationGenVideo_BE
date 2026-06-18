@@ -100,6 +100,8 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       parent_id: data.parentId || null,
       extra_data: data.extraData || {},
       is_active: true,
+      // Chủ ý: account mặc định chia sẻ cho toàn hệ thống (is_shared = true).
+      // Re-save (OAuth reconnect / auto-save token) cũng bật lại true là hành vi mong muốn.
       is_shared: data.isShared ?? true,
       updated_at: new Date(),
     };
