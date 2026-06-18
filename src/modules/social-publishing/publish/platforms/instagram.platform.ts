@@ -141,7 +141,7 @@ export class InstagramPublisher {
     _igUserId: string,
     token: string,
     containerId: string,
-    maxMs = 180000,
+    maxMs = 600000,
   ) {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
@@ -167,6 +167,6 @@ export class InstagramPublisher {
         this.logger.warn(`[IG] Container poll lỗi tạm thời (retrying): ${err.message}`);
       }
     }
-    throw new Error('Instagram container timeout sau 3 phút');
+    throw new Error('Instagram container timeout sau 10 phút');
   }
 }
