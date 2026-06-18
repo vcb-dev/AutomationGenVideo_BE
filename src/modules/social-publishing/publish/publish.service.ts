@@ -24,7 +24,7 @@ function extractDriveFileId(url: string): string | null {
     const u = new URL(url);
     const id = u.searchParams.get('id');
     if (id) return id;
-  } catch {}
+  } catch { }
   const match = url.match(/\/file\/d\/([^/?#]+)/);
   return match?.[1] || null;
 }
@@ -58,7 +58,7 @@ export class PublishService {
     private readonly yt: YoutubePublisher,
     private readonly zalo: ZaloPublisher,
     private readonly googleDrive: GoogleDriveStorageService,
-  ) {}
+  ) { }
 
   private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
@@ -173,7 +173,7 @@ export class PublishService {
     }));
 
     return {
-      urls:      results.map(r => r.url),
+      urls: results.map(r => r.url),
       tempFiles: results.map(r => r.tempFile).filter((f): f is string => f !== null),
     };
   }
@@ -192,7 +192,7 @@ export class PublishService {
     this.logger.log(`[PublishNow] ${account.platform} "${account.name}" | platformId=${account.platform_id} | igUserId=${extraData?.igUserId} | pageId=${extraData?.pageId} | mediaUrls=${JSON.stringify(dto.mediaUrls)}`);
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
-                           account.platform === SocialPlatform.THREADS;
+      account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -252,7 +252,7 @@ export class PublishService {
     const extraData = account.extra_data as any;
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
-                           account.platform === SocialPlatform.THREADS;
+      account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -349,11 +349,13 @@ export class PublishService {
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
       // '-map 0:a:0?' — dấu '?' làm audio map optional: không crash nếu video không có audio
+      // threads=4: Railway có CPU limit thấp — threads=0 (auto=60) gây OOM/kill
       await execFileAsync(ffmpegPath, [
         '-y', '-i', inputPath,
         '-map', '0:v:0', '-map', '0:a:0?',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '0',
-        '-profile:v', 'high', '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
+        '-profile:v', 'baseline', '-level', '4.0',
+        '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
         '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
         '-map_metadata', '-1', '-movflags', '+faststart',
@@ -422,8 +424,8 @@ export class PublishService {
         const igUserId = extra.igUserId || opts.platformId;
         if (!igUserId) throw new BadRequestException('Thiếu Instagram User ID — hãy kết nối lại tài khoản');
         return this.ig.publish(token, {
-          caption:     opts.message,
-          mediaUrls:   opts.mediaUrls,
+          caption: opts.message,
+          mediaUrls: opts.mediaUrls,
           igUserId,
           accountType: extra.type, // 'instagram_business' | 'instagram_direct'
         });
@@ -509,17 +511,17 @@ export class PublishService {
 
     const post = await this.prisma.socialPost.create({
       data: {
-        user_id:      userId,
-        account_id:   dto.accountId,
-        platform:     account.platform,
-        message:      dto.message,
-        media_urls:   dto.mediaUrls ?? [],
-        page_id:      dto.pageId,
-        privacy:      dto.privacy,
+        user_id: userId,
+        account_id: dto.accountId,
+        platform: account.platform,
+        message: dto.message,
+        media_urls: dto.mediaUrls ?? [],
+        page_id: dto.pageId,
+        privacy: dto.privacy,
         scheduled_at: new Date(), // đến hạn ngay lập tức
-        source:       SocialPostSource.IMMEDIATE,
-        status:       SocialPostStatus.PENDING,
-        updated_at:   new Date(),
+        source: SocialPostSource.IMMEDIATE,
+        status: SocialPostStatus.PENDING,
+        updated_at: new Date(),
       },
     });
 
