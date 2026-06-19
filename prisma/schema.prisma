@@ -55,10 +55,13 @@ model User {
   editor_weekend_kpis_set   EditorWeekendKpi[] @relation("EditorWeekendKpiSetBy")
   team_kpis_created         TeamKpi[]        @relation("TeamKpiCreatedBy")
   products_added            Product[]        @relation("ProductAddedBy")
+  products_owned            Product[]        @relation("PersonalProductOf")
   team_products_added       TeamProduct[]    @relation("TeamProductAddedBy")
   team_contents_added       TeamContent[]    @relation("TeamContentAddedBy")
   contents_added            Content[]        @relation("ContentAddedBy")
+  contents_owned            Content[]        @relation("PersonalContentOf")
   sources_added             Source[]         @relation("SourceAddedBy")
+  sources_owned             Source[]         @relation("EditorSourcesOwned")
   tasks_assigned            Task[]           @relation("TaskAssignee")
   tasks_reviewed            Task[]           @relation("TaskReviewer")
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
@@ -1347,6 +1350,7 @@ model Team {
   tasks     Task[]
   products  TeamProduct[]
   contents  TeamContent[]
+  sources   Source[]     @relation("TeamSourcesOwned")
 
   @@index([leader_id])
   @@map("teams")
@@ -1453,11 +1457,31 @@ model EditorKpi {
   id           String   @id @default(uuid())
   user_id      String
   month        String
+  // Legacy fields kept at 0 (auto-assign still reads total_target)
   kpi_day      Int      @default(0)
   kpi_weekend  Int      @default(0)
-  kpi_extra    Int      @default(0)
   kpi_creative Int      @default(0)
-  total_target Int      @default(0)
+  // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
+  total_target Int      @default(0)   // = Tổng video sản xuất (drives auto-assign)
+  video_win    Int      @default(0)   // Số video win (≥10k views)
+  video_fail   Int      @default(0)   // Số video fail
+  ratio_a1     Int      @default(0)   // Tỷ lệ A1 Kéo traffic
+  ratio_a2     Int      @default(0)   // Tỷ lệ A2 Tạo chuyên gia
+  ratio_a3     Int      @default(0)   // Tỷ lệ A3 Tạo trust
+  ratio_a4     Int      @default(0)   // Tỷ lệ A4 Chuyển đổi
+  ratio_a5     Int      @default(0)   // Tỷ lệ A5 Nhân bản & scale
+  // ── Content ──
+  kpi_extra         Int @default(0)   // Tổng KPI sáng tạo (chỉ thông báo)
+  content_new       Int @default(0)   // Số content mới được làm
+  content_collected Int @default(0)   // Số content sưu tầm về kho team để test
+  content_win_cover Int @default(0)   // Số content win cover lại bởi team
+  // ── Product ──
+  product_planned      Int @default(0) // Số SP đẩy video theo kế hoạch
+  product_win_collect  Int @default(0) // Số SP sưu tầm và test video win
+  video_traffic        Int @default(0) // Số video SP dòng Traffic
+  video_gmv            Int @default(0) // Số video SP dòng GMV
+  video_profit         Int @default(0) // Số video SP dòng Profit
+
   set_by_id    String
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
@@ -1472,8 +1496,10 @@ model EditorKpi {
 }
 
 model ContentLine {
-  id   String @id @default(uuid())
-  name String @unique
+  id     String  @id @default(uuid())
+  name   String  @unique
+  /// A1 | A2 | A3 | A4 | A5 — dùng để map sang ratio_a{n} trong EditorKpi
+  a_type String?
 
   contents    Content[]
   tasks       Task[]
@@ -1483,8 +1509,10 @@ model ContentLine {
 }
 
 model ProductLine {
-  id   String @id @default(uuid())
-  name String @unique
+  id             String  @id @default(uuid())
+  name           String  @unique
+  /// TRAFFIC | GMV | PROFIT — dùng để map sang video_traffic/gmv/profit trong EditorKpi
+  video_category String?
 
   products    Product[]
   allocations TeamKpiAllocation[]
@@ -1514,6 +1542,8 @@ model Product {
   material_id     String?
   product_line_id String?
   added_by_id     String
+  /// NULL = kho chung; có giá trị = sản phẩm riêng của editor này
+  user_id         String?
   lark_record_id  String?  @unique
   is_active       Boolean  @default(true)
   created_at      DateTime @default(now())
@@ -1522,12 +1552,14 @@ model Product {
   material       Material?       @relation(fields: [material_id], references: [id])
   product_line   ProductLine?    @relation(fields: [product_line_id], references: [id])
   added_by       User            @relation("ProductAddedBy", fields: [added_by_id], references: [id])
+  owner_user     User?           @relation("PersonalProductOf", fields: [user_id], references: [id])
   sources        Source[]
   tasks          Task[]
   team_products  TeamProduct[]
 
   @@index([product_line_id])
   @@index([priority_score(sort: Desc)])
+  @@index([user_id])
   @@map("products")
 }
 
@@ -1545,18 +1577,22 @@ model Content {
   view_count          BigInt             @default(0)
   approved_content_id String?
   added_by_id         String
+  /// NULL = kho chung; có giá trị = content riêng của editor này
+  user_id             String?
   lark_record_id      String?            @unique
   created_at          DateTime           @default(now())
   updated_at          DateTime           @updatedAt
 
   content_line  ContentLine?     @relation(fields: [content_line_id], references: [id])
   added_by      User             @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  owner_user    User?            @relation("PersonalContentOf", fields: [user_id], references: [id])
   tasks         Task[]
   team_contents TeamContent[]
 
   @@index([status])
   @@index([content_line_id, status])
   @@index([added_by_id])
+  @@index([user_id])
   @@map("contents")
 }
 
@@ -1567,6 +1603,10 @@ model Source {
   link           String
   code           String?
   product_id     String?
+  /// NULL = kho chung; có giá trị = source thuộc riêng team này
+  team_id        String?
+  /// NULL = không thuộc editor; có giá trị = source riêng của editor (user) này
+  user_id        String?
   added_by_id    String
   lark_record_id String?    @unique
   is_active      Boolean    @default(true)
@@ -1574,13 +1614,17 @@ model Source {
   updated_at     DateTime   @updatedAt
 
   product     Product? @relation(fields: [product_id], references: [id])
+  team        Team?    @relation("TeamSourcesOwned", fields: [team_id], references: [id])
+  owner_user  User?    @relation("EditorSourcesOwned", fields: [user_id], references: [id])
   added_by    User     @relation("SourceAddedBy", fields: [added_by_id], references: [id])
   tasks_outro Task[]   @relation("TaskSourceOutro")
   tasks_extra Task[]   @relation("TaskSourceExtra")
 
   @@index([type, is_active])
   @@index([product_id])
-  /// persistPairings: findFirst({ where: { product_id, type: OUTRO, is_active: true } })
+  @@index([team_id])
+  @@index([user_id])
+  /// persistPairings: cascading outro lookup per product
   @@index([product_id, type, is_active])
   @@map("sources")
 }
