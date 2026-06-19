@@ -5667,7 +5667,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async getUserReportDetails(email: string, dateStr: string) {
-        // `dateStr` = ngày hiệu suất trên UI (VN). Checklist/traffic lưu theo ngày hôm sau → query D+1.
+        // `dateStr` = ngày báo cáo (reportDate) user chọn trên form (VN). Checklist/traffic in-app lưu đúng ngày này → query đúng ngày đó (không +1).
         const vnYmdFromDate = (dateObj: Date) => {
             const dtf = new Intl.DateTimeFormat('en-CA', {
                 timeZone: 'Asia/Ho_Chi_Minh',
@@ -5684,10 +5684,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const uiYmd = dateStr.includes('T')
             ? vnYmdFromDate(new Date(dateStr))
             : dateStr.slice(0, 10);
-        const up = uiYmd.split('-').map((x) => parseInt(x, 10));
-        const anchor = new Date(Date.UTC(up[0], up[1] - 1, up[2], 5, 0, 0, 0));
-        const dataYmd = vnYmdFromDate(new Date(anchor.getTime() + 24 * 60 * 60 * 1000));
-        const [y, mo, da] = dataYmd.split('-').map((x) => parseInt(x, 10));
+        // Form checklist/traffic in-app lưu ĐÚNG ngày user chọn (reportDate) — đọc lại phải dùng cùng ngày.
+        // KHÔNG cộng D+1 (quy ước cũ của dashboard): nếu cộng +1, đọc lại không thấy record vừa gửi
+        // → cho báo cáo trùng cùng 1 ngày & hiển thị nhầm dữ liệu của ngày hôm sau.
+        const [y, mo, da] = uiYmd.split('-').map((x) => parseInt(x, 10));
         const m = mo - 1;
 
         const startOfDay = new Date(Date.UTC(y, m, da - 1, 17, 0, 0, 0));
