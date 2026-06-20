@@ -85,6 +85,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
             this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message ?? err}`);
         }
 
+
         // 3. Chạy Permissions & Channels
         try {
             await this.larkService.syncPermissionData();
@@ -124,6 +125,27 @@ export class LarkSyncService implements OnApplicationBootstrap {
             this.logger.log(`✅ Do Da channel sync: ${doda?.synced ?? 0} records`);
         } catch (err: any) {
             this.logger.error(`❌ Do Da channel sync failed: ${err?.message ?? err}`);
+        }
+        this.syncLock = false;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // TEAM GLOBAL INDO — Luồng riêng, chạy hàng ngày lúc 12:50
+    // ──────────────────────────────────────────────────────────────────────────
+    @Cron('0 50 12 * * *', { name: 'lark-global-indo-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    async scheduledGlobalIndoSync() {
+        if (!this.legacySyncEnabled) return;
+        if (this.syncLock) {
+            this.logger.warn('⏭️ Global Indo sync skipped — another sync is in progress');
+            return;
+        }
+        this.syncLock = true;
+        this.logger.log('⏰ Scheduled Lark Global Indo sync triggered (daily at 12:50)');
+        try {
+            const result = await this.larkService.syncKPIGlobalIndoData();
+            this.logger.log(`✅ KPI Global Indo sync: ${result?.synced ?? 0} records`);
+        } catch (err: any) {
+            this.logger.error(`❌ KPI Global Indo sync failed: ${err?.message ?? err}`);
         }
         this.syncLock = false;
     }

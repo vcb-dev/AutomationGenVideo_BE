@@ -25,7 +25,8 @@
     "sync:larkkpi:force": "ts-node scripts/force-sync-kpi-to-remote.ts",
     "sync:all:fast": "ts-node scripts/wipe-remote-data.ts && ts-node scripts/sync-lark-to-server-direct.ts && ts-node scripts/sync-channels-to-server-direct.ts && cross-env SYNC_FULL_REPLACE=1 ts-node scripts/force-sync-kpi-to-remote.ts && cross-env SYNC_FULL_REPLACE=1 ts-node scripts/force-sync-kpi-doda-to-remote.ts",
     "sync:channels:force": "ts-node scripts/sync-channels-to-server-direct.ts",
-    "sync:all-kpis:force": "ts-node scripts/sync-all-kpis-from-lark-to-server-direct.ts"
+    "sync:all-kpis:force": "ts-node scripts/sync-all-kpis-from-lark-to-server-direct.ts",
+    "sync:kpi:global-indo": "ts-node scripts/sync-kpi-global-indo.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

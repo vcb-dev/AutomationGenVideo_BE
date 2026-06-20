@@ -184,6 +184,12 @@ export class LarkController {
         return this.larkService.listTables();
     }
 
+    @Get('global-indo/inspect')
+    @ApiOperation({ summary: 'Debug: xem tên cột + 3 record mẫu từ bảng Lark Global Indo' })
+    async inspectGlobalIndoTable() {
+        return this.larkService.inspectGlobalIndoTable();
+    }
+
     @Get('db-targets')
     @ApiOperation({ summary: 'Debug: show sanitized DB targets (no secrets)' })
     dbTargets() {

@@ -26,7 +26,8 @@ function retryDelayMs(attempt: number): number {
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
-  private isExecuting = false;
+  private isClaiming = false;     // khóa pha claim (vài query DB nhanh) — KHÔNG giữ trong lúc thực thi
+  private activeExecutions = 0;   // số job đang thực thi nền — cap để giữ peak RAM/CPU như cũ (Railway)
 
   constructor(
     private readonly prisma: PrismaService,
@@ -160,16 +161,49 @@ export class ScheduleService {
 
   @Cron('*/5 * * * * *')
   async checkAndExecute() {
-    if (this.isExecuting) return;
-    this.isExecuting = true;
+    // Chỉ khóa PHA CLAIM (vài query DB nhanh). Việc thực thi (download/transcode/upload —
+    // có thể vài phút) chạy NỀN, KHÔNG giữ khóa → bài mới enqueue được claim & bắt đầu ngay
+    // thay vì phải chờ bài đang xử lý xong. Concurrency đếm qua next_retry_at (claim) như cũ.
+    if (this.isClaiming) return;
+    if (this.activeExecutions >= MAX_HEAVY_JOBS) return; // hết slot — chờ job đang chạy nhả slot
+
+    this.isClaiming = true;
+    let claimedPosts: any[] = [];
     try {
-      await this._doCheckAndExecute();
+      claimedPosts = await this._claimDuePosts(MAX_HEAVY_JOBS - this.activeExecutions);
+    } catch (err: any) {
+      this.logger.warn(`[Worker] claim error: ${err?.message}`);
     } finally {
-      this.isExecuting = false;
+      this.isClaiming = false;
+    }
+
+    if (claimedPosts.length === 0) return;
+
+    // Pre-warm: khởi động download Drive cho tất cả posts ngay (non-blocking)
+    this.publishService.preWarmDownloads(
+      claimedPosts.map(p => ({ platform: p.platform, media_urls: (p.media_urls as string[]) ?? [] })),
+    );
+
+    // Thực thi NỀN — KHÔNG await dưới khóa. Mỗi job xong sẽ nhả slot và trigger claim job
+    // kế tiếp ngay → pipeline luôn đầy (sliding window), peak vẫn ≤ MAX_HEAVY_JOBS như trước.
+    for (const post of claimedPosts) {
+      this.activeExecutions++;
+      void this.executePost(post)
+        .catch((err: any) => this.logger.error(`[Worker] executePost ${post.id} lỗi ngoài dự kiến: ${err?.message}`))
+        .finally(() => {
+          this.activeExecutions--;
+          this.triggerNow(); // job xong → nhả slot → claim job kế tiếp ngay, không chờ cron 5s
+        });
     }
   }
 
-  private async _doCheckAndExecute() {
+  /**
+   * Pha claim (nhanh): đếm job đang xử lý, lấy job đến hạn, atomic-claim tôn trọng giới hạn
+   * platform + global + số slot nội bộ còn trống. Trả về danh sách post đã claim (chưa thực thi).
+   */
+  private async _claimDuePosts(maxLocalSlots: number): Promise<any[]> {
+    if (maxLocalSlots <= 0) return [];
+
     const now        = new Date();
     // Video lớn cần download từ Drive + upload lên MXH → có thể mất 20-30 phút
     const claimUntil = new Date(Date.now() + 40 * 60 * 1000); // claim 40 phút
@@ -192,7 +226,7 @@ export class ScheduleService {
     }
 
     // Nếu đã đạt global limit thì dừng
-    if (totalInFlight >= GLOBAL_CONCURRENCY) return;
+    if (totalInFlight >= GLOBAL_CONCURRENCY) return [];
 
     // 2. Lấy các job đến hạn (SCHEDULED + IMMEDIATE), sắp theo thời gian tạo
     const duePosts = await this.prisma.socialPost.findMany({
@@ -206,13 +240,14 @@ export class ScheduleService {
       take: 50,
     });
 
-    if (duePosts.length === 0) return;
+    if (duePosts.length === 0) return [];
 
-    // 3. Claim từng job — tôn trọng giới hạn platform và global
+    // 3. Claim từng job — tôn trọng giới hạn platform, global và số slot nội bộ còn trống
     const claimedIds: string[]          = [];
     const claimedPerPlatform: Record<string, number> = {};
 
     for (const post of duePosts) {
+      if (claimedIds.length >= maxLocalSlots) break;
       if (totalInFlight + claimedIds.length >= GLOBAL_CONCURRENCY) break;
 
       const platformLimit    = PLATFORM_CONCURRENCY[post.platform] ?? 3;
@@ -235,25 +270,14 @@ export class ScheduleService {
       }
     }
 
-    if (claimedIds.length === 0) return;
+    if (claimedIds.length === 0) return [];
 
     const claimedPosts = duePosts.filter(p => claimedIds.includes(p.id));
     this.logger.log(
       `[Worker] Claimed ${claimedPosts.length} jobs | ` +
       Object.entries(claimedPerPlatform).map(([p, n]) => `${p}:${n}`).join(', '),
     );
-
-    // 4. Pre-warm: khởi động download Drive cho tất cả posts ngay bây giờ (non-blocking)
-    // → chunk 2, 3... sẽ tìm thấy file đã download sẵn trong cache khi đến lượt
-    this.publishService.preWarmDownloads(
-      claimedPosts.map(p => ({ platform: p.platform, media_urls: (p.media_urls as string[]) ?? [] })),
-    );
-
-    // 5. Chạy tuần tự theo nhóm để tránh quá tải RAM (Heavy Jobs Control)
-    for (let i = 0; i < claimedPosts.length; i += MAX_HEAVY_JOBS) {
-      const chunk = claimedPosts.slice(i, i + MAX_HEAVY_JOBS);
-      await Promise.all(chunk.map(post => this.executePost(post)));
-    }
+    return claimedPosts;
   }
 
   private async executePost(post: any) {

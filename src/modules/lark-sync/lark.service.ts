@@ -3,6 +3,8 @@ import { Injectable, Logger, OnModuleInit, OnApplicationBootstrap, OnModuleDestr
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma, PrismaClient, UserRole } from '@prisma/client';
@@ -49,6 +51,15 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     /** KPI hiệu suất Đồ Da — wiki Bitable (cùng app token nhiều khi dùng cho kênh Đồ Da) */
     private readonly KPI_DODA_BASE_ID: string;
     private readonly KPI_DODA_TABLE_ID: string;
+    /** KPI Global Indo — bảng KPI ngày (số video cần làm) */
+    private readonly KPI_GLOBAL_INDO_BASE_ID: string;
+    private readonly KPI_GLOBAL_INDO_TABLE_ID: string;
+    /** KPI Global Indo — bảng báo cáo video (số video đã làm xong) */
+    private readonly KPI_GLOBAL_INDO_REPORT_TABLE_ID: string;
+    /** KPI Global Indo — app riêng + OAuth user token (base nằm ở wiki space ngoài) */
+    private readonly KPI_GLOBAL_INDO_APP_ID: string;
+    private readonly KPI_GLOBAL_INDO_APP_SECRET: string;
+    private readonly KPI_GLOBAL_INDO_REFRESH_TOKEN: string;
 
     constructor(
         private readonly httpService: HttpService,
@@ -75,6 +86,18 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             this.configService.get<string>('LARK_KPI_DODA_BASE_ID') || 'Livew1AE0i2vo5kF3YXlCPNWg8f';
         this.KPI_DODA_TABLE_ID =
             this.configService.get<string>('LARK_KPI_DODA_TABLE_ID') || 'tblI1NzUOszaehhQ';
+        this.KPI_GLOBAL_INDO_BASE_ID =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_BASE_ID') || '';
+        this.KPI_GLOBAL_INDO_TABLE_ID =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_TABLE_ID') || '';
+        this.KPI_GLOBAL_INDO_REPORT_TABLE_ID =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_REPORT_TABLE_ID') || '';
+        this.KPI_GLOBAL_INDO_APP_ID =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_APP_ID') || '';
+        this.KPI_GLOBAL_INDO_APP_SECRET =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_APP_SECRET') || '';
+        this.KPI_GLOBAL_INDO_REFRESH_TOKEN =
+            this.configService.get<string>('LARK_KPI_GLOBAL_INDO_REFRESH_TOKEN') || '';
         // Keep activity data cached longer to cut repeated SQL load from frequent polling.
         this.activitySharedCacheTtlMs = Math.max(
             30_000,
@@ -112,6 +135,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     /** Bảng KPI Đồ Da tách riêng theo Người edit + Ngày edit. */
     private get prismaLarkKpiDoDaEditor() {
         return (this.prisma as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+    }
+
+    /** Bảng KPI Global Indo. */
+    private get prismaLarkKpiGlobalIndo(): Prisma.LarkKPIDelegate {
+        return (this.prisma as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate }).larkKpiGlobalIndo;
     }
 
     private remotePrismaClients = new Map<string, PrismaClient>();
@@ -1262,6 +1290,411 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const result = await this.prisma.larkReport.deleteMany({});
         this.logger.log(`Deleted ${result.count} records from larkReport`);
         return result;
+    }
+
+    /** File lưu refresh_token Global Indo (tự gia hạn mỗi lần lấy token mới). */
+    private readonly GLOBAL_INDO_REFRESH_FILE = path.join(process.cwd(), '.lark-global-indo-refresh.txt');
+
+    /**
+     * Lấy user_access_token cho base Global Indo.
+     * Base nằm ở wiki space ngoài → tenant_access_token của app chính KHÔNG đọc được,
+     * phải dùng app riêng (LARK_KPI_GLOBAL_INDO_APP_ID/SECRET) + OAuth refresh_token.
+     */
+    private async getGlobalIndoUserToken(): Promise<string> {
+        if (!this.KPI_GLOBAL_INDO_APP_ID || !this.KPI_GLOBAL_INDO_APP_SECRET) {
+            throw new Error('[KPI Global Indo] LARK_KPI_GLOBAL_INDO_APP_ID / APP_SECRET chưa cấu hình.');
+        }
+
+        let refreshToken = this.KPI_GLOBAL_INDO_REFRESH_TOKEN;
+        try {
+            if (fs.existsSync(this.GLOBAL_INDO_REFRESH_FILE)) {
+                const fromFile = fs.readFileSync(this.GLOBAL_INDO_REFRESH_FILE, 'utf-8').trim();
+                if (fromFile) refreshToken = fromFile;
+            }
+        } catch { /* dùng token từ env nếu đọc file lỗi */ }
+        if (!refreshToken) {
+            throw new Error('[KPI Global Indo] Chưa có refresh_token — chạy: npx ts-node scripts/lark-auth-global-indo.ts');
+        }
+
+        const appRes = await firstValueFrom(this.httpService.post(
+            'https://open.larksuite.com/open-apis/auth/v3/app_access_token/internal',
+            { app_id: this.KPI_GLOBAL_INDO_APP_ID, app_secret: this.KPI_GLOBAL_INDO_APP_SECRET },
+        ));
+        const appToken = appRes.data?.app_access_token;
+        if (!appToken) throw new Error(`[KPI Global Indo] Lấy app_access_token thất bại: ${JSON.stringify(appRes.data)}`);
+
+        const res = await firstValueFrom(this.httpService.post(
+            'https://open.larksuite.com/open-apis/authen/v1/refresh_access_token',
+            { grant_type: 'refresh_token', refresh_token: refreshToken },
+            { headers: { Authorization: `Bearer ${appToken}` } },
+        ));
+        const data = res.data?.data || res.data;
+        if (!data?.access_token) throw new Error(`[KPI Global Indo] Refresh thất bại: ${JSON.stringify(res.data)}`);
+        if (data.refresh_token) {
+            try { fs.writeFileSync(this.GLOBAL_INDO_REFRESH_FILE, data.refresh_token, 'utf-8'); }
+            catch (e) { this.logger.warn(`[KPI Global Indo] Không ghi được refresh file: ${(e as any)?.message ?? e}`); }
+        }
+        return data.access_token as string;
+    }
+
+    /** Fetch toàn bộ record của 1 bảng Global Indo bằng user_access_token (phân trang). */
+    private async fetchGlobalIndoRecords(token: string, tableId: string): Promise<any[]> {
+        const records: any[] = [];
+        let pageToken = '';
+        let hasMore = true;
+        while (hasMore) {
+            const res: any = await firstValueFrom(this.httpService.get(
+                `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_GLOBAL_INDO_BASE_ID}/tables/${tableId}/records`,
+                { headers: { Authorization: `Bearer ${token}` }, params: { page_size: 500, page_token: pageToken || undefined } },
+            ));
+            const data = res.data?.data;
+            if (data?.items) records.push(...data.items);
+            hasMore = !!data?.has_more;
+            pageToken = data?.page_token || '';
+        }
+        return records;
+    }
+
+    private async mirrorLarkKpiGlobalIndoSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
+        const url = this.getRemoteMirrorDbUrl();
+        if (!url) return 0;
+        const remote = this.createRemotePrismaClient(url);
+        const delegate = (remote as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate | undefined }).larkKpiGlobalIndo;
+        if (!delegate) {
+            await remote.$disconnect().catch(() => undefined);
+            this.logger.warn('[KPI Global Indo] Remote Prisma has no larkKpiGlobalIndo delegate — skip mirror.');
+            return 0;
+        }
+        const maxRetries = this.getMirrorRetryCount();
+        const CHUNK = 400;
+        try {
+            await this.withRetry(
+                async () => {
+                    await delegate.deleteMany({});
+                    for (let i = 0; i < rows.length; i += CHUNK) {
+                        const chunk = rows.slice(i, i + CHUNK);
+                        if (chunk.length) await delegate.createMany({ data: chunk as any, skipDuplicates: true });
+                    }
+                },
+                maxRetries,
+                'mirrorLarkKpiGlobalIndoSnapshotToServer',
+            );
+            this.logger.log(`[KPI Global Indo] Mirrored ${rows.length} row(s) to remote DB.`);
+            return rows.length;
+        } finally {
+            await remote.$disconnect().catch(() => undefined);
+        }
+    }
+
+    /**
+     * Đồng bộ KPI Global Indo từ 2 bảng Lark:
+     *   - KPI table (LARK_KPI_GLOBAL_INDO_TABLE_ID): số video cần làm mỗi ngày → kpi_day
+     *   - Report table (LARK_KPI_GLOBAL_INDO_REPORT_TABLE_ID): số video đã làm xong → completed_day
+     * Merge theo employee_id/name + ngày rồi lưu vào lark_kpi_global_indo.
+     */
+    async syncKPIGlobalIndoData(options?: { forceLocalWrite?: boolean; skipRemoteMirror?: boolean }) {
+        if (!this.KPI_GLOBAL_INDO_BASE_ID || !this.KPI_GLOBAL_INDO_TABLE_ID) {
+            this.logger.warn('[KPI Global Indo] LARK_KPI_GLOBAL_INDO_BASE_ID / LARK_KPI_GLOBAL_INDO_TABLE_ID chưa cấu hình — bỏ qua sync.');
+            return { synced: 0, total: 0, samples: [], allKeys: [] };
+        }
+
+        const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
+        const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
+        const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
+        const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
+        const targetUsers = targetClient ? targetClient.user : this.prisma.user;
+        const targetDelegate = targetClient
+            ? (targetClient as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate | undefined }).larkKpiGlobalIndo
+            : this.prismaLarkKpiGlobalIndo;
+        if (!targetDelegate) throw new Error('[KPI Global Indo] Target Prisma has no larkKpiGlobalIndo delegate.');
+
+        const normKey = (s: string) =>
+            String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
+
+        const extractStr = (val: any): string | null => {
+            if (!val) return null;
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val) && val.length > 0) {
+                const f = val[0];
+                return f?.name || f?.text || (typeof f === 'string' ? f : null);
+            }
+            if (typeof val === 'object') return val.name || val.text || null;
+            return String(val);
+        };
+        const extractNum = (val: any): number | null => {
+            if (val === null || val === undefined) return null;
+            const n = Number(val);
+            return isNaN(n) ? null : n;
+        };
+        const extractDate = (val: any): Date | null => {
+            if (!val) return null;
+            const d = typeof val === 'number' ? new Date(val) : new Date(String(val));
+            return isNaN(d.getTime()) ? null : d;
+        };
+        /** Lấy open_id + name từ person field (array hoặc object). */
+        const extractPerson = (val: any): { id: string | null; name: string } => {
+            if (!val) return { id: null, name: '' };
+            const obj = Array.isArray(val) ? val[0] : val;
+            if (!obj) return { id: null, name: '' };
+            return { id: obj.id || null, name: obj.name || obj.en_name || '' };
+        };
+
+        try {
+            // Fetch cả 2 bảng song song — base nằm ở wiki ngoài nên phải dùng user_access_token.
+            const userToken = await this.getGlobalIndoUserToken();
+            const [kpiRecords, reportRecords] = await Promise.all([
+                this.fetchGlobalIndoRecords(userToken, this.KPI_GLOBAL_INDO_TABLE_ID),
+                this.KPI_GLOBAL_INDO_REPORT_TABLE_ID
+                    ? this.fetchGlobalIndoRecords(userToken, this.KPI_GLOBAL_INDO_REPORT_TABLE_ID)
+                    : Promise.resolve([]),
+            ]);
+            this.logger.log(`[KPI Global Indo] Fetched ${kpiRecords.length} KPI rows, ${reportRecords.length} report rows.`);
+            if (!kpiRecords.length) throw new Error('[KPI Global Indo] Sync aborted: no KPI records fetched.');
+
+            // Load users để match tên/id
+            const sysUsers = await targetUsers.findMany({
+                select: { full_name: true, employee_id: true, email: true, team: true, employee_status: true },
+            });
+            const dbUsersMap = new Map<string, any>();
+            sysUsers.forEach(u => {
+                if (u.employee_id) dbUsersMap.set(String(u.employee_id).trim(), u);
+                if (u.email) dbUsersMap.set(String(u.email).toLowerCase().trim(), u);
+                if (u.full_name) {
+                    const k = normKey(u.full_name);
+                    dbUsersMap.set(k, u);
+                    const tokens = k.split(' ').filter(Boolean);
+                    if (tokens.length >= 3 && !dbUsersMap.has(`${tokens[0]} ${tokens[tokens.length - 1]}`))
+                        dbUsersMap.set(`${tokens[0]} ${tokens[tokens.length - 1]}`, u);
+                }
+            });
+
+            const allKeys = new Set<string>();
+            const rawSamples: any[] = [];
+
+            // ── Bước 1: Parse bảng KPI → bucket[empKey+dateKey] = { kpi_day, meta }
+            // Tên cột thực từ bảng Lark (dựa trên /inspect): Tên, Ngày báo cáo, Số task tự động, TAG, Team, Trạng thái, Email, Nhân viên
+            type KpiBucket = {
+                id: string; personKey: string; name: string; employee_id: string | null; tag: string | null;
+                team: string | null; employee_status: string | null; email: string | null;
+                employee_data: any; report_date: Date; dateKey: string; month: string | null;
+                kpi_day: number; kpi_month: number;
+            };
+            const kpiBuckets = new Map<string, KpiBucket>();
+
+            for (const rec of kpiRecords) {
+                const f = rec.fields || {};
+                Object.keys(f).forEach(k => allKeys.add(k));
+                if (rawSamples.length < 3) rawSamples.push(rec);
+
+                const rawDate = f['Ngày báo cáo'] || f['Ngay bao cao'] || f['Date'] || f['Ngày'];
+                const reportDate = extractDate(rawDate);
+                if (!reportDate) continue;
+                const dateKey = this.toVietnamDateKey(reportDate);
+                if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) continue;
+
+                // Ưu tiên person field "Nhân viên" (có open_id) — khớp với bảng report qua open_id.
+                const person = extractPerson(f['Nhân viên']);
+                const name = person.name || extractStr(f['Tên'] || f['Ten'] || f['HoTen'] || f['Họ tên']) || '';
+                if (!name || normKey(name) === 'unknown') continue;
+
+                const tag = extractStr(f['TAG'] || f['Mã tag']) || null;
+                const empId = extractStr(f['ID nhân viên']) || tag || null;
+                const team = extractStr(f['Team']) || 'Global - Indo';
+                const status = extractStr(f['Trạng thái'] || f['Tinh trang']) || null;
+                const email = extractStr(f['Email']) || null;
+                const kpiDay = extractNum(f['KPI Ngày'] ?? f['KPI ngày'] ?? f['Số task tự động'] ?? f['So task tu dong']) ?? 0;
+
+                const empIdKey = empId ? String(empId).trim() : null;
+                const nameKey = normKey(name);
+                const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) || (email ? dbUsersMap.get(email.toLowerCase().trim()) : null) || dbUsersMap.get(nameKey);
+
+                // Key gộp: ưu tiên open_id (khớp bảng report), fallback empId/name.
+                const personKey = person.id || empIdKey || nameKey;
+                const bucketKey = `${personKey}|${dateKey}`;
+                const existing = kpiBuckets.get(bucketKey);
+                if (existing) {
+                    existing.kpi_day += kpiDay;
+                } else {
+                    kpiBuckets.set(bucketKey, {
+                        id: `gcindo-${dateKey}-${personKey}`.slice(0, 191),
+                        personKey,
+                        name: sysMatch?.full_name || name,
+                        employee_id: empIdKey,
+                        tag,
+                        team: sysMatch?.team || team,
+                        employee_status: sysMatch?.employee_status || status,
+                        email: email || sysMatch?.email || null,
+                        employee_data: f['Nhân viên'] || null,
+                        report_date: reportDate,
+                        dateKey,
+                        month: `T${parseInt(dateKey.slice(5, 7), 10)}`,
+                        kpi_day: kpiDay,
+                        kpi_month: 0,
+                    });
+                }
+            }
+
+            // Tính kpi_month (tổng kpi_day theo tháng của từng người)
+            const monthTotalsKpi = new Map<string, number>();
+            kpiBuckets.forEach((b, key) => {
+                const [empKey] = key.split('|');
+                const mKey = `${empKey}|${b.dateKey.slice(0, 7)}`;
+                monthTotalsKpi.set(mKey, (monthTotalsKpi.get(mKey) || 0) + b.kpi_day);
+            });
+            kpiBuckets.forEach((b, key) => {
+                const [empKey] = key.split('|');
+                b.kpi_month = monthTotalsKpi.get(`${empKey}|${b.dateKey.slice(0, 7)}`) || 0;
+            });
+
+            // ── Bước 2: Parse "Bảng Task New (Gói)" → completed_day per personKey+dateKey.
+            // 1 video hoàn thành = record có Duyệt video = "Đã duyệt" VÀ có Link Video.
+            // Ghép với bảng KPI qua open_id (Người[0].id == Nhân viên[0].id).
+            const completedMap = new Map<string, number>();
+            for (const rec of reportRecords) {
+                const f = rec.fields || {};
+
+                if (extractStr(f['Duyệt video']) !== 'Đã duyệt') continue;
+                const linkVideo = f['Link Video'];
+                const hasLink = linkVideo && (typeof linkVideo === 'string'
+                    ? linkVideo.trim()
+                    : Array.isArray(linkVideo) ? linkVideo.length > 0 : !!linkVideo);
+                if (!hasLink) continue;
+
+                const reportDate = extractDate(f['Ngày'] || f['Ngày báo cáo'] || f['Date']);
+                if (!reportDate) continue;
+                const dateKey = this.toVietnamDateKey(reportDate);
+                if (dateKey < KPI_MIN_DATE_KEY || dateKey > KPI_MAX_DATE_KEY) continue;
+
+                const person = extractPerson(f['Người']);
+                if (!person.id && !person.name) continue;
+                const personKey = person.id || normKey(person.name);
+
+                const bucketKey = `${personKey}|${dateKey}`;
+                completedMap.set(bucketKey, (completedMap.get(bucketKey) || 0) + 1);
+            }
+
+            // Tính completed_month
+            const monthTotalsDone = new Map<string, number>();
+            completedMap.forEach((v, key) => {
+                const [empKey, dateKey] = key.split('|');
+                const mKey = `${empKey}|${dateKey.slice(0, 7)}`;
+                monthTotalsDone.set(mKey, (monthTotalsDone.get(mKey) || 0) + v);
+            });
+
+            // ── Bước 3: Merge thành rows cuối
+            const rows: any[] = [];
+            kpiBuckets.forEach((b, key) => {
+                const [empKey] = key.split('|');
+                const completedDay = completedMap.get(key) || 0;
+                const completedMonth = monthTotalsDone.get(`${empKey}|${b.dateKey.slice(0, 7)}`) || 0;
+                rows.push({
+                    id: b.id,
+                    employee_id: b.employee_id,
+                    name: b.name,
+                    tag: b.tag,
+                    team: b.team,
+                    image_url: null,
+                    kpi_day: b.kpi_day,
+                    kpi_month: b.kpi_month,
+                    kpii_status: b.kpi_day > 0 ? (completedDay >= b.kpi_day ? 'ĐẠT' : 'CHƯA ĐẠT') : null,
+                    kpi_day_percent: b.kpi_day > 0 ? `${Math.round((completedDay / b.kpi_day) * 100)}%` : '0%',
+                    completed_day: completedDay,
+                    completed_month: completedMonth,
+                    task_new: null,
+                    task_new_month: null,
+                    task_auto: b.kpi_day,
+                    task_auto_month: b.kpi_month,
+                    task_creative: null,
+                    content_win_new: null,
+                    revenue_month: null,
+                    traffic_month: null,
+                    target_revenue_month: null,
+                    target_traffic_month: null,
+                    kpi_progress_month: b.kpi_month > 0 ? completedMonth / b.kpi_month : null,
+                    employee_status: b.employee_status,
+                    state: b.employee_status?.toLowerCase() || null,
+                    employee_data: b.employee_data,
+                    report_date: b.report_date,
+                    month: b.month,
+                    link_image: null,
+                });
+            });
+
+            // ── Bước 4: Lưu vào DB
+            const delegate = targetDelegate as Prisma.LarkKPIDelegate;
+            await delegate.deleteMany({});
+            if (rows.length > 0) {
+                const CHUNK = 500;
+                for (let i = 0; i < rows.length; i += CHUNK)
+                    await delegate.createMany({ data: rows.slice(i, i + CHUNK), skipDuplicates: true });
+            }
+
+            let mirroredRemote = 0;
+            if (!targetClient && !options?.skipRemoteMirror) {
+                try { mirroredRemote = await this.mirrorLarkKpiGlobalIndoSnapshotToServer(rows); }
+                catch (e) { this.logger.error('[KPI Global Indo] Mirror failed', e); }
+            }
+
+            this.logger.log(`[KPI Global Indo] Synced ${rows.length} rows (kpi=${kpiRecords.length} report=${reportRecords.length}).`);
+            this.invalidateActivityCache();
+            return { synced: rows.length, total: kpiRecords.length + reportRecords.length, samples: rawSamples, allKeys: Array.from(allKeys), mirroredRemote };
+        } catch (error) {
+            this.logger.error('[KPI Global Indo] Sync failed', error);
+            throw error;
+        } finally {
+            if (targetClient) await targetClient.$disconnect().catch(() => undefined);
+        }
+    }
+
+    async inspectGlobalIndoTable() {
+        if (!this.KPI_GLOBAL_INDO_BASE_ID || !this.KPI_GLOBAL_INDO_TABLE_ID) {
+            return { error: 'LARK_KPI_GLOBAL_INDO_BASE_ID / LARK_KPI_GLOBAL_INDO_TABLE_ID chưa cấu hình' };
+        }
+        const token = await this.getAccessToken();
+        const baseUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_GLOBAL_INDO_BASE_ID}/tables/${this.KPI_GLOBAL_INDO_TABLE_ID}`;
+
+        const [fieldsRes, recordsRes] = await Promise.all([
+            firstValueFrom(this.httpService.get(`${baseUrl}/fields`, { headers: { Authorization: `Bearer ${token}` } })),
+            firstValueFrom(this.httpService.get(`${baseUrl}/records`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { page_size: 3, text_field_as_array: true },
+            })),
+        ]);
+
+        const fields = (fieldsRes.data?.data?.items || []).map((f: any) => ({
+            field_id: f.field_id,
+            name: f.field_name,
+            type: f.type,
+        }));
+
+        const samples = (recordsRes.data?.data?.items || []).map((r: any) => ({
+            record_id: r.record_id,
+            fields: r.fields,
+        }));
+
+        // Cũng inspect bảng báo cáo video nếu đã cấu hình
+        let reportInspect: any = null;
+        if (this.KPI_GLOBAL_INDO_REPORT_TABLE_ID) {
+            const reportBaseUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_GLOBAL_INDO_BASE_ID}/tables/${this.KPI_GLOBAL_INDO_REPORT_TABLE_ID}`;
+            const [rFields, rRecords] = await Promise.all([
+                firstValueFrom(this.httpService.get(`${reportBaseUrl}/fields`, { headers: { Authorization: `Bearer ${token}` } })),
+                firstValueFrom(this.httpService.get(`${reportBaseUrl}/records`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    params: { page_size: 3, text_field_as_array: true },
+                })),
+            ]);
+            reportInspect = {
+                table_id: this.KPI_GLOBAL_INDO_REPORT_TABLE_ID,
+                fields: (rFields.data?.data?.items || []).map((f: any) => ({ field_id: f.field_id, name: f.field_name, type: f.type })),
+                samples: (rRecords.data?.data?.items || []).map((r: any) => ({ record_id: r.record_id, fields: r.fields })),
+            };
+        }
+
+        return {
+            base_id: this.KPI_GLOBAL_INDO_BASE_ID,
+            kpi_table: { table_id: this.KPI_GLOBAL_INDO_TABLE_ID, fields, samples },
+            report_table: reportInspect,
+        };
     }
 
     async listTables() {
@@ -3878,6 +4311,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     if (emp.full_name) {
                         nameKeyMatchMap.set(normName(emp.full_name), emp);
                         nameKeyMatchMap.set(compactNameKey(emp.full_name), emp);
+                        // sorted-word key handles name-order variations (e.g. "Thị Duyên Lê" vs "Lê Thị Duyên")
+                        const sk = normName(emp.full_name).split(' ').sort().join(' ');
+                        if (!nameKeyMatchMap.has(sk)) nameKeyMatchMap.set(sk, emp);
                     }
                 });
 
@@ -4009,6 +4445,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     reportOutstandings,
                     totalKpiCount,
                     reportsUnfilteredCount,
+                    globalIndoKpisRaw,
                 ] = await Promise.all([
                     this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
                     this.prisma.$queryRawUnsafe(`
@@ -4019,6 +4456,21 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     `),
                     this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
                     this.prisma.larkReport.count({ where: whereClause }),
+                    this.prismaLarkKpiGlobalIndo.findMany({
+                        where: {
+                            OR: [
+                                { month: { in: monthsInRange.flatMap(m => m.formats) } },
+                                {
+                                    month: null,
+                                    report_date: {
+                                        gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
+                                        lte: monthsInRange.length > 0 ? getVietnamMonthBounds(monthsInRange[monthsInRange.length - 1].year, monthsInRange[monthsInRange.length - 1].monthNum).end : larkKpiEndOfDay,
+                                    }
+                                },
+                            ],
+                            report_date: { gte: new Date('2026-03-01T00:00:00Z') },
+                        },
+                    }) as Promise<any[]>,
                 ]);
 
                 const dodaKpis = (dodaKpisRaw as any[]).map((r: any) => {
@@ -4054,7 +4506,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     };
                 }).filter(Boolean);
 
-                const allKpiInDb: any[] = [...standardKpis, ...dodaKpis];
+                const allKpiInDb: any[] = [...standardKpis, ...dodaKpis, ...(globalIndoKpisRaw ?? [])];
                 const permissions: any[] = [];
 
                 if (isDoDaTeamFilter) {
@@ -4479,7 +4931,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         const kEmail = (this.extractEmailFromKpi(kpi) || (kpi as any).email || '').toLowerCase().trim();
                         const authUser =
                             (kEmail ? emailKeyMatchMap.get(kEmail) : null) ||
-                            (kName ? nameKeyMatchMap.get(kName) : null);
+                            (kName ? nameKeyMatchMap.get(kName) : null) ||
+                            (kName ? nameKeyMatchMap.get(kName.split(' ').sort().join(' ')) : null);
                         if (!authUser || !isActiveEmployeeStatus(authUser.employee_status || authUser.status)) {
                             continue;
                         }
@@ -4558,6 +5011,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     if (nameKey) {
                         const byName = nameKeyMatchMap.get(nameKey);
                         if (byName?.email) return String(byName.email).toLowerCase().trim();
+                        if (byName) return normName(byName.full_name);
+                        // sorted-word fallback for name-order variations (e.g. "Thị Duyên Lê" vs "Lê Thị Duyên")
+                        const sk = nameKey.split(' ').sort().join(' ');
+                        const bySorted = nameKeyMatchMap.get(sk);
+                        if (bySorted?.email) return String(bySorted.email).toLowerCase().trim();
+                        if (bySorted) return normName(bySorted.full_name);
                         return nameKey;
                     }
                     return opts.fallbackId ? String(opts.fallbackId) : null;
@@ -4574,9 +5033,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         });
                         if (!pk) continue;
                         const prev = targetByPerson.get(pk);
-                        if (!prev || new Date(kpi.report_date || 0).getTime() >= new Date(prev.report_date || 0).getTime()) {
-                            targetByPerson.set(pk, kpi);
-                        }
+                        // Một người có thể có nhiều dòng KPI cùng ngày (vd. dòng rỗng ở lark_kpi
+                        // team "Global - Indo" kpi=0/completed=0 TRÙNG với dòng thật ở lark_kpi_global_indo).
+                        // Ưu tiên dòng CÓ dữ liệu (kpi_day + completed_day lớn hơn), rồi mới tới report_date,
+                        // để dòng rỗng report_date trễ hơn không ghi đè dòng thật.
+                        const kpiScore = (r: any) => (Number(r?.kpi_day) || 0) + (Number(r?.completed_day) || 0);
+                        const better = !prev
+                            || kpiScore(kpi) > kpiScore(prev)
+                            || (kpiScore(kpi) === kpiScore(prev)
+                                && new Date(kpi.report_date || 0).getTime() >= new Date(prev.report_date || 0).getTime());
+                        if (better) targetByPerson.set(pk, kpi);
                     }
                     kpisForAggregation.forEach((agg) => {
                         const pk = resolvePersonKey({
@@ -4587,7 +5053,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         const td = pk ? targetByPerson.get(pk) : null;
                         if (!td) return;
                         agg.kpi_day = Number(td.kpi_day) > 0 ? Number(td.kpi_day) : Number(agg.kpi_day || 0);
-                        agg.completed_day = Number(td.completed_day) || 0;
+                        // Không để dòng target rỗng (kpi=0 & completed=0) xóa completed_day thật đã gộp được.
+                        const tdCompleted = Number(td.completed_day) || 0;
+                        const tdHasData = (Number(td.kpi_day) || 0) > 0 || tdCompleted > 0;
+                        agg.completed_day = tdHasData ? tdCompleted : (Number(agg.completed_day) || 0);
                         agg.team = td.team || agg.team;
                         agg.report_date = td.report_date;
                         (agg as any).hasExactDayKpi = true;
@@ -4601,7 +5070,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     const kpiEmpId = kpi.employee_id ? String(kpi.employee_id).trim() : null;
                     const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) ||
                                      (kpiEmpId ? larkUserIdMatchMap.get(kpiEmpId) : null) ||
-                                     (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+                                     (nameKey ? nameKeyMatchMap.get(nameKey) : null) ||
+                                     (nameKey ? nameKeyMatchMap.get(nameKey.split(' ').sort().join(' ')) : null);
 
                     const pKey = resolvePersonKey({
                         email: emailKey || this.extractEmailFromKpi(kpi),

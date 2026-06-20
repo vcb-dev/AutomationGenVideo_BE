@@ -84,8 +84,9 @@ export class ThreadsPublisher {
 
   private async waitForContainer(containerId: string, token: string, maxMs = 180000) {
     const start = Date.now();
+    // Check NGAY lần đầu (không chờ 2s trước) → ảnh thường FINISHED ngay; rồi backoff 1s→3s
+    let delay = 1000;
     while (Date.now() - start < maxMs) {
-      await new Promise((r) => setTimeout(r, 2000));
       try {
         const res = await axios.get(`${this.BASE}/${containerId}`, {
           params: { fields: 'status,error_message', access_token: token },
@@ -107,6 +108,8 @@ export class ThreadsPublisher {
         if (err.message?.includes('Threads container error')) throw err;
         this.logger.warn(`[Threads] Poll error (retrying): ${err.message}`);
       }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay + 500, 3000);
     }
     throw new Error('Threads container timeout sau 3 phút');
   }
