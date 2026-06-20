@@ -12,12 +12,39 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
 type PreparedMedia = { url: string; tempFile: string | null };
+
+/** Semaphore đơn giản: giới hạn số tác vụ nặng (FFmpeg/transcode, Drive download) chạy đồng thời */
+class Semaphore {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+  constructor(private readonly max: number) {}
+
+  acquire(): Promise<() => void> {
+    if (this.active < this.max) {
+      this.active++;
+      return Promise.resolve(() => this.release());
+    }
+    return new Promise(resolve => {
+      this.queue.push(() => {
+        this.active++;
+        resolve(() => this.release());
+      });
+    });
+  }
+
+  private release() {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
 
 function extractDriveFileId(url: string): string | null {
   try {
@@ -46,6 +73,20 @@ function ensureExt(filename: string, ext: string): string {
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
+
+  // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
+  // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
+  private readonly publishNowSemaphore = new Semaphore(4);
+  // Chặn double-click / submit trùng: nếu 1 request publishNow giống hệt (cùng user +
+  // account + nội dung) đang xử lý, trả lại promise đang chạy thay vì đăng 2 lần.
+  private readonly inFlightPublishNow = new Map<string, Promise<any>>();
+  // Trần ffmpeg DÙNG CHUNG cho CẢ worker lẫn sync publishNow. publishNowSemaphore chỉ chặn
+  // đường sync; worker transcode riêng (cap MAX_HEAVY_JOBS=5). Không có trần chung này thì
+  // worst case 4 (sync) + 5 (worker) = 9 ffmpeg × threads=4 → bão CPU/OOM trên Railway.
+  // Tune qua env SOCIAL_TRANSCODE_CONCURRENCY (mặc định 2).
+  private readonly transcodeSemaphore = new Semaphore(
+    Math.max(1, parseInt(process.env.SOCIAL_TRANSCODE_CONCURRENCY || '2', 10) || 2),
+  );
 
   constructor(
     private readonly prisma: PrismaService,
@@ -185,6 +226,47 @@ export class PublishService {
     pageId?: string;
     privacy?: string;
   }) {
+    const dedupKey = `${userId}:${dto.accountId}:${crypto
+      .createHash('sha1')
+      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}`)
+      .digest('hex')}`;
+
+    const existing = this.inFlightPublishNow.get(dedupKey);
+    if (existing) {
+      this.logger.warn(`[PublishNow] Request trùng (double-click?) cho key=${dedupKey} — trả về kết quả của request đang xử lý`);
+      return existing;
+    }
+
+    const task = this.publishNowInternal(userId, dto).finally(() => {
+      // Giữ key thêm 3s sau khi xong để chặn click trùng đến muộn do network jitter
+      setTimeout(() => this.inFlightPublishNow.delete(dedupKey), 3000);
+    });
+    this.inFlightPublishNow.set(dedupKey, task);
+    return task;
+  }
+
+  private async publishNowInternal(userId: string, dto: {
+    accountId: string;
+    message: string;
+    mediaUrls?: string[];
+    pageId?: string;
+    privacy?: string;
+  }) {
+    const release = await this.publishNowSemaphore.acquire();
+    try {
+      return await this.doPublishNow(userId, dto);
+    } finally {
+      release();
+    }
+  }
+
+  private async doPublishNow(userId: string, dto: {
+    accountId: string;
+    message: string;
+    mediaUrls?: string[];
+    pageId?: string;
+    privacy?: string;
+  }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
     const extraData = account.extra_data as any;
@@ -290,7 +372,9 @@ export class PublishService {
     } catch (err: any) {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[ExecuteScheduled] ❌ postId=${post.id} ${account.platform} "${account.name}": ${apiErr}`, err.stack);
-      throw err;
+      const enrichedErr = new Error(apiErr);
+      enrichedErr.stack = err.stack;
+      throw enrichedErr;
     } finally {
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
@@ -409,25 +493,32 @@ export class PublishService {
       const transcodedName = `tc_${Date.now()}_${filename}`;
       const outputPath = path.join(uploadBase, transcodedName);
 
-      this.logger.log(`[Transcode] Bắt đầu transcode ${filename} → ${transcodedName}...`);
-      const start = Date.now();
       // H.264 high, CRF 20, cap 8Mbps, CFR 30fps, yuv420p, faststart
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
       // '-map 0:a:0?' — dấu '?' làm audio map optional: không crash nếu video không có audio
       // threads=4: Railway có CPU limit thấp — threads=0 (auto=60) gây OOM/kill
-      await execFileAsync(ffmpegPath, [
-        '-y', '-i', inputPath,
-        '-map', '0:v:0', '-map', '0:a:0?',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
-        '-profile:v', 'baseline', '-level', '4.0',
-        '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
-        '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-        '-map_metadata', '-1', '-movflags', '+faststart',
-        outputPath,
-      ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      // Gate qua semaphore DÙNG CHUNG (worker + sync) — chờ slot nếu đang đầy.
+      const releaseTranscode = await this.transcodeSemaphore.acquire();
+      let start = Date.now();
+      try {
+        this.logger.log(`[Transcode] Bắt đầu transcode ${filename} → ${transcodedName}...`);
+        start = Date.now(); // reset sau khi có slot → đo đúng thời gian encode, không tính thời gian chờ
+        await execFileAsync(ffmpegPath, [
+          '-y', '-i', inputPath,
+          '-map', '0:v:0', '-map', '0:a:0?',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
+          '-profile:v', 'baseline', '-level', '4.0',
+          '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
+          '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+          '-map_metadata', '-1', '-movflags', '+faststart',
+          outputPath,
+        ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      } finally {
+        releaseTranscode();
+      }
 
       if (!fs.existsSync(outputPath)) {
         this.logger.warn(`[Transcode] File output không tồn tại sau transcode: ${outputPath}`);
