@@ -103,10 +103,12 @@ export class LarkController {
     }
 
     @Get('kpi')
-    @ApiOperation({ summary: 'Get KPI data from Database' })
-    @ApiResponse({ status: 200, description: 'Returns list of KPI data from PostgreSQL.' })
-    async getKPI() {
-        return this.larkService.getKPIData();
+    @ApiOperation({ summary: 'Get KPI data from Database with pagination' })
+    @ApiResponse({ status: 200, description: 'Returns paginated KPI data from PostgreSQL.' })
+    async getKPI(@Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+        const pageNum = Math.max(1, parseInt(page || '1', 10));
+        const size = Math.min(100, Math.max(10, parseInt(pageSize || '50', 10)));
+        return this.larkService.getKPIData(pageNum, size);
     }
 
     @Post('sync-kpi')

@@ -1,6 +1,11 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 import axios from 'axios';
+
+/** Tạo platformId ổn định từ access_token để tránh tạo duplicate accounts */
+function tokenHash(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
 import { AccountsService } from '../accounts/accounts.service';
 import { FacebookOAuthStrategy } from './strategies/facebook.strategy';
 import { InstagramOAuthStrategy } from './strategies/instagram.strategy';
@@ -115,6 +120,12 @@ export class OAuthService {
       throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
     }
 
+    // Verify platform trong state phải khớp với platform trong URL — ngăn CSRF variant
+    if (decoded.platform && decoded.platform !== platform) {
+      this.logger.error(`[OAuth] Platform mismatch: state=${decoded.platform}, callback=${platform}`);
+      throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
+    }
+
     const { userId, codeVerifier } = decoded;
     let result: any;
 
@@ -151,8 +162,10 @@ export class OAuthService {
 
     if (platform === 'FACEBOOK') {
       // Chạy ngầm — không await để không làm chậm response callback
-      this.accounts.syncFacebookChildrenTokens(saved.id, userId).catch(() => {});
-      this.accounts.autoSaveFacebookPages(saved.id, userId).catch(() => {});
+      this.accounts.syncFacebookChildrenTokens(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] syncFacebookChildrenTokens failed for ${saved.id}: ${err.message}`));
+      this.accounts.autoSaveFacebookPages(saved.id, userId)
+        .catch((err: any) => this.logger.error(`[OAuth] autoSaveFacebookPages failed for ${saved.id}: ${err.message}`));
     }
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);
@@ -169,7 +182,8 @@ export class OAuthService {
       throw new BadRequestException(`Platform không hợp lệ: ${platform}`);
     }
 
-    let platformId = `manual_${Date.now()}`;
+    // Dùng hash của token làm platformId fallback — đảm bảo idempotent (cùng token → cùng account)
+    let platformId = `manual_${tokenHash(body.access_token)}`;
     let name = `${platform} Account`;
     let username = '';
 
@@ -177,11 +191,13 @@ export class OAuthService {
       if (platform === 'FACEBOOK') {
         const r = await axios.get('https://graph.facebook.com/v21.0/me', {
           params: { access_token: body.access_token, fields: 'id,name' },
+          timeout: 10000,
         });
         platformId = r.data.id; name = r.data.name; username = r.data.id;
       } else if (platform === 'THREADS') {
         const r = await axios.get('https://graph.threads.net/v1.0/me', {
           params: { access_token: body.access_token, fields: 'id,username,name' },
+          timeout: 10000,
         });
         platformId = r.data.id; name = r.data.name || r.data.username; username = r.data.username;
       }

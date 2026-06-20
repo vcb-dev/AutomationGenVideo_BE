@@ -16,6 +16,10 @@ import axios from 'axios';
 const FB_BASE = 'https://graph.facebook.com/v21.0';
 const IG_BASE = 'https://graph.instagram.com/v21.0';
 
+function isVideoUrl(url: string): boolean {
+  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
+}
+
 @Injectable()
 export class InstagramPublisher {
   private readonly logger = new Logger(InstagramPublisher.name);
@@ -25,7 +29,7 @@ export class InstagramPublisher {
     mediaUrls: string[];
     igUserId: string;
     accountType?: string; // 'instagram_business' | 'instagram_direct' | undefined
-  }): Promise<{ postId: string }> {
+  }): Promise<{ postId: string; url?: string }> {
     const { igUserId, caption, mediaUrls, accountType } = opts;
     const base = accountType === 'instagram_business' ? FB_BASE : IG_BASE;
 
@@ -33,7 +37,8 @@ export class InstagramPublisher {
 
     if (mediaUrls.length === 0) throw new Error('Instagram yêu cầu ít nhất 1 media');
 
-    const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(mediaUrls[0]);
+    const isVideo = isVideoUrl(mediaUrls[0]);
+    let postId: string;
 
     // ── Single media ──────────────────────────────────────────────────────────
     if (mediaUrls.length === 1) {
@@ -44,31 +49,49 @@ export class InstagramPublisher {
       const res = await axios.post(`${base}/${igUserId}/media_publish`, {
         creation_id: containerId,
         access_token: token,
+      }, { timeout: 60000 });
+      postId = res.data.id;
+    } else {
+      // ── Carousel ────────────────────────────────────────────────────────────
+      const childIds = await Promise.all(
+        mediaUrls.map(url =>
+          this.createContainer(base, igUserId, token, {
+            mediaUrl: url,
+            isCarouselItem: true,
+            isVideo: isVideoUrl(url),
+          }),
+        ),
+      );
+      await Promise.all(childIds.map(id => this.waitForContainer(base, igUserId, token, id)));
+
+      const parentId = await this.createContainer(base, igUserId, token, {
+        caption, children: childIds, isCarousel: true,
       });
-      return { postId: res.data.id };
+      await this.waitForContainer(base, igUserId, token, parentId);
+      const res = await axios.post(`${base}/${igUserId}/media_publish`, {
+        creation_id: parentId,
+        access_token: token,
+      }, { timeout: 60000 });
+      postId = res.data.id;
     }
 
-    // ── Carousel ──────────────────────────────────────────────────────────────
-    const childIds = await Promise.all(
-      mediaUrls.map(url =>
-        this.createContainer(base, igUserId, token, {
-          mediaUrl: url,
-          isCarouselItem: true,
-          isVideo: /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i.test(url),
-        }),
-      ),
-    );
-    for (const id of childIds) await this.waitForContainer(base, igUserId, token, id);
+    // Lấy permalink bài vừa đăng
+    const url = await this.getPermalink(base, postId, token);
+    this.logger.log(`[IG] Published postId=${postId} url=${url ?? 'N/A'}`);
+    return { postId, ...(url ? { url } : {}) };
+  }
 
-    const parentId = await this.createContainer(base, igUserId, token, {
-      caption, children: childIds, isCarousel: true,
-    });
-    await this.waitForContainer(base, igUserId, token, parentId);
-    const res = await axios.post(`${base}/${igUserId}/media_publish`, {
-      creation_id: parentId,
-      access_token: token,
-    });
-    return { postId: res.data.id };
+  private async getPermalink(base: string, postId: string, token: string): Promise<string | undefined> {
+    try {
+      const res = await axios.get(`${base}/${postId}`, {
+        params: { fields: 'permalink', access_token: token },
+        timeout: 10000,
+      });
+      return res.data.permalink ?? undefined;
+    } catch (err: any) {
+      this.logger.warn(`[IG] Không lấy được permalink cho ${postId}: ${err.message}`);
+      return undefined;
+    }
   }
 
   private async createContainer(
@@ -103,7 +126,7 @@ export class InstagramPublisher {
     }
 
     try {
-      const res = await axios.post(`${base}/${igUserId}/media`, params);
+      const res = await axios.post(`${base}/${igUserId}/media`, params, { timeout: 60000 });
       this.logger.log(`[IG] Container created: ${res.data.id}`);
       return res.data.id;
     } catch (err: any) {
@@ -115,14 +138,14 @@ export class InstagramPublisher {
 
   private async waitForContainer(
     base: string,
-    igUserId: string,
+    _igUserId: string,
     token: string,
     containerId: string,
     maxMs = 180000,
   ) {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 2000));
       try {
         const res = await axios.get(`${base}/${containerId}`, {
           params: { fields: 'status_code,status', access_token: token },

@@ -4,8 +4,18 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+
+  // Connection pooling is configured via:
+  // 1. DATABASE_URL parameters: connection_limit, pool_timeout
+  // 2. PgBouncer (already enabled with pgbouncer=true)
+  // 3. Prisma Client pool configuration (see prisma.service.ts)
+  // Requirements: 2.5, 8.6 - Pool settings: min=10, max=100, idleTimeoutMillis=30000
+  //
+  // directUrl dùng connection trực tiếp (port 5432) cho prisma migrate deploy,
+  // tránh treo vì PgBouncer transaction mode không hỗ trợ advisory locks.
 }
 
 /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
@@ -45,6 +55,7 @@ model User {
   reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                  Video[]
   social_accounts         SocialAccount[]
+  social_posts              SocialPost[]
   teams_leading             Team[]           @relation("TeamLeaderOf")
   team_membership           TeamMember?      @relation("TeamMembershipOf")
   editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
@@ -71,6 +82,8 @@ model User {
   @@index([roles])
   @@index([manager_id])
   @@index([team_leader_id])
+  @@index([is_active])
+  @@index([team])
   @@map("users")
 }
 
@@ -575,6 +588,7 @@ model LarkKPI {
   @@index([team])
   @@index([name])
   @@index([employee_id])
+  @@index([report_date(sort: Desc)])
   @@map("lark_kpi")
 }
 
@@ -1164,6 +1178,7 @@ model SocialAccount {
   /// Dữ liệu bổ sung tuỳ platform: { pageId, pageToken, igUserId, channelId, … }
   extra_data              Json?
   is_active               Boolean        @default(true)
+  is_shared               Boolean        @default(false)
   created_at              DateTime       @default(now())
   updated_at              DateTime       @updatedAt
   user                    User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
@@ -1176,6 +1191,9 @@ model SocialAccount {
   @@index([platform])
   @@index([parent_id])
   @@index([is_active])
+  @@index([is_shared])
+  @@index([token_expires_at])
+  @@index([is_active, token_expires_at])
   @@map("social_accounts")
 }
 
@@ -1198,9 +1216,11 @@ model SocialPost {
   next_retry_at DateTime?
   result        Json?
   error_msg     String?
+  thumb_url     String?
   created_at    DateTime         @default(now())
   updated_at    DateTime         @updatedAt
   account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([account_id])
@@ -1208,26 +1228,11 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([updated_at])
   @@index([status, scheduled_at])
+  @@index([status, source, updated_at])
   @@map("social_posts")
 
-  media_files   SocialMediaFile[]
-}
-
-/// Video/ảnh đã đăng — lưu binary trực tiếp vào DB sau khi nén xong, xóa file local
-model SocialMediaFile {
-  id         String      @id @default(uuid())
-  post_id    String?
-  filename   String      @unique
-  mimetype   String      @default("video/mp4")
-  size       Int
-  data       Bytes
-  created_at DateTime    @default(now())
-  post       SocialPost? @relation(fields: [post_id], references: [id], onDelete: SetNull)
-
-  @@index([post_id])
-  @@index([filename])
-  @@map("social_media_files")
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
@@ -1254,6 +1259,7 @@ model SocialDraft {
   platform    SocialPlatform?
   account_id  String?
   page_id     String?
+  thumb_url   String?
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 
@@ -1261,7 +1267,7 @@ model SocialDraft {
   @@map("social_drafts")
 }
 
-/// File đã upload vào Media Library — metadata only (binary lưu Supabase/DB)
+/// Media Library file metadata only. Binary content is stored in Google Drive.
 model SocialUploadedFile {
   id           String   @id @default(uuid())
   user_id      String
@@ -1269,8 +1275,12 @@ model SocialUploadedFile {
   originalname String
   mimetype     String
   size         Int
-  url          String
-  storage      String   @default("supabase")
+  url           String
+  thumbnail_url String?
+  storage       String   @default("google_drive")
+  drive_file_id String?
+  drive_web_view_url String?
+  thumbnail_drive_file_id String?
   created_at   DateTime @default(now())
 
   @@index([user_id])
@@ -1782,4 +1792,25 @@ model Notification {
   @@index([user_id, is_read])
   @@index([created_at(sort: Desc)])
   @@map("notifications")
+}
+
+model SocialDriveUploadSession {
+  id             String    @id
+  user_id        String
+  filename       String
+  originalname   String
+  mimetype       String
+  size           Int
+  upload_url     String    @db.Text
+  drive_file_id  String?
+  uploaded_bytes Int       @default(0)
+  status         String    @default("PENDING")
+  error_msg      String?
+  expires_at     DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+  @@map("social_drive_upload_sessions")
 }

@@ -141,19 +141,53 @@ async function main() {
         });
     }
 
-    // Perform upserts in batches
-    const BATCH_SIZE = 100;
-    for (let i = 0; i < channelsToUpsert.length; i += BATCH_SIZE) {
-        const batch = channelsToUpsert.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(data => 
-            server.channel.upsert({
-                where: { id: data.id },
-                update: data,
-                create: { ...data, created_at: new Date() }
-            })
-        ));
-        created += batch.length;
-        process.stdout.write(`\r   Progress: ${created}/${channelsToUpsert.length}`);
+function esc(val: any): string {
+    if (val === null || val === undefined) return 'NULL';
+    if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    if (val instanceof Date) return `'${val.toISOString()}'`;
+    return `'${String(val).replace(/'/g, "''")}'`;
+}
+
+    // High-performance UPSERT using Buffer Table
+    console.log(`📡 Using Buffer Table optimization for ${channelsToUpsert.length} channels...`);
+    const COLUMNS = `"id","name","platform","channel_id","link_channel","status","team_traffic","owner","email","created_at","updated_at"`;
+    
+    try {
+        // Step 1: Buffer Table
+        await server.$executeRawUnsafe(`DROP TABLE IF EXISTS sync_channels_buffer`);
+        await server.$executeRawUnsafe(`CREATE UNLOGGED TABLE sync_channels_buffer (LIKE "huyk_channels" INCLUDING ALL)`);
+
+        // Step 2: Load into Buffer in large chunks
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < channelsToUpsert.length; i += CHUNK_SIZE) {
+            const chunk = channelsToUpsert.slice(i, i + CHUNK_SIZE);
+            const values = chunk.map(r => `(${esc(r.id)},${esc(r.name)},${esc(r.platform)},${esc(r.channel_id)},${esc(r.link_channel)},${esc(r.status)},${esc(r.team_traffic)},${esc(r.owner)},${esc(r.email)},NOW(),NOW())`).join(',');
+            await server.$executeRawUnsafe(`INSERT INTO sync_channels_buffer (${COLUMNS}) VALUES ${values}`);
+            console.log(`   → Loaded ${Math.min(i + CHUNK_SIZE, channelsToUpsert.length)}/${channelsToUpsert.length} to Buffer`);
+        }
+
+        // Step 3: Merge
+        console.log('🪄  Merging Channels into Main table...');
+        const updateSet = COLUMNS.split(',')
+            .filter(c => c !== '"id"' && c !== '"created_at"' && c !== '"updated_at"')
+            .map(c => `${c}=EXCLUDED.${c}`)
+            .join(',');
+
+        await server.$executeRawUnsafe(`
+            INSERT INTO "huyk_channels" (${COLUMNS})
+            SELECT ${COLUMNS} FROM sync_channels_buffer
+            ON CONFLICT ("id") DO UPDATE SET ${updateSet}, "updated_at"=NOW()
+        `);
+
+        await server.$executeRawUnsafe(`DROP TABLE IF EXISTS sync_channels_buffer`);
+        console.log('✅ Channel sync successful!');
+
+        console.log('🔗 Enriching channel emails from Users table...');
+        const enrichedCount = await enrichChannelEmailsFromUsers(server);
+        console.log(`✅ Enriched ${enrichedCount} channels with correct emails.`);
+    } catch (err) {
+        console.error('❌ Channel sync failed:', err);
+        throw err;
     }
 
     console.log(`\n✅ Done! Synced ${created} channels (skipped ${skipped} excluded teams).`);
@@ -163,6 +197,61 @@ async function main() {
   } finally {
     await server.$disconnect();
   }
+}
+
+function normalizeOwnerName(s: string | null | undefined): string {
+    return (s || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'd')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+}
+
+async function enrichChannelEmailsFromUsers(server: PrismaClient): Promise<number> {
+    const users = await server.user.findMany({
+        where: { is_active: true },
+        select: { email: true, full_name: true },
+    });
+
+    const nameToEmail = new Map<string, string>();
+    for (const u of users) {
+        if (u.full_name && u.email) {
+            nameToEmail.set(normalizeOwnerName(u.full_name), u.email);
+        }
+    }
+
+    const channels = await server.channel.findMany({
+        select: { id: true, owner: true, email: true },
+    });
+
+    let updated = 0;
+    for (const ch of channels) {
+        if (!ch.owner) continue;
+
+        const normalizedOwner = normalizeOwnerName(ch.owner);
+        let matchedEmail = nameToEmail.get(normalizedOwner);
+
+        if (!matchedEmail) {
+            for (const [normalizedName, email] of nameToEmail) {
+                if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
+                    matchedEmail = email;
+                    break;
+                }
+            }
+        }
+
+        if (matchedEmail) {
+            await server.channel.update({
+                where: { id: ch.id },
+                data: { email: matchedEmail },
+            });
+            updated++;
+        }
+    }
+    return updated;
 }
 
 main();

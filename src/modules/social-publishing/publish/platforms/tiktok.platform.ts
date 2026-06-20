@@ -35,7 +35,7 @@ export class TiktokPublisher {
           total_chunk_count: totalChunks,
         },
       },
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' } },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
     );
 
     const { publish_id, upload_url } = initRes.data.data;
@@ -49,8 +49,8 @@ export class TiktokPublisher {
     const finalStatus = await this.pollStatus(token, publish_id);
     this.logger.log(`[TikTok] Final status: ${finalStatus}`);
 
-    if (finalStatus === 'FAILED') {
-      throw new Error('TikTok publishing failed');
+    if (finalStatus !== 'PUBLISH_COMPLETE') {
+      throw new Error(`TikTok publishing failed (status=${finalStatus})`);
     }
 
     return { publishId: publish_id, status: finalStatus };
@@ -63,13 +63,17 @@ export class TiktokPublisher {
         const res = await axios.post(
           'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
           { publish_id: publishId },
-          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' } },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
         );
         const status = res.data?.data?.status;
         this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
         if (['PUBLISH_COMPLETE', 'FAILED'].includes(status)) return status;
       } catch (err: any) {
-        this.logger.warn(`[TikTok] Poll error: ${err.message}`);
+        const httpStatus = err.response?.status;
+        if (httpStatus && httpStatus >= 400 && httpStatus < 500) {
+          throw new Error(`TikTok poll thất bại vĩnh viễn (HTTP ${httpStatus}): ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
+        }
+        this.logger.warn(`[TikTok] Poll error (retrying): ${err.message}`);
       }
     }
     return 'TIMEOUT';
@@ -77,10 +81,42 @@ export class TiktokPublisher {
 
   private async getFileSize(urlOrPath: string): Promise<number> {
     if (urlOrPath.startsWith('http')) {
-      const r = await axios.head(urlOrPath);
-      return parseInt(r.headers['content-length'] || '0');
+      let size = 0;
+      try {
+        const r = await axios.head(urlOrPath, { timeout: 15000 });
+        size = parseInt(r.headers['content-length'] || '0', 10);
+      } catch (e: any) {
+        this.logger.warn(`[TikTok] HEAD request failed: ${e.message}, trying GET Range fallback...`);
+      }
+
+      if (size === 0) {
+        try {
+          const r = await axios.get(urlOrPath, {
+            headers: { Range: 'bytes=0-0' },
+            timeout: 15000,
+          });
+          const contentRange = r.headers['content-range'];
+          if (contentRange) {
+            size = parseInt(contentRange.split('/').pop() || '0', 10);
+          }
+          if (size === 0) {
+            size = parseInt(r.headers['content-length'] || '0', 10);
+          }
+        } catch (e: any) {
+          this.logger.error(`[TikTok] Fallback GET Range request failed: ${e.message}`);
+        }
+      }
+
+      if (!size) {
+        throw new Error(`TikTok: không lấy được kích thước file từ ${urlOrPath}`);
+      }
+      return size;
     }
-    return fs.statSync(urlOrPath).size;
+    try {
+      return fs.statSync(urlOrPath).size;
+    } catch (e: any) {
+      throw new Error(`TikTok: không đọc được file local ${urlOrPath}: ${e.message}`);
+    }
   }
 
   private async uploadChunks(videoUrl: string, uploadUrl: string, fileSize: number) {
@@ -94,6 +130,7 @@ export class TiktokPublisher {
         const r = await axios.get(videoUrl, {
           responseType: 'arraybuffer',
           headers: { Range: `bytes=${start}-${end}` },
+          timeout: 60000,
         });
         chunk = Buffer.from(r.data);
       } else {
@@ -113,6 +150,9 @@ export class TiktokPublisher {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Content-Length': chunk.length,
         },
+        timeout: 120000, // 2 phút per chunk
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
       });
 
       this.logger.log(`[TikTok] Chunk ${chunkIndex + 1} uploaded (${start}-${end}/${fileSize})`);
