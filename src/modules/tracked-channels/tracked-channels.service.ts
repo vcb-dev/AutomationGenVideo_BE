@@ -132,7 +132,7 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
             AND hc.team_traffic ILIKE ${likeParam}
             AND tc.platform::text = ${platform.toUpperCase()}
@@ -143,7 +143,7 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
             AND hc.team_traffic ILIKE ${likeParam}
           ORDER BY tc.created_at DESC

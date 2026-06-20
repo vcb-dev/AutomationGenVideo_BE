@@ -328,6 +328,66 @@ export class PublishService {
     return null;
   }
 
+  /** Tìm ffprobe: env → cạnh ffmpeg → /usr/bin/ffprobe → null */
+  private resolveFFprobePath(): string | null {
+    const fromEnv = process.env.FFPROBE_PATH;
+    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+    const ffmpeg = process.env.FFMPEG_PATH;
+    if (ffmpeg && fs.existsSync(ffmpeg)) {
+      const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    if (fs.existsSync('/usr/bin/ffprobe')) return '/usr/bin/ffprobe';
+    return null;
+  }
+
+  /**
+   * Kiểm tra video đã đạt chuẩn IG/Threads chưa → nếu rồi thì bỏ qua transcode (tiết kiệm 10-40s).
+   * Conservative: bất kỳ nghi ngờ nào (không probe được, đọc thiếu thông tin) → false (vẫn transcode).
+   */
+  private async isVideoCompliant(inputPath: string): Promise<boolean> {
+    const ffprobePath = this.resolveFFprobePath();
+    if (!ffprobePath) return false;
+    try {
+      const { stdout } = await execFileAsync(ffprobePath, [
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_name,pix_fmt,profile,avg_frame_rate,r_frame_rate,bit_rate',
+        '-of', 'json',
+        inputPath,
+      ], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+
+      const v = JSON.parse(stdout)?.streams?.[0];
+      if (!v) return false;
+
+      const codec = String(v.codec_name || '').toLowerCase();
+      const pixFmt = String(v.pix_fmt || '').toLowerCase();
+      const profile = String(v.profile || '').toLowerCase();
+      if (codec !== 'h264') return false;
+      if (pixFmt !== 'yuv420p') return false;
+      if (!['constrained baseline', 'baseline', 'main', 'high'].includes(profile)) return false;
+
+      // CFR: avg_frame_rate ≈ r_frame_rate (VFR sẽ bị IG/Threads từ chối → cần transcode)
+      const parseFps = (s: any): number => {
+        const [n, d] = String(s || '0/1').split('/').map(Number);
+        return d ? n / d : 0;
+      };
+      const avg = parseFps(v.avg_frame_rate);
+      const r = parseFps(v.r_frame_rate);
+      if (avg <= 0 || avg > 60) return false;
+      if (Math.abs(avg - r) > 0.5) return false;
+
+      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được)
+      const bitRate = Number(v.bit_rate || 0);
+      if (bitRate > 12_000_000) return false;
+
+      return true;
+    } catch (e: any) {
+      this.logger.warn(`[Transcode] ffprobe lỗi (${e.message}) → vẫn transcode cho chắc`);
+      return false;
+    }
+  }
+
   private async _doTranscode(localUrl: string): Promise<string> {
     const ffmpegPath = this.resolveFFmpegPath();
     if (!ffmpegPath) return localUrl;
@@ -338,6 +398,13 @@ export class PublishService {
       const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
       const inputPath = path.join(uploadBase, filename);
       if (!fs.existsSync(inputPath)) return localUrl;
+
+      // Bỏ qua transcode nếu video đã đạt chuẩn IG/Threads (tiết kiệm 10-40s).
+      // Tắt tối ưu này bằng env SOCIAL_TRANSCODE_SKIP=false nếu gặp video bị nền tảng từ chối.
+      if (process.env.SOCIAL_TRANSCODE_SKIP !== 'false' && await this.isVideoCompliant(inputPath)) {
+        this.logger.log(`[Transcode] ⏭️ Bỏ qua — ${filename} đã đạt chuẩn H.264/yuv420p/CFR`);
+        return localUrl;
+      }
 
       const transcodedName = `tc_${Date.now()}_${filename}`;
       const outputPath = path.join(uploadBase, transcodedName);

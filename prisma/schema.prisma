@@ -613,6 +613,45 @@ model LarkKpiDoDa {
   @@map("lark_kpi_do_da")
 }
 
+/// KPI Global Indo — sync từ bảng "Báo cáo KPI ngày" trong wiki External (dùng user_access_token).
+model LarkKpiGlobalIndo {
+  id                   String    @id
+  employee_id          String?
+  name                 String?
+  tag                  String?
+  team                 String?
+  image_url            String?
+  kpi_day              Int?
+  kpi_month            Int?
+  kpii_status          String?
+  kpi_day_percent      String?
+  completed_day        Int?
+  completed_month      Int?
+  task_new             Int?
+  task_new_month       Int?
+  task_auto            Int?
+  task_auto_month      Int?
+  task_creative        Int?
+  content_win_new      Int?
+  revenue_month        BigInt?
+  traffic_month        BigInt?
+  target_revenue_month String?
+  target_traffic_month String?
+  kpi_progress_month   Float?
+  employee_status      String?
+  state                String?
+  employee_data        Json?
+  report_date          DateTime?
+  month                String?
+  link_image           String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@index([month])
+  @@index([report_date])
+  @@map("lark_kpi_global_indo")
+}
+
 /// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
 model LarkKpiDoDaEditor {
   id              String   @id

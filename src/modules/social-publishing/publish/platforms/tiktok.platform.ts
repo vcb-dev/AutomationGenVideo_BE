@@ -56,9 +56,11 @@ export class TiktokPublisher {
     return { publishId: publish_id, status: finalStatus };
   }
 
-  private async pollStatus(token: string, publishId: string, maxAttempts = 20): Promise<string> {
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 3000));
+  private async pollStatus(token: string, publishId: string, maxMs = 60000): Promise<string> {
+    // Check NGAY lần đầu (không chờ 3s trước), rồi backoff 2s→4s — ngân sách ~60s như cũ
+    const start = Date.now();
+    let delay = 2000;
+    while (Date.now() - start < maxMs) {
       try {
         const res = await axios.post(
           'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
@@ -66,7 +68,7 @@ export class TiktokPublisher {
           { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
         );
         const status = res.data?.data?.status;
-        this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
+        this.logger.log(`[TikTok] Poll status=${status}`);
         if (['PUBLISH_COMPLETE', 'FAILED'].includes(status)) return status;
       } catch (err: any) {
         const httpStatus = err.response?.status;
@@ -75,6 +77,8 @@ export class TiktokPublisher {
         }
         this.logger.warn(`[TikTok] Poll error (retrying): ${err.message}`);
       }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay + 500, 4000);
     }
     return 'TIMEOUT';
   }

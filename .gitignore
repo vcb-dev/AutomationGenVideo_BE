@@ -80,3 +80,6 @@ video-backend-*.tar
 # OS
 Thumbs.db
 .DS_Store
+
+# Lark secrets (refresh tokens — never commit)
+.lark-global-indo-refresh.txt

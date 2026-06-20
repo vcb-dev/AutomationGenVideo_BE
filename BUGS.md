@@ -34,3 +34,31 @@
 - Tổng mục: **7**. Đã fix: **3** (BUG-01 High, BUG-03 Low, BUG-06 Medium). By design (không phải bug): **1** (BUG-02 — chia sẻ account toàn hệ thống là chủ ý). Won't-fix có lý do: **3** (BUG-04 dead file; BUG-05 cần migration schema; BUG-07 cần xác nhận intent nghiệp vụ).
 - Test thêm: 3 file spec, 9 test — tất cả pass. Type-check toàn backend: pass.
 - **Lưu ý cho chủ dự án:** BUG-05 (kẹt hàng chờ khi nhiều job retry) và BUG-07 (so trùng video bỏ qua video nội bộ) nên được xử lý ở PR riêng vì cần đổi schema / xác nhận yêu cầu.
+
+---
+
+## Cải thiện hiệu suất — Load dữ liệu lag (2026-06-18)
+
+**Vấn đề gốc:** Người dùng phản ánh web lag khi sync dữ liệu từ Lark về và khi dùng bộ lọc (filter) trên trang Hiệu suất.
+
+### Bảng thay đổi
+
+| ID | File | Phạm vi | Mô tả vấn đề | Thay đổi | Trạng thái |
+|----|------|---------|--------------|---------- |------------|
+| PERF-01 | [lark.service.ts ~L4056-4087](src/modules/lark-sync/lark.service.ts#L4056) | Backend | `getUserActivityReports()` gọi thêm query `leaderUsers` thứ hai để lấy danh sách leader, trong khi dữ liệu này đã có sẵn trong `allUsersForTeam.roles` được load ở bước trước. Query dư thừa này chạy tuần tự → tăng thời gian phản hồi mỗi lần gọi API. | Xoá khối query `leaderUsers` (~30 dòng), dùng trực tiếp `employeesMap` đã có. | ✅ Fixed |
+| PERF-02 | [lark.service.ts ~L88](src/modules/lark-sync/lark.service.ts#L88) | Backend | Cache TTL mặc định chỉ 5 phút (`LARK_ACTIVITY_SHARED_CACHE_TTL_MS`). Dữ liệu Lark sync 3 tiếng/lần, TTL ngắn khiến cache hết hạn thường xuyên → nhiều request phải hit DB lại. | Tăng TTL mặc định từ `5 * 60 * 1000` lên `10 * 60 * 1000` (10 phút). | ✅ Fixed |
+| PERF-03 | [lark.service.ts — `invalidateActivityCache()`](src/modules/lark-sync/lark.service.ts) | Backend | Sau khi sync Lark xong, `invalidateActivityCache()` xoá cache nhưng không warm lại. User đầu tiên vào trang sau sync luôn bị cold cache → chờ lâu. | Thêm method `_warmActivityCache()` gọi qua `setImmediate` sau khi invalidate, tự động prefetch dữ liệu ngày hôm nay. | ✅ Fixed |
+| PERF-04 | [useActivityData.ts](../AutomationGenVideo_FE/src/app/dashboard/manager/user-activity/hooks/useActivityData.ts) | Frontend | Mỗi lần user thay đổi filter (team, ngày, loại thời gian) → React Query tạo cache key mới → gọi API ngay lập tức → nếu click nhanh nhiều filter liên tiếp sẽ bắn nhiều request song song. Không có `keepPreviousData` → UI trắng/xoá trong khi chờ. | Thêm debounce 400ms cho filter params và `searchName` (dùng `useRef` + `useState`). Thêm `placeholderData: keepPreviousData` vào cả `activityQuery` và `historyQuery` — giữ dữ liệu cũ hiển thị khi đang load dữ liệu mới. | ✅ Fixed |
+| PERF-05 | [page.tsx](../AutomationGenVideo_FE/src/app/dashboard/manager/user-activity/page.tsx) | Frontend | Khi filter refetch (có `keepPreviousData`), người dùng không có phản hồi visual nào — không biết dữ liệu đang được cập nhật. | Expose `isFetching` từ `useActivityData`. Thêm thanh progress mỏng (blue, slide animation) ở đáy thanh filter sticky khi `isFetching && !loading`. | ✅ Fixed |
+
+### Tóm tắt kỹ thuật
+
+**Backend (`lark.service.ts`):**
+- Xoá 1 DB query thừa trong hot path `getUserActivityReports` → giảm latency mỗi cold-cache hit.
+- TTL cache: 5m → 10m → giảm tần suất cold miss.
+- Proactive cache warm sau sync → user đầu tiên sau sync không còn chờ full DB query.
+
+**Frontend (`useActivityData.ts` + `page.tsx`):**
+- Debounce 400ms ngăn bắn API khi click filter nhanh.
+- `keepPreviousData` giữ UI có dữ liệu trong khi refetch (không flash trắng).
+- Thanh loading mỏng cho phản hồi visual tức thì khi filter thay đổi.

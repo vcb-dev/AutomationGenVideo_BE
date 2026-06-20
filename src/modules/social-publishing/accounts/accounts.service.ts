@@ -140,7 +140,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.$executeRaw`
       UPDATE social_accounts
       SET is_active = false
-      WHERE user_id = ${userId}
+      WHERE user_id::text = ${userId}
         AND is_active = true
         AND extra_data->>'parentAccountId' = ${id}
     `;
