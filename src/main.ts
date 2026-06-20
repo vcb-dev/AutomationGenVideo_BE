@@ -47,12 +47,13 @@ async function bootstrap() {
   // Set global prefix
   app.setGlobalPrefix('api');
 
-  // Rewrite /auth/google/callback to /api/auth/google/callback
-  // This avoids redirect_uri_mismatch errors in Google Cloud Console
-  // if the whitelisted URL doesn't have the /api/ prefix.
+  // Rewrite /auth/google/callback and /social/oauth/ callbacks to prepend /api
+  // This avoids redirect_uri_mismatch errors and 404s in Google/Social Cloud Console
   app.use((req, res, next) => {
     if (req.url.startsWith('/auth/google/callback')) {
       req.url = req.url.replace('/auth/google/callback', '/api/auth/google/callback');
+    } else if (req.url.startsWith('/social/oauth/')) {
+      req.url = req.url.replace('/social/oauth/', '/api/social/oauth/');
     }
     next();
   });
