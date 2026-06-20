@@ -76,19 +76,25 @@ export class YoutubePublisher {
     }
 
     // Initiate resumable upload session
-    const initRes = await axios.post(
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
-      metadata,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-Upload-Content-Type': 'video/mp4',
-          'X-Upload-Content-Length': fileSize,
+    let initRes: any;
+    try {
+      initRes = await axios.post(
+        'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+        metadata,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-Upload-Content-Type': 'video/mp4',
+            'X-Upload-Content-Length': fileSize,
+          },
+          timeout: 30000,
         },
-        timeout: 30000,
-      },
-    );
+      );
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube init upload session failed: ${detail}`);
+    }
     const uploadUrl = initRes.headers.location;
     if (!uploadUrl) throw new Error('YouTube: không nhận được upload URL');
 
@@ -107,6 +113,9 @@ export class YoutubePublisher {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube video upload failed: ${detail}`);
     } finally {
       try { videoStream?.data?.destroy(); } catch {}
     }
@@ -134,7 +143,8 @@ export class YoutubePublisher {
         );
         this.logger.log(`[YouTube] Thumbnail đã được upload cho video ${videoId}`);
       } catch (e: any) {
-        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${e.message}`);
+        const detail = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${detail}`);
       }
     }
 

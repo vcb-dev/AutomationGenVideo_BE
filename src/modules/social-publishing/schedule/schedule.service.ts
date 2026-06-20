@@ -4,9 +4,15 @@ import { PrismaService } from '../../../common/prisma/prisma.service';
 import { PublishService } from '../publish/publish.service';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const MAX_RETRIES = 3;
 const MAX_HEAVY_JOBS = 5;
+// Số bài tối đa được đăng ĐỒNG THỜI trên cùng 1 account (page/kênh). Mặc định 1 =
+// serialize hoàn toàn → tránh FB/IG gắn cờ spam / rate-limit #613 khi nhiều bài lên
+// cùng 1 page gần như cùng lúc. Tăng qua env nếu chấp nhận đánh đổi throughput.
+const ACCOUNT_CONCURRENCY = Math.max(1, parseInt(process.env.SOCIAL_ACCOUNT_CONCURRENCY || '1', 10) || 1);
 
 function extractDriveFileId(url: string): string | null {
   if (!url) return null;
@@ -228,6 +234,21 @@ export class ScheduleService {
     // Nếu đã đạt global limit thì dừng
     if (totalInFlight >= GLOBAL_CONCURRENCY) return [];
 
+    // 1b. Đếm số job đang xử lý theo ACCOUNT — để serialize ≤ ACCOUNT_CONCURRENCY bài/account,
+    // tránh đăng nhiều bài gần như đồng thời lên cùng 1 page/kênh (MXH gắn cờ spam / #613).
+    const inFlightAccountRows = await this.prisma.socialPost.groupBy({
+      by: ['account_id'],
+      where: {
+        status:        SocialPostStatus.PENDING,
+        next_retry_at: { gt: now, lte: claimUntil },
+      },
+      _count: { account_id: true },
+    });
+    const inFlightByAccount: Record<string, number> = {};
+    for (const r of inFlightAccountRows) {
+      if (r.account_id) inFlightByAccount[r.account_id] = r._count.account_id;
+    }
+
     // 2. Lấy các job đến hạn (SCHEDULED + IMMEDIATE), sắp theo thời gian tạo
     const duePosts = await this.prisma.socialPost.findMany({
       where: {
@@ -245,6 +266,7 @@ export class ScheduleService {
     // 3. Claim từng job — tôn trọng giới hạn platform, global và số slot nội bộ còn trống
     const claimedIds: string[]          = [];
     const claimedPerPlatform: Record<string, number> = {};
+    const claimedPerAccount: Record<string, number>  = {};
 
     for (const post of duePosts) {
       if (claimedIds.length >= maxLocalSlots) break;
@@ -253,6 +275,11 @@ export class ScheduleService {
       const platformLimit    = PLATFORM_CONCURRENCY[post.platform] ?? 3;
       const currentInFlight  = (inFlight[post.platform] ?? 0) + (claimedPerPlatform[post.platform] ?? 0);
       if (currentInFlight >= platformLimit) continue; // platform đầy slot
+
+      // Serialize theo account: account đang có bài in-flight → để bài này chờ lượt sau.
+      // Không "break" vì post khác (account khác) phía sau vẫn có thể claim được.
+      const acctInFlight = (inFlightByAccount[post.account_id] ?? 0) + (claimedPerAccount[post.account_id] ?? 0);
+      if (acctInFlight >= ACCOUNT_CONCURRENCY) continue;
 
       // Atomic claim: chỉ thành công nếu next_retry_at chưa thay đổi
       const claimed = await this.prisma.socialPost.updateMany({
@@ -267,6 +294,7 @@ export class ScheduleService {
       if (claimed.count === 1) {
         claimedIds.push(post.id);
         claimedPerPlatform[post.platform] = (claimedPerPlatform[post.platform] ?? 0) + 1;
+        claimedPerAccount[post.account_id] = (claimedPerAccount[post.account_id] ?? 0) + 1;
       }
     }
 
@@ -395,5 +423,48 @@ export class ScheduleService {
 
     const total = s.count + i.count + f.count;
     if (total > 0) this.logger.log(`[Cleanup] Deleted ${s.count} scheduled + ${i.count} immediate + ${f.count} failed old posts`);
+  }
+
+  // ─── DỌN DẸP FILE RÁC TRÊN ĐĨA: mỗi giờ ─────────────────────────────────────
+  // scheduleCleanupTranscoded() trong PublishService chỉ xóa file qua setTimeout
+  // trong-process (10 phút) — nếu server crash/restart trước khi timer chạy, hoặc
+  // archiveMediaAsync bỏ lỡ 1 file, file sẽ nằm lại vĩnh viễn trên đĩa. Cron này
+  // quét thư mục upload và xóa mọi file cũ hơn 2 giờ (đủ dư so với thời gian
+  // 1 lượt đăng bài + transcode + cleanup trong-process cần để hoàn tất).
+  @Cron(CronExpression.EVERY_HOUR)
+  async cleanupOrphanFiles() {
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    if (!fs.existsSync(uploadBase)) return;
+
+    const maxAgeMs = 2 * 60 * 60 * 1000;
+    const now = Date.now();
+    let deleted = 0;
+    let failed = 0;
+
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(uploadBase);
+    } catch (e: any) {
+      this.logger.warn(`[CleanupOrphanFiles] Không đọc được thư mục ${uploadBase}: ${e.message}`);
+      return;
+    }
+
+    for (const name of entries) {
+      const filePath = path.join(uploadBase, name);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+        if (now - stat.mtimeMs < maxAgeMs) continue;
+        fs.unlinkSync(filePath);
+        deleted++;
+      } catch (e: any) {
+        failed++;
+        this.logger.warn(`[CleanupOrphanFiles] Không xóa được ${name}: ${e.message}`);
+      }
+    }
+
+    if (deleted > 0 || failed > 0) {
+      this.logger.log(`[CleanupOrphanFiles] Đã xóa ${deleted} file rác trên đĩa (${failed} lỗi) — thư mục: ${uploadBase}`);
+    }
   }
 }

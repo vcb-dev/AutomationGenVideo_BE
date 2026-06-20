@@ -12,6 +12,7 @@ import { resolveTrackedUsername } from './channel-to-tracked.util';
 import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { buildScopedPrismaDbUrl } from '../../common/prisma/build-prisma-db-url';
+import { Semaphore } from '../../common/utils/semaphore';
 
 /** Chuẩn hóa cột trạng thái kênh Lark — chỉ "Đang hoạt động" (sau chuẩn hóa) được coi là active. */
 function normalizeLarkChannelActivityStatus(status: string | null | undefined): string {
@@ -31,6 +32,13 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     private tokenExpiresAt: number;
     private readonly activitySharedCacheTtlMs: number;
     private readonly activityRoleCacheTtlMs: number;
+
+    // Giới hạn số lần TÍNH TOÁN dashboard NẶNG (nhiều query song song) chạy đồng thời cho các
+    // key/filter KHÁC NHAU → tránh cạn connection pool khi đông người xem cùng lúc. Same-key đã
+    // được single-flight trong CacheService. Tune qua env LARK_DASHBOARD_CONCURRENCY (mặc định 3).
+    private readonly dashboardReadSemaphore = new Semaphore(
+        Math.max(1, parseInt(process.env.LARK_DASHBOARD_CONCURRENCY || '3', 10) || 3),
+    );
 
     // Lark API credentials
     private readonly APP_ID: string;
@@ -3978,7 +3986,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         }
 
         // Step 2: Fetch shared dataset (configurable TTL to control SQL pressure)
-        const sharedData = await this.cacheService.get(sharedCacheKey, this.activitySharedCacheTtlMs, async () => {
+        const sharedData = await this.cacheService.get(sharedCacheKey, this.activitySharedCacheTtlMs, () => this.dashboardReadSemaphore.run(async () => {
             // ─── PERF: Memoized name normalizer ─────────────────────────────────────────
             // normalize('NFD') + replace chain là operation nặng (O(n) string scan).
             // Với 70+ nhân viên × nhiều vòng lặp = hàng chục nghìn lần gọi.
@@ -4470,6 +4478,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                             ],
                             report_date: { gte: new Date('2026-03-01T00:00:00Z') },
                         },
+                    }).catch((err: any) => {
+                        this.logger.warn(`[Global Indo] lark_kpi_global_indo query failed, fallback []: ${err?.message || err}`);
+                        return [];
                     }) as Promise<any[]>,
                 ]);
 
@@ -6126,7 +6137,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 this.logger.error('Failed to get user activity reports', error);
                 throw error;
             }
-        }); // end sharedData cacheService.get
+        })); // end sharedData cacheService.get
 
         // Merge per-user role/team vào shared data trước khi trả về client
         return {
@@ -7754,7 +7765,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     async getDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
         const cacheKey = `dashboard-analytics:${filters?.startDate || ''}:${filters?.endDate || ''}:${filters?.team || 'All'}`;
-        return this.cacheService.get(cacheKey, 3 * 60 * 1000, () => this._buildDashboardAnalytics(filters));
+        return this.cacheService.get(cacheKey, 3 * 60 * 1000, () => this.dashboardReadSemaphore.run(() => this._buildDashboardAnalytics(filters)));
     }
 
     private async _buildDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {

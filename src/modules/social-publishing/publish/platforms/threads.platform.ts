@@ -28,13 +28,27 @@ export class ThreadsPublisher {
       await this.waitForContainer(cid, token);
       result = await this.publishContainer(userId, token, cid);
     } else {
-      // Carousel
-      const childIds = await Promise.all(mediaUrls.map((url) => {
+      // Carousel — tạo container tuần tự (không bắn đồng thời) + retry để tránh
+      // bị rate-limit khi có nhiều ảnh/video cùng lúc, giống fix Facebook/Instagram.
+      const childIds: string[] = [];
+      const failReasons: string[] = [];
+      for (let i = 0; i < mediaUrls.length; i++) {
+        const url = mediaUrls[i];
         const isVid = isVideoUrl(url);
-        return this.createContainer(userId, token, {
-          mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
-        });
-      }));
+        try {
+          const id = await this.createContainerWithRetry(userId, token, {
+            mediaType: isVid ? 'VIDEO' : 'IMAGE', mediaUrl: url, isCarouselItem: true,
+          });
+          childIds.push(id);
+        } catch (err: any) {
+          failReasons.push(`media[${i}]: ${err.message}`);
+          this.logger.warn(`[Threads] Tạo container thất bại cho media[${i}] sau khi retry: ${err.message}`);
+        }
+        if (i < mediaUrls.length - 1) await new Promise(r => setTimeout(r, 400));
+      }
+      if (failReasons.length > 0) {
+        throw new Error(`Chỉ tạo được ${childIds.length}/${mediaUrls.length} media container trên Threads — ${failReasons.join('; ')}`);
+      }
       await Promise.all(childIds.map(id => this.waitForContainer(id, token)));
       const cid = await this.createContainer(userId, token, { text, mediaType: 'CAROUSEL', children: childIds });
       await this.waitForContainer(cid, token);
@@ -78,8 +92,31 @@ export class ThreadsPublisher {
     } catch (err: any) {
       const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[Threads] createContainer failed (${err.response?.status}): ${detail}`);
-      throw new Error(`Threads createContainer (HTTP ${err.response?.status || 'unknown'}): ${detail}`);
+      const wrapped = new Error(`Threads createContainer (HTTP ${err.response?.status || 'unknown'}): ${detail}`);
+      (wrapped as any).status = err.response?.status;
+      throw wrapped;
     }
+  }
+
+  private async createContainerWithRetry(userId: string, token: string, opts: {
+    text?: string; mediaType: string; mediaUrl?: string; isCarouselItem?: boolean; children?: string[];
+  }, maxAttempts = 3): Promise<string> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.createContainer(userId, token, opts);
+      } catch (err: any) {
+        lastErr = err;
+        const status = err.status;
+        const retryable = !status || status === 429 || status >= 500;
+        if (attempt < maxAttempts && retryable) {
+          await new Promise(r => setTimeout(r, attempt * 800));
+          continue;
+        }
+        break;
+      }
+    }
+    throw lastErr;
   }
 
   private async waitForContainer(containerId: string, token: string, maxMs = 180000) {

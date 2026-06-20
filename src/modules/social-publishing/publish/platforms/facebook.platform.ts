@@ -39,7 +39,13 @@ export class FacebookPublisher {
     if (!opts.mediaUrls?.length) {
       const body: any = { message: opts.message, access_token: pageToken };
       if (privacyParam) body.privacy = privacyParam;
-      const res = await axios.post(`${this.BASE}/${targetId}/feed`, body, { timeout: 60000 });
+      let res: any;
+      try {
+        res = await axios.post(`${this.BASE}/${targetId}/feed`, body, { timeout: 60000 });
+      } catch (err: any) {
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        throw new Error(`Facebook text post failed: ${detail}`);
+      }
       const id = res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
@@ -58,7 +64,13 @@ export class FacebookPublisher {
         this.logger.log(`[FB] Uploading video via file_url: ${firstMedia}`);
         const body: any = { file_url: firstMedia, description: opts.message, access_token: pageToken };
         if (privacyParam) body.privacy = privacyParam;
-        const res = await axios.post(`${this.BASE}/${targetId}/videos`, body, { timeout: 60000 });
+        let res: any;
+        try {
+          res = await axios.post(`${this.BASE}/${targetId}/videos`, body, { timeout: 60000 });
+        } catch (err: any) {
+          const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          throw new Error(`Facebook video upload (file_url) failed: ${detail}`);
+        }
         videoId = res.data.id;
       }
 
@@ -75,29 +87,42 @@ export class FacebookPublisher {
     if (opts.mediaUrls.length === 1) {
       const body: any = { url: firstMedia, caption: opts.message, access_token: pageToken };
       if (privacyParam) body.privacy = privacyParam;
-      const res = await axios.post(`${this.BASE}/${targetId}/photos`, body, { timeout: 60000 });
+      let res: any;
+      try {
+        res = await axios.post(`${this.BASE}/${targetId}/photos`, body, { timeout: 60000 });
+      } catch (err: any) {
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        throw new Error(`Facebook single image post failed: ${detail}`);
+      }
       const id = res.data.post_id || res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
 
     // ── Multiple images → Carousel ─────────────────────────────────
-    const photoResults = await Promise.allSettled(
-      opts.mediaUrls.map(url =>
-        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }, { timeout: 60000 }),
-      ),
-    );
+    // Upload tuần tự (không bắn đồng thời) + retry từng ảnh để tránh bị Facebook
+    // rate-limit khi có nhiều ảnh (vd: 8 ảnh bắn cùng lúc → vài ảnh bị 400/timeout).
     const photoIds: string[] = [];
-    photoResults.forEach((r, i) => {
-      if (r.status === 'fulfilled' && r.value.data?.id) {
-        photoIds.push(r.value.data.id);
-      } else {
-        const reason = r.status === 'rejected'
-          ? (r.reason?.response?.data?.error?.message || r.reason?.message)
-          : 'no id returned';
-        this.logger.warn(`[FB] Photo upload failed for url[${i}]: ${reason}`);
+    const failReasons: string[] = [];
+    for (let i = 0; i < opts.mediaUrls.length; i++) {
+      const url = opts.mediaUrls[i];
+      try {
+        const id = await this.uploadCarouselPhotoWithRetry(url, targetId, pageToken);
+        photoIds.push(id);
+      } catch (e: any) {
+        const reason = e?.response?.data?.error?.message || e?.message;
+        failReasons.push(`url[${i}]: ${reason}`);
+        this.logger.warn(`[FB] Photo upload failed for url[${i}] sau khi retry: ${reason}`);
       }
-    });
-    if (photoIds.length === 0) throw new Error('Tất cả ảnh upload thất bại');
+      if (i < opts.mediaUrls.length - 1) await this.sleep(400);
+    }
+    if (photoIds.length === 0) throw new Error(`Tất cả ảnh upload thất bại — ${failReasons.join('; ')}`);
+    if (failReasons.length > 0) {
+      // Không đăng thiếu ảnh một cách âm thầm — ném lỗi để hệ thống retry cả bài,
+      // tránh trường hợp carousel hiển thị thiếu ảnh trên Facebook mà không ai biết.
+      throw new Error(
+        `Chỉ upload thành công ${photoIds.length}/${opts.mediaUrls.length} ảnh lên Facebook — ${failReasons.join('; ')}`,
+      );
+    }
 
     const feedBody: any = {
       message: opts.message,
@@ -105,7 +130,13 @@ export class FacebookPublisher {
       access_token: pageToken,
     };
     if (privacyParam) feedBody.privacy = privacyParam;
-    const res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody, { timeout: 60000 });
+    let res: any;
+    try {
+      res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody, { timeout: 60000 });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook carousel feed post failed: ${detail}`);
+    }
     const id = res.data.id;
     return { postId: id, url: `https://facebook.com/${id}` };
   }
@@ -171,11 +202,16 @@ export class FacebookPublisher {
     thumbForm.append('source', buffer, { filename: 'cover.jpg', contentType: 'image/jpeg' });
 
     this.logger.log(`[FB] Uploading thumbnail cho video ${videoId} (${buffer.length} bytes)`);
-    await axios.post(`${this.BASE}/${videoId}/thumbnails`, thumbForm, {
-      headers: thumbForm.getHeaders(),
-      params: { access_token: pageToken },
-      timeout: 60000,
-    });
+    try {
+      await axios.post(`${this.BASE}/${videoId}/thumbnails`, thumbForm, {
+        headers: thumbForm.getHeaders(),
+        params: { access_token: pageToken },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook thumbnail upload failed: ${detail}`);
+    }
     this.logger.log(`[FB] ✅ Thumbnail set cho video ${videoId}`);
   }
 
@@ -189,10 +225,16 @@ export class FacebookPublisher {
     const fileSize = fs.statSync(localFilePath).size;
     this.logger.log(`[FB] Resumable upload start: ${localFilePath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
 
-    const startRes = await axios.post(`${this.BASE}/${targetId}/videos`, null, {
-      params: { upload_phase: 'start', file_size: fileSize, access_token: pageToken },
-      timeout: 60000,
-    });
+    let startRes: any;
+    try {
+      startRes = await axios.post(`${this.BASE}/${targetId}/videos`, null, {
+        params: { upload_phase: 'start', file_size: fileSize, access_token: pageToken },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook resumable upload (start) failed: ${detail}`);
+    }
     const { upload_session_id, video_id } = startRes.data;
     let currentStart: number = parseInt(startRes.data.start_offset, 10);
     let currentEnd: number = parseInt(startRes.data.end_offset, 10);
@@ -217,12 +259,18 @@ export class FacebookPublisher {
         const pct = ((currentStart / fileSize) * 100).toFixed(0);
         this.logger.log(`[FB] Chunk ${pct}% (${(currentStart / 1024 / 1024).toFixed(1)}-${(currentEnd / 1024 / 1024).toFixed(1)} MB)`);
         const t0 = Date.now();
-        const transferRes = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
-          headers: form.getHeaders(),
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          timeout: 180000,
-        });
+        let transferRes: any;
+        try {
+          transferRes = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            timeout: 180000,
+          });
+        } catch (err: any) {
+          const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          throw new Error(`Facebook resumable upload (chunk ${pct}%) failed: ${detail}`);
+        }
         const mbps = (chunkSize / 1024 / 1024 / ((Date.now() - t0) / 1000)).toFixed(1);
         this.logger.log(`[FB] Chunk done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${mbps} MB/s)`);
         currentStart = parseInt(transferRes.data.start_offset, 10);
@@ -234,7 +282,12 @@ export class FacebookPublisher {
 
     const finishBody: any = { upload_phase: 'finish', upload_session_id, description, access_token: pageToken };
     if (privacyParam) finishBody.privacy = privacyParam;
-    await axios.post(`${this.BASE}/${targetId}/videos`, finishBody, { timeout: 60000 });
+    try {
+      await axios.post(`${this.BASE}/${targetId}/videos`, finishBody, { timeout: 60000 });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook resumable upload (finish) failed: ${detail}`);
+    }
 
     this.logger.log(`[FB] Resumable upload complete: videoId=${video_id}`);
     return video_id;
@@ -249,5 +302,40 @@ export class FacebookPublisher {
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
     const filePath = path.join(uploadBase, filename);
     return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  private async uploadCarouselPhotoWithRetry(
+    url: string,
+    targetId: string,
+    pageToken: string,
+    maxAttempts = 3,
+  ): Promise<string> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await axios.post(
+          `${this.BASE}/${targetId}/photos`,
+          { url, published: false, access_token: pageToken },
+          { timeout: 60000 },
+        );
+        if (res.data?.id) return res.data.id;
+        throw new Error('no id returned');
+      } catch (e: any) {
+        lastErr = e;
+        const status = e?.response?.status;
+        // Chỉ retry lỗi tạm thời: rate limit (429), lỗi server FB (5xx), hoặc không có status (timeout/network)
+        const retryable = !status || status === 429 || status >= 500;
+        if (attempt < maxAttempts && retryable) {
+          await this.sleep(attempt * 800);
+          continue;
+        }
+        break;
+      }
+    }
+    throw lastErr;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
