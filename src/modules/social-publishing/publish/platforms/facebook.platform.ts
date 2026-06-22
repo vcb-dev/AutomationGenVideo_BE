@@ -85,11 +85,11 @@ export class FacebookPublisher {
 
     // ── Single image ───────────────────────────────────────────────
     if (opts.mediaUrls.length === 1) {
-      const body: any = { url: firstMedia, caption: opts.message, access_token: pageToken };
-      if (privacyParam) body.privacy = privacyParam;
+      const extraFields: Record<string, string> = { caption: opts.message };
+      if (privacyParam) extraFields.privacy = privacyParam;
       let res: any;
       try {
-        res = await axios.post(`${this.BASE}/${targetId}/photos`, body, { timeout: 60000 });
+        res = await this.postPhoto(firstMedia, targetId, pageToken, extraFields);
       } catch (err: any) {
         const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
         throw new Error(`Facebook single image post failed: ${detail}`);
@@ -99,8 +99,10 @@ export class FacebookPublisher {
     }
 
     // ── Multiple images → Carousel ─────────────────────────────────
-    // Upload tuần tự (không bắn đồng thời) + retry từng ảnh để tránh bị Facebook
-    // rate-limit khi có nhiều ảnh (vd: 8 ảnh bắn cùng lúc → vài ảnh bị 400/timeout).
+    // Upload tuần tự (không bắn đồng thời) + retry từng ảnh. Khi file là local
+    // (/api/social/media/...) thì upload thẳng bytes lên Facebook thay vì đưa URL
+    // để Facebook tự tải — tránh lỗi code 100 "Invalid parameter" khi server fetch
+    // của Facebook không tải được URL Railway lúc nhiều bài đăng đồng thời.
     const photoIds: string[] = [];
     const failReasons: string[] = [];
     for (let i = 0; i < opts.mediaUrls.length; i++) {
@@ -109,7 +111,8 @@ export class FacebookPublisher {
         const id = await this.uploadCarouselPhotoWithRetry(url, targetId, pageToken);
         photoIds.push(id);
       } catch (e: any) {
-        const reason = e?.response?.data?.error?.message || e?.message;
+        // Log FULL response data (kèm error_subcode, fbtrace_id) để chẩn đoán chính xác
+        const reason = e?.response?.data ? JSON.stringify(e.response.data) : e?.message;
         failReasons.push(`url[${i}]: ${reason}`);
         this.logger.warn(`[FB] Photo upload failed for url[${i}] sau khi retry: ${reason}`);
       }
@@ -304,6 +307,39 @@ export class FacebookPublisher {
     return fs.existsSync(filePath) ? filePath : null;
   }
 
+  /**
+   * Đăng 1 ảnh lên /photos. Nếu file là local (/api/social/media/...) thì upload
+   * thẳng bytes (multipart `source`) để Facebook không phải tự tải URL của ta —
+   * loại bỏ lỗi "Invalid parameter" do server FB fetch URL Railway bị timeout.
+   * Nếu không phải local (vd: Drive direct URL) thì fallback về cách đưa `url`.
+   */
+  private async postPhoto(
+    mediaUrl: string,
+    targetId: string,
+    pageToken: string,
+    extraFields: Record<string, string>,
+    timeout = 120000,
+  ): Promise<any> {
+    const localPath = this.resolveLocalFilePath(mediaUrl);
+    if (localPath) {
+      const form = new FormData();
+      for (const [k, v] of Object.entries(extraFields)) form.append(k, v);
+      form.append('access_token', pageToken);
+      form.append('source', fs.createReadStream(localPath), { filename: path.basename(localPath) });
+      return axios.post(`${this.BASE}/${targetId}/photos`, form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout,
+      });
+    }
+    return axios.post(
+      `${this.BASE}/${targetId}/photos`,
+      { url: mediaUrl, ...extraFields, access_token: pageToken },
+      { timeout },
+    );
+  }
+
   private async uploadCarouselPhotoWithRetry(
     url: string,
     targetId: string,
@@ -313,11 +349,7 @@ export class FacebookPublisher {
     let lastErr: any;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const res = await axios.post(
-          `${this.BASE}/${targetId}/photos`,
-          { url, published: false, access_token: pageToken },
-          { timeout: 60000 },
-        );
+        const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
         if (res.data?.id) return res.data.id;
         throw new Error('no id returned');
       } catch (e: any) {

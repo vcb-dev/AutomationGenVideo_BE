@@ -97,6 +97,7 @@ export class AccountsController {
   @Delete(':id')
   @ApiOperation({ summary: 'Ngắt kết nối tài khoản' })
   disconnect(@Param('id') id: string, @Request() req) {
-    return this.accountsService.disconnect(id, req.user.id);
+    const isAdmin = (req.user.roles ?? []).includes('ADMIN');
+    return this.accountsService.disconnect(id, req.user.id, isAdmin);
   }
 }

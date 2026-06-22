@@ -120,8 +120,18 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async disconnect(id: string, userId: string) {
-    await this.findOneOwned(id, userId);
+  async disconnect(id: string, userId: string, isAdmin = false) {
+    // Admin gỡ được mọi tài khoản; người khác chỉ gỡ tài khoản mình sở hữu.
+    let ownerId = userId;
+    if (isAdmin) {
+      const account = await this.prisma.socialAccount.findFirst({
+        where: { id, is_active: true },
+      });
+      if (!account) throw new NotFoundException('Social account not found');
+      ownerId = account.user_id;
+    } else {
+      await this.findOneOwned(id, userId);
+    }
 
     // Tắt account chính
     await this.prisma.socialAccount.update({
@@ -129,9 +139,9 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       data: { is_active: false },
     });
 
-    // Tắt account con qua parent_id (accounts mới)
+    // Tắt account con qua parent_id (accounts mới) — theo chủ sở hữu của account cha
     await this.prisma.socialAccount.updateMany({
-      where: { parent_id: id, user_id: userId },
+      where: { parent_id: id, user_id: ownerId },
       data: { is_active: false },
     });
 
@@ -140,12 +150,12 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.$executeRaw`
       UPDATE social_accounts
       SET is_active = false
-      WHERE user_id::text = ${userId}
+      WHERE user_id::text = ${ownerId}
         AND is_active = true
         AND extra_data->>'parentAccountId' = ${id}
     `;
 
-    this.logger.log(`[disconnect] Đã gỡ account ${id} và tất cả account con`);
+    this.logger.log(`[disconnect] Đã gỡ account ${id} và tất cả account con${isAdmin && ownerId !== userId ? ` (admin ${userId} gỡ hộ owner ${ownerId})` : ''}`);
     return { success: true };
   }
 
