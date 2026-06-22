@@ -14,13 +14,21 @@ function buildRedirectUri(envVar: string, platform: string): string {
 export class YoutubeOAuthStrategy {
   readonly platform = SocialPlatform.YOUTUBE;
 
+  private get clientId(): string {
+    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+  }
+
+  private get clientSecret(): string {
+    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+  }
+
   private get redirectUri() {
     return buildRedirectUri('YT_REDIRECT_URI', 'youtube');
   }
 
   getAuthUrl(state: string): string {
     const params = new URLSearchParams({
-      client_id: process.env.YT_CLIENT_ID!,
+      client_id: this.clientId,
       redirect_uri: this.redirectUri,
       scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/userinfo.profile',
       response_type: 'code',
@@ -36,8 +44,8 @@ export class YoutubeOAuthStrategy {
     accessToken: string; refreshToken: string; tokenExpiresAt: Date;
   }> {
     const tokenRes = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
-      client_id: process.env.YT_CLIENT_ID!,
-      client_secret: process.env.YT_CLIENT_SECRET!,
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
       redirect_uri: this.redirectUri,
       grant_type: 'authorization_code',
       code,
@@ -72,8 +80,8 @@ export class YoutubeOAuthStrategy {
 
   async refreshToken(refreshToken: string): Promise<{ accessToken: string; tokenExpiresAt: Date }> {
     const res = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
-      client_id: process.env.YT_CLIENT_ID!,
-      client_secret: process.env.YT_CLIENT_SECRET!,
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
     }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 });
