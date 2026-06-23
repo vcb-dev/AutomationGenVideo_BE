@@ -34,12 +34,19 @@ export class ChannelsController {
   constructor(private readonly channelsService: ChannelsService) {}
 
   @Post()
-  @ApiOperation({ summary: "Create a new channel (LEADER only, auto-assigns own team)" })
+  @ApiOperation({ summary: "Create a new channel (all roles, auto-assigns owner & team)" })
   @ApiResponse({ status: 201, type: ChannelResponseDto })
-  @ApiResponse({ status: 403, description: "Only LEADER can create channels" })
   async create(@Body() dto: CreateChannelDto, @Request() req) {
     const channel = await this.channelsService.create(dto, req.user);
     return new ChannelResponseDto(channel);
+  }
+
+  @Get("my")
+  @ApiOperation({ summary: "Get channels owned by the current user" })
+  @ApiResponse({ status: 200, type: [ChannelResponseDto] })
+  async findMine(@Request() req) {
+    const channels = await this.channelsService.findMine(req.user.id);
+    return channels.map((c) => new ChannelResponseDto(c));
   }
 
   @Get()

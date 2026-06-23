@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsString, IsOptional, IsNotEmpty } from "class-validator";
+import { IsString, IsOptional, IsNotEmpty, IsUUID } from "class-validator";
 
 export class CreateChannelDto {
   @ApiProperty({ example: "Kênh TikTok chính" })
@@ -22,15 +22,10 @@ export class CreateChannelDto {
   @IsOptional()
   status?: string;
 
-  @ApiPropertyOptional({ example: "nguyen.van.a@company.com" })
-  @IsString()
+  @ApiPropertyOptional({ description: "ID của User sở hữu kênh (FK → users.id)" })
+  @IsUUID()
   @IsOptional()
-  owner?: string;
+  owner_id?: string;
 
-  @ApiPropertyOptional({ example: "user@company.com" })
-  @IsString()
-  @IsOptional()
-  email?: string;
-
-  // team_traffic KHÔNG nhận từ client — tự động gán từ req.user.team
+  // team_id KHÔNG nhận từ client — tự động gán từ req.user.team
 }

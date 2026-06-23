@@ -4,10 +4,16 @@ import {
   ForbiddenException,
   ConflictException,
 } from "@nestjs/common";
+import { randomUUID } from "crypto";
 import { CreateChannelDto } from "./dto/create-channel.dto";
 import { UpdateChannelDto } from "./dto/update-channel.dto";
 import { UserRole } from "@prisma/client";
 import { PrismaService } from "@/common/prisma/prisma.service";
+
+const CHANNEL_INCLUDE = {
+  team: { select: { id: true, name: true } },
+  owner: { select: { id: true, full_name: true, email: true } },
+} as const;
 
 @Injectable()
 export class ChannelsService {
@@ -19,19 +25,32 @@ export class ChannelsService {
     return roles.includes(UserRole.LEADER);
   }
 
-  /** Lấy channel và kiểm tra tồn tại */
+  /** Resolve team_id từ tên team (User.team là string) */
+  private async resolveTeamId(teamName: string | null | undefined): Promise<string | null> {
+    if (!teamName) return null;
+    const team = await this.prisma.team.findFirst({
+      where: { name: { equals: teamName, mode: "insensitive" } },
+      select: { id: true },
+    });
+    return team?.id ?? null;
+  }
+
+  /** Lấy channel và kiểm tra tồn tại, kèm relations */
   private async findChannelOrThrow(id: string) {
-    const channel = await this.prisma.channel.findUnique({ where: { id } });
+    const channel = await this.prisma.channel.findUnique({
+      where: { id },
+      include: CHANNEL_INCLUDE,
+    });
     if (!channel) throw new NotFoundException(`Channel ${id} not found`);
     return channel;
   }
 
   /** Kiểm tra LEADER có quyền thao tác trên channel này không */
   private assertLeaderOwnsChannel(
-    channel: { team_traffic: string | null },
+    channel: { team: { name: string } | null },
     userTeam: string | null | undefined,
   ) {
-    if (!userTeam || channel.team_traffic !== userTeam) {
+    if (!userTeam || channel.team?.name !== userTeam) {
       throw new ForbiddenException(
         "You can only manage channels belonging to your team",
       );
@@ -41,33 +60,43 @@ export class ChannelsService {
   // ─── CRUD ───────────────────────────────────────────────────────────────────
 
   /**
-   * Tạo kênh mới — chỉ LEADER.
-   * team_traffic tự động = team của LEADER, không nhận từ client.
+   * Tạo kênh mới — mọi role đều được, tự động gán owner_id và team_id từ user.
    */
   async create(
     dto: CreateChannelDto,
-    user: { roles: UserRole[]; team: string | null },
+    user: { id: string; roles: UserRole[]; team: string | null },
   ) {
-    if (!this.isLeader(user.roles)) {
-      throw new ForbiddenException("Only LEADER can create channels");
-    }
+    const team_id = await this.resolveTeamId(user.team);
 
     return this.prisma.channel.create({
       data: {
+        id: `manual_${randomUUID()}`,
         ...dto,
-        team_traffic: user.team ?? null,
+        owner_id: user.id,
+        team_id,
       },
+      include: CHANNEL_INCLUDE,
+    });
+  }
+
+  /** Lấy tất cả kênh thuộc về user hiện tại (owner_id). */
+  async findMine(userId: string) {
+    return this.prisma.channel.findMany({
+      where: { owner_id: userId },
+      include: CHANNEL_INCLUDE,
+      orderBy: { created_at: "desc" },
     });
   }
 
   /**
-   * Lấy danh sách kênh:
-   * - LEADER + MEMBER: chỉ thấy kênh cùng team (`team_traffic = user.team`)
-   * - Các role khác (ADMIN, MANAGER): cũng chỉ thấy kênh cùng team (theo spec)
+   * Lấy danh sách kênh thuộc team của user hiện tại.
    */
   async findAll(user: { roles: UserRole[]; team: string | null }) {
     return this.prisma.channel.findMany({
-      where: { team_traffic: user.team ?? undefined },
+      where: user.team
+        ? { team: { name: { equals: user.team, mode: "insensitive" } } }
+        : undefined,
+      include: CHANNEL_INCLUDE,
       orderBy: { created_at: "desc" },
     });
   }
@@ -79,7 +108,7 @@ export class ChannelsService {
   ) {
     const channel = await this.findChannelOrThrow(id);
 
-    if (channel.team_traffic !== user.team) {
+    if (channel.team?.name !== user.team) {
       throw new ForbiddenException("You do not have access to this channel");
     }
 
@@ -88,7 +117,7 @@ export class ChannelsService {
 
   /**
    * Cập nhật kênh — chỉ LEADER cùng team.
-   * Không cho phép thay đổi team_traffic qua API.
+   * Không cho phép thay đổi team_id qua API.
    */
   async update(
     id: string,
@@ -102,13 +131,14 @@ export class ChannelsService {
     const channel = await this.findChannelOrThrow(id);
     this.assertLeaderOwnsChannel(channel, user.team);
 
-    // Strip team_traffic nếu client cố tình truyền vào
+    // Strip team_id nếu client cố tình truyền vào
     const { ...safeData } = dto;
-    delete (safeData as any).team_traffic;
+    delete (safeData as any).team_id;
 
     return this.prisma.channel.update({
       where: { id },
       data: safeData,
+      include: CHANNEL_INCLUDE,
     });
   }
 
@@ -127,7 +157,6 @@ export class ChannelsService {
     const channel = await this.findChannelOrThrow(id);
     this.assertLeaderOwnsChannel(channel, user.team);
 
-    // Kiểm tra xem có TrackedChannel nào đang dùng kênh này không
     const trackedCount = await this.prisma.trackedChannel.count({
       where: { lark_channel_id: id },
     });
