@@ -83,3 +83,4 @@ Thumbs.db
 
 # Local uploads — không commit lên git
 uploads/
+cloudflared.exe
