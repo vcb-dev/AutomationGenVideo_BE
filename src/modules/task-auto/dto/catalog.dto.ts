@@ -11,11 +11,15 @@ import {
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
+export type BrandType = "DO_DA" | "TRANG_SUC";
+const BRAND_TYPES: BrandType[] = ["DO_DA", "TRANG_SUC"];
+
 // ─── Product ─────────────────────────────────────────────────────────────────
 
 export class CreateProductDto {
   @ApiProperty() @IsString() sku: string;
   @ApiProperty() @IsString() name: string;
+  @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
   @ApiPropertyOptional()
   @IsArray()
@@ -43,6 +47,7 @@ export class CreateProductDto {
 
 export class UpdateProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
   @ApiPropertyOptional()
   @IsArray()
@@ -68,6 +73,7 @@ export class UpdateProductDto {
 }
 
 export class QueryProductDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
@@ -99,6 +105,7 @@ export class QueryProductDto {
 // ─── Content ──────────────────────────────────────────────────────────────────
 
 export class CreateContentDto {
+  @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -113,6 +120,7 @@ export class CreateContentDto {
 }
 
 export class UpdateContentDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -130,10 +138,12 @@ export class UpdateContentDto {
 }
 
 export class QueryContentDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
   @ApiPropertyOptional({ enum: ["global", "personal", "all"] })
   @IsString()
   @IsOptional()
@@ -156,6 +166,7 @@ export class QueryContentDto {
 // ─── Source ───────────────────────────────────────────────────────────────────
 
 export class CreateSourceDto {
+  @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
   @ApiProperty({
     enum: ["PRODUCT_STOCK", "COLLECTED", "OUTRO", "WORKSHOP", "HUYK"],
   })
@@ -172,6 +183,7 @@ export class CreateSourceDto {
 }
 
 export class UpdateSourceDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
@@ -183,6 +195,7 @@ export class UpdateSourceDto {
 
 // owner: 'global' = team_id null & user_id null; 'team' = team_id set; 'editor' = user_id set
 export class QuerySourceDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;

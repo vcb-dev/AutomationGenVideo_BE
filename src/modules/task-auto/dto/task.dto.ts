@@ -1,5 +1,5 @@
 import {
-  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean,
+  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean, ValidateIf,
 } from 'class-validator'
 import { Transform, Type } from 'class-transformer'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
@@ -21,6 +21,8 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_outro_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_extra_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() source_workshop_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() source_huyk_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
   @ApiPropertyOptional() @IsDateString() @IsOptional() deadline?: string
 }
@@ -31,6 +33,12 @@ export class UpdateTaskDto {
   @ApiPropertyOptional() @IsDateString() @IsOptional() deadline?: string
   @ApiPropertyOptional() @IsString() @IsOptional() result_url?: string
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() content_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_outro_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_extra_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_workshop_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_huyk_id?: string | null
 }
 
 export class QueryTaskDto {

@@ -77,6 +77,7 @@ model User {
   tasks_reviewed            Task[]           @relation("TaskReviewer")
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
   notifications             Notification[]   @relation("NotificationOf")
+  owned_channels            Channel[]        @relation("ChannelOwner")
 
   @@index([email])
   @@index([roles])
@@ -731,16 +732,17 @@ model Channel {
   channel_id   String?
   link_channel String?
   status       String?
-  team_traffic String?
-  owner        String?
+  team_id      String?
+  owner_id     String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
-  email        String?
 
-  @@index([owner])
-  @@index([email])
-  @@index([team_traffic])
-  @@index([email, status])
+  team  Team? @relation("ChannelTeam", fields: [team_id], references: [id])
+  owner User? @relation("ChannelOwner", fields: [owner_id], references: [id])
+
+  @@index([owner_id])
+  @@index([team_id])
+  @@index([owner_id, status])
   @@index([platform, status])
   @@map("huyk_channels")
 }
@@ -1346,6 +1348,11 @@ enum ApprovalStatus {
   REJECTED
 }
 
+enum BrandType {
+  DO_DA
+  TRANG_SUC
+}
+
 model Team {
   id         String   @id @default(uuid())
   name       String   @unique
@@ -1361,6 +1368,7 @@ model Team {
   products  TeamProduct[]
   contents  TeamContent[]
   sources   Source[]     @relation("TeamSourcesOwned")
+  channels  Channel[]    @relation("ChannelTeam")
 
   @@index([leader_id])
   @@map("teams")
@@ -1519,33 +1527,38 @@ model ContentLine {
 }
 
 model ProductLine {
-  id             String  @id @default(uuid())
-  name           String  @unique
+  id             String    @id @default(uuid())
+  name           String
+  brand_type     BrandType @default(DO_DA)
   /// TRAFFIC | GMV | PROFIT — dùng để map sang video_traffic/gmv/profit trong EditorKpi
   video_category String?
 
   products    Product[]
   allocations TeamKpiAllocation[]
 
+  @@unique([name, brand_type])
   @@map("product_lines")
 }
 
 model Material {
-  id   String @id @default(uuid())
-  name String @unique
+  id         String    @id @default(uuid())
+  name       String
+  brand_type BrandType @default(DO_DA)
 
   products Product[]
 
+  @@unique([name, brand_type])
   @@map("materials")
 }
 
 model Product {
-  id              String   @id @default(uuid())
-  sku             String   @unique
+  id              String    @id @default(uuid())
+  sku             String    @unique
   name            String
+  brand_type      BrandType @default(DO_DA)
   image_url       String?
-  image_urls      String[] @default([])
-  price           Decimal? @db.Decimal(15, 2)
+  image_urls      String[]  @default([])
+  price           Decimal?  @db.Decimal(15, 2)
   market          String?
   price_segment   String?
   priority_score  Int      @default(0)
@@ -1575,6 +1588,7 @@ model Product {
 
 model Content {
   id                  String             @id @default(uuid())
+  brand_type          BrandType          @default(DO_DA)
   market              ContentMarket      @default(VIETNAM)
   title               String?
   body                String?
@@ -1608,6 +1622,7 @@ model Content {
 
 model Source {
   id             String     @id @default(uuid())
+  brand_type     BrandType  @default(DO_DA)
   type           SourceType
   name           String
   link           String
@@ -1627,8 +1642,10 @@ model Source {
   team        Team?    @relation("TeamSourcesOwned", fields: [team_id], references: [id])
   owner_user  User?    @relation("EditorSourcesOwned", fields: [user_id], references: [id])
   added_by    User     @relation("SourceAddedBy", fields: [added_by_id], references: [id])
-  tasks_outro Task[]   @relation("TaskSourceOutro")
-  tasks_extra Task[]   @relation("TaskSourceExtra")
+  tasks_outro    Task[] @relation("TaskSourceOutro")
+  tasks_extra    Task[] @relation("TaskSourceExtra")
+  tasks_workshop Task[] @relation("TaskSourceWorkshop")
+  tasks_huyk     Task[] @relation("TaskSourceHuyk")
 
   @@index([type, is_active])
   @@index([product_id])
@@ -1648,6 +1665,8 @@ model Task {
   content_line_id    String?
   source_outro_id    String?
   source_extra_id    String?
+  source_workshop_id String?
+  source_huyk_id     String?
   status             TaskStatus @default(PENDING)
   assignee_id        String?
   assigned_at        DateTime?
@@ -1668,8 +1687,10 @@ model Task {
   content         Content?         @relation(fields: [content_id], references: [id])
   product         Product?         @relation(fields: [product_id], references: [id])
   content_line    ContentLine?     @relation(fields: [content_line_id], references: [id])
-  source_outro    Source?          @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
-  source_extra    Source?          @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
+  source_outro    Source?          @relation("TaskSourceOutro",    fields: [source_outro_id],    references: [id])
+  source_extra    Source?          @relation("TaskSourceExtra",    fields: [source_extra_id],    references: [id])
+  source_workshop Source?          @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
+  source_huyk     Source?          @relation("TaskSourceHuyk",     fields: [source_huyk_id],     references: [id])
   assignee        User?            @relation("TaskAssignee", fields: [assignee_id], references: [id])
   reviewed_by     User?            @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
   run             AssignmentRun?   @relation(fields: [run_id], references: [id])
@@ -1691,16 +1712,18 @@ model Task {
 }
 
 model TaskPendingVideo {
-  id           String   @id @default(uuid())
-  task_id      String   @unique
-  uploader_id  String
-  filename     String
-  originalname String
-  mimetype     String
-  size         BigInt
-  url          String
-  storage      String   @default("local")
-  created_at   DateTime @default(now())
+  id             String   @id @default(uuid())
+  task_id        String   @unique
+  uploader_id    String
+  filename       String
+  originalname   String
+  mimetype       String
+  size           BigInt
+  url            String
+  storage        String   @default("local")
+  drive_file_id  String?
+  web_view_url   String?
+  created_at     DateTime @default(now())
 
   task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
 

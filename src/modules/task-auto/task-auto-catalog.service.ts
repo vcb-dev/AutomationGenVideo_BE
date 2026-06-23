@@ -25,6 +25,7 @@ export class TaskAutoCatalogService {
 
   async findAllProducts(q: QueryProductDto) {
     const where: any = {};
+    if (q.brand_type) where.brand_type = q.brand_type;
     if (q.search)
       where.OR = [
         { name: { contains: q.search, mode: "insensitive" } },
@@ -109,18 +110,25 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async findProductLines() {
-    return this.prisma.productLine.findMany({ orderBy: { name: "asc" } });
+  async findProductLines(brandType?: string) {
+    return this.prisma.productLine.findMany({
+      where: brandType ? { brand_type: brandType as any } : undefined,
+      orderBy: { name: "asc" },
+    });
   }
 
-  async findMaterials() {
-    return this.prisma.material.findMany({ orderBy: { name: "asc" } });
+  async findMaterials(brandType?: string) {
+    return this.prisma.material.findMany({
+      where: brandType ? { brand_type: brandType as any } : undefined,
+      orderBy: { name: "asc" },
+    });
   }
 
   // ─── Contents ─────────────────────────────────────────────────────────────
 
   async findAllContents(q: QueryContentDto) {
     const where: any = {};
+    if (q.brand_type) where.brand_type = q.brand_type;
     if (q.content_line_id) where.content_line_id = q.content_line_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
@@ -129,6 +137,7 @@ export class TaskAutoCatalogService {
         { title: { contains: q.search, mode: "insensitive" } },
         { body: { contains: q.search, mode: "insensitive" } },
       ];
+    if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
     if (q.owner === "global") where.user_id = null;
     else if (q.owner === "personal") where.user_id = { not: null };
     if (q.user_id) where.user_id = q.user_id;
@@ -181,42 +190,41 @@ export class TaskAutoCatalogService {
   // ─── Push to team ──────────────────────────────────────────────────────────
 
   async pushProductToTeam(productId: string, teamId: string, userId: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id: productId },
-    });
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
     if (!product) throw new NotFoundException("Product not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
-    await this.prisma.teamProduct.upsert({
+    const existing = await this.prisma.teamProduct.findUnique({
       where: { team_id_product_id: { team_id: teamId, product_id: productId } },
-      create: { team_id: teamId, product_id: productId, added_by_id: userId },
-      update: {},
+    });
+    if (existing) throw new ConflictException("Sản phẩm đã có trong kho team");
+    await this.prisma.teamProduct.create({
+      data: { team_id: teamId, product_id: productId, added_by_id: userId },
     });
     return { success: true, product_id: productId, team_id: teamId };
   }
 
   async pushContentToTeam(contentId: string, teamId: string, userId: string) {
-    const content = await this.prisma.content.findUnique({
-      where: { id: contentId },
-    });
+    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
     if (!content) throw new NotFoundException("Content not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
-    await this.prisma.teamContent.upsert({
+    const existing = await this.prisma.teamContent.findUnique({
       where: { team_id_content_id: { team_id: teamId, content_id: contentId } },
-      create: { team_id: teamId, content_id: contentId, added_by_id: userId },
-      update: {},
+    });
+    if (existing) throw new ConflictException("Content đã có trong kho team");
+    await this.prisma.teamContent.create({
+      data: { team_id: teamId, content_id: contentId, added_by_id: userId },
     });
     return { success: true, content_id: contentId, team_id: teamId };
   }
 
   async pushSourceToTeam(sourceId: string, teamId: string) {
-    const source = await this.prisma.source.findUnique({
-      where: { id: sourceId },
-    });
+    const source = await this.prisma.source.findUnique({ where: { id: sourceId } });
     if (!source) throw new NotFoundException("Source not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
+    if (source.team_id) throw new ConflictException("Source đã thuộc về một team");
     return this.prisma.source.update({
       where: { id: sourceId },
       data: { team_id: teamId },
@@ -269,11 +277,13 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async createProductLine(name: string) {
-    const exists = await this.prisma.productLine.findUnique({ where: { name } });
+  async createProductLine(name: string, brandType: string) {
+    const exists = await this.prisma.productLine.findUnique({
+      where: { name_brand_type: { name, brand_type: brandType as any } },
+    });
     if (exists)
-      throw new ConflictException(`ProductLine "${name}" already exists`);
-    return this.prisma.productLine.create({ data: { name } });
+      throw new ConflictException(`ProductLine "${name}" already exists for this brand`);
+    return this.prisma.productLine.create({ data: { name, brand_type: brandType as any } });
   }
 
   async updateProductLine(id: string, data: { video_category?: string | null }) {
@@ -288,11 +298,13 @@ export class TaskAutoCatalogService {
     await this.prisma.productLine.delete({ where: { id } });
   }
 
-  async createMaterial(name: string) {
-    const exists = await this.prisma.material.findUnique({ where: { name } });
+  async createMaterial(name: string, brandType: string) {
+    const exists = await this.prisma.material.findUnique({
+      where: { name_brand_type: { name, brand_type: brandType as any } },
+    });
     if (exists)
-      throw new ConflictException(`Material "${name}" already exists`);
-    return this.prisma.material.create({ data: { name } });
+      throw new ConflictException(`Material "${name}" already exists for this brand`);
+    return this.prisma.material.create({ data: { name, brand_type: brandType as any } });
   }
 
   async removeMaterial(id: string) {
@@ -305,6 +317,7 @@ export class TaskAutoCatalogService {
 
   async findAllSources(q: QuerySourceDto) {
     const where: any = {};
+    if (q.brand_type) where.brand_type = q.brand_type;
     if (q.type) where.type = q.type;
     if (q.product_id) where.product_id = q.product_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;

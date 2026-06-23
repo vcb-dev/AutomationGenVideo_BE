@@ -17,10 +17,15 @@ type EditorSlot = {
   userId: string;
   remainingDaily: number;
   remainingMonthly: number;
-  // Per-editor content type targets from ratio_a1..a5 (empty = use team allocations)
+  productPlanned: number;
   contentTypeWeights: QuotaItem[];
-  // Per-editor product category targets from video_traffic/gmv/profit (empty = use team allocations)
   productTypeWeights: QuotaItem[];
+};
+
+type EditorStats = {
+  existingPairs: Set<string>;     // "contentId:productId" — all-time dedup
+  usedContentIds: Set<string>;    // content IDs with any task for this editor (all-time)
+  teamProductTaskCount: number;   // tasks using team products this month → TH1/TH2
 };
 
 type Candidate = {
@@ -35,14 +40,10 @@ type QuotaItem = { key: string; weight: number };
 
 type Pairing = { editorId: string; candidate: Candidate };
 
-type TeamResult = {
-  assigned: number;
-  skipped: number;
-};
+type TeamResult = { assigned: number; skipped: number };
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-/** Saturday (6) or Sunday (7) in Luxon's 1-based weekday */
 function isWeekend(d: DateTime): boolean {
   return d.weekday >= 6;
 }
@@ -55,7 +56,6 @@ function addCalendarDays(d: DateTime, n: number): DateTime {
   return d.plus({ days: n });
 }
 
-/** Count remaining calendar days in the month, including today. Minimum 1. */
 function remainingCalendarDays(today: DateTime): number {
   const last = today.endOf("month").startOf("day");
   const todayStart = today.startOf("day");
@@ -63,10 +63,6 @@ function remainingCalendarDays(today: DateTime): number {
   return Math.max(1, diff);
 }
 
-/**
- * Daily target = ceil(remaining / remaining_days).
- * All calendar days are equal — no Sunday exception.
- */
 function deriveDailyTarget(
   monthlyTarget: number,
   doneThisMonth: number,
@@ -78,10 +74,6 @@ function deriveDailyTarget(
   return Math.min(remaining, Math.ceil(remaining / days));
 }
 
-/**
- * Largest Remainder Method: distributes `total` integer slots across
- * weighted buckets, guaranteeing each gets at least floor(exact).
- */
 function largestRemainder(
   total: number,
   items: QuotaItem[],
@@ -92,11 +84,7 @@ function largestRemainder(
   if (sumW <= 0) return out;
   const rows = items.map((i) => {
     const exact = (total * Math.max(0, i.weight)) / sumW;
-    return {
-      key: i.key,
-      floor: Math.floor(exact),
-      rem: exact - Math.floor(exact),
-    };
+    return { key: i.key, floor: Math.floor(exact), rem: exact - Math.floor(exact) };
   });
   let left = total - rows.reduce((s, r) => s + r.floor, 0);
   rows.sort((a, b) => b.rem - a.rem || (a.key < b.key ? -1 : 1));
@@ -105,18 +93,19 @@ function largestRemainder(
   return out;
 }
 
-/** Cross-product of contents × products into candidate pairs. */
+/**
+ * Content-outer cross-product: candidate order mirrors content freshness ordering.
+ * For each content (in new→repeated, personal→team→global order), all products
+ * are listed in their priority order. This ensures selectPairsForEditor picks
+ * new content first within each content-line quota bucket.
+ */
 function buildCandidates(
   contents: { id: string; content_line_id: string | null }[],
-  products: {
-    id: string;
-    product_line_id: string | null;
-    priority_score: number;
-  }[],
+  products: { id: string; product_line_id: string | null; priority_score: number }[],
 ): Candidate[] {
   const candidates: Candidate[] = [];
-  for (const product of products) {
-    for (const content of contents) {
+  for (const content of contents) {
+    for (const product of products) {
       candidates.push({
         contentId: content.id,
         productId: product.id,
@@ -131,9 +120,9 @@ function buildCandidates(
 
 // ── Per-editor pair selection ─────────────────────────────────────────────────
 //
-// PASS 1 — Content-line quota: pick exact slot count per content line,
-//   prefer products matching product-line quota, fallback to any product.
-// PASS 2 — Product-only: pick by product quota when no content quota.
+// PASS 1 — Content-line quota: pick slots per content line,
+//   prefer products matching product-line quota first.
+// PASS 2 — Product-only quota when no content quota.
 // RELAXED (CAPACITY): fill remaining slots with any unused candidate.
 
 function selectPairsForEditor(
@@ -162,12 +151,9 @@ function selectPairsForEditor(
 
   if (contentConstrained) {
     for (const [lineId, slots] of contentQuota) {
-      const lineCandidates = candidates.filter(
-        (c) => c.contentLineId === lineId,
-      );
+      const lineCandidates = candidates.filter((c) => c.contentLineId === lineId);
       let taken = 0;
 
-      // Prefer candidates whose product also satisfies product quota
       if (productConstrained) {
         for (const c of lineCandidates) {
           if (taken >= slots || need === 0) break;
@@ -179,7 +165,6 @@ function selectPairsForEditor(
         }
       }
 
-      // Fill content-line slot with any remaining candidate
       for (const c of lineCandidates) {
         if (taken >= slots || need === 0) break;
         if (chosen.has(pairKey(c))) continue;
@@ -191,12 +176,10 @@ function selectPairsForEditor(
     for (const c of candidates) {
       if (need === 0) break;
       if (chosen.has(pairKey(c))) continue;
-      if (c.productLineId != null && (remP.get(c.productLineId) ?? 0) > 0)
-        take(c);
+      if (c.productLineId != null && (remP.get(c.productLineId) ?? 0) > 0) take(c);
     }
   }
 
-  // Relaxed pass: fill remaining slots from any unused candidate
   if (fillStrategy === "CAPACITY" && need > 0) {
     for (const c of candidates) {
       if (need === 0) break;
@@ -245,6 +228,8 @@ export class TaskAutoAssignService {
 
   @Cron("* * * * *", { name: "task-auto-assign" })
   async cronCheck() {
+    // TẠM THỜI TẮT — bỏ dòng này khi muốn bật lại
+    //return;
     try {
       const settings = await this.prisma.autoAssignSetting.findUnique({
         where: { id: 1 },
@@ -257,17 +242,12 @@ export class TaskAutoAssignService {
 
       const now = DateTime.now().setZone(settings.timezone || DEFAULT_TZ);
 
-      // `weekend_enabled` now controls whether to run on Saturday AND Sunday
       if (isWeekend(now) && !settings.weekend_enabled) return;
 
-      const [hh, mm] = (settings.schedule_time || "17:00")
-        .split(":")
-        .map(Number);
+      const [hh, mm] = (settings.schedule_time || "17:00").split(":").map(Number);
       if (now.hour !== hh || now.minute !== mm) return;
 
-      this.logger.log(
-        `cronCheck: time matched ${settings.schedule_time} — checking dedup`,
-      );
+      this.logger.log(`cronCheck: time matched ${settings.schedule_time} — checking dedup`);
 
       const windowStart = now.startOf("minute").toJSDate();
       const windowEnd = new Date(windowStart.getTime() + 60_000);
@@ -275,9 +255,7 @@ export class TaskAutoAssignService {
         where: { run_at: { gte: windowStart, lt: windowEnd } },
       });
       if (recentRun) {
-        this.logger.log(
-          `cronCheck: skipped — run ${recentRun.id} already exists this minute`,
-        );
+        this.logger.log(`cronCheck: skipped — run ${recentRun.id} already exists this minute`);
         return;
       }
 
@@ -288,11 +266,7 @@ export class TaskAutoAssignService {
     }
   }
 
-  async triggerManually(): Promise<{
-    assigned: number;
-    skipped: number;
-    runId: string;
-  }> {
+  async triggerManually(): Promise<{ assigned: number; skipped: number; runId: string }> {
     const now = DateTime.now().setZone(DEFAULT_TZ);
     return this.runDailyAssignment(now, true);
   }
@@ -303,9 +277,7 @@ export class TaskAutoAssignService {
     now: DateTime = DateTime.now().setZone(DEFAULT_TZ),
     forceRun = false,
   ): Promise<{ assigned: number; skipped: number; runId: string }> {
-    const settings = await this.prisma.autoAssignSetting.findUnique({
-      where: { id: 1 },
-    });
+    const settings = await this.prisma.autoAssignSetting.findUnique({ where: { id: 1 } });
     if (!settings?.is_active) return { assigned: 0, skipped: 0, runId: "" };
     if (isWeekend(now) && !(settings.weekend_enabled ?? true))
       return { assigned: 0, skipped: 0, runId: "" };
@@ -314,15 +286,10 @@ export class TaskAutoAssignService {
       const dayStart = now.startOf("day").toJSDate();
       const dayEnd = now.endOf("day").toJSDate();
       const existingDone = await this.prisma.assignmentRun.findFirst({
-        where: {
-          status: AssignmentRunStatus.DONE,
-          run_at: { gte: dayStart, lte: dayEnd },
-        },
+        where: { status: AssignmentRunStatus.DONE, run_at: { gte: dayStart, lte: dayEnd } },
       });
       if (existingDone) {
-        this.logger.log(
-          `Assignment already done today (run ${existingDone.id}), skipping`,
-        );
+        this.logger.log(`Assignment already done today (run ${existingDone.id}), skipping`);
         return { assigned: 0, skipped: 0, runId: existingDone.id };
       }
     }
@@ -335,21 +302,12 @@ export class TaskAutoAssignService {
     const deadline = addCalendarDays(now, DEADLINE_CALENDAR_DAYS).toJSDate();
 
     try {
-      const teams = await this.prisma.team.findMany({
-        where: { is_active: true },
-      });
+      const teams = await this.prisma.team.findMany({ where: { is_active: true } });
       let totalAssigned = 0;
       const details: Record<string, any> = {};
 
       for (const team of teams) {
-        const result = await this.processTeam(
-          team.id,
-          now,
-          month,
-          monthStart,
-          run.id,
-          deadline,
-        );
+        const result = await this.processTeam(team.id, now, month, monthStart, run.id, deadline);
         totalAssigned += result.assigned;
         details[team.id] = { team_name: team.name, ...result };
       }
@@ -393,7 +351,7 @@ export class TaskAutoAssignService {
     runId: string,
     deadline: Date,
   ): Promise<TeamResult> {
-    // 0. Fetch ContentLine a_type and ProductLine video_category mappings (once)
+    // 0. ContentLine a_type and ProductLine video_category mappings
     const [contentLineTypes, productLineTypes] = await Promise.all([
       this.prisma.contentLine.findMany({
         where: { a_type: { not: null } },
@@ -407,35 +365,32 @@ export class TaskAutoAssignService {
 
     // 1. Eligible editors with per-editor quota weights
     const editors = await this.getEligibleEditors(
-      teamId,
-      now,
-      month,
-      monthStart,
-      contentLineTypes,
-      productLineTypes,
+      teamId, now, month, monthStart, contentLineTypes, productLineTypes,
     );
     if (!editors.length) {
       this.logger.log(`Team ${teamId}: no eligible editors`);
       return { assigned: 0, skipped: 0 };
     }
 
-    // 2. Team-level allocations (fallback when editor has no per-editor weights)
+    // 2. Team-level fallback allocations
     const { contentItems: teamContentItems, productItems: teamProductItems } =
       await this.getQuotaAllocations(teamId, month);
 
-    this.logger.log(
-      `Team ${teamId}: teamContentAllocs=[${teamContentItems.map((i) => `${i.key}:${i.weight}%`).join(",")}] ` +
-        `teamProductAllocs=[${teamProductItems.map((i) => `${i.key}:${i.weight}%`).join(",")}]`,
-    );
+    // 3. Team content catalog — used to classify content into 3 tiers
+    const teamContentRaw = await this.prisma.teamContent.findMany({
+      where: { team_id: teamId },
+      select: { content_id: true },
+    });
+    const teamContentIdSet = new Set(teamContentRaw.map((tc) => tc.content_id));
 
-    // 3. All available content (once) — includes personal content (user_id set)
+    // 4. All available contents (not ARCHIVED)
     const allContents = await this.prisma.content.findMany({
       where: { status: { not: "ARCHIVED" } },
       select: { id: true, content_line_id: true, user_id: true },
       orderBy: { created_at: "asc" },
     });
 
-    // 4. Team products (once) — global team pool
+    // 5. Team product catalog + IDs for TH1/TH2 detection
     const teamProductRaw = await this.prisma.teamProduct.findMany({
       where: { team_id: teamId },
       select: {
@@ -450,91 +405,106 @@ export class TaskAutoAssignService {
         },
       },
     });
-    const teamProducts = teamProductRaw
-      .map((tp) => tp.product)
-      .filter((p) => p.is_active);
+    const teamProducts = teamProductRaw.map((tp) => tp.product).filter((p) => p.is_active);
+    const teamProductIdSet = new Set(teamProducts.map((p) => p.id));
 
-    // 5. Batch-fetch personal products for all editors (1 query)
+    // 6. Personal products for all editors (1 query)
     const editorIds = editors.map((e) => e.userId);
     const personalProductsRaw = await this.prisma.product.findMany({
       where: { user_id: { in: editorIds }, is_active: true },
-      select: {
-        id: true,
-        product_line_id: true,
-        priority_score: true,
-        user_id: true,
-      },
+      select: { id: true, product_line_id: true, priority_score: true, is_active: true, user_id: true },
       orderBy: { priority_score: "desc" },
     });
-    const personalProductsByEditor = new Map<
-      string,
-      typeof personalProductsRaw
-    >();
+    const personalProductsByEditor = new Map<string, typeof personalProductsRaw>();
     for (const p of personalProductsRaw) {
       if (!personalProductsByEditor.has(p.user_id!))
         personalProductsByEditor.set(p.user_id!, []);
       personalProductsByEditor.get(p.user_id!)!.push(p);
     }
 
-    // 6. Batch existing pairs (1 query — dedup across all editors)
-    const existingByEditor = await this.batchExistingPairs(editorIds);
+    // 7. Batch editor stats (1 query: dedup pairs + content usage + team product count)
+    const editorStats = await this.batchEditorStats(editorIds, teamProductIdSet, monthStart);
 
-    // 7. Per-editor selection
+    // 8. Per-editor selection
     const allPairings: Pairing[] = [];
 
     for (const editor of editors) {
       if (editor.remainingDaily <= 0) continue;
 
-      // ── Build candidate pool: personal catalog first ──────────────────────
-      //
-      // Priority order for products:  personal (tier 0) → team (tier 1)
-      // Priority order for content:   personal (tier 0) → shared (tier 1)
-      //
-      // Within each tier, products are sorted by priority_score desc.
+      const stats = editorStats.get(editor.userId) ?? {
+        existingPairs: new Set<string>(),
+        usedContentIds: new Set<string>(),
+        teamProductTaskCount: 0,
+      };
 
-      const personalProducts =
-        personalProductsByEditor.get(editor.userId) ?? [];
+      // ── TH1 / TH2 ──────────────────────────────────────────────────────────
+      // TH1: chưa đủ KPI đẩy sản phẩm → pool sản phẩm = kho team, sort priority cao trước
+      // TH2: đã đủ KPI → pool sản phẩm = kho cá nhân → kho team
+      const isPhase1 =
+        editor.productPlanned > 0 &&
+        stats.teamProductTaskCount < editor.productPlanned;
+
+      // ── Content: phân 3 tầng ────────────────────────────────────────────────
+      // Tier 1 (cá nhân): user_id = editor
+      // Tier 2 (team):    id in teamContentIdSet, không phải của editor
+      // Tier 3 (tổng):    user_id = null, không trong team catalog
+      const personalContents = allContents.filter((c) => c.user_id === editor.userId);
+      const teamContents = allContents.filter(
+        (c) => c.user_id !== editor.userId && teamContentIdSet.has(c.id),
+      );
+      const globalContents = allContents.filter(
+        (c) => c.user_id === null && !teamContentIdSet.has(c.id),
+      );
+
+      // Content mới = chưa có task nào với editor này (all-time)
+      const isNew = (c: { id: string }) => !stats.usedContentIds.has(c.id);
+
+      // Thứ tự cuối:
+      //   content MỚI:   cá nhân → team → tổng   (editor khám phá content mới của mình trước)
+      //   content LẶP:   team → tổng → cá nhân   (ưu tiên content win đã qua kiểm chứng)
+      const orderedContents = [
+        ...personalContents.filter(isNew),
+        ...teamContents.filter(isNew),
+        ...globalContents.filter(isNew),
+        ...teamContents.filter((c) => !isNew(c)),
+        ...globalContents.filter((c) => !isNew(c)),
+        ...personalContents.filter((c) => !isNew(c)),
+      ];
+
+      // ── Product pool ────────────────────────────────────────────────────────
+      const personalProducts = personalProductsByEditor.get(editor.userId) ?? [];
       const personalProductIds = new Set(personalProducts.map((p) => p.id));
-
       const otherTeamProducts = teamProducts
         .filter((p) => !personalProductIds.has(p.id))
         .sort((a, b) => b.priority_score - a.priority_score);
 
-      const orderedProducts = [...personalProducts, ...otherTeamProducts];
-
-      // Personal content first, then shared (global + other editors' content not included)
-      const personalContents = allContents.filter(
-        (c) => c.user_id === editor.userId,
-      );
-      const sharedContents = allContents.filter(
-        (c) => c.user_id !== editor.userId,
-      );
-      const orderedContents = [...personalContents, ...sharedContents];
+      let orderedProducts: typeof teamProducts;
+      if (isPhase1) {
+        // TH1: toàn bộ kho team (kể cả sản phẩm cá nhân đã vào kho team), sort priority cao trước
+        orderedProducts = [...teamProducts].sort((a, b) => b.priority_score - a.priority_score);
+      } else {
+        // TH2: kho cá nhân → kho team (không trùng)
+        orderedProducts = [...personalProducts, ...otherTeamProducts];
+      }
 
       if (!orderedProducts.length || !orderedContents.length) {
-        this.logger.log(
-          `Team ${teamId} editor ${editor.userId}: no candidates available`,
-        );
+        this.logger.log(`Team ${teamId} editor ${editor.userId}: no candidates available`);
         continue;
       }
 
+      // ── Build candidates (content-outer để freshness ordering được giữ nguyên) ──
       const candidates = buildCandidates(orderedContents, orderedProducts);
 
-      // Dedup: skip pairs already assigned to this editor
-      const existingPairs =
-        existingByEditor.get(editor.userId) ?? new Set<string>();
       const available = candidates.filter(
-        (c) => !existingPairs.has(`${c.contentId}:${c.productId}`),
+        (c) => !stats.existingPairs.has(`${c.contentId}:${c.productId}`),
       );
 
       if (!available.length) {
-        this.logger.log(
-          `Team ${teamId} editor ${editor.userId}: all pairs already assigned`,
-        );
+        this.logger.log(`Team ${teamId} editor ${editor.userId}: all pairs already assigned`);
         continue;
       }
 
-      // ── Quota: editor-level weights override team-level allocations ────────
+      // ── Quota: editor-level weights, fallback về team-level ────────────────
       const useEditorContent = editor.contentTypeWeights.length > 0;
       const useEditorProduct = editor.productTypeWeights.length > 0;
 
@@ -557,9 +527,10 @@ export class TaskAutoAssignService {
 
       this.logger.log(
         `Team ${teamId} editor ${editor.userId}: ` +
+          `phase=${isPhase1 ? "TH1" : "TH2"} ` +
+          `teamProductTasks=${stats.teamProductTaskCount}/${editor.productPlanned} ` +
           `daily=${editor.remainingDaily} monthly_rem=${editor.remainingMonthly} ` +
-          `selected=${selected.length} ` +
-          `(cWeights=${useEditorContent ? "editor" : "team"} pWeights=${useEditorProduct ? "editor" : "team"})`,
+          `selected=${selected.length}`,
       );
 
       for (const candidate of selected) {
@@ -567,12 +538,7 @@ export class TaskAutoAssignService {
       }
     }
 
-    const assigned = await this.persistPairings(
-      teamId,
-      runId,
-      deadline,
-      allPairings,
-    );
+    const assigned = await this.persistPairings(teamId, runId, deadline, allPairings);
     return { assigned, skipped: 0 };
   }
 
@@ -601,6 +567,7 @@ export class TaskAutoAssignService {
               where: { month },
               select: {
                 total_target: true,
+                product_planned: true,
                 ratio_a1: true,
                 ratio_a2: true,
                 ratio_a3: true,
@@ -628,7 +595,6 @@ export class TaskAutoAssignService {
 
     const userIds = eligible.map((u) => u.id);
 
-    // Count auto tasks assigned this month (1 query, no Sunday distinction)
     const autoRows = await this.prisma.task.groupBy({
       by: ["assignee_id"],
       where: {
@@ -639,11 +605,8 @@ export class TaskAutoAssignService {
       },
       _count: { id: true },
     });
-    const autoCountMap = new Map(
-      autoRows.map((r) => [r.assignee_id!, r._count.id]),
-    );
+    const autoCountMap = new Map(autoRows.map((r) => [r.assignee_id!, r._count.id]));
 
-    // A-type → EditorKpi field mapping
     const aTypeToField: Record<
       string,
       "ratio_a1" | "ratio_a2" | "ratio_a3" | "ratio_a4" | "ratio_a5"
@@ -655,11 +618,7 @@ export class TaskAutoAssignService {
       A5: "ratio_a5",
     };
 
-    // video_category → EditorKpi field mapping
-    const categoryToField: Record<
-      string,
-      "video_traffic" | "video_gmv" | "video_profit"
-    > = {
+    const categoryToField: Record<string, "video_traffic" | "video_gmv" | "video_profit"> = {
       TRAFFIC: "video_traffic",
       GMV: "video_gmv",
       PROFIT: "video_profit",
@@ -672,49 +631,27 @@ export class TaskAutoAssignService {
       if (!kpi) continue;
 
       const assignedThisMonth = autoCountMap.get(u.id) ?? 0;
-      const remainingMonthly = Math.max(
-        0,
-        kpi.total_target - assignedThisMonth,
-      );
-
-      // All days equal — no Sunday special case
-      const dailyTarget = deriveDailyTarget(
-        kpi.total_target,
-        assignedThisMonth,
-        now,
-      );
+      const remainingMonthly = Math.max(0, kpi.total_target - assignedThisMonth);
+      const dailyTarget = deriveDailyTarget(kpi.total_target, assignedThisMonth, now);
       const remainingDaily = Math.min(dailyTarget, remainingMonthly);
 
       if (remainingDaily <= 0) continue;
 
-      // Build per-editor content type weights from ratio_a1..a5
       const contentTypeWeights: QuotaItem[] = contentLineTypes
         .filter((cl) => cl.a_type && aTypeToField[cl.a_type])
-        .map((cl) => ({
-          key: cl.id,
-          weight: kpi[aTypeToField[cl.a_type!]] ?? 0,
-        }))
+        .map((cl) => ({ key: cl.id, weight: kpi[aTypeToField[cl.a_type!]] ?? 0 }))
         .filter((i) => i.weight > 0);
 
-      // Build per-editor product type weights from video_traffic/gmv/profit
       const productTypeWeights: QuotaItem[] = productLineTypes
         .filter((pl) => pl.video_category && categoryToField[pl.video_category])
-        .map((pl) => ({
-          key: pl.id,
-          weight: kpi[categoryToField[pl.video_category!]] ?? 0,
-        }))
+        .map((pl) => ({ key: pl.id, weight: kpi[categoryToField[pl.video_category!]] ?? 0 }))
         .filter((i) => i.weight > 0);
-
-      this.logger.log(
-        `Editor ${u.id}: daily=${remainingDaily}/${kpi.total_target} ` +
-          `cWeights=[${contentTypeWeights.map((w) => `${w.key}:${w.weight}`).join(",")}] ` +
-          `pWeights=[${productTypeWeights.map((w) => `${w.key}:${w.weight}`).join(",")}]`,
-      );
 
       slots.push({
         userId: u.id,
         remainingDaily,
         remainingMonthly,
+        productPlanned: kpi.product_planned ?? 0,
         contentTypeWeights,
         productTypeWeights,
       });
@@ -723,30 +660,67 @@ export class TaskAutoAssignService {
     return slots;
   }
 
-  // ── Batch existing pairs ──────────────────────────────────────────────────
+  // ── Batch editor stats ────────────────────────────────────────────────────
+  //
+  // Single query returning per-editor:
+  //   existingPairs      — all-time (content, product) dedup set
+  //   usedContentIds     — all-time content IDs → "repeated" classification
+  //   teamProductTaskCount — this-month tasks with team products → TH1/TH2
 
-  private async batchExistingPairs(
+  private async batchEditorStats(
     editorIds: string[],
-  ): Promise<Map<string, Set<string>>> {
+    teamProductIds: Set<string>,
+    monthStart: Date,
+  ): Promise<Map<string, EditorStats>> {
     const tasks = await this.prisma.task.findMany({
       where: {
         assignee_id: { in: editorIds },
-        product_id: { not: null },
         is_extra: false,
+        status: { not: "CANCELLED" },
       },
-      select: { assignee_id: true, content_id: true, product_id: true },
+      select: {
+        assignee_id: true,
+        content_id: true,
+        product_id: true,
+        assigned_at: true,
+      },
     });
 
-    const result = new Map<string, Set<string>>();
+    const result = new Map<string, EditorStats>();
+
     for (const t of tasks) {
       const eid = t.assignee_id!;
-      if (!result.has(eid)) result.set(eid, new Set());
-      result.get(eid)!.add(`${t.content_id}:${t.product_id}`);
+      if (!result.has(eid)) {
+        result.set(eid, {
+          existingPairs: new Set(),
+          usedContentIds: new Set(),
+          teamProductTaskCount: 0,
+        });
+      }
+      const stats = result.get(eid)!;
+
+      if (t.content_id && t.product_id) {
+        stats.existingPairs.add(`${t.content_id}:${t.product_id}`);
+      }
+
+      if (t.content_id) {
+        stats.usedContentIds.add(t.content_id);
+      }
+
+      if (
+        t.product_id &&
+        teamProductIds.has(t.product_id) &&
+        t.assigned_at != null &&
+        t.assigned_at >= monthStart
+      ) {
+        stats.teamProductTaskCount++;
+      }
     }
+
     return result;
   }
 
-  // ── Team quota allocations (fallback) ─────────────────────────────────────
+  // ── Team quota allocations (fallback khi editor không có per-editor weights) ──
 
   private async getQuotaAllocations(
     teamId: string,
@@ -769,8 +743,7 @@ export class TaskAutoAssignService {
   }
 
   // ── Persist pairings ──────────────────────────────────────────────────────
-  //
-  // Source resolution cascades: editor-personal → team-owned → global (both null)
+  // Source resolution: editor-personal → team → global
 
   private async persistPairings(
     teamId: string,
@@ -783,26 +756,21 @@ export class TaskAutoAssignService {
     const productIds = [...new Set(pairings.map((p) => p.candidate.productId))];
     const editorIds = [...new Set(pairings.map((p) => p.editorId))];
 
-    // Pre-fetch OUTRO sources for all editors + products in 1 query
     const outroSources = await this.prisma.source.findMany({
       where: {
         product_id: { in: productIds },
         type: "OUTRO",
         is_active: true,
         OR: [
-          { user_id: { in: editorIds } }, // personal
-          { team_id: teamId }, // team
-          { user_id: null, team_id: null }, // global
+          { user_id: { in: editorIds } },
+          { team_id: teamId },
+          { user_id: null, team_id: null },
         ],
       },
       select: { product_id: true, id: true, user_id: true, team_id: true },
     });
 
-    // Cascading: editor-personal → team → global
-    const resolveOutro = (
-      productId: string,
-      editorId: string,
-    ): string | null => {
+    const resolveOutro = (productId: string, editorId: string): string | null => {
       const srcs = outroSources.filter((s) => s.product_id === productId);
       return (
         srcs.find((s) => s.user_id === editorId)?.id ??
@@ -834,12 +802,7 @@ export class TaskAutoAssignService {
           });
 
           await tx.taskAssignment.create({
-            data: {
-              task_id: task.id,
-              user_id: editorId,
-              deadline,
-              run_id: runId,
-            },
+            data: { task_id: task.id, user_id: editorId, deadline, run_id: runId },
           });
 
           await tx.notification.create({

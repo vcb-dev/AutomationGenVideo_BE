@@ -152,15 +152,18 @@ export class TaskAutoTeamsService {
 
   // ─── Team Products ────────────────────────────────────────────────────────
 
-  async listTeamProducts(teamId: string) {
+  async listTeamProducts(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC') {
     await this.findOne(teamId) // validates team exists
     return this.prisma.teamProduct.findMany({
-      where: { team_id: teamId },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { product: { brand_type: brandType } } : {}),
+      },
       include: {
         product: {
           select: {
-            id: true, name: true, sku: true, image_url: true,
-            price: true, market: true, priority_score: true,
+            id: true, name: true, sku: true, image_url: true, image_urls: true,
+            price: true, market: true, priority_score: true, brand_type: true,
             product_line: { select: { id: true, name: true } },
           },
         },
@@ -215,15 +218,18 @@ export class TaskAutoTeamsService {
 
   // ─── Team Contents ────────────────────────────────────────────────────────
 
-  async listTeamContents(teamId: string) {
+  async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC') {
     await this.findOne(teamId)
     return this.prisma.teamContent.findMany({
-      where: { team_id: teamId },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { content: { brand_type: brandType } } : {}),
+      },
       include: {
         content: {
           select: {
             id: true, title: true, body: true, status: true, market: true,
-            view_count: true, file_content_url: true, voice_url: true,
+            view_count: true, file_content_url: true, voice_url: true, brand_type: true,
             content_line: { select: { id: true, name: true } },
           },
         },

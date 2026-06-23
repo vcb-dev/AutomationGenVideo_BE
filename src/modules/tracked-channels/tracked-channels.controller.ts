@@ -139,7 +139,9 @@ export class TrackedChannelsController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update a tracked channel' })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiOperation({ summary: 'Update a tracked channel (ADMIN/MANAGER/LEADER only)' })
   update(
     @Param('id') id: string,
     @Request() req,
@@ -155,7 +157,9 @@ export class TrackedChannelsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Remove a tracked channel' })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiOperation({ summary: 'Remove a tracked channel (ADMIN/MANAGER/LEADER only)' })
   remove(@Param('id') id: string, @Request() req) {
     return this.trackedChannelsService.remove(id, req.user.id);
   }

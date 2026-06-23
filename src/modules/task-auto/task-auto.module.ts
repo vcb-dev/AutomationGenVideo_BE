@@ -9,6 +9,9 @@ import { TaskAutoCatalogService } from './task-auto-catalog.service'
 import { TaskAutoKpiService } from './task-auto-kpi.service'
 import { TaskAutoAssignService } from './task-auto-assign.service'
 import { TaskAutoVideoService } from './task-auto-video.service'
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service'
+import { UploadService } from '../social-publishing/upload/upload.service'
+import { MediaLibraryService } from '../social-publishing/upload/media-library.service'
 
 @Module({
   imports: [
@@ -23,6 +26,9 @@ import { TaskAutoVideoService } from './task-auto-video.service'
     TaskAutoKpiService,
     TaskAutoAssignService,
     TaskAutoVideoService,
+    GoogleDriveStorageService,
+    UploadService,
+    MediaLibraryService,
   ],
   exports: [TaskAutoAssignService],
 })

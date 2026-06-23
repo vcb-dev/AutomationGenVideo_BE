@@ -3,8 +3,10 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
+import { TaskAutoVideoService } from "./task-auto-video.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -15,7 +17,12 @@ import {
 
 @Injectable()
 export class TaskAutoTasksService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(TaskAutoTasksService.name)
+
+  constructor(
+    private prisma: PrismaService,
+    private videoService: TaskAutoVideoService,
+  ) {}
 
   private taskInclude = {
     team: { select: { id: true, name: true } },
@@ -24,8 +31,10 @@ export class TaskAutoTasksService {
     content_line: { select: { id: true, name: true } },
     assignee: { select: { id: true, full_name: true, email: true } },
     reviewed_by: { select: { id: true, full_name: true } },
-    source_outro: { select: { id: true, name: true, type: true } },
-    source_extra: { select: { id: true, name: true, type: true } },
+    source_outro:    { select: { id: true, name: true, type: true } },
+    source_extra:    { select: { id: true, name: true, type: true } },
+    source_workshop: { select: { id: true, name: true, type: true } },
+    source_huyk:     { select: { id: true, name: true, type: true } },
     pending_video: true,
   };
 
@@ -150,8 +159,10 @@ export class TaskAutoTasksService {
         content_id: dto.content_id,
         product_id: dto.product_id ?? null,
         content_line_id: dto.content_line_id ?? content.content_line_id,
-        source_outro_id: dto.source_outro_id,
-        source_extra_id: dto.source_extra_id,
+        source_outro_id:    dto.source_outro_id,
+        source_extra_id:    dto.source_extra_id,
+        source_workshop_id: dto.source_workshop_id,
+        source_huyk_id:     dto.source_huyk_id,
         assignee_id: dto.assignee_id,
         deadline: dto.deadline ? new Date(dto.deadline) : undefined,
         status: dto.assignee_id ? "ASSIGNED" : "PENDING",
@@ -314,6 +325,20 @@ export class TaskAutoTasksService {
       const title =
         dto.action === "APPROVED" ? "Task đã được duyệt" : "Task bị từ chối";
       await this.notify(task.assignee_id, `TASK_${dto.action}`, title, id);
+    }
+
+    if (dto.action === "APPROVED") {
+      // Video đã trên Drive — chỉ cần lưu vào media library và dọn pending record
+      await this.videoService.uploadPendingToDrive(id).catch(err =>
+        this.logger.warn(`[review] uploadPendingToDrive failed for task ${id}: ${err.message}`)
+      );
+    }
+
+    if (dto.action === "REJECTED") {
+      // Xóa Drive file (nếu có) khi task bị từ chối — editor sẽ upload lại khi nộp lại
+      await this.videoService.deletePendingVideo(id).catch(err =>
+        this.logger.warn(`[review] deletePendingVideo failed for task ${id}: ${err.message}`)
+      );
     }
 
     return updated;

@@ -407,14 +407,9 @@ export class LarkController {
     }
 
     @Post('enrich-channel-emails')
-    @ApiOperation({ summary: 'Cross-reference Channel.owner with Users.full_name to fill email' })
+    @ApiOperation({ summary: 'No-op: owner_id is now resolved inline during sync' })
     async enrichChannelEmails() {
-        try {
-            const updated = await this.larkService.enrichChannelEmailsFromUsers();
-            return { message: `Email enrichment completed: ${updated} channels updated`, updated };
-        } catch (error) {
-            return { message: 'Email enrichment failed', error: error.message };
-        }
+        return { message: 'owner_id enrichment: no-op (resolved inline during sync)', updated: 0 };
     }
 
     @Post('sync-doda-channel')

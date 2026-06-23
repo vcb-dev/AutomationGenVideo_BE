@@ -14,8 +14,10 @@ import {
   UploadedFile,
   Res,
   NotFoundException,
+  BadRequestException,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { Response } from "express";
 import * as path from "path";
 import * as fs from "fs";
@@ -37,6 +39,8 @@ import { TaskAutoCatalogService } from "./task-auto-catalog.service";
 import { TaskAutoKpiService } from "./task-auto-kpi.service";
 import { TaskAutoAssignService } from "./task-auto-assign.service";
 import { TaskAutoVideoService } from "./task-auto-video.service";
+import { GoogleDriveStorageService } from "../social-publishing/upload/google-drive-storage.service";
+import * as os from "os";
 
 import {
   CreateTaskDto,
@@ -81,6 +85,7 @@ export class TaskAutoController {
     private kpi: TaskAutoKpiService,
     private assign: TaskAutoAssignService,
     private video: TaskAutoVideoService,
+    private googleDrive: GoogleDriveStorageService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -150,32 +155,12 @@ export class TaskAutoController {
 
   // ── Video submission ──────────────────────────────────────────────────────
 
-  @Post("tasks/:id/attach-video")
-  @ApiOperation({
-    summary: "Gắn video đã upload vào task (lưu vào bộ nhớ tạm)",
-  })
-  attachTaskVideo(
-    @Param("id") id: string,
-    @Body()
-    body: {
-      filename: string;
-      originalname: string;
-      mimetype: string;
-      size: number;
-      url: string;
-      storage: string;
-    },
-    @Request() req: any,
-  ) {
-    return this.video.attachVideo(id, req.user.id, body);
-  }
-
   @Post("tasks/:id/promote-video")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "LEADER chuyển video tạm vào thư viện media" })
-  promoteTaskVideo(@Param("id") id: string, @Request() req: any) {
-    return this.video.promoteToLibrary(id, req.user.id);
+  @ApiOperation({ summary: "LEADER thủ công promote video tạm lên Drive" })
+  promoteTaskVideo(@Param("id") id: string) {
+    return this.video.uploadPendingToDrive(id);
   }
 
   @Delete("tasks/:id/pending-video")
@@ -184,6 +169,56 @@ export class TaskAutoController {
   })
   deleteTaskVideo(@Param("id") id: string, @Request() req: any) {
     return this.video.removeVideo(id, req.user.id, req.user.roles ?? []);
+  }
+
+  // ── Local chunked video upload (file stays local until task is approved) ───
+
+  @Post("tasks/:id/upload-video/init")
+  @ApiOperation({ summary: "Khởi tạo upload video tạm (local, chưa lên Drive)" })
+  initVideoUpload(
+    @Param("id") id: string,
+    @Body() body: { filename: string; mimetype: string; totalSize: number },
+    @Request() req: any,
+  ) {
+    return this.video.initChunkUpload(id, req.user.id, body);
+  }
+
+  @Post("tasks/:id/upload-video/chunk")
+  @ApiOperation({ summary: "Gửi một chunk của video lên server" })
+  @UseInterceptors(FileInterceptor("chunk", {
+    storage: memoryStorage(),
+    limits: { fileSize: 12 * 1024 * 1024 }, // 12 MB per chunk
+  }))
+  async receiveVideoChunk(
+    @Param("id") id: string,
+    @UploadedFile() chunk: Express.Multer.File,
+    @Body("uploadId") uploadId: string,
+    @Body("chunkIndex") chunkIndex: string,
+    @Request() req: any,
+  ) {
+    if (!chunk) throw new BadRequestException("Thiếu dữ liệu chunk");
+    if (!uploadId) throw new BadRequestException("Thiếu uploadId");
+    return this.video.receiveChunk(uploadId, req.user.id, chunk.buffer, parseInt(chunkIndex, 10));
+  }
+
+  @Post("tasks/:id/upload-video/finish")
+  @ApiOperation({ summary: "Hoàn tất upload: ghép chunks, đăng ký video tạm" })
+  finishVideoUpload(
+    @Param("id") id: string,
+    @Body() body: { uploadId: string },
+    @Request() req: any,
+  ) {
+    if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
+    return this.video.finishChunkUpload(body.uploadId, req.user.id, id);
+  }
+
+  @Get("tasks/:id/pending-video")
+  @ApiOperation({ summary: "Stream video tạm để xem trước (hỗ trợ Range)" })
+  async streamPendingVideo(
+    @Param("id") id: string,
+    @Res() res: Response,
+  ) {
+    return this.video.streamVideo(id, res);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -249,8 +284,11 @@ export class TaskAutoController {
 
   @Get("teams/:id/products")
   @ApiOperation({ summary: "List products in team inventory" })
-  listTeamProducts(@Param("id") teamId: string) {
-    return this.teams.listTeamProducts(teamId);
+  listTeamProducts(
+    @Param("id") teamId: string,
+    @Query("brand_type") brandType?: string,
+  ) {
+    return this.teams.listTeamProducts(teamId, brandType as any);
   }
 
   @Post("teams/:id/products")
@@ -294,8 +332,11 @@ export class TaskAutoController {
 
   @Get("teams/:id/contents")
   @ApiOperation({ summary: "List contents in team storage" })
-  listTeamContents(@Param("id") teamId: string) {
-    return this.teams.listTeamContents(teamId);
+  listTeamContents(
+    @Param("id") teamId: string,
+    @Query("brand_type") brandType?: string,
+  ) {
+    return this.teams.listTeamContents(teamId, brandType as any);
   }
 
   @Post("teams/:id/contents")
@@ -368,7 +409,7 @@ export class TaskAutoController {
   @ApiOperation({ summary: "Upload product image — returns { url }" })
   @ApiConsumes("multipart/form-data")
   @UseInterceptors(FileInterceptor("image"))
-  uploadProductImage(
+  async uploadProductImage(
     @UploadedFile() file: Express.Multer.File,
     @Request() req: any,
   ) {
@@ -378,13 +419,26 @@ export class TaskAutoController {
       throw new NotFoundException(
         "Only image files are allowed (jpg, png, gif, webp)",
       );
-    if (!fs.existsSync(PRODUCT_IMAGES_DIR))
-      fs.mkdirSync(PRODUCT_IMAGES_DIR, { recursive: true });
     const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
     const filename = `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+
+    if (this.googleDrive.isAvailable()) {
+      const tmpPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(tmpPath, file.buffer);
+      try {
+        const result = await this.googleDrive.uploadFromPath(tmpPath, filename, file.mimetype, req.user, { subfolder: "products" });
+        return { url: result.url, storage: "google_drive" };
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+
+    // Fallback: local disk
+    if (!fs.existsSync(PRODUCT_IMAGES_DIR))
+      fs.mkdirSync(PRODUCT_IMAGES_DIR, { recursive: true });
     fs.writeFileSync(path.join(PRODUCT_IMAGES_DIR, filename), file.buffer);
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-    return { url: `${baseUrl}/api/task-auto/images/${filename}` };
+    return { url: `${baseUrl}/api/task-auto/images/${filename}`, storage: "local" };
   }
 
   @Get("images/:filename")
@@ -411,7 +465,7 @@ export class TaskAutoController {
   @ApiOperation({ summary: "Upload content voice file — returns { url }" })
   @ApiConsumes("multipart/form-data")
   @UseInterceptors(FileInterceptor("voice"))
-  uploadVoiceFile(
+  async uploadVoiceFile(
     @UploadedFile() file: Express.Multer.File,
     @Request() req: any,
   ) {
@@ -422,13 +476,26 @@ export class TaskAutoController {
       throw new NotFoundException(
         "Only audio files are allowed (mp3, wav, ogg, aac, flac, m4a)",
       );
-    const voiceDir = path.join(process.cwd(), "uploads", "voices");
-    if (!fs.existsSync(voiceDir)) fs.mkdirSync(voiceDir, { recursive: true });
     const ext = path.extname(file.originalname).toLowerCase() || ".mp3";
     const filename = `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+
+    if (this.googleDrive.isAvailable()) {
+      const tmpPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(tmpPath, file.buffer);
+      try {
+        const result = await this.googleDrive.uploadFromPath(tmpPath, filename, file.mimetype, req.user, { subfolder: "voices" });
+        return { url: result.url, storage: "google_drive" };
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+
+    // Fallback: local disk
+    const voiceDir = path.join(process.cwd(), "uploads", "voices");
+    if (!fs.existsSync(voiceDir)) fs.mkdirSync(voiceDir, { recursive: true });
     fs.writeFileSync(path.join(voiceDir, filename), file.buffer);
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-    return { url: `${baseUrl}/api/task-auto/voices/${filename}` };
+    return { url: `${baseUrl}/api/task-auto/voices/${filename}`, storage: "local" };
   }
 
   @Get("voices/:filename")
@@ -451,6 +518,72 @@ export class TaskAutoController {
     res.setHeader("Content-Type", mime[ext] || "audio/mpeg");
     res.setHeader("Cache-Control", "public, max-age=604800");
     res.setHeader("Accept-Ranges", "bytes");
+    fs.createReadStream(filePath).pipe(res);
+  }
+
+  @Post("upload-content")
+  @ApiOperation({ summary: "Upload content file (PDF, Word, Excel…) — returns { url }" })
+  @ApiConsumes("multipart/form-data")
+  @UseInterceptors(FileInterceptor("file"))
+  async uploadContentFile(
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req: any,
+  ) {
+    if (!file) throw new NotFoundException("No file provided");
+    const ALLOWED_MIME = [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "text/plain",
+    ];
+    if (!ALLOWED_MIME.includes(file.mimetype))
+      throw new NotFoundException("Chỉ chấp nhận PDF, Word, Excel, PowerPoint, TXT");
+    const ext = path.extname(file.originalname).toLowerCase() || ".pdf";
+    const filename = `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+
+    if (this.googleDrive.isAvailable()) {
+      const tmpPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(tmpPath, file.buffer);
+      try {
+        const result = await this.googleDrive.uploadFromPath(tmpPath, filename, file.mimetype, req.user, { subfolder: "content-files" });
+        return { url: result.url, storage: "google_drive" };
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+
+    // Fallback: local disk
+    const contentDir = path.join(process.cwd(), "uploads", "content-files");
+    if (!fs.existsSync(contentDir)) fs.mkdirSync(contentDir, { recursive: true });
+    fs.writeFileSync(path.join(contentDir, filename), file.buffer);
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    return { url: `${baseUrl}/api/task-auto/content-files/${filename}`, storage: "local" };
+  }
+
+  @Get("content-files/:filename")
+  @ApiOperation({ summary: "Serve content file" })
+  serveContentFile(@Param("filename") filename: string, @Res() res: Response) {
+    const safeName = path.basename(filename);
+    const filePath = path.join(process.cwd(), "uploads", "content-files", safeName);
+    if (!fs.existsSync(filePath)) throw new NotFoundException("File not found");
+    const ext = path.extname(safeName).toLowerCase();
+    const mime: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".doc": "application/msword",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xls": "application/vnd.ms-excel",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".ppt": "application/vnd.ms-powerpoint",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".txt": "text/plain",
+    };
+    res.setHeader("Content-Type", mime[ext] || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+    res.setHeader("Cache-Control", "public, max-age=604800");
     fs.createReadStream(filePath).pipe(res);
   }
 
@@ -518,14 +651,14 @@ export class TaskAutoController {
 
   @Get("product-lines")
   @ApiOperation({ summary: "List product lines" })
-  getProductLines() {
-    return this.catalog.findProductLines();
+  getProductLines(@Query("brand_type") brandType?: string) {
+    return this.catalog.findProductLines(brandType);
   }
 
   @Get("materials")
   @ApiOperation({ summary: "List materials" })
-  getMaterials() {
-    return this.catalog.findMaterials();
+  getMaterials(@Query("brand_type") brandType?: string) {
+    return this.catalog.findMaterials(brandType);
   }
 
   // ─── Catalog — Contents ───────────────────────────────────────────────────
@@ -593,8 +726,8 @@ export class TaskAutoController {
 
   @Post("product-lines")
   @ApiOperation({ summary: "Create a product line (all roles)" })
-  createProductLine(@Body("name") name: string) {
-    return this.catalog.createProductLine(name);
+  createProductLine(@Body("name") name: string, @Body("brand_type") brandType: string) {
+    return this.catalog.createProductLine(name, brandType);
   }
 
   @Patch("product-lines/:id")
@@ -618,8 +751,8 @@ export class TaskAutoController {
 
   @Post("materials")
   @ApiOperation({ summary: "Create a material (all roles)" })
-  createMaterial(@Body("name") name: string) {
-    return this.catalog.createMaterial(name);
+  createMaterial(@Body("name") name: string, @Body("brand_type") brandType: string) {
+    return this.catalog.createMaterial(name, brandType);
   }
 
   @Delete("materials/:id")

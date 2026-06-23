@@ -21,7 +21,7 @@ import { SearchRecommendationModule } from './modules/search-recommendations/sea
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
-import { ChannelsModule } from "./modules/channels/channels.module";
+import { ChannelsModule } from "./modules/channelsTeam/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
 
 @Module({
