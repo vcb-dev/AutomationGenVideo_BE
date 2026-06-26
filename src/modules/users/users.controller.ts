@@ -153,6 +153,30 @@ export class UsersController {
     return this.usersService.reactivate(req.user.id, req.user.roles, id);
   }
 
+  @Get("available-managers")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get list of available managers for selection" })
+  @ApiResponse({
+    status: 200,
+    description: "List of managers",
+  })
+  async getAvailableManagers() {
+    return this.usersService.getAvailableManagers();
+  }
+
+  @Get("available-leaders")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get list of available leaders for selection" })
+  @ApiResponse({
+    status: 200,
+    description: "List of leaders",
+  })
+  async getAvailableLeaders() {
+    return this.usersService.getAvailableLeaders();
+  }
+
   @Get(":id")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -193,30 +217,6 @@ export class UsersController {
   @ApiResponse({ status: 404, description: "User not found" })
   remove(@Param("id") id: string) {
     return this.usersService.remove(id);
-  }
-
-  @Get("available-managers")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Get list of available managers for selection" })
-  @ApiResponse({
-    status: 200,
-    description: "List of managers",
-  })
-  async getAvailableManagers() {
-    return this.usersService.getAvailableManagers();
-  }
-
-  @Get("available-leaders")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Get list of available leaders for selection" })
-  @ApiResponse({
-    status: 200,
-    description: "List of leaders",
-  })
-  async getAvailableLeaders() {
-    return this.usersService.getAvailableLeaders();
   }
 
   @Patch("select-manager/:managerId")
