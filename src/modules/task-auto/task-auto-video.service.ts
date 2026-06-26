@@ -168,8 +168,13 @@ export class TaskAutoVideoService {
     fs.rmSync(sessionDir, { recursive: true, force: true })
 
     const { size } = fs.statSync(tmpPath)
-    const task = await this.prisma.task.findUnique({ where: { id: taskId }, select: { assignee_id: true } })
-    const userObj = task?.assignee_id ? { id: task.assignee_id } : null
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
+    })
+    const userObj = task?.assignee_id
+      ? { id: task.assignee_id, full_name: task.assignee?.full_name, email: task.assignee?.email }
+      : null
 
     // Upload thẳng lên Drive — Google Drive tự xử lý codec, không cần transcode
     this.logger.log(`[VideoUpload] Uploading task ${taskId} → Drive (${(size / 1024 / 1024).toFixed(1)}MB)...`)
@@ -197,6 +202,20 @@ export class TaskAutoVideoService {
 
     // result_url = webViewUrl để FE embed Drive iframe
     await this.prisma.task.update({ where: { id: taskId }, data: { result_url: webViewUrl } })
+
+    // Lưu ngay vào media library để hiển thị trong Thư viện media
+    if (task?.assignee_id) {
+      await this.library.save(task.assignee_id, {
+        filename: meta.filename,
+        originalname: meta.originalname,
+        mimetype: meta.mimetype || 'video/mp4',
+        size,
+        url: driveResult.url,
+        storage: 'google_drive',
+        drive_file_id: driveResult.fileId,
+        drive_web_view_url: webViewUrl,
+      }).catch(err => this.logger.warn(`[VideoUpload] library.save failed: ${err.message}`))
+    }
 
     this.logger.log(`[VideoUpload] ✅ ${uploadId} done — task ${taskId}`)
     return { url: webViewUrl, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, storage: 'google_drive' }
@@ -242,21 +261,16 @@ export class TaskAutoVideoService {
 
     if (!pending) { this.logger.warn(`[VideoApprove] Task ${taskId}: không có video pending`); return null }
 
-    const task = await this.prisma.task.findUnique({ where: { id: taskId }, select: { assignee_id: true } })
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
+    })
     const ownerId = task?.assignee_id
 
-    // Video đã trên Drive (upload khi nộp) — chỉ cần lưu vào media library
+    // Video đã trên Drive (upload khi nộp) — media library đã lưu lúc nộp, chỉ cần xóa pending record
     if (pending.storage === 'google_drive') {
-      if (ownerId) {
-        await this.library.save(ownerId, {
-          filename: pending.filename, originalname: pending.originalname,
-          mimetype: pending.mimetype, size: pending.size,
-          url: pending.url, storage: 'google_drive',
-          drive_file_id: pending.drive_file_id,
-        }).catch(err => this.logger.warn(`[VideoApprove] library.save: ${err.message}`))
-      }
       await (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {})
-      this.logger.log(`[VideoApprove] ✅ Task ${taskId} approved — video already on Drive`)
+      this.logger.log(`[VideoApprove] ✅ Task ${taskId} approved — video already on Drive and in media library`)
       return pending.url
     }
 
@@ -269,7 +283,9 @@ export class TaskAutoVideoService {
 
     this.logger.log(`[VideoApprove] Uploading task ${taskId} → Drive (${(pending.size / 1024 / 1024).toFixed(1)}MB)`)
 
-    const userObj = ownerId ? { id: ownerId } : null
+    const userObj = ownerId
+      ? { id: ownerId, full_name: task.assignee?.full_name, email: task.assignee?.email }
+      : null
     let driveUrl: string
     let driveFileId: string | undefined
 
@@ -355,6 +371,10 @@ export class TaskAutoVideoService {
     if (pending.storage === 'google_drive' && pending.drive_file_id) {
       await this.googleDrive.delete(pending.drive_file_id).catch((err: any) =>
         this.logger.warn(`[VideoCleanup] Could not delete Drive file ${pending.drive_file_id}: ${err.message}`)
+      )
+      // Xóa luôn record trong media library (đã lưu lúc nộp task)
+      await this.library.removeByDriveFileId(pending.drive_file_id).catch((err: any) =>
+        this.logger.warn(`[VideoCleanup] Could not remove library entry for Drive file ${pending.drive_file_id}: ${err.message}`)
       )
     } else if (pending.storage === 'local') {
       const localPath = this.taskVideoPath(pending.task_id, '.mp4')

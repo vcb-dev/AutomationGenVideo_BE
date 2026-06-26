@@ -17,24 +17,105 @@ import {
 
 @Injectable()
 export class TaskAutoTasksService {
-  private readonly logger = new Logger(TaskAutoTasksService.name)
+  private readonly logger = new Logger(TaskAutoTasksService.name);
 
   constructor(
     private prisma: PrismaService,
     private videoService: TaskAutoVideoService,
-  ) {}
+  ) { }
 
   private taskInclude = {
     team: { select: { id: true, name: true } },
     content: { select: { id: true, title: true, market: true, status: true } },
-    product: { select: { id: true, name: true, sku: true } },
+    product: {
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        sources: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+          },
+        },
+      },
+    },
+    editor_product: {
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        image_url: true,
+        image_urls: true,
+        price: true,
+        market: true,
+        price_segment: true,
+        priority_score: true,
+        material: { select: { id: true, name: true } },
+        product_line: { select: { id: true, name: true } },
+        editor_sources: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+          },
+        },
+      },
+    },
+    team_product: {
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        image_url: true,
+        image_urls: true,
+        price: true,
+        market: true,
+        price_segment: true,
+        priority_score: true,
+        material: { select: { id: true, name: true } },
+        product_line: { select: { id: true, name: true } },
+        team_sources: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+          },
+        },
+      },
+    },
+    editor_content: {
+      select: {
+        id: true,
+        title: true,
+        market: true,
+        script: true,
+        body: true,
+        file_content_url: true,
+        voice_url: true,
+        content_line: { select: { id: true, name: true } },
+      },
+    },
+    team_content: {
+      select: {
+        id: true,
+        title: true,
+        market: true,
+        script: true,
+        body: true,
+        file_content_url: true,
+        voice_url: true,
+        content_line: { select: { id: true, name: true } },
+      },
+    },
     content_line: { select: { id: true, name: true } },
     assignee: { select: { id: true, full_name: true, email: true } },
     reviewed_by: { select: { id: true, full_name: true } },
-    source_outro:    { select: { id: true, name: true, type: true } },
-    source_extra:    { select: { id: true, name: true, type: true } },
+    source_outro: { select: { id: true, name: true, type: true } },
+    source_extra: { select: { id: true, name: true, type: true } },
     source_workshop: { select: { id: true, name: true, type: true } },
-    source_huyk:     { select: { id: true, name: true, type: true } },
+    source_huyk: { select: { id: true, name: true, type: true } },
     pending_video: true,
   };
 
@@ -101,8 +182,17 @@ export class TaskAutoTasksService {
         notifications: { take: 5, orderBy: { created_at: "desc" } },
       },
     });
+    const productSources =
+      task.product?.sources ??
+      task.editor_product?.editor_sources ??
+      task.team_product?.team_sources ??
+      [];
+
     if (!task) throw new NotFoundException("Task not found");
-    return task;
+    return {
+      ...task,
+      product_sources: productSources,
+    };
   }
 
   async create(dto: CreateTaskDto, creatorId: string, roles: string[] = []) {
@@ -115,15 +205,41 @@ export class TaskAutoTasksService {
       dto = { ...dto, assignee_id: creatorId };
     }
 
-    const [team, content] = await Promise.all([
-      this.prisma.team.findUnique({ where: { id: dto.team_id } }),
-      this.prisma.content.findUnique({
-        where: { id: dto.content_id },
-        select: { id: true, content_line_id: true },
-      }),
-    ]);
+    if (!dto.content_id && !dto.editor_content_id && !dto.team_content_id) {
+      throw new BadRequestException(
+        "Cần cung cấp content_id, editor_content_id hoặc team_content_id",
+      );
+    }
+
+    const team = await this.prisma.team.findUnique({
+      where: { id: dto.team_id },
+    });
     if (!team) throw new NotFoundException("Team not found");
-    if (!content) throw new NotFoundException("Content not found");
+
+    // Resolve content_line_id từ kho tương ứng
+    let resolvedContentLineId: string | null = null;
+    if (dto.content_id) {
+      const content = await this.prisma.content.findUnique({
+        where: { id: dto.content_id },
+        select: { content_line_id: true },
+      });
+      if (!content) throw new NotFoundException("Content not found");
+      resolvedContentLineId = content.content_line_id;
+    } else if (dto.editor_content_id) {
+      const ec = await this.prisma.editorContent.findUnique({
+        where: { id: dto.editor_content_id },
+        select: { content_line_id: true },
+      });
+      if (!ec) throw new NotFoundException("EditorContent not found");
+      resolvedContentLineId = ec.content_line_id;
+    } else if (dto.team_content_id) {
+      const tc = await this.prisma.teamContent.findUnique({
+        where: { id: dto.team_content_id },
+        select: { content_line_id: true },
+      });
+      if (!tc) throw new NotFoundException("TeamContent not found");
+      resolvedContentLineId = tc.content_line_id;
+    }
 
     // Editor phải là thành viên của team đó — lookup thẳng qua unique user_id
     if (!isPrivileged) {
@@ -136,13 +252,26 @@ export class TaskAutoTasksService {
       }
     }
 
-    // Kiểm tra trùng task: cùng editor + content + product
-    if (dto.assignee_id && dto.product_id) {
+    // Kiểm tra trùng task: cùng editor + content + product (bất kỳ loại nào)
+    const hasProduct = dto.product_id || dto.editor_product_id || dto.team_product_id;
+    if (dto.assignee_id && hasProduct) {
       const duplicate = await this.prisma.task.findFirst({
         where: {
           assignee_id: dto.assignee_id,
-          content_id: dto.content_id,
-          product_id: dto.product_id,
+          ...(dto.content_id ? { content_id: dto.content_id } : {}),
+          ...(dto.editor_content_id
+            ? { editor_content_id: dto.editor_content_id }
+            : {}),
+          ...(dto.team_content_id
+            ? { team_content_id: dto.team_content_id }
+            : {}),
+          ...(dto.product_id ? { product_id: dto.product_id } : {}),
+          ...(dto.editor_product_id
+            ? { editor_product_id: dto.editor_product_id }
+            : {}),
+          ...(dto.team_product_id
+            ? { team_product_id: dto.team_product_id }
+            : {}),
         },
         select: { id: true },
       });
@@ -156,13 +285,17 @@ export class TaskAutoTasksService {
     const task = await this.prisma.task.create({
       data: {
         team_id: dto.team_id,
-        content_id: dto.content_id,
+        content_id: dto.content_id ?? null,
+        editor_content_id: dto.editor_content_id ?? null,
+        team_content_id: dto.team_content_id ?? null,
         product_id: dto.product_id ?? null,
-        content_line_id: dto.content_line_id ?? content.content_line_id,
-        source_outro_id:    dto.source_outro_id,
-        source_extra_id:    dto.source_extra_id,
+        editor_product_id: dto.editor_product_id ?? null,
+        team_product_id: dto.team_product_id ?? null,
+        content_line_id: dto.content_line_id ?? resolvedContentLineId,
+        source_outro_id: dto.source_outro_id,
+        source_extra_id: dto.source_extra_id,
         source_workshop_id: dto.source_workshop_id,
-        source_huyk_id:     dto.source_huyk_id,
+        source_huyk_id: dto.source_huyk_id,
         assignee_id: dto.assignee_id,
         deadline: dto.deadline ? new Date(dto.deadline) : undefined,
         status: dto.assignee_id ? "ASSIGNED" : "PENDING",
@@ -215,6 +348,11 @@ export class TaskAutoTasksService {
     if (dto.deadline) data.deadline = new Date(dto.deadline);
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;
+      if (dto.assignee_id && task.status === 'PENDING') {
+        data.status = 'ASSIGNED';
+      } else if (!dto.assignee_id && task.status === 'ASSIGNED') {
+        data.status = 'PENDING';
+      }
     }
     if (dto.status === "SUBMITTED") data.submitted_at = new Date();
     if (dto.status === "APPROVED" || dto.status === "REJECTED") {
@@ -234,6 +372,9 @@ export class TaskAutoTasksService {
     });
 
     // Notifications
+    if (dto.assignee_id && !task.assignee_id) {
+      await this.notify(dto.assignee_id, "TASK_ASSIGNED", "Task mới được giao cho bạn", id);
+    }
     if (dto.status === "SUBMITTED" && task.assignee_id) {
       const team = await this.prisma.team.findUnique({
         where: { id: task.team_id },
@@ -330,14 +471,18 @@ export class TaskAutoTasksService {
     if (dto.action === "APPROVED") {
       // Video đã trên Drive — chỉ cần lưu vào media library và dọn pending record
       await this.videoService.uploadPendingToDrive(id).catch(err =>
-        this.logger.warn(`[review] uploadPendingToDrive failed for task ${id}: ${err.message}`)
+        this.logger.warn(
+          `[review] uploadPendingToDrive failed for task ${id}: ${err.message}`,
+        ),
       );
     }
 
     if (dto.action === "REJECTED") {
       // Xóa Drive file (nếu có) khi task bị từ chối — editor sẽ upload lại khi nộp lại
       await this.videoService.deletePendingVideo(id).catch(err =>
-        this.logger.warn(`[review] deletePendingVideo failed for task ${id}: ${err.message}`)
+        this.logger.warn(
+          `[review] deletePendingVideo failed for task ${id}: ${err.message}`,
+        ),
       );
     }
 
@@ -581,24 +726,24 @@ export class TaskAutoTasksService {
       overdue,
       kpi: myKpi
         ? {
-            month: myKpi.month,
-            completed,
-            // Video
-            total_target: myKpi.total_target,
-            video_win: myKpi.video_win,
-            video_fail: myKpi.video_fail,
-            // Content
-            kpi_extra: myKpi.kpi_extra,
-            content_new: myKpi.content_new,
-            content_collected: myKpi.content_collected,
-            content_win_cover: myKpi.content_win_cover,
-            // Product
-            product_planned: myKpi.product_planned,
-            product_win_collect: myKpi.product_win_collect,
-            video_traffic: myKpi.video_traffic,
-            video_gmv: myKpi.video_gmv,
-            video_profit: myKpi.video_profit,
-          }
+          month: myKpi.month,
+          completed,
+          // Video
+          total_target: myKpi.total_target,
+          video_win: myKpi.video_win,
+          video_fail: myKpi.video_fail,
+          // Content
+          kpi_extra: myKpi.kpi_extra,
+          content_new: myKpi.content_new,
+          content_collected: myKpi.content_collected,
+          content_win_cover: myKpi.content_win_cover,
+          // Product
+          product_planned: myKpi.product_planned,
+          product_win_collect: myKpi.product_win_collect,
+          video_traffic: myKpi.video_traffic,
+          video_gmv: myKpi.video_gmv,
+          video_profit: myKpi.video_profit,
+        }
         : null,
     };
   }

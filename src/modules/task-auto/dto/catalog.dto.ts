@@ -41,7 +41,6 @@ export class CreateProductDto {
   priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -78,11 +77,6 @@ export class QueryProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
-  @ApiPropertyOptional({ enum: ["global", "personal", "all"] })
-  @IsString()
-  @IsOptional()
-  owner?: "global" | "personal" | "all";
   @ApiPropertyOptional()
   @IsBoolean()
   @IsOptional()
@@ -112,7 +106,6 @@ export class CreateContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
   @ApiPropertyOptional({ enum: ["GLOBAL", "VIETNAM"] })
   @IsEnum(["GLOBAL", "VIETNAM"])
   @IsOptional()
@@ -142,12 +135,7 @@ export class QueryContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
-  @ApiPropertyOptional({ enum: ["global", "personal", "all"] })
-  @IsString()
-  @IsOptional()
-  owner?: "global" | "personal" | "all";
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
@@ -177,8 +165,6 @@ export class CreateSourceDto {
   @ApiProperty() @IsString() link: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -188,22 +174,102 @@ export class UpdateSourceDto {
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
-// owner: 'global' = team_id null & user_id null; 'team' = team_id set; 'editor' = user_id set
+// ─── Team Product (standalone) ───────────────────────────────────────────────
+
+export class CreateTeamProductDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_product_id?: string;
+
+  @ApiPropertyOptional() @IsString() @IsOptional() sku?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
+  @ApiPropertyOptional() @IsArray() @IsString({ each: true }) @IsOptional() image_urls?: string[];
+  @ApiPropertyOptional() @IsNumber() @IsOptional() @Type(() => Number) price?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
+  @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class UpdateTeamProductDto {
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
+  @ApiPropertyOptional() @IsArray() @IsString({ each: true }) @IsOptional() image_urls?: string[];
+  @ApiPropertyOptional() @IsNumber() @IsOptional() @Type(() => Number) price?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
+  @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+// ─── Team Content (standalone) ───────────────────────────────────────────────
+
+export class CreateTeamContentDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_content_id?: string;
+
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+}
+
+export class UpdateTeamContentDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsEnum(['AVAILABLE', 'IN_TASK', 'USED', 'ARCHIVED']) @IsOptional() status?: string;
+}
+
+// ─── Team Source (standalone) ─────────────────────────────────────────────────
+
+export class CreateTeamSourceDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_source_id?: string;
+
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK'] })
+  @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class UpdateTeamSourceDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
 export class QuerySourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() user_id?: string;
-  @ApiPropertyOptional({ enum: ["global", "team", "editor", "all"] })
-  @IsString()
-  @IsOptional()
-  owner?: "global" | "team" | "editor" | "all";
   @ApiPropertyOptional()
   @IsBoolean()
   @IsOptional()
@@ -222,4 +288,124 @@ export class QuerySourceDto {
   @Min(1)
   @IsOptional()
   limit?: number = 50;
+}
+
+// ─── Editor Product ───────────────────────────────────────────────────────────
+
+export class CreateEditorProductDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_product_id?: string;
+
+  @ApiPropertyOptional() @IsString() @IsOptional() sku?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
+  @ApiPropertyOptional() @IsArray() @IsString({ each: true }) @IsOptional() image_urls?: string[];
+  @ApiPropertyOptional() @IsNumber() @IsOptional() @Type(() => Number) price?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
+  @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class UpdateEditorProductDto {
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() image_url?: string;
+  @ApiPropertyOptional() @IsArray() @IsString({ each: true }) @IsOptional() image_urls?: string[];
+  @ApiPropertyOptional() @IsNumber() @IsOptional() @Type(() => Number) price?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
+  @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class QueryEditorProductDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() @Type(() => Boolean) is_active?: boolean;
+  @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
+  @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
+}
+
+// ─── Editor Content ───────────────────────────────────────────────────────────
+
+export class CreateEditorContentDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_content_id?: string;
+
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+}
+
+export class UpdateEditorContentDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsEnum(['AVAILABLE', 'IN_TASK', 'USED', 'ARCHIVED']) @IsOptional() status?: string;
+}
+
+export class QueryEditorContentDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
+  @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
+}
+
+// ─── Editor Source ────────────────────────────────────────────────────────────
+
+export class CreateEditorSourceDto {
+  @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
+  @IsString() @IsOptional() source_source_id?: string;
+
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK'] })
+  @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class UpdateEditorSourceDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class QueryEditorSourceDto {
+  @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() type?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() @Type(() => Boolean) is_active?: boolean;
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
+  @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
 }

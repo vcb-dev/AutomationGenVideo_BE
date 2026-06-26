@@ -16,8 +16,12 @@ export enum TaskStatus {
 
 export class CreateTaskDto {
   @ApiProperty() @IsString() team_id: string
-  @ApiProperty() @IsString() content_id: string
+  @ApiPropertyOptional() @IsString() @IsOptional() content_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_content_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_content_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_outro_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_extra_id?: string
@@ -34,7 +38,11 @@ export class UpdateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() result_url?: string
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
   @ApiPropertyOptional() @IsString() @IsOptional() content_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_content_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_content_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_outro_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_extra_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_workshop_id?: string | null

@@ -37,7 +37,7 @@ import { TaskAutoTasksService } from "./task-auto-tasks.service";
 import { TaskAutoTeamsService } from "./task-auto-teams.service";
 import { TaskAutoCatalogService } from "./task-auto-catalog.service";
 import { TaskAutoKpiService } from "./task-auto-kpi.service";
-import { TaskAutoAssignService } from "./task-auto-assign.service";
+import { TaskAutoAssignService } from "./task-auto-assign/task-auto-assign.service";
 import { TaskAutoVideoService } from "./task-auto-video.service";
 import { GoogleDriveStorageService } from "../social-publishing/upload/google-drive-storage.service";
 import * as os from "os";
@@ -65,6 +65,21 @@ import {
   CreateSourceDto,
   UpdateSourceDto,
   QuerySourceDto,
+  CreateTeamProductDto,
+  UpdateTeamProductDto,
+  CreateTeamContentDto,
+  UpdateTeamContentDto,
+  CreateTeamSourceDto,
+  UpdateTeamSourceDto,
+  CreateEditorProductDto,
+  UpdateEditorProductDto,
+  QueryEditorProductDto,
+  CreateEditorContentDto,
+  UpdateEditorContentDto,
+  QueryEditorContentDto,
+  CreateEditorSourceDto,
+  UpdateEditorSourceDto,
+  QueryEditorSourceDto,
 } from "./dto/catalog.dto";
 import {
   UpsertTeamKpiDto,
@@ -283,7 +298,7 @@ export class TaskAutoController {
   // ─── Team Products ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/products")
-  @ApiOperation({ summary: "List products in team inventory" })
+  @ApiOperation({ summary: "List products in team inventory (standalone)" })
   listTeamProducts(
     @Param("id") teamId: string,
     @Query("brand_type") brandType?: string,
@@ -294,44 +309,56 @@ export class TaskAutoController {
   @Post("teams/:id/products")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
-  @ApiOperation({ summary: "Add product to team inventory" })
+  @ApiOperation({ summary: "Add product to team inventory (copy from catalog or create new)" })
   addTeamProduct(
     @Param("id") teamId: string,
-    @Body("product_id") productId: string,
+    @Body() dto: CreateTeamProductDto,
     @Request() req: any,
   ) {
-    return this.teams.addTeamProduct(
-      teamId,
-      productId,
-      req.user.id,
-      req.user.roles ?? [],
-    );
+    return this.teams.addTeamProduct(teamId, dto, req.user.id, req.user.roles ?? []);
   }
 
-  @Delete("teams/:id/products/:productId")
+  @Patch("teams/:id/products/:teamProductId")
   @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
-  @ApiOperation({
-    summary:
-      "Remove product from team inventory (leader/members of that team only)",
-  })
-  removeTeamProduct(
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Update team product (LEADER/ADMIN/MANAGER)" })
+  updateTeamProduct(
     @Param("id") teamId: string,
-    @Param("productId") productId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Body() dto: UpdateTeamProductDto,
     @Request() req: any,
   ) {
-    return this.teams.removeTeamProduct(
-      teamId,
-      productId,
-      req.user.id,
-      req.user.roles ?? [],
-    );
+    return this.teams.updateTeamProduct(teamId, teamProductId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("teams/:id/products/:teamProductId/push")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push team product to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushTeamProduct(
+    @Param("id") teamId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.pushTeamProductToGlobal(teamId, teamProductId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("teams/:id/products/:teamProductId")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Remove product from team inventory (LEADER/ADMIN/MANAGER)" })
+  removeTeamProduct(
+    @Param("id") teamId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.removeTeamProduct(teamId, teamProductId, req.user.id, req.user.roles ?? []);
   }
 
   // ─── Team Contents ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/contents")
-  @ApiOperation({ summary: "List contents in team storage" })
+  @ApiOperation({ summary: "List contents in team storage (standalone)" })
   listTeamContents(
     @Param("id") teamId: string,
     @Query("brand_type") brandType?: string,
@@ -342,55 +369,112 @@ export class TaskAutoController {
   @Post("teams/:id/contents")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
-  @ApiOperation({ summary: "Add content to team storage" })
+  @ApiOperation({ summary: "Add content to team storage (copy from catalog or create new)" })
   addTeamContent(
     @Param("id") teamId: string,
-    @Body("content_id") contentId: string,
+    @Body() dto: CreateTeamContentDto,
     @Request() req: any,
   ) {
-    return this.teams.addTeamContent(
-      teamId,
-      contentId,
-      req.user.id,
-      req.user.roles ?? [],
-    );
+    return this.teams.addTeamContent(teamId, dto, req.user.id, req.user.roles ?? []);
   }
 
-  @Delete("teams/:id/contents/:contentId")
+  @Patch("teams/:id/contents/:teamContentId")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Update team content (LEADER/ADMIN/MANAGER)" })
+  updateTeamContent(
+    @Param("id") teamId: string,
+    @Param("teamContentId") teamContentId: string,
+    @Body() dto: UpdateTeamContentDto,
+    @Request() req: any,
+  ) {
+    return this.teams.updateTeamContent(teamId, teamContentId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("teams/:id/contents/:teamContentId/push")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push team content to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushTeamContent(
+    @Param("id") teamId: string,
+    @Param("teamContentId") teamContentId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.pushTeamContentToGlobal(teamId, teamContentId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("teams/:id/contents/:teamContentId")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
   @ApiOperation({ summary: "Remove content from team storage" })
   removeTeamContent(
     @Param("id") teamId: string,
-    @Param("contentId") contentId: string,
+    @Param("teamContentId") teamContentId: string,
     @Request() req: any,
   ) {
-    return this.teams.removeTeamContent(
-      teamId,
-      contentId,
-      req.user.id,
-      req.user.roles ?? [],
-    );
+    return this.teams.removeTeamContent(teamId, teamContentId, req.user.id, req.user.roles ?? []);
   }
 
-  @Patch("teams/:id/contents/:contentId/push")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({
-    summary:
-      "Push content from team storage to global catalog (LEADER/ADMIN/MANAGER)",
-  })
-  pushTeamContent(
+  // ─── Team Sources ──────────────────────────────────────────────────────────
+
+  @Get("teams/:id/sources")
+  @ApiOperation({ summary: "List sources in team inventory" })
+  listTeamSources(
     @Param("id") teamId: string,
-    @Param("contentId") contentId: string,
+    @Query("brand_type") brandType?: string,
+    @Query("product_id") productId?: string,
+    @Query("team_product_id") teamProductId?: string,
+  ) {
+    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId);
+  }
+
+  @Post("teams/:id/sources")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
+  @ApiOperation({ summary: "Add source to team inventory (copy from catalog or create new)" })
+  addTeamSource(
+    @Param("id") teamId: string,
+    @Body() dto: CreateTeamSourceDto,
     @Request() req: any,
   ) {
-    return this.teams.pushTeamContentToGlobal(
-      teamId,
-      contentId,
-      req.user.id,
-      req.user.roles ?? [],
-    );
+    return this.teams.addTeamSource(teamId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("teams/:id/sources/:teamSourceId")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Update team source (LEADER/ADMIN/MANAGER)" })
+  updateTeamSource(
+    @Param("id") teamId: string,
+    @Param("teamSourceId") teamSourceId: string,
+    @Body() dto: UpdateTeamSourceDto,
+    @Request() req: any,
+  ) {
+    return this.teams.updateTeamSource(teamId, teamSourceId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("teams/:id/sources/:teamSourceId/push")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push team source to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushTeamSource(
+    @Param("id") teamId: string,
+    @Param("teamSourceId") teamSourceId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.pushTeamSourceToGlobal(teamId, teamSourceId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("teams/:id/sources/:teamSourceId")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Remove source from team inventory (LEADER/ADMIN/MANAGER)" })
+  removeTeamSource(
+    @Param("id") teamId: string,
+    @Param("teamSourceId") teamSourceId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.removeTeamSource(teamId, teamSourceId, req.user.id, req.user.roles ?? []);
   }
 
   @Get("users")
@@ -644,9 +728,11 @@ export class TaskAutoController {
   }
 
   @Delete("products/:id")
-  @ApiOperation({ summary: "Delete a product (own personal or ADMIN/MANAGER)" })
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Delete a product from global catalog (ADMIN/MANAGER)" })
   deleteProduct(@Param("id") id: string, @Request() req: any) {
-    return this.catalog.removeProduct(id, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeProduct(id, req.user.roles ?? []);
   }
 
   @Get("product-lines")
@@ -688,9 +774,11 @@ export class TaskAutoController {
   }
 
   @Delete("contents/:id")
-  @ApiOperation({ summary: "Delete a content (own personal or ADMIN/MANAGER)" })
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Delete a content from global catalog (ADMIN/MANAGER)" })
   deleteContent(@Param("id") id: string, @Request() req: any) {
-    return this.catalog.removeContent(id, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeContent(id, req.user.roles ?? []);
   }
 
   @Get("content-lines")
@@ -790,39 +878,238 @@ export class TaskAutoController {
   }
 
   @Delete("sources/:id")
-  @ApiOperation({ summary: "Delete a source (own personal or ADMIN/MANAGER)" })
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Delete a source from global catalog (ADMIN/MANAGER)" })
   deleteSource(@Param("id") id: string, @Request() req: any) {
-    return this.catalog.removeSource(id, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeSource(id, req.user.roles ?? []);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PERSONAL CATALOG — push to team
+  // EDITOR CATALOG — kho cá nhân của editor
+  // Route /editors/:userId/... — bản thân dùng ID của mình, ADMIN/MANAGER xem bất kỳ
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @Post("my-catalog/products/:id/push-to-team")
-  @ApiOperation({ summary: "Push personal product to team catalog" })
-  pushProductToTeam(
-    @Param("id") id: string,
+  // ─── Editor Products ───────────────────────────────────────────────────────
+
+  @Get("editors/:userId/products")
+  @ApiOperation({ summary: "List editor personal products" })
+  listEditorProducts(
+    @Param("userId") userId: string,
+    @Query() q: QueryEditorProductDto,
+  ) {
+    return this.catalog.findAllEditorProducts(userId, q);
+  }
+
+  @Post("editors/:userId/products")
+  @ApiOperation({ summary: "Add product to editor personal catalog (copy from global or create new)" })
+  addEditorProduct(
+    @Param("userId") userId: string,
+    @Body() dto: CreateEditorProductDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.createEditorProduct(userId, dto);
+  }
+
+  @Get("editors/:userId/products/:epId")
+  @ApiOperation({ summary: "Get editor product detail" })
+  getEditorProduct(
+    @Param("userId") userId: string,
+    @Param("epId") epId: string,
+  ) {
+    return this.catalog.findOneEditorProduct(epId);
+  }
+
+  @Patch("editors/:userId/products/:epId")
+  @ApiOperation({ summary: "Update editor product" })
+  updateEditorProduct(
+    @Param("userId") userId: string,
+    @Param("epId") epId: string,
+    @Body() dto: UpdateEditorProductDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.updateEditorProduct(epId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("editors/:userId/products/:epId")
+  @ApiOperation({ summary: "Delete editor product" })
+  removeEditorProduct(
+    @Param("userId") userId: string,
+    @Param("epId") epId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.removeEditorProduct(epId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/products/:epId/push-to-global")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push editor product to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushEditorProductToGlobal(
+    @Param("userId") userId: string,
+    @Param("epId") epId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.pushEditorProductToGlobal(epId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/products/:epId/push-to-team")
+  @ApiOperation({ summary: "Push editor product to team catalog" })
+  pushEditorProductToTeam(
+    @Param("userId") userId: string,
+    @Param("epId") epId: string,
     @Body("team_id") teamId: string,
     @Request() req: any,
   ) {
-    return this.catalog.pushProductToTeam(id, teamId, req.user.id);
+    return this.catalog.pushEditorProductToTeam(epId, teamId, req.user.id);
   }
 
-  @Post("my-catalog/contents/:id/push-to-team")
-  @ApiOperation({ summary: "Push personal content to team catalog" })
-  pushContentToTeam(
-    @Param("id") id: string,
+  // ─── Editor Contents ───────────────────────────────────────────────────────
+
+  @Get("editors/:userId/contents")
+  @ApiOperation({ summary: "List editor personal contents" })
+  listEditorContents(
+    @Param("userId") userId: string,
+    @Query() q: QueryEditorContentDto,
+  ) {
+    return this.catalog.findAllEditorContents(userId, q);
+  }
+
+  @Post("editors/:userId/contents")
+  @ApiOperation({ summary: "Add content to editor personal catalog (copy from global or create new)" })
+  addEditorContent(
+    @Param("userId") userId: string,
+    @Body() dto: CreateEditorContentDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.createEditorContent(userId, dto);
+  }
+
+  @Get("editors/:userId/contents/:ecId")
+  @ApiOperation({ summary: "Get editor content detail" })
+  getEditorContent(
+    @Param("userId") userId: string,
+    @Param("ecId") ecId: string,
+  ) {
+    return this.catalog.findOneEditorContent(ecId);
+  }
+
+  @Patch("editors/:userId/contents/:ecId")
+  @ApiOperation({ summary: "Update editor content" })
+  updateEditorContent(
+    @Param("userId") userId: string,
+    @Param("ecId") ecId: string,
+    @Body() dto: UpdateEditorContentDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.updateEditorContent(ecId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("editors/:userId/contents/:ecId")
+  @ApiOperation({ summary: "Delete editor content" })
+  removeEditorContent(
+    @Param("userId") userId: string,
+    @Param("ecId") ecId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.removeEditorContent(ecId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/contents/:ecId/push-to-global")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push editor content to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushEditorContentToGlobal(
+    @Param("userId") userId: string,
+    @Param("ecId") ecId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.pushEditorContentToGlobal(ecId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/contents/:ecId/push-to-team")
+  @ApiOperation({ summary: "Push editor content to team catalog" })
+  pushEditorContentToTeam(
+    @Param("userId") userId: string,
+    @Param("ecId") ecId: string,
     @Body("team_id") teamId: string,
     @Request() req: any,
   ) {
-    return this.catalog.pushContentToTeam(id, teamId, req.user.id);
+    return this.catalog.pushEditorContentToTeam(ecId, teamId, req.user.id);
   }
 
-  @Post("my-catalog/sources/:id/push-to-team")
-  @ApiOperation({ summary: "Push personal source to team catalog" })
-  pushSourceToTeam(@Param("id") id: string, @Body("team_id") teamId: string) {
-    return this.catalog.pushSourceToTeam(id, teamId);
+  // ─── Editor Sources ────────────────────────────────────────────────────────
+
+  @Get("editors/:userId/sources")
+  @ApiOperation({ summary: "List editor personal sources" })
+  listEditorSources(
+    @Param("userId") userId: string,
+    @Query() q: QueryEditorSourceDto,
+  ) {
+    return this.catalog.findAllEditorSources(userId, q);
+  }
+
+  @Post("editors/:userId/sources")
+  @ApiOperation({ summary: "Add source to editor personal catalog (copy from global or create new)" })
+  addEditorSource(
+    @Param("userId") userId: string,
+    @Body() dto: CreateEditorSourceDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.createEditorSource(userId, dto);
+  }
+
+  @Get("editors/:userId/sources/:esId")
+  @ApiOperation({ summary: "Get editor source detail" })
+  getEditorSource(
+    @Param("userId") userId: string,
+    @Param("esId") esId: string,
+  ) {
+    return this.catalog.findOneEditorSource(esId);
+  }
+
+  @Patch("editors/:userId/sources/:esId")
+  @ApiOperation({ summary: "Update editor source" })
+  updateEditorSource(
+    @Param("userId") userId: string,
+    @Param("esId") esId: string,
+    @Body() dto: UpdateEditorSourceDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.updateEditorSource(esId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("editors/:userId/sources/:esId")
+  @ApiOperation({ summary: "Delete editor source" })
+  removeEditorSource(
+    @Param("userId") userId: string,
+    @Param("esId") esId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.removeEditorSource(esId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/sources/:esId/push-to-global")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Push editor source to global catalog (LEADER/ADMIN/MANAGER)" })
+  pushEditorSourceToGlobal(
+    @Param("userId") userId: string,
+    @Param("esId") esId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.pushEditorSourceToGlobal(esId, req.user.id, req.user.roles ?? []);
+  }
+
+  @Patch("editors/:userId/sources/:esId/push-to-team")
+  @ApiOperation({ summary: "Push editor source to team catalog" })
+  pushEditorSourceToTeam(
+    @Param("userId") userId: string,
+    @Param("esId") esId: string,
+    @Body("team_id") teamId: string,
+    @Request() req: any,
+  ) {
+    return this.catalog.pushEditorSourceToTeam(esId, teamId, req.user.id);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
