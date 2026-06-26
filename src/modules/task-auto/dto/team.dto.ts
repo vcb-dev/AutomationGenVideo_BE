@@ -1,9 +1,11 @@
-import { IsString, IsOptional, IsBoolean, IsArray } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEnum } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
+import { BrandType } from '@prisma/client'
 
 export class CreateTeamDto {
   @ApiProperty() @IsString() name: string
   @ApiPropertyOptional() @IsString() @IsOptional() leader_id?: string
+  @ApiPropertyOptional({ enum: BrandType }) @IsEnum(BrandType) @IsOptional() brand_type?: BrandType
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean
   @ApiPropertyOptional({ type: [String] })
   @IsArray() @IsString({ each: true }) @IsOptional() member_ids?: string[]
@@ -12,6 +14,7 @@ export class CreateTeamDto {
 export class UpdateTeamDto {
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string
   @ApiPropertyOptional() @IsString() @IsOptional() leader_id?: string
+  @ApiPropertyOptional({ enum: BrandType }) @IsEnum(BrandType) @IsOptional() brand_type?: BrandType
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean
   @ApiPropertyOptional({ type: [String] })
   @IsArray() @IsString({ each: true }) @IsOptional() member_ids?: string[]

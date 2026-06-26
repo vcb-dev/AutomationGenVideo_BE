@@ -1358,12 +1358,13 @@ enum BrandType {
 }
 
 model Team {
-  id         String   @id @default(uuid())
-  name       String   @unique
+  id         String    @id @default(uuid())
+  name       String    @unique
   leader_id  String?
-  is_active  Boolean  @default(true)
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  brand_type BrandType @default(TRANG_SUC)
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
 
   leader    User?        @relation("TeamLeaderOf", fields: [leader_id], references: [id])
   members   TeamMember[]
@@ -1375,6 +1376,7 @@ model Team {
   channels  Channel[]    @relation("ChannelTeam")
 
   @@index([leader_id])
+  @@index([brand_type])
   @@map("teams")
 }
 
@@ -1770,6 +1772,7 @@ model Content {
   tasks         Task[]
 
   @@index([status])
+  @@index([brand_type, status])
   @@index([content_line_id, status])
   @@index([added_by_id])
   @@map("contents")

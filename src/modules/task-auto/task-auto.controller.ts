@@ -263,9 +263,13 @@ export class TaskAutoController {
   @Put("teams/:id")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Update a team" })
-  updateTeam(@Param("id") id: string, @Body() dto: UpdateTeamDto) {
-    return this.teams.update(id, dto);
+  @ApiOperation({ summary: "Update a team. LEADER chỉ được đổi brand_type của team mình lead." })
+  updateTeam(
+    @Param("id") id: string,
+    @Body() dto: UpdateTeamDto,
+    @Request() req: any,
+  ) {
+    return this.teams.update(id, dto, req.user.id, req.user.roles ?? []);
   }
 
   @Delete("teams/:id")

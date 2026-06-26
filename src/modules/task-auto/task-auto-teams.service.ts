@@ -100,10 +100,27 @@ export class TaskAutoTeamsService {
     })
   }
 
-  async update(id: string, dto: UpdateTeamDto) {
-    await this.findOne(id)
+  async update(id: string, dto: UpdateTeamDto, userId: string, userRoles: string[]) {
+    const team = await this.findOne(id)
+
+    const isAdminOrManager = userRoles.includes('ADMIN') || userRoles.includes('MANAGER')
+    const isLeaderOnly =
+      userRoles.includes('LEADER') && !isAdminOrManager
+
+    // LEADER chỉ được sửa team mà mình đang lead
+    if (isLeaderOnly && team.leader_id !== userId) {
+      throw new ForbiddenException('LEADER chỉ được cập nhật team của mình')
+    }
 
     const { member_ids, ...rest } = dto
+
+    // LEADER không được thay đổi member_ids, name, is_active, leader_id
+    if (isLeaderOnly) {
+      if (member_ids !== undefined)    throw new ForbiddenException('LEADER không được thay đổi danh sách thành viên')
+      if (rest.name !== undefined)     throw new ForbiddenException('LEADER không được đổi tên team')
+      if (rest.is_active !== undefined) throw new ForbiddenException('LEADER không được thay đổi trạng thái team')
+      if (rest.leader_id !== undefined) throw new ForbiddenException('LEADER không được thay đổi leader')
+    }
 
     if (member_ids !== undefined) {
       // Replace all members atomically

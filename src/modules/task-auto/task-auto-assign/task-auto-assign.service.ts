@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
-import { AssignmentRunStatus } from "@prisma/client";
+import { AssignmentRunStatus, BrandType } from "@prisma/client";
 
 import { isWeekend, monthKey, addCalendarDays } from "./helpers/date.helpers";
 import { largestRemainder } from "./helpers/quota.helpers";
@@ -159,6 +159,7 @@ export class TaskAutoAssignService {
       for (const team of teams) {
         const result = await this.processTeam(
           team.id,
+          team.brand_type,
           now,
           month,
           monthStart,
@@ -202,6 +203,7 @@ export class TaskAutoAssignService {
 
   private async processTeam(
     teamId: string,
+    teamBrandType: BrandType,
     now: DateTime,
     month: string,
     monthStart: Date,
@@ -214,7 +216,7 @@ export class TaskAutoAssignService {
         select: { id: true, a_type: true },
       }),
       this.prisma.productLine.findMany({
-        where: { video_category: { not: null } },
+        where: { video_category: { not: null }, brand_type: teamBrandType },
         select: { id: true, video_category: true },
       }),
     ]);
@@ -236,113 +238,33 @@ export class TaskAutoAssignService {
     const { contentItems: teamContentItems, productItems: teamProductItems } =
       await this.getQuotaAllocations(teamId, month);
 
-    // ── Content pools ─────────────────────────────────────────────────────
-    const teamContentsRaw = await this.prisma.teamContent.findMany({
-      where: { team_id: teamId, status: { not: "ARCHIVED" } },
-      select: { id: true, content_line_id: true, source_content_id: true, added_at: true },
-      orderBy: { added_at: "asc" },
-    });
-    const teamContentPool: PoolContent[] = teamContentsRaw.map((tc) => ({
-      id: tc.id,
-      content_line_id: tc.content_line_id,
-      source: "team" as const,
-      source_content_id: tc.source_content_id,
-    }));
-    const teamSourceContentIds = new Set(
-      teamContentsRaw.filter((tc) => tc.source_content_id).map((tc) => tc.source_content_id!),
-    );
-
-    const allGlobalContents = await this.prisma.content.findMany({
-      where: {
-        status: { not: "ARCHIVED" },
-        ...(teamSourceContentIds.size > 0
-          ? { NOT: { id: { in: [...teamSourceContentIds] } } }
-          : {}),
-      },
-      select: { id: true, content_line_id: true },
-      orderBy: { created_at: "asc" },
-    });
-    const globalContentPool: PoolContent[] = allGlobalContents.map((c) => ({
-      id: c.id,
-      content_line_id: c.content_line_id,
-      source: "global" as const,
-      source_content_id: null,
-    }));
-
-    // ── Product pools ─────────────────────────────────────────────────────
-    const teamProductsRaw = await this.prisma.teamProduct.findMany({
-      where: { team_id: teamId, is_active: true },
-      select: { id: true, product_line_id: true, priority_score: true, source_product_id: true },
-      orderBy: { priority_score: "desc" },
-    });
-    const teamProductPool: PoolProduct[] = teamProductsRaw.map((tp) => ({
-      id: tp.id,
-      product_line_id: tp.product_line_id,
-      priority_score: tp.priority_score,
-      source: "team" as const,
-      source_product_id: tp.source_product_id,
-    }));
-    const teamSourceProductIds = new Set(
-      teamProductsRaw.filter((tp) => tp.source_product_id).map((tp) => tp.source_product_id!),
-    );
-
-    const globalProductsRaw = await this.prisma.product.findMany({
-      where: {
-        is_active: true,
-        ...(teamSourceProductIds.size > 0
-          ? { NOT: { id: { in: [...teamSourceProductIds] } } }
-          : {}),
-      },
-      select: { id: true, product_line_id: true, priority_score: true },
-      orderBy: { priority_score: "desc" },
-    });
-    const globalProductPool: PoolProduct[] = globalProductsRaw.map((p) => ({
-      id: p.id,
-      product_line_id: p.product_line_id,
-      priority_score: p.priority_score,
-      source: "global" as const,
-      source_product_id: null,
-    }));
-
-    // ── Personal pools (batch) ────────────────────────────────────────────
     const editorIds = editors.map((e) => e.userId);
 
-    const personalContentsRaw = await this.prisma.editorContent.findMany({
-      where: { user_id: { in: editorIds }, status: { not: "ARCHIVED" } },
-      select: { id: true, content_line_id: true, source_content_id: true, user_id: true },
-      orderBy: { added_at: "asc" },
-    });
-    const personalContentsByEditor = new Map<string, PoolContent[]>();
-    for (const c of personalContentsRaw) {
-      if (!personalContentsByEditor.has(c.user_id))
-        personalContentsByEditor.set(c.user_id, []);
-      personalContentsByEditor.get(c.user_id)!.push({
-        id: c.id,
-        content_line_id: c.content_line_id,
-        source: "personal",
-        source_content_id: c.source_content_id,
-      });
-    }
+    const {
+      teamContentPool,
+      globalContentPool,
+      teamProductPool,
+      globalProductPool,
+      personalContentsByEditor,
+      personalProductsByEditor,
+    } = await this.buildContentProductPoolsByBrandType(
+      teamBrandType,
+      teamId,
+      editorIds,
+    );
 
-    const personalProductsRaw = await this.prisma.editorProduct.findMany({
-      where: { user_id: { in: editorIds }, is_active: true },
-      select: { id: true, product_line_id: true, priority_score: true, user_id: true, source_product_id: true },
-      orderBy: { priority_score: "desc" },
-    });
-    const personalProductsByEditor = new Map<string, PoolProduct[]>();
-    for (const p of personalProductsRaw) {
-      if (!personalProductsByEditor.has(p.user_id))
-        personalProductsByEditor.set(p.user_id, []);
-      personalProductsByEditor.get(p.user_id)!.push({
-        id: p.id,
-        product_line_id: p.product_line_id,
-        priority_score: p.priority_score,
-        source: "personal",
-        source_product_id: p.source_product_id,
-      });
-    }
+    this.logger.log(
+      `Team ${teamId} [${teamBrandType}]: ` +
+        `teamContent=${teamContentPool.length} globalContent=${globalContentPool.length} ` +
+        `teamProduct=${teamProductPool.length} globalProduct=${globalProductPool.length} ` +
+        `personalEditors=${personalContentsByEditor.size}`,
+    );
 
-    const editorStats = await batchEditorStats(this.prisma, editorIds, monthStart);
+    const editorStats = await batchEditorStats(
+      this.prisma,
+      editorIds,
+      monthStart,
+    );
 
     // ── Per-editor selection ──────────────────────────────────────────────
     const allPairings: Pairing[] = [];
@@ -361,19 +283,25 @@ export class TaskAutoAssignService {
         stats.teamProductTaskCount < editor.productPlanned;
 
       // Content ordering: new personal → new team → new global → repeat team → repeat global → repeat personal
-      const personalContents = personalContentsByEditor.get(editor.userId) ?? [];
+      const personalContents =
+        personalContentsByEditor.get(editor.userId) ?? [];
       const personalSourceContentIds = new Set(
-        personalContents.filter((c) => c.source_content_id).map((c) => c.source_content_id!),
+        personalContents
+          .filter((c) => c.source_content_id)
+          .map((c) => c.source_content_id!),
       );
       const filteredTeamContents = teamContentPool.filter(
-        (tc) => !tc.source_content_id || !personalSourceContentIds.has(tc.source_content_id),
+        (tc) =>
+          !tc.source_content_id ||
+          !personalSourceContentIds.has(tc.source_content_id),
       );
       const filteredGlobalContents = globalContentPool.filter(
         (c) => !personalSourceContentIds.has(c.id),
       );
 
       const contentKey = (c: PoolContent) => `${c.source}:${c.id}`;
-      const isNew = (c: PoolContent) => !stats.usedContentKeys.has(contentKey(c));
+      const isNew = (c: PoolContent) =>
+        !stats.usedContentKeys.has(contentKey(c));
 
       const orderedContents: PoolContent[] = [
         ...personalContents.filter(isNew),
@@ -385,12 +313,17 @@ export class TaskAutoAssignService {
       ];
 
       // Product ordering: ưu tiên theo tier (team > personal > global) rồi mới theo priority_score cao → thấp
-      const personalProducts = personalProductsByEditor.get(editor.userId) ?? [];
+      const personalProducts =
+        personalProductsByEditor.get(editor.userId) ?? [];
       const personalSourceProductIds = new Set(
-        personalProducts.filter((p) => p.source_product_id).map((p) => p.source_product_id!),
+        personalProducts
+          .filter((p) => p.source_product_id)
+          .map((p) => p.source_product_id!),
       );
       const filteredTeamProducts = teamProductPool.filter(
-        (tp) => !tp.source_product_id || !personalSourceProductIds.has(tp.source_product_id),
+        (tp) =>
+          !tp.source_product_id ||
+          !personalSourceProductIds.has(tp.source_product_id),
       );
       const filteredGlobalProducts = globalProductPool.filter(
         (p) => !personalSourceProductIds.has(p.id),
@@ -405,15 +338,23 @@ export class TaskAutoAssignService {
       // TH1: chỉ dùng kho team (sort priority_score desc)
       // TH2: global → personal → team, mỗi tier sort priority_score desc
       const orderedProducts: PoolProduct[] = isPhase1
-        ? [...teamProductPool].sort((a, b) => b.priority_score - a.priority_score)
-        : [...filteredGlobalProducts, ...personalProducts, ...filteredTeamProducts].sort(
+        ? [...teamProductPool].sort(
+            (a, b) => b.priority_score - a.priority_score,
+          )
+        : [
+            ...filteredGlobalProducts,
+            ...personalProducts,
+            ...filteredTeamProducts,
+          ].sort(
             (a, b) =>
               PRODUCT_TIER_RANK[a.source] - PRODUCT_TIER_RANK[b.source] ||
               b.priority_score - a.priority_score,
           );
 
       if (!orderedProducts.length || !orderedContents.length) {
-        this.logger.log(`Team ${teamId} editor ${editor.userId}: no candidates available`);
+        this.logger.log(
+          `Team ${teamId} editor ${editor.userId}: no candidates available`,
+        );
         continue;
       }
 
@@ -426,17 +367,23 @@ export class TaskAutoAssignService {
       );
 
       if (!available.length) {
-        this.logger.log(`Team ${teamId} editor ${editor.userId}: all pairs already assigned`);
+        this.logger.log(
+          `Team ${teamId} editor ${editor.userId}: all pairs already assigned`,
+        );
         continue;
       }
 
       const contentQuota = largestRemainder(
         editor.remainingDaily,
-        editor.contentTypeWeights.length > 0 ? editor.contentTypeWeights : teamContentItems,
+        editor.contentTypeWeights.length > 0
+          ? editor.contentTypeWeights
+          : teamContentItems,
       );
       const productQuota = largestRemainder(
         editor.remainingDaily,
-        editor.productTypeWeights.length > 0 ? editor.productTypeWeights : teamProductItems,
+        editor.productTypeWeights.length > 0
+          ? editor.productTypeWeights
+          : teamProductItems,
       );
 
       const selected = selectPairsForEditor(
@@ -468,6 +415,176 @@ export class TaskAutoAssignService {
       allPairings,
     );
     return { assigned, skipped: 0 };
+  }
+
+  // ── Brand-type filtered pool builder ─────────────────────────────────────
+
+  private async buildContentProductPoolsByBrandType(
+    brandType: BrandType,
+    teamId: string,
+    editorIds: string[],
+  ): Promise<{
+    teamContentPool: PoolContent[];
+    globalContentPool: PoolContent[];
+    teamProductPool: PoolProduct[];
+    globalProductPool: PoolProduct[];
+    personalContentsByEditor: Map<string, PoolContent[]>;
+    personalProductsByEditor: Map<string, PoolProduct[]>;
+  }> {
+    // ── Team content (filtered by brand_type) ─────────────────────────────
+    const teamContentsRaw = await this.prisma.teamContent.findMany({
+      where: {
+        team_id: teamId,
+        status: { not: "ARCHIVED" },
+        brand_type: brandType,
+      },
+      select: {
+        id: true,
+        content_line_id: true,
+        source_content_id: true,
+        added_at: true,
+      },
+      orderBy: { added_at: "asc" },
+    });
+    const teamContentPool: PoolContent[] = teamContentsRaw.map((tc) => ({
+      id: tc.id,
+      content_line_id: tc.content_line_id,
+      source: "team" as const,
+      source_content_id: tc.source_content_id,
+    }));
+    const teamSourceContentIds = new Set(
+      teamContentsRaw
+        .filter((tc) => tc.source_content_id)
+        .map((tc) => tc.source_content_id!),
+    );
+
+    // ── Global content (filtered by brand_type) ───────────────────────────
+    const allGlobalContents = await this.prisma.content.findMany({
+      where: {
+        status: { not: "ARCHIVED" },
+        brand_type: brandType,
+        ...(teamSourceContentIds.size > 0
+          ? { NOT: { id: { in: [...teamSourceContentIds] } } }
+          : {}),
+      },
+      select: { id: true, content_line_id: true },
+      orderBy: { created_at: "asc" },
+    });
+    const globalContentPool: PoolContent[] = allGlobalContents.map((c) => ({
+      id: c.id,
+      content_line_id: c.content_line_id,
+      source: "global" as const,
+      source_content_id: null,
+    }));
+
+    // ── Team product (filtered by brand_type) ─────────────────────────────
+    const teamProductsRaw = await this.prisma.teamProduct.findMany({
+      where: { team_id: teamId, is_active: true, brand_type: brandType },
+      select: {
+        id: true,
+        product_line_id: true,
+        priority_score: true,
+        source_product_id: true,
+      },
+      orderBy: { priority_score: "desc" },
+    });
+    const teamProductPool: PoolProduct[] = teamProductsRaw.map((tp) => ({
+      id: tp.id,
+      product_line_id: tp.product_line_id,
+      priority_score: tp.priority_score,
+      source: "team" as const,
+      source_product_id: tp.source_product_id,
+    }));
+    const teamSourceProductIds = new Set(
+      teamProductsRaw
+        .filter((tp) => tp.source_product_id)
+        .map((tp) => tp.source_product_id!),
+    );
+
+    // ── Global product (filtered by brand_type) ───────────────────────────
+    const globalProductsRaw = await this.prisma.product.findMany({
+      where: {
+        is_active: true,
+        brand_type: brandType,
+        ...(teamSourceProductIds.size > 0
+          ? { NOT: { id: { in: [...teamSourceProductIds] } } }
+          : {}),
+      },
+      select: { id: true, product_line_id: true, priority_score: true },
+      orderBy: { priority_score: "desc" },
+    });
+    const globalProductPool: PoolProduct[] = globalProductsRaw.map((p) => ({
+      id: p.id,
+      product_line_id: p.product_line_id,
+      priority_score: p.priority_score,
+      source: "global" as const,
+      source_product_id: null,
+    }));
+
+    // ── Personal content (filtered by brand_type) ─────────────────────────
+    const personalContentsRaw = await this.prisma.editorContent.findMany({
+      where: {
+        user_id: { in: editorIds },
+        status: { not: "ARCHIVED" },
+        brand_type: brandType,
+      },
+      select: {
+        id: true,
+        content_line_id: true,
+        source_content_id: true,
+        user_id: true,
+      },
+      orderBy: { added_at: "asc" },
+    });
+    const personalContentsByEditor = new Map<string, PoolContent[]>();
+    for (const c of personalContentsRaw) {
+      if (!personalContentsByEditor.has(c.user_id))
+        personalContentsByEditor.set(c.user_id, []);
+      personalContentsByEditor.get(c.user_id)!.push({
+        id: c.id,
+        content_line_id: c.content_line_id,
+        source: "personal",
+        source_content_id: c.source_content_id,
+      });
+    }
+
+    // ── Personal product (filtered by brand_type) ─────────────────────────
+    const personalProductsRaw = await this.prisma.editorProduct.findMany({
+      where: {
+        user_id: { in: editorIds },
+        is_active: true,
+        brand_type: brandType,
+      },
+      select: {
+        id: true,
+        product_line_id: true,
+        priority_score: true,
+        user_id: true,
+        source_product_id: true,
+      },
+      orderBy: { priority_score: "desc" },
+    });
+    const personalProductsByEditor = new Map<string, PoolProduct[]>();
+    for (const p of personalProductsRaw) {
+      if (!personalProductsByEditor.has(p.user_id))
+        personalProductsByEditor.set(p.user_id, []);
+      personalProductsByEditor.get(p.user_id)!.push({
+        id: p.id,
+        product_line_id: p.product_line_id,
+        priority_score: p.priority_score,
+        source: "personal",
+        source_product_id: p.source_product_id,
+      });
+    }
+
+    return {
+      teamContentPool,
+      globalContentPool,
+      teamProductPool,
+      globalProductPool,
+      personalContentsByEditor,
+      personalProductsByEditor,
+    };
   }
 
   // ── Team quota allocations ────────────────────────────────────────────────
