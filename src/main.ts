@@ -79,8 +79,11 @@ async function bootstrap() {
       } catch { /* invalid URL, skip */ }
     }
     corsOriginOption = (origin, callback) => {
-      // Allow server-to-server (no origin) and matching origins
-      if (!origin || allowedSet.has(origin)) return callback(null, true);
+      // Allow server-to-server (no origin), matching origins, và mọi extension Chrome
+      // (chrome-extension://... — client nội bộ, API đã được bảo vệ bằng JWT).
+      if (!origin || allowedSet.has(origin) || origin.startsWith('chrome-extension://')) {
+        return callback(null, true);
+      }
       callback(new Error(`CORS: origin '${origin}' not allowed`));
     };
   }
