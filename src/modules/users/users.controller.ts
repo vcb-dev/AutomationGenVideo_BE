@@ -100,6 +100,16 @@ export class UsersController {
     return this.usersService.getTeamMembers(req.user.id, req.user.roles);
   }
 
+  @Get("unassigned")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get members not yet assigned to a team (shared pool, claimable by any leader)" })
+  @ApiResponse({ status: 200, description: "List of unassigned members" })
+  async getUnassignedMembers() {
+    return this.usersService.getUnassignedMembers();
+  }
+
   @Post("hr")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
@@ -195,6 +205,18 @@ export class UsersController {
   })
   async getAvailableManagers() {
     return this.usersService.getAvailableManagers();
+  }
+
+  @Get("available-leaders")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get list of available leaders for selection" })
+  @ApiResponse({
+    status: 200,
+    description: "List of leaders",
+  })
+  async getAvailableLeaders() {
+    return this.usersService.getAvailableLeaders();
   }
 
   @Patch("select-manager/:managerId")

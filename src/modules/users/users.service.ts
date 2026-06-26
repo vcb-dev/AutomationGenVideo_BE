@@ -219,7 +219,7 @@ export class UsersService {
     const oldEmail = user.email;
     const oldName = user.full_name;
     const newName = updateUserDto.full_name ?? user.full_name;
-    const newTeam = updateUserDto.team ?? user.team;
+    const newTeam = updateUserDto.team !== undefined ? updateUserDto.team : user.team;
     const newEmail = updateUserDto.email ?? user.email;
 
     // Run main update + sync in transaction
@@ -507,6 +507,35 @@ export class UsersService {
     return managers.map((m) => ({ ...m, avatar: m.image_url }));
   }
 
+  async getAvailableLeaders() {
+    const leaders = await this.prisma.user.findMany({
+      where: {
+        roles: { has: UserRole.LEADER },
+        is_active: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        image_url: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        team_leader_id: true,
+        is_active: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: {
+        full_name: 'asc',
+      },
+    });
+
+    return leaders;
+  }
+
   async selectManager(userId: string, managerId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -583,6 +612,33 @@ export class UsersService {
     return [];
   }
 
+  /**
+   * Nhân sự chưa được gán team (vd: vừa đăng nhập Gmail lần đầu).
+   * ADMIN/MANAGER/LEADER đều thấy chung pool này để "nhận" về team mình —
+   * khác với getTeamMembers (LEADER chỉ thấy member ĐÃ thuộc team mình).
+   */
+  async getUnassignedMembers() {
+    return this.prisma.user.findMany({
+      where: { team: null },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        team_leader_id: true,
+        is_active: true,
+        image_url: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
   /** Tạo nhân sự (MANAGER=ADMIN có full quyền, LEADER chỉ tạo MEMBER) */
   async createHR(callerId: string, callerRoles: UserRole[], dto: CreateUserDto) {
     const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
@@ -611,11 +667,18 @@ export class UsersService {
       const target = await this.prisma.user.findUnique({ where: { id: targetId } });
       if (!target) throw new NotFoundException(`User ${targetId} not found`);
 
-      if (target.team_leader_id !== callerId) {
+      const isOwnMember = target.team_leader_id === callerId;
+      const isUnclaimed = target.team_leader_id === null;
+
+      if (!isOwnMember && !isUnclaimed) {
         throw new ForbiddenException('Leader chỉ được cập nhật member trong team mình');
       }
       if (dto.roles || (dto as any).role) {
         throw new ForbiddenException('Leader không được thay đổi role');
+      }
+      // Claiming a not-yet-assigned member (e.g. a fresh Gmail signup) always attaches them to this leader.
+      if (isUnclaimed) {
+        dto.team_leader_id = callerId;
       }
     }
 
