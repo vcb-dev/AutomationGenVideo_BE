@@ -56,6 +56,12 @@ model User {
   videos                  Video[]
   social_accounts         SocialAccount[]
   social_posts            SocialPost[]
+  // Content Report relations (virtual — không tạo cột DB mới)
+  content_videos_edited   ContentVideo[]        @relation("EditorContentVideos")
+  case_studies_created    CaseStudy[]           @relation("CreatorCaseStudies")
+  editor_performances     EditorPerformance[]
+  clone_videos_edited     CloneVideo[]          @relation("EditorCloneVideos")
+  action_items_assigned   ActionItem[]          @relation("AssigneeActionItems")
 
   @@index([email])
   @@index([roles])
@@ -1092,6 +1098,16 @@ enum CollectionType {
   SHARED
 }
 
+enum PeriodType {
+  WEEK
+  MONTH
+}
+
+enum VideoStatus {
+  WIN
+  FAIL
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -1286,4 +1302,213 @@ model SocialDriveUploadSession {
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_drive_upload_sessions")
+}
+
+// ─────────────────────────────────────────────
+//  CONTENT REPORT — Module "Báo cáo content"
+// ─────────────────────────────────────────────
+
+/// Danh sách team (K1, K2, K3...)
+model Team {
+  id         String   @id @default(uuid())
+  name       String   @unique  // "K1", "K2", "K3"...
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  // Relations (1-N)
+  content_videos       ContentVideo[]
+  case_studies         CaseStudy[]
+  editor_performances  EditorPerformance[]
+  clone_videos         CloneVideo[]
+  action_items         ActionItem[]
+  kpi_snapshots        TeamKpiSnapshot[]
+
+  @@map("teams")
+}
+
+/// Kỳ báo cáo — tuần hoặc tháng
+model ReportPeriod {
+  id         String     @id @default(uuid())
+  type       PeriodType // WEEK | MONTH
+  label      String     // "Tuần 1 - T6/2026", "Tháng 6/2026"
+  start_date DateTime
+  end_date   DateTime
+  created_at DateTime   @default(now())
+
+  // Relations
+  content_videos       ContentVideo[]
+  case_studies         CaseStudy[]
+  editor_performances  EditorPerformance[]
+  clone_videos         CloneVideo[]
+  action_items         ActionItem[]
+  kpi_snapshots        TeamKpiSnapshot[]
+
+  @@unique([type, start_date])
+  @@index([type])
+  @@index([start_date])
+  @@map("report_periods")
+}
+
+/// Video content WIN hoặc FAIL của team
+model ContentVideo {
+  id             String      @id @default(uuid())
+  team_id        String
+  period_id      String
+  editor_id      String
+  status         VideoStatus // WIN | FAIL
+  content        String      @db.Text
+  analysis       String?     @db.Text // Phân tích win/fail reason
+  link           String?
+  platform       String?     // TikTok, YouTube Shorts, IG Reels
+  post_date      DateTime?
+  views          BigInt      @default(0)
+  likes          BigInt      @default(0)
+  comments       Int         @default(0)
+  shares         Int         @default(0)
+  thumbnail_url  String?
+  video_url      String?
+  highlights     String?     @db.Text
+  improvements   String?     @db.Text
+  leader_comment String?     @db.Text
+  notes          String?     @db.Text
+  order_index    Int         @default(0)
+  created_at     DateTime    @default(now())
+  updated_at     DateTime    @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  editor User         @relation("EditorContentVideos", fields: [editor_id], references: [id])
+
+  @@index([team_id, period_id, status])
+  @@index([editor_id])
+  @@index([period_id])
+  @@map("content_videos")
+}
+
+/// Case study hay bên ngoài
+model CaseStudy {
+  id          String   @id @default(uuid())
+  team_id     String
+  period_id   String
+  created_by  String   // FK → users (người tạo)
+  title       String
+  channel     String?  // Tên kênh bên ngoài
+  content     String?  @db.Text
+  takeaway    String?  @db.Text // Bài học rút ra
+  link        String?
+  platform    String?
+  post_date   DateTime?
+  views       BigInt   @default(0)
+  order_index Int      @default(0)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  team    Team         @relation(fields: [team_id], references: [id])
+  period  ReportPeriod @relation(fields: [period_id], references: [id])
+  creator User         @relation("CreatorCaseStudies", fields: [created_by], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([created_by])
+  @@map("case_studies")
+}
+
+/// Hiệu suất cá nhân editor trong kỳ
+model EditorPerformance {
+  id           String   @id @default(uuid())
+  team_id      String
+  period_id    String
+  user_id      String   // FK → users (editor)
+  total_videos Int      @default(0)
+  win_videos   Int      @default(0)
+  notes        String?  @db.Text
+  analysis     String?  @db.Text
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  user   User         @relation(fields: [user_id], references: [id])
+
+  @@unique([team_id, period_id, user_id]) // 1 editor chỉ có 1 record / kỳ / team
+  @@map("editor_performance")
+}
+
+/// Video nhân bản (clone)
+model CloneVideo {
+  id             String   @id @default(uuid())
+  team_id        String
+  period_id      String
+  editor_id      String
+  content        String   @db.Text
+  target_channel String?
+  link           String?
+  platform       String?
+  post_date      DateTime?
+  views          BigInt   @default(0)
+  likes          BigInt   @default(0)
+  comments       Int      @default(0)
+  shares         Int      @default(0)
+  analysis       String?  @db.Text
+  highlights     String?  @db.Text
+  improvements   String?  @db.Text
+  leader_comment String?  @db.Text
+  notes          String?  @db.Text
+  video_url      String?
+  order_index    Int      @default(0)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  editor User         @relation("EditorCloneVideos", fields: [editor_id], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([editor_id])
+  @@map("clone_videos")
+}
+
+/// Kế hoạch hành động sau khi phân tích
+model ActionItem {
+  id             String   @id @default(uuid())
+  team_id        String
+  period_id      String
+  assignee_id    String   // FK → users (người được giao)
+  title          String
+  description    String?  @db.Text
+  deadline       DateTime?
+  status         String   @default("PENDING") // PENDING, IN_PROGRESS, DONE
+  priority       String   @default("MEDIUM")  // LOW, MEDIUM, HIGH
+  notes          String?  @db.Text
+  leader_comment String?  @db.Text
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  team     Team         @relation(fields: [team_id], references: [id])
+  period   ReportPeriod @relation(fields: [period_id], references: [id])
+  assignee User         @relation("AssigneeActionItems", fields: [assignee_id], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([assignee_id])
+  @@map("action_items")
+}
+
+/// Ảnh chụp nhanh KPI tổng hợp — cache để FE load nhanh
+model TeamKpiSnapshot {
+  id               String   @id @default(uuid())
+  team_id          String
+  period_id        String
+  total_videos     Int      @default(0)
+  win_videos       Int      @default(0)
+  fail_videos      Int      @default(0)
+  win_rate         Float    @default(0)
+  total_new_videos Int      @default(0)
+  new_win_videos   Int      @default(0)
+  new_win_rate     Float    @default(0)
+  computed_at      DateTime @default(now())
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+
+  @@unique([team_id, period_id]) // 1 snapshot / team / kỳ
+  @@map("team_kpi_snapshots")
 }

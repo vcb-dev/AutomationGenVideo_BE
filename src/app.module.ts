@@ -21,6 +21,7 @@ import { SearchRecommendationModule } from './modules/search-recommendations/sea
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
+import { ContentReportModule } from './modules/content-report/content-report.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { SocialPublishingModule } from './modules/social-publishing/social-publi
     LarkModule,
     RolePermissionsModule,
     SocialPublishingModule,
+    ContentReportModule,
   ],
   controllers: [AppController],
   providers: [

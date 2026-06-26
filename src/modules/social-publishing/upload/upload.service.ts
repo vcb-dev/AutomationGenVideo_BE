@@ -34,8 +34,12 @@ export class UploadService {
 
   async saveBuffer(buffer: Buffer, filename: string, mimetype: string, user?: any): Promise<string> {
     if (!this.googleDrive.isAvailable()) {
-      this.logger.error(`[saveBuffer] Google Drive chưa được cấu hình — không thể upload ${filename}`);
-      throw new BadRequestException('Google Drive storage chua duoc cau hinh');
+      this.logger.warn(`[saveBuffer] Google Drive chưa được cấu hình. Lưu cục bộ: ${filename}`);
+      if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+      const destPath = path.join(UPLOAD_DIR, filename);
+      fs.writeFileSync(destPath, buffer);
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return `${base}/api/social/media/${filename}`;
     }
 
     if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -57,9 +61,22 @@ export class UploadService {
   /** Upload thẳng từ disk path (dùng với diskStorage — tránh load file vào RAM) */
   async saveFromDisk(filePath: string, filename: string, mimetype: string, user?: any): Promise<string> {
     if (!this.googleDrive.isAvailable()) {
-      this.logger.error(`[saveFromDisk] Google Drive chưa được cấu hình — không thể upload ${filename}`);
-      try { fs.unlinkSync(filePath); } catch {}
-      throw new BadRequestException('Google Drive storage chua duoc cau hinh');
+      this.logger.warn(`[saveFromDisk] Google Drive chưa được cấu hình. Lưu cục bộ: ${filename}`);
+      const destPath = path.join(UPLOAD_DIR, filename);
+      try {
+        fs.renameSync(filePath, destPath);
+      } catch (err: any) {
+        this.logger.error(`[saveFromDisk] ❌ Không thể rename file từ ${filePath} sang ${destPath}: ${err.message}`);
+        try {
+          fs.copyFileSync(filePath, destPath);
+          fs.unlinkSync(filePath);
+        } catch (copyErr: any) {
+          try { fs.unlinkSync(filePath); } catch {}
+          throw new BadRequestException(`Không thể lưu file cục bộ: ${copyErr.message}`);
+        }
+      }
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return `${base}/api/social/media/${filename}`;
     }
 
     const sizeMB = (() => { try { return (fs.statSync(filePath).size / 1024 / 1024).toFixed(2); } catch { return '?'; } })();
