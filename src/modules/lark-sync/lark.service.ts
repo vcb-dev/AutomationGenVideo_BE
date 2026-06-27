@@ -1874,7 +1874,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 // to prevent connection overload and avoid parallel execution race conditions.
                 await this.prisma.$transaction([
                     this.prisma.channel.deleteMany({
-                        where: { NOT: { id: { startsWith: 'doda_' } } },
+                        where: {
+                            AND: [
+                                { NOT: { id: { startsWith: 'doda_' } } },
+                                { NOT: { id: { startsWith: 'manual_' } } },
+                            ],
+                        },
                     }),
                     this.prisma.channel.createMany({
                         data: channelsToInsert,
@@ -1928,19 +1933,19 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     async enrichChannelEmailsFromUsers(): Promise<number> {
         const users = await this.prisma.user.findMany({
             where: { is_active: true },
-            select: { email: true, full_name: true },
+            select: { id: true, email: true, full_name: true },
         });
 
-        // Build map: normalized full_name → email
-        const nameToEmail = new Map<string, string>();
+        // Build maps: normalized full_name → { email, id }
+        const nameToUser = new Map<string, { email: string; id: string }>();
         for (const u of users) {
             if (u.full_name && u.email) {
-                nameToEmail.set(this.normalizeOwnerName(u.full_name), u.email);
+                nameToUser.set(this.normalizeOwnerName(u.full_name), { email: u.email, id: u.id });
             }
         }
         // Debug: log first 10 entries in map
-        const mapSample = Array.from(nameToEmail.entries()).slice(0, 10);
-        this.logger.debug(`[enrich] nameToEmail sample: ${JSON.stringify(mapSample)}`);
+        const mapSample = Array.from(nameToUser.entries()).slice(0, 10);
+        this.logger.debug(`[enrich] nameToUser sample: ${JSON.stringify(mapSample)}`);
 
         const channels = await this.prisma.channel.findMany({
             select: { id: true, owner: true, email: true },
@@ -1955,13 +1960,13 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             // the system login email in the Users table.  Always overwrite with the system email.
 
             const normalizedOwner = this.normalizeOwnerName(ch.owner);
-            let matchedEmail = nameToEmail.get(normalizedOwner);
+            let matchedUser = nameToUser.get(normalizedOwner);
 
             // Fallback 1: partial match (owner contains user name or vice versa)
-            if (!matchedEmail) {
-                for (const [normalizedName, email] of nameToEmail) {
+            if (!matchedUser) {
+                for (const [normalizedName, user] of nameToUser) {
                     if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
-                        matchedEmail = email;
+                        matchedUser = user;
                         break;
                     }
                 }
@@ -1969,21 +1974,21 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
             // Fallback 2: sorted-words match — xử lý trường hợp tên bị đảo thứ tự
             // vd: "Nhâm Đoàn" (Lark) vs "Đoàn Nhâm" (System) → sort → cùng = "doan nham"
-            if (!matchedEmail) {
+            if (!matchedUser) {
                 const sortedOwner = normalizedOwner.split(' ').sort().join(' ');
-                for (const [normalizedName, email] of nameToEmail) {
+                for (const [normalizedName, user] of nameToUser) {
                     const sortedName = normalizedName.split(' ').sort().join(' ');
                     if (sortedOwner === sortedName) {
-                        matchedEmail = email;
+                        matchedUser = user;
                         break;
                     }
                 }
             }
 
-            if (matchedEmail) {
+            if (matchedUser) {
                 await this.prisma.channel.update({
                     where: { id: ch.id },
-                    data: { email: matchedEmail },
+                    data: { email: matchedUser.email, owner_id: matchedUser.id },
                 });
                 updated++;
             } else {
