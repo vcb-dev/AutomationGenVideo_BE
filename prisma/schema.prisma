@@ -81,6 +81,7 @@ model User {
   tasks_reviewed            Task[]           @relation("TaskReviewer")
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
   notifications             Notification[]   @relation("NotificationOf")
+  owned_channels            Channel[]        @relation("ChannelOwnerUser")
 
   @@index([email])
   @@index([roles])
@@ -776,16 +777,26 @@ model Channel {
   link_channel String?
   status       String?
   team_traffic String?
+  /// Tên chủ kênh (string, dùng cho Lark sync)
   owner        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
   email        String?
+  /// FK tới User — dùng cho module channelsTeam (quản lý kênh của team)
+  owner_id     String?
+  /// FK tới Team — dùng cho module channelsTeam
+  team_id      String?
+
+  channel_owner User? @relation("ChannelOwnerUser", fields: [owner_id], references: [id], onDelete: SetNull)
+  channel_team  Team? @relation("ChannelTeam", fields: [team_id], references: [id], onDelete: SetNull)
 
   @@index([owner])
   @@index([email])
   @@index([team_traffic])
   @@index([email, status])
   @@index([platform, status])
+  @@index([owner_id])
+  @@index([team_id])
   @@map("huyk_channels")
 }
 
@@ -1411,6 +1422,7 @@ model Team {
   products  TeamProduct[]
   contents  TeamContent[]
   team_sources TeamSource[]
+  channels  Channel[]    @relation("ChannelTeam")
 
   @@index([leader_id])
   @@index([brand_type])
@@ -1458,6 +1470,7 @@ model TeamProduct {
   product_line  ProductLine? @relation(fields: [product_line_id], references: [id])
   team_sources  TeamSource[] @relation("TeamProductSources")
   tasks         Task[]
+  warehouses    TeamProductWarehouse[]
 
   @@index([team_id])
   @@index([team_id, brand_type])
@@ -1486,6 +1499,7 @@ model TeamContent {
   added_by      User          @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
   content_line  ContentLine?  @relation(fields: [content_line_id], references: [id])
   tasks         Task[]
+  warehouses    TeamContentWarehouse[]
 
   @@index([team_id])
   @@index([team_id, brand_type])
@@ -1515,6 +1529,7 @@ model TeamSource {
   product      Product?    @relation(fields: [product_id], references: [id])
   team_product TeamProduct? @relation("TeamProductSources", fields: [team_product_id], references: [id], onDelete: SetNull)
   source_source Source?    @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
+  warehouses   TeamSourceWarehouse[]
 
   @@index([team_id])
   @@index([team_id, brand_type])
@@ -1550,6 +1565,7 @@ model EditorProduct {
   product_line   ProductLine?  @relation(fields: [product_line_id], references: [id])
   editor_sources EditorSource[] @relation("EditorProductSources")
   tasks          Task[]
+  warehouses     EditorProductWarehouse[]
 
   @@index([user_id])
   @@index([user_id, brand_type])
@@ -1578,6 +1594,7 @@ model EditorContent {
   added_by      User          @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
   content_line  ContentLine?  @relation(fields: [content_line_id], references: [id])
   tasks         Task[]
+  warehouses    EditorContentWarehouse[]
 
   @@index([user_id])
   @@index([user_id, brand_type])
@@ -1607,6 +1624,7 @@ model EditorSource {
   product        Product?      @relation(fields: [product_id], references: [id])
   editor_product EditorProduct? @relation("EditorProductSources", fields: [editor_product_id], references: [id], onDelete: SetNull)
   source_source  Source?       @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
+  warehouses     EditorSourceWarehouse[]
 
   @@index([user_id])
   @@index([user_id, brand_type])
@@ -1779,6 +1797,7 @@ model Product {
   team_sources    TeamSource[]
   editor_sources  EditorSource[]
   tasks           Task[]
+  warehouses      ProductWarehouse[]
 
   @@index([product_line_id])
   @@index([priority_score(sort: Desc)])
@@ -1807,6 +1826,7 @@ model Content {
   content_line  ContentLine?     @relation(fields: [content_line_id], references: [id])
   added_by      User             @relation("ContentAddedBy", fields: [added_by_id], references: [id])
   tasks         Task[]
+  warehouses    ContentWarehouse[]
 
   @@index([status])
   @@index([brand_type, status])
@@ -1837,6 +1857,7 @@ model Source {
   tasks_extra      Task[]        @relation("TaskSourceExtra")
   tasks_workshop   Task[]        @relation("TaskSourceWorkshop")
   tasks_huyk       Task[]        @relation("TaskSourceHuyk")
+  warehouses       SourceWarehouse[]
 
   @@index([type, is_active])
   @@index([product_id])
@@ -2037,4 +2058,107 @@ model SocialDriveUploadSession {
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_drive_upload_sessions")
+}
+
+// ─────────────────────────────────────────────
+//  WAREHOUSE JUNCTION TABLES (kho tháng)
+// ─────────────────────────────────────────────
+
+model ProductWarehouse {
+  product_id String
+  month      String
+
+  product Product @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@id([product_id, month])
+  @@index([month])
+  @@map("product_warehouses")
+}
+
+model ContentWarehouse {
+  content_id String
+  month      String
+
+  content Content @relation(fields: [content_id], references: [id], onDelete: Cascade)
+
+  @@id([content_id, month])
+  @@index([month])
+  @@map("content_warehouses")
+}
+
+model SourceWarehouse {
+  source_id String
+  month     String
+
+  source Source @relation(fields: [source_id], references: [id], onDelete: Cascade)
+
+  @@id([source_id, month])
+  @@index([month])
+  @@map("source_warehouses")
+}
+
+model TeamProductWarehouse {
+  team_product_id String
+  month           String
+
+  team_product TeamProduct @relation(fields: [team_product_id], references: [id], onDelete: Cascade)
+
+  @@id([team_product_id, month])
+  @@index([month])
+  @@map("team_product_warehouses")
+}
+
+model TeamContentWarehouse {
+  team_content_id String
+  month           String
+
+  team_content TeamContent @relation(fields: [team_content_id], references: [id], onDelete: Cascade)
+
+  @@id([team_content_id, month])
+  @@index([month])
+  @@map("team_content_warehouses")
+}
+
+model TeamSourceWarehouse {
+  team_source_id String
+  month          String
+
+  team_source TeamSource @relation(fields: [team_source_id], references: [id], onDelete: Cascade)
+
+  @@id([team_source_id, month])
+  @@index([month])
+  @@map("team_source_warehouses")
+}
+
+model EditorProductWarehouse {
+  editor_product_id String
+  month             String
+
+  editor_product EditorProduct @relation(fields: [editor_product_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_product_id, month])
+  @@index([month])
+  @@map("editor_product_warehouses")
+}
+
+model EditorContentWarehouse {
+  editor_content_id String
+  month             String
+
+  editor_content EditorContent @relation(fields: [editor_content_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_content_id, month])
+  @@index([month])
+  @@map("editor_content_warehouses")
+}
+
+model EditorSourceWarehouse {
+  editor_source_id String
+  month            String
+
+  editor_source EditorSource @relation(fields: [editor_source_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_source_id, month])
+  @@index([month])
+  @@map("editor_source_warehouses")
 }

@@ -11,8 +11,8 @@ type ChannelWithRelations = {
   owner_id?: string | null;
   created_at: Date;
   updated_at: Date;
-  team?: { id: string; name: string } | null;
-  owner?: { id: string; full_name: string; email: string } | null;
+  channel_team?: { id: string; name: string } | null;
+  channel_owner?: { id: string; full_name: string; email: string } | null;
 };
 
 export class ChannelResponseDto {
@@ -38,8 +38,8 @@ export class ChannelResponseDto {
     this.status = channel.status;
     this.team_id = channel.team_id;
     this.owner_id = channel.owner_id;
-    this.team = channel.team ?? null;
-    this.owner = channel.owner ?? null;
+    this.team = channel.channel_team ?? null;
+    this.owner = channel.channel_owner ?? null;
     this.created_at = channel.created_at;
     this.updated_at = channel.updated_at;
   }

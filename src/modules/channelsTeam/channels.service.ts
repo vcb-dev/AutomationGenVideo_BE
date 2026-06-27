@@ -11,8 +11,8 @@ import { UserRole } from "@prisma/client";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
 const CHANNEL_INCLUDE = {
-  team: { select: { id: true, name: true } },
-  owner: { select: { id: true, full_name: true, email: true } },
+  channel_team: { select: { id: true, name: true } },
+  channel_owner: { select: { id: true, full_name: true, email: true } },
 } as const;
 
 @Injectable()
@@ -47,10 +47,10 @@ export class ChannelsService {
 
   /** Kiểm tra LEADER có quyền thao tác trên channel này không */
   private assertLeaderOwnsChannel(
-    channel: { team: { name: string } | null },
+    channel: { channel_team: { name: string } | null },
     userTeam: string | null | undefined,
   ) {
-    if (!userTeam || channel.team?.name !== userTeam) {
+    if (!userTeam || channel.channel_team?.name !== userTeam) {
       throw new ForbiddenException(
         "You can only manage channels belonging to your team",
       );
@@ -73,7 +73,7 @@ export class ChannelsService {
         id: `manual_${randomUUID()}`,
         ...dto,
         owner_id: user.id,
-        team_id,
+        team_id: team_id ?? undefined,
       },
       include: CHANNEL_INCLUDE,
     });
@@ -94,7 +94,7 @@ export class ChannelsService {
   async findAll(user: { roles: UserRole[]; team: string | null }) {
     return this.prisma.channel.findMany({
       where: user.team
-        ? { team: { name: { equals: user.team, mode: "insensitive" } } }
+        ? { channel_team: { name: { equals: user.team, mode: "insensitive" } } }
         : undefined,
       include: CHANNEL_INCLUDE,
       orderBy: { created_at: "desc" },
@@ -108,7 +108,7 @@ export class ChannelsService {
   ) {
     const channel = await this.findChannelOrThrow(id);
 
-    if (channel.team?.name !== user.team) {
+    if (channel.channel_team?.name !== user.team) {
       throw new ForbiddenException("You do not have access to this channel");
     }
 
