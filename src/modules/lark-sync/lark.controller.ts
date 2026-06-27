@@ -184,6 +184,12 @@ export class LarkController {
         return this.larkService.listTables();
     }
 
+    @Get('global-indo/inspect')
+    @ApiOperation({ summary: 'Debug: xem tên cột + 3 record mẫu từ bảng Lark Global Indo' })
+    async inspectGlobalIndoTable() {
+        return this.larkService.inspectGlobalIndoTable();
+    }
+
     @Get('db-targets')
     @ApiOperation({ summary: 'Debug: show sanitized DB targets (no secrets)' })
     dbTargets() {
@@ -407,9 +413,14 @@ export class LarkController {
     }
 
     @Post('enrich-channel-emails')
-    @ApiOperation({ summary: 'No-op: owner_id is now resolved inline during sync' })
+    @ApiOperation({ summary: 'Cross-reference Channel.owner with Users.full_name to fill email' })
     async enrichChannelEmails() {
-        return { message: 'owner_id enrichment: no-op (resolved inline during sync)', updated: 0 };
+        try {
+            const updated = await this.larkService.enrichChannelEmailsFromUsers();
+            return { message: `Email enrichment completed: ${updated} channels updated`, updated };
+        } catch (error) {
+            return { message: 'Email enrichment failed', error: error.message };
+        }
     }
 
     @Post('sync-doda-channel')

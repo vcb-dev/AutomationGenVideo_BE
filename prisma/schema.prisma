@@ -1,6 +1,6 @@
 generator client {
   provider   = "prisma-client-js"
-  engineType = "binary"
+  engineType = "library"
 }
 
 datasource db {
@@ -54,7 +54,7 @@ model User {
   team_members            User[]           @relation("TeamLeaderMembers")
   reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                  Video[]
-  social_accounts         SocialAccount[]
+  social_accounts           SocialAccount[]
   social_posts              SocialPost[]
   teams_leading             Team[]           @relation("TeamLeaderOf")
   team_membership           TeamMember?      @relation("TeamMembershipOf")
@@ -81,7 +81,6 @@ model User {
   tasks_reviewed            Task[]           @relation("TaskReviewer")
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
   notifications             Notification[]   @relation("NotificationOf")
-  owned_channels            Channel[]        @relation("ChannelOwner")
 
   @@index([email])
   @@index([roles])
@@ -639,6 +638,46 @@ model LarkKpiDoDa {
   @@map("lark_kpi_do_da")
 }
 
+/// KPI Global Indo — sync từ bảng "Báo cáo KPI ngày" trong wiki External (dùng user_access_token).
+model LarkKpiGlobalIndo {
+  id                   String    @id
+  employee_id          String?
+  name                 String?
+  tag                  String?
+  team                 String?
+  image_url            String?
+  kpi_day              Int?
+  kpi_month            Int?
+  kpii_status          String?
+  kpi_day_percent      String?
+  completed_day        Int?
+  completed_month      Int?
+  task_new             Int?
+  task_new_month       Int?
+  task_auto            Int?
+  task_auto_month      Int?
+  task_creative        Int?
+  content_win_new      Int?
+  revenue_month        BigInt?
+  traffic_month        BigInt?
+  target_revenue_month String?
+  target_traffic_month String?
+  kpi_progress_month   Float?
+  employee_status      String?
+  state                String?
+  employee_data        Json?
+  report_date          DateTime?
+  month                String?
+  link_image           String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@index([month])
+  @@index([report_date])
+  @@map("lark_kpi_global_indo")
+}
+
+
 /// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
 model LarkKpiDoDaEditor {
   id              String   @id
@@ -730,23 +769,22 @@ model ReportOutstanding {
 }
 
 model Channel {
-  id           String   @id @default(uuid())
+  id           String   @id
   name         String
   platform     String?
   channel_id   String?
   link_channel String?
   status       String?
-  team_id      String?
-  owner_id     String?
+  team_traffic String?
+  owner        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
+  email        String?
 
-  team  Team? @relation("ChannelTeam", fields: [team_id], references: [id])
-  owner User? @relation("ChannelOwner", fields: [owner_id], references: [id])
-
-  @@index([owner_id])
-  @@index([team_id])
-  @@index([owner_id, status])
+  @@index([owner])
+  @@index([email])
+  @@index([team_traffic])
+  @@index([email, status])
   @@index([platform, status])
   @@map("huyk_channels")
 }
@@ -1373,7 +1411,6 @@ model Team {
   products  TeamProduct[]
   contents  TeamContent[]
   team_sources TeamSource[]
-  channels  Channel[]    @relation("ChannelTeam")
 
   @@index([leader_id])
   @@index([brand_type])

@@ -21,15 +21,7 @@ export class TrackedChannelsService {
       select: { email: true, full_name: true, team: true },
     });
 
-    // Resolve team_id từ tên team của user
-    let teamId: string | null = null;
-    if (user?.team) {
-      const team = await this.prisma.team.findFirst({
-        where: { name: { equals: user.team, mode: 'insensitive' } },
-        select: { id: true },
-      });
-      teamId = team?.id ?? null;
-    }
+
 
     // Upsert vào Channel table (huyk_channels) — link kênh với công ty
     const channelId = `manual_${createDto.platform}_${createDto.username}`.toLowerCase();
@@ -40,8 +32,9 @@ export class TrackedChannelsService {
       update: {
         name: createDto.display_name || createDto.username,
         platform: platformLabel,
-        owner_id: userId,
-        team_id: teamId,
+        owner: user?.full_name || '',
+        email: user?.email || null,
+        team_traffic: user?.team || '',
       },
       create: {
         id: channelId,
@@ -50,8 +43,9 @@ export class TrackedChannelsService {
         channel_id: createDto.username,
         link_channel: '',
         status: 'Đang hoạt động',
-        team_id: teamId,
-        owner_id: userId,
+        team_traffic: user?.team || '',
+        owner: user?.full_name || '',
+        email: user?.email || null,
       },
     });
 
@@ -140,10 +134,9 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          JOIN teams t ON t.id = hc.team_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
-            AND t.name ILIKE ${likeParam}
+            AND hc.team_traffic ILIKE ${likeParam}
             AND tc.platform::text = ${platform.toUpperCase()}
           ORDER BY tc.created_at DESC
         `;
@@ -152,10 +145,9 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          JOIN teams t ON t.id = hc.team_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
-            AND t.name ILIKE ${likeParam}
+            AND hc.team_traffic ILIKE ${likeParam}
           ORDER BY tc.created_at DESC
         `;
       }

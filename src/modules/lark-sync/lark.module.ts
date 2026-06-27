@@ -6,6 +6,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { LarkController } from './lark.controller';
 import { LarkService } from './lark.service';
 import { LarkSyncService } from './lark-sync.service';
+import { LarkGlobalIndoCronService } from './lark-global-indo-cron.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { ChannelEnrichmentModule } from '../channel-enrichment/channel-enrichment.module';
 import { CacheModule } from '../../common/cache/cache.module';
@@ -20,7 +21,7 @@ import { CacheModule } from '../../common/cache/cache.module';
         CacheModule,
     ],
     controllers: [LarkController],
-    providers: [LarkService, LarkSyncService],
-    exports: [LarkService, LarkSyncService],
+    providers: [LarkService, LarkSyncService, LarkGlobalIndoCronService],
+    exports: [LarkService, LarkSyncService, LarkGlobalIndoCronService],
 })
 export class LarkModule { }

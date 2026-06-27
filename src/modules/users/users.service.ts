@@ -212,14 +212,16 @@ export class UsersService {
     delete updateData.role;
 
     // --- Cross-table sync ---
-    const nameChanged = updateUserDto.full_name && updateUserDto.full_name !== user.full_name;
+    // !== undefined (not a truthy check): an explicit full_name: "" must still be treated as a
+    // change and synced to Lark, otherwise the users table and Lark tables end up out of sync.
+    const nameChanged = updateUserDto.full_name !== undefined && updateUserDto.full_name !== user.full_name;
     const teamChanged = updateUserDto.team !== undefined && updateUserDto.team !== user.team;
     const emailChanged = updateUserDto.email && updateUserDto.email !== user.email;
 
     const oldEmail = user.email;
     const oldName = user.full_name;
     const newName = updateUserDto.full_name ?? user.full_name;
-    const newTeam = updateUserDto.team ?? user.team;
+    const newTeam = updateUserDto.team !== undefined ? updateUserDto.team : user.team;
     const newEmail = updateUserDto.email ?? user.email;
 
     // Run main update + sync in transaction
@@ -227,7 +229,7 @@ export class UsersService {
       const result = await tx.user.update({
         where: { id },
         data: {
-          ...updateUserDto,
+          ...updateData,
           last_app_update_at: new Date(),
         },
         select: {
@@ -235,6 +237,7 @@ export class UsersService {
           email: true,
           full_name: true,
           roles: true,
+          team: true,
           manager_id: true,
           team_leader_id: true,
           is_active: true,
@@ -363,13 +366,9 @@ export class UsersService {
   }
 
   async getMyEditors(managerId: string, platform?: string) {
-    console.log('🔍 getMyEditors called with:', { managerId, platform });
-
     const manager = await this.prisma.user.findUnique({
       where: { id: managerId },
     });
-
-    console.log('👤 Manager found:', manager ? { id: manager.id, email: manager.email, roles: manager.roles } : 'NOT FOUND');
 
     if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !manager.roles.includes(UserRole.ADMIN))) {
       throw new BadRequestException('Only managers and admins can view their team members');
@@ -399,8 +398,6 @@ export class UsersService {
     })) as unknown as Array<
       UserWithImageSelect & { is_active: boolean; created_at: Date }
     >;
-
-    console.log('📝 Team members found:', editors.length);
 
     const editorsWithStats = await Promise.all(
       editors.map(async (editor) => {
@@ -507,6 +504,35 @@ export class UsersService {
     return managers.map((m) => ({ ...m, avatar: m.image_url }));
   }
 
+  async getAvailableLeaders() {
+    const leaders = await this.prisma.user.findMany({
+      where: {
+        roles: { has: UserRole.LEADER },
+        is_active: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        image_url: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        team_leader_id: true,
+        is_active: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: {
+        full_name: 'asc',
+      },
+    });
+
+    return leaders;
+  }
+
   async selectManager(userId: string, managerId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -583,6 +609,33 @@ export class UsersService {
     return [];
   }
 
+  /**
+   * Nhân sự chưa được gán team (vd: vừa đăng nhập Gmail lần đầu).
+   * ADMIN/MANAGER/LEADER đều thấy chung pool này để "nhận" về team mình —
+   * khác với getTeamMembers (LEADER chỉ thấy member ĐÃ thuộc team mình).
+   */
+  async getUnassignedMembers() {
+    return this.prisma.user.findMany({
+      where: { team: null },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        team_leader_id: true,
+        is_active: true,
+        image_url: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
   /** Tạo nhân sự (MANAGER=ADMIN có full quyền, LEADER chỉ tạo MEMBER) */
   async createHR(callerId: string, callerRoles: UserRole[], dto: CreateUserDto) {
     const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
@@ -596,7 +649,24 @@ export class UsersService {
       if (requestedRoles.some(r => r !== UserRole.MEMBER)) {
         throw new ForbiddenException('Leader chỉ được tạo MEMBER');
       }
+      // Force roles to exactly [MEMBER] — don't just validate "nothing else requested", since
+      // an empty/omitted roles field would otherwise pass that check and create() would persist
+      // roles: [], leaving the account without any role (locked out of every RolesGuard route).
+      dto.roles = [UserRole.MEMBER];
+      delete dto.role;
+      // Force team to the leader's own team server-side (don't trust client payload) so the
+      // new member can't end up with team_leader_id set but team mismatched/null — which would
+      // make them show up in getUnassignedMembers() despite already being claimed.
+      const caller = await this.prisma.user.findUnique({ where: { id: callerId } });
       dto.team_leader_id = callerId;
+      dto.team = caller?.team ?? null;
+      // A leader may only set name/email/password for a new hire — strip fields that grant
+      // capability beyond that (manager_id ties them into an unrelated manager's hierarchy,
+      // custom_permissions can widen app access, is_active should only go through deactivate/
+      // reactivate). The UI never sends these for a LEADER, this only closes a direct-API gap.
+      delete dto.manager_id;
+      delete dto.custom_permissions;
+      delete (dto as any).is_active;
     }
 
     return this.create(dto);
@@ -611,11 +681,46 @@ export class UsersService {
       const target = await this.prisma.user.findUnique({ where: { id: targetId } });
       if (!target) throw new NotFoundException(`User ${targetId} not found`);
 
-      if (target.team_leader_id !== callerId) {
+      const isOwnMember = target.team_leader_id === callerId;
+      // "Unclaimed" must match getUnassignedMembers()'s definition (team === null), not
+      // team_leader_id === null — those two fields are independent. Using team_leader_id here
+      // let any LEADER hijack a member that a MANAGER had already assigned a team to but no
+      // specific team_leader_id yet, since such a member never shows up as "unassigned" in the UI.
+      const isUnclaimed = target.team === null;
+
+      if (!isOwnMember && !isUnclaimed) {
         throw new ForbiddenException('Leader chỉ được cập nhật member trong team mình');
       }
       if (dto.roles || (dto as any).role) {
         throw new ForbiddenException('Leader không được thay đổi role');
+      }
+      // A leader may only edit name/email/team(forced below) for a member they own — strip
+      // fields that would let a direct API call bypass deactivate/reactivate's stricter
+      // ownership check (is_active) or alter authorization-relevant data outside their scope
+      // (manager_id, custom_permissions). The UI never sends these for a LEADER.
+      delete dto.manager_id;
+      delete dto.custom_permissions;
+      delete (dto as any).is_active;
+      // Claiming a not-yet-assigned member (e.g. a fresh Gmail signup) always attaches them to
+      // this leader's own team — force it server-side instead of trusting the client payload.
+      if (isUnclaimed) {
+        const caller = await this.prisma.user.findUnique({ where: { id: callerId } });
+        dto.team_leader_id = callerId;
+        dto.team = caller?.team ?? null;
+      } else if (dto.team === null) {
+        // Already-claimed own member, leader explicitly releases them back to the shared
+        // "unassigned" pool (e.g. member is moving teams and the new leader will claim them).
+        // Always clear team_leader_id together with team — a leader can release, but still
+        // can't redirect the member straight to a specific other team/leader themselves.
+        dto.team_leader_id = null;
+      } else {
+        // Any other team/team_leader_id change (i.e. picking a specific different team) is a
+        // manager-level reassignment decision. Drop it, keep the existing value — the
+        // HRModal's team <select> is supposed to be disabled for LEADER outside the release
+        // case, but this is the authoritative guard in case that ever regresses or is bypassed
+        // via a direct API call.
+        delete dto.team;
+        delete dto.team_leader_id;
       }
     }
 
