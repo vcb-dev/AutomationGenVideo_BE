@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import axios from 'axios';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { ContentReportService } from './content-report.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -216,6 +217,42 @@ export class ContentReportController {
     @Body('periodId') periodId: string,
   ) {
     return this.contentReportService.computeKpiSnapshot(team, periodId);
+  }
+
+  // ───────────────────── TIKTOK RESOLVER ─────────────────────
+
+  @Get('resolve-tiktok')
+  @ApiOperation({ summary: 'Giải mã link rút gọn vt.tiktok.com thành id video nhúng' })
+  @ApiQuery({ name: 'url', type: String, required: true })
+  async resolveTiktokUrl(@Query('url') url: string) {
+    // 1. Check if the input URL already contains the video ID
+    const ttRegex = /tiktok\.com\/.*\/(?:video|photo)\/(\d+)/;
+    const initialMatch = url.match(ttRegex);
+    if (initialMatch && initialMatch[1]) {
+      const isPhoto = url.includes('/photo/');
+      return { success: true, videoId: initialMatch[1], isPhoto };
+    }
+
+    // 2. Otherwise, resolve the redirect on server side
+    try {
+      const res = await axios.get(url, {
+        maxRedirects: 5,
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      const resolvedUrl = res.request?.res?.responseUrl || res.config?.url || url;
+      
+      const ttMatch = resolvedUrl.match(ttRegex);
+      if (ttMatch && ttMatch[1]) {
+        const isPhoto = resolvedUrl.includes('/photo/');
+        return { success: true, videoId: ttMatch[1], isPhoto };
+      }
+      return { success: false, message: 'Could not extract video ID from resolved URL: ' + resolvedUrl };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
   }
 
   // ───────────────────── SEED ─────────────────────

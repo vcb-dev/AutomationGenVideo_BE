@@ -29,7 +29,6 @@ export class CreateContentVideoDto {
 
   @ApiProperty({ example: 'Review chi tiết sản phẩm...' })
   @IsString()
-  @IsNotEmpty()
   content: string;
 
   @ApiPropertyOptional()

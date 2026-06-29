@@ -92,6 +92,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async onApplicationBootstrap() {
+        if (this.configService.get<string>('LARK_SYNC_ON_BOOTSTRAP') === 'false') {
+            this.logger.log('🚀 [Bootstrap] LARK_SYNC_ON_BOOTSTRAP is false — bỏ qua tự động sync Lark khi startup.');
+            return;
+        }
         // Delay 30s để DB + Redis kịp kết nối trước khi sync
         const DELAY_MS = 30_000;
         this.logger.log(`🚀 [Bootstrap] Server started — sẽ tự động sync Lark sau ${DELAY_MS / 1000}s...`);
