@@ -1512,3 +1512,4 @@ model TeamKpiSnapshot {
   @@unique([team_id, period_id]) // 1 snapshot / team / kỳ
   @@map("team_kpi_snapshots")
 }
+}

@@ -517,7 +517,6 @@ export class LarkController {
             );
             fileTokens.push(token);
         }
-
         return { message: 'Files uploaded successfully', fileTokens };
     }
 }

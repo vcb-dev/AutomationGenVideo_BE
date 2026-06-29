@@ -20,7 +20,7 @@ import {
 export class ContentReportService {
   private readonly logger = new Logger(ContentReportService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   private async resolveUser(id?: string, name?: string): Promise<string> {
     if (id && id.length > 10) {
@@ -103,7 +103,7 @@ export class ContentReportService {
 
     const whereTeamPeriod = { team_id: team.id, period_id: periodId };
 
-    const [winVideos, failVideos, caseStudies, editorPerformance, cloneVideos, actionItems, kpiSnapshot] =
+    const [winVideos, failVideos, caseStudies, editorPerformance, cloneVideos, actionItems, kpiSnapshot, teamMembers] =
       await Promise.all([
         this.prisma.contentVideo.findMany({
           where: { ...whereTeamPeriod, status: VideoStatus.WIN },
@@ -156,41 +156,55 @@ export class ContentReportService {
         this.prisma.teamKpiSnapshot.findUnique({
           where: { team_id_period_id: { team_id: team.id, period_id: periodId } },
         }),
+        this.prisma.user.findMany({
+          where: {
+            is_active: true,
+            team: {
+              contains: teamName,
+              mode: 'insensitive',
+            },
+          },
+          select: {
+            full_name: true,
+          },
+        }),
       ]);
 
     // Transform to FE-friendly format
     const totalVids = winVideos.length + failVideos.length;
     const winCount = winVideos.length;
+    const members = (teamMembers || []).map((m) => m.full_name);
 
     return {
       teamId: team.id,
       teamName: team.name,
       periodId: period.id,
       periodLabel: period.label,
+      members,
       win5Stats: kpiSnapshot
         ? {
-            total: kpiSnapshot.total_videos,
-            win: kpiSnapshot.win_videos,
-            fail: kpiSnapshot.fail_videos,
-            percent: kpiSnapshot.total_videos > 0
-              ? `${((kpiSnapshot.win_videos / kpiSnapshot.total_videos) * 100).toFixed(1)}%`
-              : '0.0%',
-          }
+          total: kpiSnapshot.total_videos,
+          win: kpiSnapshot.win_videos,
+          fail: kpiSnapshot.fail_videos,
+          percent: kpiSnapshot.total_videos > 0
+            ? `${((kpiSnapshot.win_videos / kpiSnapshot.total_videos) * 100).toFixed(1)}%`
+            : '0.0%',
+        }
         : {
-            total: totalVids,
-            win: winCount,
-            fail: failVideos.length,
-            percent: totalVids > 0 ? `${((winCount / totalVids) * 100).toFixed(1)}%` : '0.0%',
-          },
+          total: totalVids,
+          win: winCount,
+          fail: failVideos.length,
+          percent: totalVids > 0 ? `${((winCount / totalVids) * 100).toFixed(1)}%` : '0.0%',
+        },
       newVideoStats: kpiSnapshot
         ? {
-            total: kpiSnapshot.total_new_videos,
-            win: kpiSnapshot.new_win_videos,
-            fail: kpiSnapshot.total_new_videos - kpiSnapshot.new_win_videos,
-            percent: kpiSnapshot.total_new_videos > 0
-              ? `${((kpiSnapshot.new_win_videos / kpiSnapshot.total_new_videos) * 100).toFixed(1)}%`
-              : '0.0%',
-          }
+          total: kpiSnapshot.total_new_videos,
+          win: kpiSnapshot.new_win_videos,
+          fail: kpiSnapshot.total_new_videos - kpiSnapshot.new_win_videos,
+          percent: kpiSnapshot.total_new_videos > 0
+            ? `${((kpiSnapshot.new_win_videos / kpiSnapshot.total_new_videos) * 100).toFixed(1)}%`
+            : '0.0%',
+        }
         : { total: 0, win: 0, fail: 0, percent: '0.0%' },
       videos: winVideos.map((v, i) => ({
         id: i + 1,
@@ -344,12 +358,12 @@ export class ContentReportService {
   async updateContentVideo(id: string, dto: UpdateContentVideoDto) {
     const data: any = { ...dto };
     if (dto.post_date) data.post_date = new Date(dto.post_date);
-    
+
     if (dto.editor || dto.editor_id) {
       data.editor_id = await this.resolveUser(dto.editor_id, dto.editor);
       delete data.editor;
     }
-    
+
     // Remove FK fields from update if they exist to prevent accidental reassignment
     delete data.team_id;
     delete data.period_id;
@@ -638,8 +652,6 @@ export class ContentReportService {
   // ───────────────────── HELPERS ─────────────────────
 
   private formatViews(views: number): string {
-    if (views >= 1000000) return `${(views / 1000000).toFixed(1)}M views`;
-    if (views >= 1000) return `${(views / 1000).toFixed(0)}K views`;
-    return `${views} views`;
+    return views.toString();
   }
 }
