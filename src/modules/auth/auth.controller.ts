@@ -84,21 +84,33 @@ export class AuthController {
   async googleAuthRedirect(@Req() req: any, @Res() res: Response) {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
 
-    // Check if this is a new user or existing user
-    if (req.user.isNewUser) {
-      // New user - create a temporary token with Google profile data
-      const tempToken = this.authService.createTempToken(req.user);
+    try {
+      console.log("[GoogleCallback] Authenticated google user:", req.user);
+      
+      // Check if this is a new user or existing user
+      if (req.user.isNewUser) {
+        // New user - create a temporary token with Google profile data
+        const tempToken = this.authService.createTempToken(req.user);
 
-      // Redirect to role selection page
-      res.redirect(
-        `${frontendUrl}/auth/google/role-selection?tempToken=${tempToken}`,
-      );
-    } else {
-      // Existing user - generate regular token and redirect to dashboard
-      const tokenResponse = await this.authService.generateToken(req.user);
-      res.redirect(
-        `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
-      );
+        // Redirect to role selection page
+        res.redirect(
+          `${frontendUrl}/auth/google/role-selection?tempToken=${tempToken}`,
+        );
+      } else {
+        // Existing user - generate regular token and redirect to dashboard
+        const tokenResponse = await this.authService.generateToken(req.user);
+        res.redirect(
+          `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
+        );
+      }
+    } catch (err: any) {
+      console.error("[GoogleCallback] CRITICAL ERROR:", err);
+      res.status(500).json({
+        statusCode: 500,
+        message: err?.message || "Internal server error",
+        error: err?.name || "Error",
+        stack: err?.stack?.split("\n")
+      });
     }
   }
 
