@@ -50,6 +50,11 @@ async function bootstrap() {
   // Rewrite /auth/google/callback and /social/oauth/ callbacks to prepend /api
   // This avoids redirect_uri_mismatch errors and 404s in Google/Social Cloud Console
   app.use((req, res, next) => {
+    console.log(`[HTTP Request] ${req.method} ${req.url}`);
+    res.on('finish', () => {
+      console.log(`[HTTP Response] ${req.method} ${req.url} -> Status ${res.statusCode}`);
+    });
+
     if (req.url.startsWith('/auth/google/callback')) {
       req.url = req.url.replace('/auth/google/callback', '/api/auth/google/callback');
     } else if (req.url.startsWith('/social/oauth/')) {
