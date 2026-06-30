@@ -719,8 +719,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         await runTask('ListTask', () => this.syncListTaskData());
         await runTask('Permission', () => this.syncPermissionData());
         await runTask('Employee', () => this.syncEmployeeData());
-        await runTask('Channel VCB', () => this.syncChannelData());
-        await runTask('Channel DoDa', () => this.syncDoDaChannelData());
+        // await runTask('Channel VCB', () => this.syncChannelData());
+        // await runTask('Channel DoDa', () => this.syncDoDaChannelData());
 
         this.logger.log(`[Cron] Finished full sync flow in ${Date.now() - startTime}ms.`);
     }
@@ -1722,426 +1722,426 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         }
     }
 
-    async syncChannelData() {
-        try {
-            const baseId = this.configService.get<string>('LARK_CHANNEL_BASE_ID')
-                || 'JAEmwmWQkixHOOkumU5lRU7ogkb';
-            const tableId = this.configService.get<string>('LARK_CHANNEL_TABLE_ID')
-                || 'tblWxMtDAkvh1gWS';
+    // async syncChannelData() {
+    //     try {
+    //         const baseId = this.configService.get<string>('LARK_CHANNEL_BASE_ID')
+    //             || 'JAEmwmWQkixHOOkumU5lRU7ogkb';
+    //         const tableId = this.configService.get<string>('LARK_CHANNEL_TABLE_ID')
+    //             || 'tblWxMtDAkvh1gWS';
 
-            this.logger.log(`Syncing Channel table: ${tableId} from base: ${baseId}`);
-            const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
-            this.logger.log(`Fetched ${records.length} records from Channel table. Overwriting Channel model...`);
+    //         this.logger.log(`Syncing Channel table: ${tableId} from base: ${baseId}`);
+    //         const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
+    //         this.logger.log(`Fetched ${records.length} records from Channel table. Overwriting Channel model...`);
 
-            const extractString = (val: any): string | null => {
-                if (val === null || val === undefined) return null;
-                if (typeof val === 'string') return val;
-                if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-                if (Array.isArray(val)) {
-                    if (val.length === 0) return null;
-                    const first = val[0];
-                    if (typeof first === 'string') return first;
-                    if (typeof first === 'object' && first !== null) {
-                        return first.text || first.name || first.value || first.en_name || JSON.stringify(first);
-                    }
-                    return String(first);
-                }
-                if (typeof val === 'object') {
-                    return val.text || val.value || val.name || val.link || null;
-                }
-                return String(val);
-            };
+    //         const extractString = (val: any): string | null => {
+    //             if (val === null || val === undefined) return null;
+    //             if (typeof val === 'string') return val;
+    //             if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    //             if (Array.isArray(val)) {
+    //                 if (val.length === 0) return null;
+    //                 const first = val[0];
+    //                 if (typeof first === 'string') return first;
+    //                 if (typeof first === 'object' && first !== null) {
+    //                     return first.text || first.name || first.value || first.en_name || JSON.stringify(first);
+    //                 }
+    //                 return String(first);
+    //             }
+    //             if (typeof val === 'object') {
+    //                 return val.text || val.value || val.name || val.link || null;
+    //             }
+    //             return String(val);
+    //         };
 
-            const extractUrl = (val: any): string | null => {
-                if (!val) return null;
-                if (typeof val === 'string') return val;
-                if (Array.isArray(val) && val.length > 0) {
-                    const first = val[0];
-                    return first.link || first.url || first.text || (typeof first === 'string' ? first : null);
-                }
-                if (typeof val === 'object') return val.link || val.url || val.text || null;
-                return String(val);
-            };
+    //         const extractUrl = (val: any): string | null => {
+    //             if (!val) return null;
+    //             if (typeof val === 'string') return val;
+    //             if (Array.isArray(val) && val.length > 0) {
+    //                 const first = val[0];
+    //                 return first.link || first.url || first.text || (typeof first === 'string' ? first : null);
+    //             }
+    //             if (typeof val === 'object') return val.link || val.url || val.text || null;
+    //             return String(val);
+    //         };
 
-            const extractEmail = (val: any): string | null => {
-                if (!val) return null;
-                if (Array.isArray(val) && val.length > 0) {
-                    return val[0].email || null;
-                }
-                if (typeof val === 'object') return val.email || null;
-                return null;
-            };
+    //         const extractEmail = (val: any): string | null => {
+    //             if (!val) return null;
+    //             if (Array.isArray(val) && val.length > 0) {
+    //                 return val[0].email || null;
+    //             }
+    //             if (typeof val === 'object') return val.email || null;
+    //             return null;
+    //         };
 
-            const EXCLUDED_TEAMS = ['global - jp2', 'global - jp3'];
+    //         const EXCLUDED_TEAMS = ['global - jp2', 'global - jp3'];
 
-            const channelsToInsert: any[] = [];
-            let skippedTeam = 0;
+    //         const channelsToInsert: any[] = [];
+    //         let skippedTeam = 0;
 
-            // Pre-load users để resolve email từ owner name ngay trong vòng lặp,
-            // vì Lark Person field không trả .email qua API.
-            const allUsers = await this.prisma.user.findMany({
-                where: { is_active: true },
-                select: { email: true, full_name: true },
-            });
-            // Map 1: exact normalized name → email (ưu tiên cao nhất)
-            const exactNameToEmail = new Map<string, string>();
-            // Map 2: sorted-words → email, chỉ dùng khi key là DUY NHẤT
-            // (tránh "Chung Đoàn" và "Đoàn Chung" cùng sort thành "chung doan" → gán nhầm)
-            const sortedKeyCount = new Map<string, number>();
-            const sortedToEmail = new Map<string, string>();
-            for (const u of allUsers) {
-                if (!u.full_name || !u.email) continue;
-                const norm = this.normalizeOwnerName(u.full_name);
-                if (!exactNameToEmail.has(norm)) exactNameToEmail.set(norm, u.email);
-                const sorted = norm.split(' ').sort().join(' ');
-                if (sorted !== norm) {
-                    sortedKeyCount.set(sorted, (sortedKeyCount.get(sorted) ?? 0) + 1);
-                    sortedToEmail.set(sorted, u.email);
-                }
-            }
-            const resolveEmailFromOwner = (ownerName: string): string | null => {
-                if (!ownerName) return null;
-                const norm = this.normalizeOwnerName(ownerName);
-                // Ưu tiên 1: khớp chính xác
-                if (exactNameToEmail.has(norm)) return exactNameToEmail.get(norm)!;
-                // Ưu tiên 2: sorted-words fallback — chỉ dùng nếu key đó duy nhất 1 người
-                const sorted = norm.split(' ').sort().join(' ');
-                if ((sortedKeyCount.get(sorted) ?? 0) === 1 && sortedToEmail.has(sorted)) {
-                    return sortedToEmail.get(sorted)!;
-                }
-                return null;
-            };
+    //         // Pre-load users để resolve email từ owner name ngay trong vòng lặp,
+    //         // vì Lark Person field không trả .email qua API.
+    //         const allUsers = await this.prisma.user.findMany({
+    //             where: { is_active: true },
+    //             select: { email: true, full_name: true },
+    //         });
+    //         // Map 1: exact normalized name → email (ưu tiên cao nhất)
+    //         const exactNameToEmail = new Map<string, string>();
+    //         // Map 2: sorted-words → email, chỉ dùng khi key là DUY NHẤT
+    //         // (tránh "Chung Đoàn" và "Đoàn Chung" cùng sort thành "chung doan" → gán nhầm)
+    //         const sortedKeyCount = new Map<string, number>();
+    //         const sortedToEmail = new Map<string, string>();
+    //         for (const u of allUsers) {
+    //             if (!u.full_name || !u.email) continue;
+    //             const norm = this.normalizeOwnerName(u.full_name);
+    //             if (!exactNameToEmail.has(norm)) exactNameToEmail.set(norm, u.email);
+    //             const sorted = norm.split(' ').sort().join(' ');
+    //             if (sorted !== norm) {
+    //                 sortedKeyCount.set(sorted, (sortedKeyCount.get(sorted) ?? 0) + 1);
+    //                 sortedToEmail.set(sorted, u.email);
+    //             }
+    //         }
+    //         const resolveEmailFromOwner = (ownerName: string): string | null => {
+    //             if (!ownerName) return null;
+    //             const norm = this.normalizeOwnerName(ownerName);
+    //             // Ưu tiên 1: khớp chính xác
+    //             if (exactNameToEmail.has(norm)) return exactNameToEmail.get(norm)!;
+    //             // Ưu tiên 2: sorted-words fallback — chỉ dùng nếu key đó duy nhất 1 người
+    //             const sorted = norm.split(' ').sort().join(' ');
+    //             if ((sortedKeyCount.get(sorted) ?? 0) === 1 && sortedToEmail.has(sorted)) {
+    //                 return sortedToEmail.get(sorted)!;
+    //             }
+    //             return null;
+    //         };
 
-            for (const record of records) {
-                const f = record.fields;
+    //         for (const record of records) {
+    //             const f = record.fields;
 
-                const teamTraffic = extractString(f['Team Traffic'])
-                    || extractString(f['Team traffic'])
-                    || '';
+    //             const teamTraffic = extractString(f['Team Traffic'])
+    //                 || extractString(f['Team traffic'])
+    //                 || '';
 
-                if (EXCLUDED_TEAMS.includes(teamTraffic.toLowerCase().trim())) {
-                    skippedTeam++;
-                    continue;
-                }
+    //             if (EXCLUDED_TEAMS.includes(teamTraffic.toLowerCase().trim())) {
+    //                 skippedTeam++;
+    //                 continue;
+    //             }
 
-                const name = extractString(f['Tên kênh hiện tại'])
-                    || extractString(f['Tên kênh A?'])
-                    || extractString(f['name'])
-                    || 'N/A';
+    //             const name = extractString(f['Tên kênh hiện tại'])
+    //                 || extractString(f['Tên kênh A?'])
+    //                 || extractString(f['name'])
+    //                 || 'N/A';
 
-                const owner = extractString(f['Nhân viên traffic xây kênh'])
-                    || extractString(f['NV traffic xây kênh'])
-                    || extractString(f['owner A?'])
-                    || '';
+    //             const owner = extractString(f['Nhân viên traffic xây kênh'])
+    //                 || extractString(f['NV traffic xây kênh'])
+    //                 || extractString(f['owner A?'])
+    //                 || '';
 
-                const data = {
-                    id: record.record_id,
-                    name,
-                    platform: extractString(f['Nền tảng'])
-                        || extractString(f['Nền tảng A?'])
-                        || '',
-                    channel_id: extractString(f['ID kênh hiện tại'])
-                        || extractString(f['channel_id A?'])
-                        || extractString(f['channel_id'])
-                        || '',
-                    link_channel: extractUrl(f['Link kênh'])
-                        || extractUrl(f['link_channel A?'])
-                        || extractUrl(f['link_channel'])
-                        || '',
-                    status: extractString(
-                        f['Trạng thái hoạt động']
-                        ?? f['Trạng thái A?']
-                        ?? f['Trạng thái']
-                        ?? f['Trạng Thái']
-                        ?? f['status'],
-                    ) || 'Đang hoạt động',
-                    team_traffic: teamTraffic,
-                    owner,
-                    // Lark Person field không trả .email qua API → resolve từ Users table
-                    email: extractEmail(f['Nhân viên traffic xây kênh'])
-                        || extractEmail(f['NV traffic xây kênh'])
-                        || resolveEmailFromOwner(owner),
-                };
+    //             const data = {
+    //                 id: record.record_id,
+    //                 name,
+    //                 platform: extractString(f['Nền tảng'])
+    //                     || extractString(f['Nền tảng A?'])
+    //                     || '',
+    //                 channel_id: extractString(f['ID kênh hiện tại'])
+    //                     || extractString(f['channel_id A?'])
+    //                     || extractString(f['channel_id'])
+    //                     || '',
+    //                 link_channel: extractUrl(f['Link kênh'])
+    //                     || extractUrl(f['link_channel A?'])
+    //                     || extractUrl(f['link_channel'])
+    //                     || '',
+    //                 status: extractString(
+    //                     f['Trạng thái hoạt động']
+    //                     ?? f['Trạng thái A?']
+    //                     ?? f['Trạng thái']
+    //                     ?? f['Trạng Thái']
+    //                     ?? f['status'],
+    //                 ) || 'Đang hoạt động',
+    //                 team_traffic: teamTraffic,
+    //                 owner,
+    //                 // Lark Person field không trả .email qua API → resolve từ Users table
+    //                 email: extractEmail(f['Nhân viên traffic xây kênh'])
+    //                     || extractEmail(f['NV traffic xây kênh'])
+    //                     || resolveEmailFromOwner(owner),
+    //             };
 
-                channelsToInsert.push(data);
-            }
+    //             channelsToInsert.push(data);
+    //         }
 
-            let synced = 0;
-            if (channelsToInsert.length > 0) {
-                this.logger.log(`Syncing ${channelsToInsert.length} fresh records to Channel atomically...`);
+    //         let synced = 0;
+    //         if (channelsToInsert.length > 0) {
+    //             this.logger.log(`Syncing ${channelsToInsert.length} fresh records to Channel atomically...`);
                 
-                // Use atomic transaction: drop old non-doda records and batch insert fresh ones 
-                // to prevent connection overload and avoid parallel execution race conditions.
-                await this.prisma.$transaction([
-                    this.prisma.channel.deleteMany({
-                        where: {
-                            AND: [
-                                { NOT: { id: { startsWith: 'doda_' } } },
-                                { NOT: { id: { startsWith: 'manual_' } } },
-                            ],
-                        },
-                    }),
-                    this.prisma.channel.createMany({
-                        data: channelsToInsert,
-                        skipDuplicates: true,
-                    }),
-                ]);
-                synced = channelsToInsert.length;
-            } else {
-                this.logger.log('No channel records to sync.');
-            }
+    //             // Use atomic transaction: drop old non-doda records and batch insert fresh ones 
+    //             // to prevent connection overload and avoid parallel execution race conditions.
+    //             await this.prisma.$transaction([
+    //                 this.prisma.channel.deleteMany({
+    //                     where: {
+    //                         AND: [
+    //                             { NOT: { id: { startsWith: 'doda_' } } },
+    //                             { NOT: { id: { startsWith: 'manual_' } } },
+    //                         ],
+    //                     },
+    //                 }),
+    //                 this.prisma.channel.createMany({
+    //                     data: channelsToInsert,
+    //                     skipDuplicates: true,
+    //                 }),
+    //             ]);
+    //             synced = channelsToInsert.length;
+    //         } else {
+    //             this.logger.log('No channel records to sync.');
+    //         }
 
-            this.logger.log(`Successfully synced ${synced}/${records.length} records to Channel (skipped ${skippedTeam} from excluded teams).`);
+    //         this.logger.log(`Successfully synced ${synced}/${records.length} records to Channel (skipped ${skippedTeam} from excluded teams).`);
 
-            // Cross-reference: gắn email chính xác từ bảng Users dựa theo owner name
-            try {
-                const enriched = await this.enrichChannelEmailsFromUsers();
-                this.logger.log(`[Channel] Email enrichment: updated ${enriched} channels from Users table.`);
-            } catch (enrichErr: any) {
-                this.logger.warn(`[Channel] Email enrichment failed: ${enrichErr?.message}`);
-            }
+    //         // Cross-reference: gắn email chính xác từ bảng Users dựa theo owner name
+    //         try {
+    //             const enriched = await this.enrichChannelEmailsFromUsers();
+    //             this.logger.log(`[Channel] Email enrichment: updated ${enriched} channels from Users table.`);
+    //         } catch (enrichErr: any) {
+    //             this.logger.warn(`[Channel] Email enrichment failed: ${enrichErr?.message}`);
+    //         }
 
-            try {
-                const imp = await this.importTrackedChannelsFromChannelTable();
-                this.logger.log(
-                    `[Lark] tracked_channels import: imported=${imp.imported} no_user=${imp.skipped_no_user} no_parse=${imp.skipped_no_identity} skip_inactive=${imp.skipped_inactive} deactivated=${imp.deactivated_inactive_lark}`,
-                );
-            } catch (ie: any) {
-                this.logger.warn(`[Lark] import tracked after channel sync: ${ie?.message}`);
-            }
+    //         try {
+    //             const imp = await this.importTrackedChannelsFromChannelTable();
+    //             this.logger.log(
+    //                 `[Lark] tracked_channels import: imported=${imp.imported} no_user=${imp.skipped_no_user} no_parse=${imp.skipped_no_identity} skip_inactive=${imp.skipped_inactive} deactivated=${imp.deactivated_inactive_lark}`,
+    //             );
+    //         } catch (ie: any) {
+    //             this.logger.warn(`[Lark] import tracked after channel sync: ${ie?.message}`);
+    //         }
 
-            // Mirror sau enrich/import — giống KPI: snapshot local khớp server (email Users đã gán).
-            try {
-                const localRows = await this.prisma.channel.findMany({
-                    where: { NOT: { id: { startsWith: 'doda_' } } },
-                });
-                const mirroredRemote = await this.mirrorChannelSnapshotToServer(localRows as any);
-                if (mirroredRemote) this.logger.log(`[Channel] Remote mirror success: ${mirroredRemote} row(s).`);
-            } catch (mirrorErr: any) {
-                this.logger.error('[Channel] Mirror to remote DB failed — local channel is already updated', mirrorErr);
-            }
-        } catch (error) {
-            this.logger.error('Failed to sync Channel data', error);
-            throw error;
-        }
-    }
+    //         // Mirror sau enrich/import — giống KPI: snapshot local khớp server (email Users đã gán).
+    //         try {
+    //             const localRows = await this.prisma.channel.findMany({
+    //                 where: { NOT: { id: { startsWith: 'doda_' } } },
+    //             });
+    //             const mirroredRemote = await this.mirrorChannelSnapshotToServer(localRows as any);
+    //             if (mirroredRemote) this.logger.log(`[Channel] Remote mirror success: ${mirroredRemote} row(s).`);
+    //         } catch (mirrorErr: any) {
+    //             this.logger.error('[Channel] Mirror to remote DB failed — local channel is already updated', mirrorErr);
+    //         }
+    //     } catch (error) {
+    //         this.logger.error('Failed to sync Channel data', error);
+    //         throw error;
+    //     }
+    // }
 
-    /**
-     * Cross-reference Channel.owner với Users.full_name để gắn email chính xác.
-     * Returns số channels đã được update email.
-     */
-    async enrichChannelEmailsFromUsers(): Promise<number> {
-        const users = await this.prisma.user.findMany({
-            where: { is_active: true },
-            select: { id: true, email: true, full_name: true },
-        });
-
-        // Build maps: normalized full_name → { email, id }
-        const nameToUser = new Map<string, { email: string; id: string }>();
-        for (const u of users) {
-            if (u.full_name && u.email) {
-                nameToUser.set(this.normalizeOwnerName(u.full_name), { email: u.email, id: u.id });
-            }
-        }
-        // Debug: log first 10 entries in map
-        const mapSample = Array.from(nameToUser.entries()).slice(0, 10);
-        this.logger.debug(`[enrich] nameToUser sample: ${JSON.stringify(mapSample)}`);
-
-        const channels = await this.prisma.channel.findMany({
-            select: { id: true, owner: true, email: true },
-        });
-
-        let updated = 0;
-        let unmatched = 0;
-        for (const ch of channels) {
-            if (!ch.owner) continue;
-            // NOTE: Do NOT skip channels that already have an email.
-            // The email extracted during Lark sync may be a Lark SSO email that does not match
-            // the system login email in the Users table.  Always overwrite with the system email.
-
-            const normalizedOwner = this.normalizeOwnerName(ch.owner);
-            let matchedUser = nameToUser.get(normalizedOwner);
-
-            // Fallback 1: partial match (owner contains user name or vice versa)
-            if (!matchedUser) {
-                for (const [normalizedName, user] of nameToUser) {
-                    if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
-                        matchedUser = user;
-                        break;
-                    }
-                }
-            }
-
-            // Fallback 2: sorted-words match — xử lý trường hợp tên bị đảo thứ tự
-            // vd: "Nhâm Đoàn" (Lark) vs "Đoàn Nhâm" (System) → sort → cùng = "doan nham"
-            if (!matchedUser) {
-                const sortedOwner = normalizedOwner.split(' ').sort().join(' ');
-                for (const [normalizedName, user] of nameToUser) {
-                    const sortedName = normalizedName.split(' ').sort().join(' ');
-                    if (sortedOwner === sortedName) {
-                        matchedUser = user;
-                        break;
-                    }
-                }
-            }
-
-            if (matchedUser) {
-                await this.prisma.channel.update({
-                    where: { id: ch.id },
-                    data: { email: matchedUser.email, owner_id: matchedUser.id },
-                });
-                updated++;
-            } else {
-                unmatched++;
-                this.logger.debug(`[enrich] No email match for owner="${ch.owner}" (normalized="${normalizedOwner}")`);
-            }
-        }
-
-        this.logger.log(`[enrich] Updated ${updated}, unmatched ${unmatched} (total channels: ${channels.length})`);
-        return updated;
-    }
+//    /**
+//     * Cross-reference Channel.owner với Users.full_name để gắn email chính xác.
+//     * Returns số channels đã được update email.
+//     */
+//    async enrichChannelEmailsFromUsers(): Promise<number> {
+//        const users = await this.prisma.user.findMany({
+//            where: { is_active: true },
+//            select: { id: true, email: true, full_name: true },
+//        });
+//
+//        // Build maps: normalized full_name → { email, id }
+//        const nameToUser = new Map<string, { email: string; id: string }>();
+//        for (const u of users) {
+//            if (u.full_name && u.email) {
+//                nameToUser.set(this.normalizeOwnerName(u.full_name), { email: u.email, id: u.id });
+//            }
+//        }
+//        // Debug: log first 10 entries in map
+//        const mapSample = Array.from(nameToUser.entries()).slice(0, 10);
+//        this.logger.debug(`[enrich] nameToUser sample: ${JSON.stringify(mapSample)}`);
+//
+//        const channels = await this.prisma.channel.findMany({
+//            select: { id: true, owner: true, email: true },
+//        });
+//
+//        let updated = 0;
+//        let unmatched = 0;
+//        for (const ch of channels) {
+//            if (!ch.owner) continue;
+//            // NOTE: Do NOT skip channels that already have an email.
+//            // The email extracted during Lark sync may be a Lark SSO email that does not match
+//            // the system login email in the Users table.  Always overwrite with the system email.
+//
+//            const normalizedOwner = this.normalizeOwnerName(ch.owner);
+//            let matchedUser = nameToUser.get(normalizedOwner);
+//
+//            // Fallback 1: partial match (owner contains user name or vice versa)
+//            if (!matchedUser) {
+//                for (const [normalizedName, user] of nameToUser) {
+//                    if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
+//                        matchedUser = user;
+//                        break;
+//                    }
+//                }
+//            }
+//
+//            // Fallback 2: sorted-words match — xử lý trường hợp tên bị đảo thứ tự
+//            // vd: "Nhâm Đoàn" (Lark) vs "Đoàn Nhâm" (System) → sort → cùng = "doan nham"
+//            if (!matchedUser) {
+//                const sortedOwner = normalizedOwner.split(' ').sort().join(' ');
+//                for (const [normalizedName, user] of nameToUser) {
+//                    const sortedName = normalizedName.split(' ').sort().join(' ');
+//                    if (sortedOwner === sortedName) {
+//                        matchedUser = user;
+//                        break;
+//                    }
+//                }
+//            }
+//
+//            if (matchedUser) {
+//                await this.prisma.channel.update({
+//                    where: { id: ch.id },
+//                    data: { email: matchedUser.email, owner_id: matchedUser.id },
+//                });
+//                updated++;
+//            } else {
+//                unmatched++;
+//                this.logger.debug(`[enrich] No email match for owner="${ch.owner}" (normalized="${normalizedOwner}")`);
+//            }
+//        }
+//
+//        this.logger.log(`[enrich] Updated ${updated}, unmatched ${unmatched} (total channels: ${channels.length})`);
+//        return updated;
+//    }
 
     /**
      * Sync kênh team Đồ Da từ Lark Bitable riêng vào Channel table.
      * Tất cả records được gán team_traffic = "Đồ Da", id prefix "doda_".
      */
-    async syncDoDaChannelData() {
-        const DODA_BASE_ID = 'Livew1AE0i2vo5kF3YXlCPNWg8f';
-        const DODA_TABLE_ID = 'tblgOat8ymmJ6oi9';
-        const TEAM_NAME = 'Đồ Da';
+    // async syncDoDaChannelData() {
+    //     const DODA_BASE_ID = 'Livew1AE0i2vo5kF3YXlCPNWg8f';
+    //     const DODA_TABLE_ID = 'tblgOat8ymmJ6oi9';
+    //     const TEAM_NAME = 'Đồ Da';
 
-        try {
-            this.logger.log(`[DoDa] Syncing channels from base: ${DODA_BASE_ID}, table: ${DODA_TABLE_ID}`);
-            const records = await this.fetchLarkRecordsGeneric(DODA_BASE_ID, DODA_TABLE_ID);
-            this.logger.log(`[DoDa] Fetched ${records.length} records.`);
+    //     try {
+    //         this.logger.log(`[DoDa] Syncing channels from base: ${DODA_BASE_ID}, table: ${DODA_TABLE_ID}`);
+    //         const records = await this.fetchLarkRecordsGeneric(DODA_BASE_ID, DODA_TABLE_ID);
+    //         this.logger.log(`[DoDa] Fetched ${records.length} records.`);
 
-            // Clear old Do Da channels
-            const deleted = await this.prisma.channel.deleteMany({
-                where: { id: { startsWith: 'doda_' } },
-            });
-            this.logger.log(`[DoDa] Cleared ${deleted.count} old Do Da channels.`);
+    //         // Clear old Do Da channels
+    //         const deleted = await this.prisma.channel.deleteMany({
+    //             where: { id: { startsWith: 'doda_' } },
+    //         });
+    //         this.logger.log(`[DoDa] Cleared ${deleted.count} old Do Da channels.`);
 
-            const extractString = (val: any): string | null => {
-                if (val === null || val === undefined) return null;
-                if (typeof val === 'string') return val;
-                if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-                if (Array.isArray(val)) {
-                    if (val.length === 0) return null;
-                    const first = val[0];
-                    if (typeof first === 'string') return first;
-                    if (typeof first === 'object' && first !== null) {
-                        return first.text || first.name || first.value || first.en_name || null;
-                    }
-                    return String(first);
-                }
-                if (typeof val === 'object') {
-                    return val.text || val.value || val.name || val.link || null;
-                }
-                return String(val);
-            };
+    //         const extractString = (val: any): string | null => {
+    //             if (val === null || val === undefined) return null;
+    //             if (typeof val === 'string') return val;
+    //             if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    //             if (Array.isArray(val)) {
+    //                 if (val.length === 0) return null;
+    //                 const first = val[0];
+    //                 if (typeof first === 'string') return first;
+    //                 if (typeof first === 'object' && first !== null) {
+    //                     return first.text || first.name || first.value || first.en_name || null;
+    //                 }
+    //                 return String(first);
+    //             }
+    //             if (typeof val === 'object') {
+    //                 return val.text || val.value || val.name || val.link || null;
+    //             }
+    //             return String(val);
+    //         };
 
-            const extractUrl = (val: any): string | null => {
-                if (!val) return null;
-                if (typeof val === 'string') return val;
-                if (Array.isArray(val) && val.length > 0) {
-                    const first = val[0];
-                    return first.link || first.url || first.text || (typeof first === 'string' ? first : null);
-                }
-                if (typeof val === 'object') return val.link || val.url || val.text || null;
-                return String(val);
-            };
+    //         const extractUrl = (val: any): string | null => {
+    //             if (!val) return null;
+    //             if (typeof val === 'string') return val;
+    //             if (Array.isArray(val) && val.length > 0) {
+    //                 const first = val[0];
+    //                 return first.link || first.url || first.text || (typeof first === 'string' ? first : null);
+    //             }
+    //             if (typeof val === 'object') return val.link || val.url || val.text || null;
+    //             return String(val);
+    //         };
 
-            const normalizePlatform = (raw: string | null): string => {
-                if (!raw) return '';
-                const lower = raw.toLowerCase().trim();
-                if (lower === 'ig' || lower === 'instagram') return 'Instagram';
-                if (lower === 'tiktok') return 'TikTok';
-                if (lower === 'facebook' || lower === 'fb') return 'Facebook';
-                if (lower === 'douyin') return 'Douyin';
-                if (lower === 'xiaohongshu' || lower === 'xhs') return 'Xiaohongshu';
-                if (lower === 'youtube' || lower === 'yt') return 'YouTube';
-                return raw.trim();
-            };
+    //         const normalizePlatform = (raw: string | null): string => {
+    //             if (!raw) return '';
+    //             const lower = raw.toLowerCase().trim();
+    //             if (lower === 'ig' || lower === 'instagram') return 'Instagram';
+    //             if (lower === 'tiktok') return 'TikTok';
+    //             if (lower === 'facebook' || lower === 'fb') return 'Facebook';
+    //             if (lower === 'douyin') return 'Douyin';
+    //             if (lower === 'xiaohongshu' || lower === 'xhs') return 'Xiaohongshu';
+    //             if (lower === 'youtube' || lower === 'yt') return 'YouTube';
+    //             return raw.trim();
+    //         };
 
-            let synced = 0;
-            for (const record of records) {
-                const f = record.fields;
+    //         let synced = 0;
+    //         for (const record of records) {
+    //             const f = record.fields;
 
-                const name = extractString(f['Tên Kênh'])
-                    || extractString(f['Tên kênh'])
-                    || 'N/A';
+    //             const name = extractString(f['Tên Kênh'])
+    //                 || extractString(f['Tên kênh'])
+    //                 || 'N/A';
 
-                const owner = extractString(f['Họ Và Tên'])
-                    || extractString(f['Họ và Tên'])
-                    || extractString(f['HoTen'])
-                    || '';
+    //             const owner = extractString(f['Họ Và Tên'])
+    //                 || extractString(f['Họ và Tên'])
+    //                 || extractString(f['HoTen'])
+    //                 || '';
 
-                const larkAccount = f['Tài khoản Lark'] || f['Tài khoản lark'];
-                let email: string | null = null;
-                if (Array.isArray(larkAccount) && larkAccount.length > 0) {
-                    email = larkAccount[0].email || null;
-                }
+    //             const larkAccount = f['Tài khoản Lark'] || f['Tài khoản lark'];
+    //             let email: string | null = null;
+    //             if (Array.isArray(larkAccount) && larkAccount.length > 0) {
+    //                 email = larkAccount[0].email || null;
+    //             }
 
-                const platformRaw = extractString(f['Nền Tảng'])
-                    || extractString(f['Nền tảng'])
-                    || '';
+    //             const platformRaw = extractString(f['Nền Tảng'])
+    //                 || extractString(f['Nền tảng'])
+    //                 || '';
 
-                const data = {
-                    id: `doda_${record.record_id}`,
-                    name,
-                    platform: normalizePlatform(platformRaw),
-                    channel_id: '',
-                    link_channel: extractUrl(f['Link kênh'])
-                        || extractUrl(f['Link Kênh'])
-                        || '',
-                    status: extractString(f['Trạng Thái HD'])
-                        || extractString(f['Trạng thái HD'])
-                        || 'ON',
-                    team_traffic: TEAM_NAME,
-                    owner,
-                    email,
-                };
+    //             const data = {
+    //                 id: `doda_${record.record_id}`,
+    //                 name,
+    //                 platform: normalizePlatform(platformRaw),
+    //                 channel_id: '',
+    //                 link_channel: extractUrl(f['Link kênh'])
+    //                     || extractUrl(f['Link Kênh'])
+    //                     || '',
+    //                 status: extractString(f['Trạng Thái HD'])
+    //                     || extractString(f['Trạng thái HD'])
+    //                     || 'ON',
+    //                 team_traffic: TEAM_NAME,
+    //                 owner,
+    //                 email,
+    //             };
 
-                try {
-                    await this.prisma.channel.create({ data });
-                    synced++;
-                } catch (e: any) {
-                    this.logger.warn(`[DoDa] Skip record ${record.record_id}: ${e?.message}`);
-                }
-            }
+    //             try {
+    //                 await this.prisma.channel.create({ data });
+    //                 synced++;
+    //             } catch (e: any) {
+    //                 this.logger.warn(`[DoDa] Skip record ${record.record_id}: ${e?.message}`);
+    //             }
+    //         }
 
-            this.logger.log(`[DoDa] Synced ${synced}/${records.length} channels.`);
+    //         this.logger.log(`[DoDa] Synced ${synced}/${records.length} channels.`);
 
-            // Cross-reference email từ Users table
-            try {
-                const enriched = await this.enrichChannelEmailsFromUsers();
-                this.logger.log(`[DoDa] Email enrichment: updated ${enriched} channels.`);
-            } catch (err: any) {
-                this.logger.warn(`[DoDa] Email enrichment failed: ${err?.message}`);
-            }
+    //         // Cross-reference email từ Users table
+    //         try {
+    //             const enriched = await this.enrichChannelEmailsFromUsers();
+    //             this.logger.log(`[DoDa] Email enrichment: updated ${enriched} channels.`);
+    //         } catch (err: any) {
+    //             this.logger.warn(`[DoDa] Email enrichment failed: ${err?.message}`);
+    //         }
 
-            // Import vào tracked_channels
-            try {
-                const imp = await this.importTrackedChannelsFromChannelTable();
-                this.logger.log(`[DoDa] tracked_channels import: imported=${imp.imported}`);
-            } catch (ie: any) {
-                this.logger.warn(`[DoDa] import tracked failed: ${ie?.message}`);
-            }
+    //         // Import vào tracked_channels
+    //         try {
+    //             const imp = await this.importTrackedChannelsFromChannelTable();
+    //             this.logger.log(`[DoDa] tracked_channels import: imported=${imp.imported}`);
+    //         } catch (ie: any) {
+    //             this.logger.warn(`[DoDa] import tracked failed: ${ie?.message}`);
+    //         }
 
-            try {
-                const dodaRows = await this.prisma.channel.findMany({ where: { id: { startsWith: 'doda_' } } });
-                const mirroredRemote = await this.mirrorDoDaChannelSnapshotToServer(dodaRows as any);
-                if (mirroredRemote) this.logger.log(`[Channel DoDa] Remote mirror success: ${mirroredRemote} row(s).`);
-            } catch (mirrorErr: any) {
-                this.logger.error('[Channel DoDa] Mirror to remote DB failed — local channel is already updated', mirrorErr);
-            }
+    //         try {
+    //             const dodaRows = await this.prisma.channel.findMany({ where: { id: { startsWith: 'doda_' } } });
+    //             const mirroredRemote = await this.mirrorDoDaChannelSnapshotToServer(dodaRows as any);
+    //             if (mirroredRemote) this.logger.log(`[Channel DoDa] Remote mirror success: ${mirroredRemote} row(s).`);
+    //         } catch (mirrorErr: any) {
+    //             this.logger.error('[Channel DoDa] Mirror to remote DB failed — local channel is already updated', mirrorErr);
+    //         }
 
-            return { synced, total: records.length };
-        } catch (error) {
-            this.logger.error('[DoDa] Failed to sync Do Da channel data', error);
-            throw error;
-        }
-    }
+    //         return { synced, total: records.length };
+    //     } catch (error) {
+    //         this.logger.error('[DoDa] Failed to sync Do Da channel data', error);
+    //         throw error;
+    //     }
+    // }
 
     /** Chuẩn hóa tên để so khớp owner Channel ↔ full_name User / Họ tên bảng Permission */
     private normalizeOwnerName(s: string | null | undefined): string {
@@ -2156,333 +2156,333 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
 
-    /**
-     * Đọc huyk_channels (đã sync từ Lark) → tạo/cập nhật tracked_channels theo email hoặc owner khớp user.
-     */
-    async importTrackedChannelsFromChannelTable(opts?: {
-        onlyUserId?: string;
-        prioritizePlatform?: string;
-    }): Promise<{
-        imported: number;
-        skipped_no_user: number;
-        skipped_no_identity: number;
-        skipped_inactive: number;
-        deactivated_inactive_lark: number;
-        errors: string[];
-    }> {
-        const stats = {
-            imported: 0,
-            skipped_no_user: 0,
-            skipped_no_identity: 0,
-            skipped_inactive: 0,
-            deactivated_inactive_lark: 0,
-            errors: [] as string[],
-        };
+//    /**
+//     * Đọc huyk_channels (đã sync từ Lark) → tạo/cập nhật tracked_channels theo email hoặc owner khớp user.
+//     */
+//    async importTrackedChannelsFromChannelTable(opts?: {
+//        onlyUserId?: string;
+//        prioritizePlatform?: string;
+//    }): Promise<{
+//        imported: number;
+//        skipped_no_user: number;
+//        skipped_no_identity: number;
+//        skipped_inactive: number;
+//        deactivated_inactive_lark: number;
+//        errors: string[];
+//    }> {
+//        const stats = {
+//            imported: 0,
+//            skipped_no_user: 0,
+//            skipped_no_identity: 0,
+//            skipped_inactive: 0,
+//            deactivated_inactive_lark: 0,
+//            errors: [] as string[],
+//        };
+//
+//        let me: { email: string; full_name: string } | null = null;
+//        if (opts?.onlyUserId) {
+//            const u = await this.prisma.user.findUnique({ where: { id: opts.onlyUserId } });
+//            if (!u?.email) {
+//                stats.errors.push('User không tồn tại hoặc không có email');
+//                return stats;
+//            }
+//            me = { email: u.email.toLowerCase(), full_name: (u.full_name || '').trim() };
+//        }
+//
+//        let myPermissionDisplayNames = new Set<string>();
+//        if (me) {
+//            const fnN = this.normalizeOwnerName(me.full_name);
+//            if (fnN) myPermissionDisplayNames.add(fnN);
+//        }
+//
+//        // Lấy tất cả rows có status không rỗng, rồi validate active bằng isLarkChannelActiveStatus
+//        // (hỗ trợ cả "Đang hoạt động", "ON", "active", v.v. — bao gồm kênh Đồ Da)
+//        const baseWhere = {
+//            AND: [
+//                { status: { not: null } },
+//                { NOT: { status: '' } },
+//            ],
+//        };
+//        let rows = await this.prisma.channel.findMany({ where: baseWhere });
+//        const beforeActive = rows.length;
+//        rows = rows.filter((row) => isLarkChannelActiveStatus(row.status));
+//        stats.skipped_inactive = beforeActive - rows.length;
+//        if (me) {
+//            rows = rows.filter((row) => {
+//                const r = row as typeof row & { email?: string | null };
+//                const em = r.email?.trim().toLowerCase();
+//                if (em && em === me!.email) return true;
+//                const ownerN = this.normalizeOwnerName(r.owner);
+//                if (!em && ownerN) {
+//                    for (const alias of myPermissionDisplayNames) {
+//                        if (alias && ownerN === alias) return true;
+//                    }
+//                }
+//                return false;
+//            });
+//        }
+//
+//        // Pre-load all active users into maps — eliminates N×2-3 DB queries in the loop
+//        const allActiveUsers = await this.prisma.user.findMany({
+//            where: { is_active: true },
+//            select: { id: true, email: true, full_name: true },
+//        });
+//        const userByEmail = new Map<string, typeof allActiveUsers[0]>();
+//        const userByNormName = new Map<string, typeof allActiveUsers[0]>();
+//        const ownerNormToEmails = new Map<string, string[]>();
+//        for (const u of allActiveUsers) {
+//            if (u.email) {
+//                userByEmail.set(u.email.trim().toLowerCase(), u);
+//                // also build ownerNormToEmails for fuzzy-name fallback
+//                const key = this.normalizeOwnerName(u.full_name);
+//                const em = u.email.trim();
+//                if (key && em) {
+//                    if (!ownerNormToEmails.has(key)) ownerNormToEmails.set(key, []);
+//                    ownerNormToEmails.get(key)!.push(em);
+//                }
+//            }
+//            const normName = this.normalizeOwnerName(u.full_name);
+//            if (normName && !userByNormName.has(normName)) userByNormName.set(normName, u);
+//        }
+//
+//        // Pre-load all existing tracked channels keyed by lark_channel_id
+//        const larkChannelIds = rows.map(r => r.id).filter(Boolean);
+//        const existingTcList = larkChannelIds.length
+//            ? await this.prisma.trackedChannel.findMany({
+//                where: { lark_channel_id: { in: larkChannelIds } },
+//                select: { user_id: true, platform: true, username: true, lark_channel_id: true, total_followers: true, total_likes: true, total_videos: true, last_synced_at: true },
+//            })
+//            : [];
+//        const tcByLarkId = new Map<string, typeof existingTcList[0]>();
+//        for (const tc of existingTcList) {
+//            if (tc.lark_channel_id) tcByLarkId.set(tc.lark_channel_id, tc);
+//        }
+//
+//        const enrichKeys = new Set<string>();
+//        const enrichQueue: { userId: string; platform: import('@prisma/client').Platform; username: string }[] = [];
+//
+//        for (const row of rows) {
+//            try {
+//                const r = row as typeof row & { email?: string | null };
+//                const identity = resolveTrackedUsername(row);
+//                if (!identity) {
+//                    stats.skipped_no_identity++;
+//                    continue;
+//                }
+//
+//                // Fast map lookup instead of per-row DB queries
+//                let user: typeof allActiveUsers[0] | null = null;
+//                if (r.email?.trim()) {
+//                    user = userByEmail.get(r.email.trim().toLowerCase()) ?? null;
+//                }
+//                if (!user && r.owner?.trim()) {
+//                    user = userByNormName.get(this.normalizeOwnerName(r.owner)) ?? null;
+//                }
+//                if (!user && r.owner?.trim()) {
+//                    const emails = ownerNormToEmails.get(this.normalizeOwnerName(r.owner));
+//                    if (emails?.length) {
+//                        for (const em of emails) {
+//                            user = userByEmail.get(em.toLowerCase()) ?? null;
+//                            if (user) break;
+//                        }
+//                    }
+//                }
+//                if (!user) {
+//                    stats.skipped_no_user++;
+//                    continue;
+//                }
+//
+//                // Fast map lookup instead of per-row DB query
+//                const existingTc = tcByLarkId.get(row.id) ?? null;
+//
+//                // Chỉ cần enrich khi:
+//                // 1. Kênh hoàn toàn mới (chưa tồn tại trong DB)
+//                // 2. Chưa bao giờ được sync (last_synced_at = null) VÀ chưa có số liệu gì
+//                // KHÔNG enrich nếu kênh đã từng sync (dù bị block → followers=0),
+//                // tránh gọi Apify lại mỗi lần user login/reload
+//                const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 giờ
+//                const isNeverSynced = !existingTc || existingTc.last_synced_at == null;
+//                const hasNoData = !existingTc ||
+//                    ((existingTc.total_followers == null || existingTc.total_followers === 0) &&
+//                        Number(existingTc.total_likes) === 0 &&
+//                        (existingTc.total_videos == null || existingTc.total_videos === 0));
+//                const isStaleWithNoData = hasNoData &&
+//                    existingTc?.last_synced_at != null &&
+//                    (Date.now() - new Date(existingTc.last_synced_at).getTime()) > STALE_THRESHOLD_MS;
+//
+//                const needsApifyEnrich = isNeverSynced ? hasNoData : isStaleWithNoData;
+//
+//                await this.prisma.$transaction(async (tx) => {
+//                    // CỰC KỲ QUAN TRỌNG: KHÔNG ĐƯỢC DETELE NẾU USERNAME KHÔNG ĐỔI
+//                    // Chỉ xóa các bản ghi cũ của lark_channel_id này nếu username/platform bị đổi
+//                    await (tx.trackedChannel as any).deleteMany({
+//                        where: {
+//                            lark_channel_id: row.id,
+//                            NOT: {
+//                                AND: [
+//                                    { platform: identity.platform },
+//                                    { username: identity.username }
+//                                ]
+//                            }
+//                        }
+//                    });
+//
+//                    await tx.trackedChannel.upsert({
+//                        where: {
+//                            user_id_platform_username: {
+//                                user_id: user!.id,
+//                                platform: identity.platform,
+//                                username: identity.username,
+//                            },
+//                        },
+//                        create: {
+//                            user_id: user!.id,
+//                            platform: identity.platform,
+//                            username: identity.username,
+//                            display_name: row.name || null,
+//                            lark_channel_id: row.id,
+//                            added_via: 'lark',
+//                            is_active: true,
+//                            total_likes: BigInt(0),
+//                            total_views: BigInt(0),
+//                            total_videos: 0,
+//                            engagement_rate: 0,
+//                            initial_video_count: 0,
+//                            // Kế thừa data từ existingTc nếu channel bị đổi ID Lark nhưng vẫn giữ username (để không mất số)
+//                            total_followers: existingTc?.total_followers || null,
+//                            last_synced_at: existingTc?.last_synced_at || null,
+//                        } as any,
+//                        update: {
+//                            lark_channel_id: row.id,
+//                            added_via: 'lark',
+//                            display_name: row.name || undefined,
+//                            is_active: true,
+//                        } as any,
+//                    });
+//                }, { timeout: 30_000 });
+//                stats.imported++;
+//                if (needsApifyEnrich) {
+//                    const ek = `${user!.id}|${identity.platform}|${identity.username}`;
+//                    if (!enrichKeys.has(ek)) {
+//                        enrichKeys.add(ek);
+//                        enrichQueue.push({
+//                            userId: user!.id,
+//                            platform: identity.platform,
+//                            username: identity.username,
+//                        });
+//                    }
+//                }
+//            } catch (e: any) {
+//                stats.errors.push(`${row.id}: ${e?.message || e}`);
+//            }
+//        }
+//
+//        if (enrichQueue.length > 0) {
+//            if (!this.shouldRunBackgroundChannelEnrich()) {
+//                this.logger.log(
+//                    `[Lark] Background channel enrich is disabled (LARK_ENABLE_BACKGROUND_CHANNEL_ENRICH=false). Skipped ${enrichQueue.length} queue item(s).`,
+//                );
+//            } else {
+//                const pri = (opts?.prioritizePlatform || '').toUpperCase().trim();
+//                const validPri = ['FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'DOUYIN', 'XIAOHONGSHU', 'YOUTUBE'].includes(pri)
+//                    ? pri
+//                    : null;
+//                if (validPri) {
+//                    enrichQueue.sort((a, b) => {
+//                        const af = a.platform === validPri ? 0 : 1;
+//                        const bf = b.platform === validPri ? 0 : 1;
+//                        return af - bf;
+//                    });
+//                    this.logger.log(`[Lark] Ưu tiên Apify nền tảng: ${validPri}`);
+//                }
+//                this.logger.log(
+//                    `[Lark] Đã đẩy ${enrichQueue.length} kênh vào hàng đợi làm giàu số liệu (chạy ngầm).`,
+//                );
+//                // FIRE AND FORGET - KHÔNG AWAIT ĐỂ KHÔNG CHẶN API
+//                this.channelStatsEnrichment.enrichBatch(enrichQueue, {
+//                    concurrency: this.getBackgroundChannelEnrichConcurrency(),
+//                }).then(({ ok, failed }) => {
+//                    this.logger.log(`[Lark] Làm giàu số liệu xong: thành công=${ok}, lỗi/bỏ qua=${failed}`);
+//                }).catch(e => {
+//                    this.logger.warn(`[Lark] Làm giàu số liệu hàng loạt lỗi (background): ${e?.message || e}`);
+//                });
+//            }
+//        }
+//
+//        const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true }, take: 5000 });
+//        const inactiveLarkIds = allCh.filter((ch) => !isLarkChannelActiveStatus(ch.status)).map((ch) => ch.id);
+//        if (inactiveLarkIds.length > 0) {
+//            try {
+//                // Dùng raw SQL: client Prisma cũ có thể chưa có field lark_channel_id sau generate
+//                const n = await this.prisma.$executeRaw`
+//                    UPDATE "tracked_channels"
+//                    SET "is_active" = false, "updated_at" = NOW()
+//                    WHERE "lark_channel_id" IN (${Prisma.join(inactiveLarkIds)})
+//                      AND "added_via" = 'lark'
+//                      AND "is_active" = true
+//                `;
+//                stats.deactivated_inactive_lark = Number(n);
+//            } catch (e: any) {
+//                this.logger.warn(
+//                    `[Lark] deactivate inactive lark tracked_channels skipped: ${e?.message || e}. Chạy migration + npx prisma generate nếu cột lark_channel_id chưa có.`,
+//                );
+//            }
+//        }
+//
+//        return stats;
+//    }
 
-        let me: { email: string; full_name: string } | null = null;
-        if (opts?.onlyUserId) {
-            const u = await this.prisma.user.findUnique({ where: { id: opts.onlyUserId } });
-            if (!u?.email) {
-                stats.errors.push('User không tồn tại hoặc không có email');
-                return stats;
-            }
-            me = { email: u.email.toLowerCase(), full_name: (u.full_name || '').trim() };
-        }
+//    async importTrackedChannelsForUser(userId: string, prioritizePlatform?: string) {
+//        return this.importTrackedChannelsFromChannelTable({ onlyUserId: userId, prioritizePlatform });
+//    }
 
-        let myPermissionDisplayNames = new Set<string>();
-        if (me) {
-            const fnN = this.normalizeOwnerName(me.full_name);
-            if (fnN) myPermissionDisplayNames.add(fnN);
-        }
+    // async getChannelData(owner?: string, team?: string, email?: string) {
+    //     // Base conditions – only channels that have a non-empty status
+    //     const andConditions: any[] = [
+    //         { status: { not: null } },
+    //         { NOT: { status: '' } },
+    //     ];
 
-        // Lấy tất cả rows có status không rỗng, rồi validate active bằng isLarkChannelActiveStatus
-        // (hỗ trợ cả "Đang hoạt động", "ON", "active", v.v. — bao gồm kênh Đồ Da)
-        const baseWhere = {
-            AND: [
-                { status: { not: null } },
-                { NOT: { status: '' } },
-            ],
-        };
-        let rows = await this.prisma.channel.findMany({ where: baseWhere });
-        const beforeActive = rows.length;
-        rows = rows.filter((row) => isLarkChannelActiveStatus(row.status));
-        stats.skipped_inactive = beforeActive - rows.length;
-        if (me) {
-            rows = rows.filter((row) => {
-                const r = row as typeof row & { email?: string | null };
-                const em = r.email?.trim().toLowerCase();
-                if (em && em === me!.email) return true;
-                const ownerN = this.normalizeOwnerName(r.owner);
-                if (!em && ownerN) {
-                    for (const alias of myPermissionDisplayNames) {
-                        if (alias && ownerN === alias) return true;
-                    }
-                }
-                return false;
-            });
-        }
+    //     // Resolve owner name: use the caller-supplied `owner` param first (frontend now sends it),
+    //     // then fall back to a DB lookup via email.  This dual-match lets the backend find channels
+    //     // by EITHER channel.email or channel.owner regardless of which field was populated.
+    //     let resolvedOwnerName: string | undefined = owner;
+    //     if (email && !resolvedOwnerName) {
+    //         const sysUser = await this.prisma.user.findFirst({
+    //             where: { email: { equals: email, mode: 'insensitive' } },
+    //             select: { full_name: true },
+    //         });
+    //         resolvedOwnerName = sysUser?.full_name ?? undefined;
+    //     }
 
-        // Pre-load all active users into maps — eliminates N×2-3 DB queries in the loop
-        const allActiveUsers = await this.prisma.user.findMany({
-            where: { is_active: true },
-            select: { id: true, email: true, full_name: true },
-        });
-        const userByEmail = new Map<string, typeof allActiveUsers[0]>();
-        const userByNormName = new Map<string, typeof allActiveUsers[0]>();
-        const ownerNormToEmails = new Map<string, string[]>();
-        for (const u of allActiveUsers) {
-            if (u.email) {
-                userByEmail.set(u.email.trim().toLowerCase(), u);
-                // also build ownerNormToEmails for fuzzy-name fallback
-                const key = this.normalizeOwnerName(u.full_name);
-                const em = u.email.trim();
-                if (key && em) {
-                    if (!ownerNormToEmails.has(key)) ownerNormToEmails.set(key, []);
-                    ownerNormToEmails.get(key)!.push(em);
-                }
-            }
-            const normName = this.normalizeOwnerName(u.full_name);
-            if (normName && !userByNormName.has(normName)) userByNormName.set(normName, u);
-        }
+    //     // Build OR conditions for owner identity
+    //     const ownerOrConds: any[] = [];
+    //     if (email) {
+    //         ownerOrConds.push({ email: { equals: email, mode: 'insensitive' } });
+    //     }
+    //     if (resolvedOwnerName) {
+    //         // Exact case-insensitive match on owner name to avoid false positives
+    //         ownerOrConds.push({ owner: { equals: resolvedOwnerName, mode: 'insensitive' } });
+    //     }
+    //     if (ownerOrConds.length > 0) {
+    //         andConditions.push({ OR: ownerOrConds });
+    //     }
 
-        // Pre-load all existing tracked channels keyed by lark_channel_id
-        const larkChannelIds = rows.map(r => r.id).filter(Boolean);
-        const existingTcList = larkChannelIds.length
-            ? await this.prisma.trackedChannel.findMany({
-                where: { lark_channel_id: { in: larkChannelIds } },
-                select: { user_id: true, platform: true, username: true, lark_channel_id: true, total_followers: true, total_likes: true, total_videos: true, last_synced_at: true },
-            })
-            : [];
-        const tcByLarkId = new Map<string, typeof existingTcList[0]>();
-        for (const tc of existingTcList) {
-            if (tc.lark_channel_id) tcByLarkId.set(tc.lark_channel_id, tc);
-        }
+    //     // Optional team filter – additive AND with the owner/email conditions
+    //     if (team) {
+    //         andConditions.push({ team_traffic: { contains: team, mode: 'insensitive' } });
+    //     }
 
-        const enrichKeys = new Set<string>();
-        const enrichQueue: { userId: string; platform: import('@prisma/client').Platform; username: string }[] = [];
+    //     const list = await this.prisma.channel.findMany({
+    //         where: { AND: andConditions },
+    //         orderBy: { name: 'asc' },
+    //     });
+    //     return list.filter((ch) => isLarkChannelActiveStatus(ch.status));
+    // }
 
-        for (const row of rows) {
-            try {
-                const r = row as typeof row & { email?: string | null };
-                const identity = resolveTrackedUsername(row);
-                if (!identity) {
-                    stats.skipped_no_identity++;
-                    continue;
-                }
-
-                // Fast map lookup instead of per-row DB queries
-                let user: typeof allActiveUsers[0] | null = null;
-                if (r.email?.trim()) {
-                    user = userByEmail.get(r.email.trim().toLowerCase()) ?? null;
-                }
-                if (!user && r.owner?.trim()) {
-                    user = userByNormName.get(this.normalizeOwnerName(r.owner)) ?? null;
-                }
-                if (!user && r.owner?.trim()) {
-                    const emails = ownerNormToEmails.get(this.normalizeOwnerName(r.owner));
-                    if (emails?.length) {
-                        for (const em of emails) {
-                            user = userByEmail.get(em.toLowerCase()) ?? null;
-                            if (user) break;
-                        }
-                    }
-                }
-                if (!user) {
-                    stats.skipped_no_user++;
-                    continue;
-                }
-
-                // Fast map lookup instead of per-row DB query
-                const existingTc = tcByLarkId.get(row.id) ?? null;
-
-                // Chỉ cần enrich khi:
-                // 1. Kênh hoàn toàn mới (chưa tồn tại trong DB)
-                // 2. Chưa bao giờ được sync (last_synced_at = null) VÀ chưa có số liệu gì
-                // KHÔNG enrich nếu kênh đã từng sync (dù bị block → followers=0),
-                // tránh gọi Apify lại mỗi lần user login/reload
-                const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 giờ
-                const isNeverSynced = !existingTc || existingTc.last_synced_at == null;
-                const hasNoData = !existingTc ||
-                    ((existingTc.total_followers == null || existingTc.total_followers === 0) &&
-                        Number(existingTc.total_likes) === 0 &&
-                        (existingTc.total_videos == null || existingTc.total_videos === 0));
-                const isStaleWithNoData = hasNoData &&
-                    existingTc?.last_synced_at != null &&
-                    (Date.now() - new Date(existingTc.last_synced_at).getTime()) > STALE_THRESHOLD_MS;
-
-                const needsApifyEnrich = isNeverSynced ? hasNoData : isStaleWithNoData;
-
-                await this.prisma.$transaction(async (tx) => {
-                    // CỰC KỲ QUAN TRỌNG: KHÔNG ĐƯỢC DETELE NẾU USERNAME KHÔNG ĐỔI
-                    // Chỉ xóa các bản ghi cũ của lark_channel_id này nếu username/platform bị đổi
-                    await (tx.trackedChannel as any).deleteMany({
-                        where: {
-                            lark_channel_id: row.id,
-                            NOT: {
-                                AND: [
-                                    { platform: identity.platform },
-                                    { username: identity.username }
-                                ]
-                            }
-                        }
-                    });
-
-                    await tx.trackedChannel.upsert({
-                        where: {
-                            user_id_platform_username: {
-                                user_id: user!.id,
-                                platform: identity.platform,
-                                username: identity.username,
-                            },
-                        },
-                        create: {
-                            user_id: user!.id,
-                            platform: identity.platform,
-                            username: identity.username,
-                            display_name: row.name || null,
-                            lark_channel_id: row.id,
-                            added_via: 'lark',
-                            is_active: true,
-                            total_likes: BigInt(0),
-                            total_views: BigInt(0),
-                            total_videos: 0,
-                            engagement_rate: 0,
-                            initial_video_count: 0,
-                            // Kế thừa data từ existingTc nếu channel bị đổi ID Lark nhưng vẫn giữ username (để không mất số)
-                            total_followers: existingTc?.total_followers || null,
-                            last_synced_at: existingTc?.last_synced_at || null,
-                        } as any,
-                        update: {
-                            lark_channel_id: row.id,
-                            added_via: 'lark',
-                            display_name: row.name || undefined,
-                            is_active: true,
-                        } as any,
-                    });
-                }, { timeout: 30_000 });
-                stats.imported++;
-                if (needsApifyEnrich) {
-                    const ek = `${user!.id}|${identity.platform}|${identity.username}`;
-                    if (!enrichKeys.has(ek)) {
-                        enrichKeys.add(ek);
-                        enrichQueue.push({
-                            userId: user!.id,
-                            platform: identity.platform,
-                            username: identity.username,
-                        });
-                    }
-                }
-            } catch (e: any) {
-                stats.errors.push(`${row.id}: ${e?.message || e}`);
-            }
-        }
-
-        if (enrichQueue.length > 0) {
-            if (!this.shouldRunBackgroundChannelEnrich()) {
-                this.logger.log(
-                    `[Lark] Background channel enrich is disabled (LARK_ENABLE_BACKGROUND_CHANNEL_ENRICH=false). Skipped ${enrichQueue.length} queue item(s).`,
-                );
-            } else {
-                const pri = (opts?.prioritizePlatform || '').toUpperCase().trim();
-                const validPri = ['FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'DOUYIN', 'XIAOHONGSHU', 'YOUTUBE'].includes(pri)
-                    ? pri
-                    : null;
-                if (validPri) {
-                    enrichQueue.sort((a, b) => {
-                        const af = a.platform === validPri ? 0 : 1;
-                        const bf = b.platform === validPri ? 0 : 1;
-                        return af - bf;
-                    });
-                    this.logger.log(`[Lark] Ưu tiên Apify nền tảng: ${validPri}`);
-                }
-                this.logger.log(
-                    `[Lark] Đã đẩy ${enrichQueue.length} kênh vào hàng đợi làm giàu số liệu (chạy ngầm).`,
-                );
-                // FIRE AND FORGET - KHÔNG AWAIT ĐỂ KHÔNG CHẶN API
-                this.channelStatsEnrichment.enrichBatch(enrichQueue, {
-                    concurrency: this.getBackgroundChannelEnrichConcurrency(),
-                }).then(({ ok, failed }) => {
-                    this.logger.log(`[Lark] Làm giàu số liệu xong: thành công=${ok}, lỗi/bỏ qua=${failed}`);
-                }).catch(e => {
-                    this.logger.warn(`[Lark] Làm giàu số liệu hàng loạt lỗi (background): ${e?.message || e}`);
-                });
-            }
-        }
-
-        const allCh = await this.prisma.channel.findMany({ select: { id: true, status: true }, take: 5000 });
-        const inactiveLarkIds = allCh.filter((ch) => !isLarkChannelActiveStatus(ch.status)).map((ch) => ch.id);
-        if (inactiveLarkIds.length > 0) {
-            try {
-                // Dùng raw SQL: client Prisma cũ có thể chưa có field lark_channel_id sau generate
-                const n = await this.prisma.$executeRaw`
-                    UPDATE "tracked_channels"
-                    SET "is_active" = false, "updated_at" = NOW()
-                    WHERE "lark_channel_id" IN (${Prisma.join(inactiveLarkIds)})
-                      AND "added_via" = 'lark'
-                      AND "is_active" = true
-                `;
-                stats.deactivated_inactive_lark = Number(n);
-            } catch (e: any) {
-                this.logger.warn(
-                    `[Lark] deactivate inactive lark tracked_channels skipped: ${e?.message || e}. Chạy migration + npx prisma generate nếu cột lark_channel_id chưa có.`,
-                );
-            }
-        }
-
-        return stats;
-    }
-
-    async importTrackedChannelsForUser(userId: string, prioritizePlatform?: string) {
-        return this.importTrackedChannelsFromChannelTable({ onlyUserId: userId, prioritizePlatform });
-    }
-
-    async getChannelData(owner?: string, team?: string, email?: string) {
-        // Base conditions – only channels that have a non-empty status
-        const andConditions: any[] = [
-            { status: { not: null } },
-            { NOT: { status: '' } },
-        ];
-
-        // Resolve owner name: use the caller-supplied `owner` param first (frontend now sends it),
-        // then fall back to a DB lookup via email.  This dual-match lets the backend find channels
-        // by EITHER channel.email or channel.owner regardless of which field was populated.
-        let resolvedOwnerName: string | undefined = owner;
-        if (email && !resolvedOwnerName) {
-            const sysUser = await this.prisma.user.findFirst({
-                where: { email: { equals: email, mode: 'insensitive' } },
-                select: { full_name: true },
-            });
-            resolvedOwnerName = sysUser?.full_name ?? undefined;
-        }
-
-        // Build OR conditions for owner identity
-        const ownerOrConds: any[] = [];
-        if (email) {
-            ownerOrConds.push({ email: { equals: email, mode: 'insensitive' } });
-        }
-        if (resolvedOwnerName) {
-            // Exact case-insensitive match on owner name to avoid false positives
-            ownerOrConds.push({ owner: { equals: resolvedOwnerName, mode: 'insensitive' } });
-        }
-        if (ownerOrConds.length > 0) {
-            andConditions.push({ OR: ownerOrConds });
-        }
-
-        // Optional team filter – additive AND with the owner/email conditions
-        if (team) {
-            andConditions.push({ team_traffic: { contains: team, mode: 'insensitive' } });
-        }
-
-        const list = await this.prisma.channel.findMany({
-            where: { AND: andConditions },
-            orderBy: { name: 'asc' },
-        });
-        return list.filter((ch) => isLarkChannelActiveStatus(ch.status));
-    }
-
-    async clearChannels() {
-        return this.prisma.channel.deleteMany({});
-    }
+    // async clearChannels() {
+    //     return this.prisma.channel.deleteMany({});
+    // }
 
     async fetchLarkRecordsGeneric(baseId: string, tableId: string, pageSize = 500) {
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${baseId}/tables/${tableId}/records`;
@@ -6722,7 +6722,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         const updateData: any = {
                             full_name: fullName,
                             roles: isRoleDowngrade ? existingUser.roles : userRoles,
-                            team: this.mergeTeamValues(existingUser.team, team),
+                            // team: this.mergeTeamValues(existingUser.team, team), // disabled: team is managed manually, not synced from Lark
                             employee_status: employee_status,
                             image_url: avatarUrl || null,
                             ...(empId ? { employee_id: empId } : {}),
@@ -6741,7 +6741,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                                 email: finalEmail,
                                 full_name: fullName,
                                 roles: userRoles as any,
-                                team: this.mergeTeamValues(team),
+                                // team: this.mergeTeamValues(team), // disabled: team is managed manually, not synced from Lark
                                 employee_status: employee_status,
                                 employee_id: empId || null,
                                 image_url: avatarUrl || null,

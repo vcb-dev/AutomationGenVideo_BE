@@ -12,7 +12,7 @@ import {
   RemoveFromWarehouseDto,
   PushToMonthDto,
   AutoCarryDto,
-} from "./dto/warehouse.dto";
+} from "../dto/warehouse.dto";
 
 function prevMonth(month: string): string {
   const dt = DateTime.fromFormat(month, "yyyy-MM");
@@ -430,7 +430,6 @@ export class TaskAutoWarehouseService {
   }
 
   private async carryGlobal(from: string, to: string) {
-    // Bỏ qua nếu tháng đích đã có items (idempotent)
     const [existingP, existingC, existingS] = await Promise.all([
       this.prisma.productWarehouse.count({ where: { month: to } }),
       this.prisma.contentWarehouse.count({ where: { month: to } }),

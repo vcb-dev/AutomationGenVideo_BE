@@ -4,7 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from "@nestjs/common";
-import { PrismaService } from "../../common/prisma/prisma.service";
+import { PrismaService } from "../../../common/prisma/prisma.service";
 import {
   CreateProductDto,
   UpdateProductDto,
@@ -24,11 +24,17 @@ import {
   CreateEditorSourceDto,
   UpdateEditorSourceDto,
   QueryEditorSourceDto,
-} from "./dto/catalog.dto";
+} from "../dto/catalog.dto";
 
 @Injectable()
 export class TaskAutoCatalogService {
   constructor(private prisma: PrismaService) {}
+
+  private monthRange(month?: string, field = "created_at") {
+    if (!month) return {};
+    const [y, m] = month.split("-").map(Number);
+    return { [field]: { gte: new Date(y, m - 1, 1), lt: new Date(y, m, 1) } };
+  }
 
   // ─── Products (kho tổng) ──────────────────────────────────────────────────
 
@@ -43,7 +49,7 @@ export class TaskAutoCatalogService {
     if (q.market) where.market = q.market;
     if (q.product_line_id) where.product_line_id = q.product_line_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
-    // team_id filter removed: global Product has no team_products relation
+    Object.assign(where, this.monthRange(q.month));
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -105,9 +111,11 @@ export class TaskAutoCatalogService {
 
   async removeProduct(id: string, roles?: string[]) {
     await this.findOneProduct(id);
-    const isPrivileged = roles?.some(r => ['ADMIN', 'MANAGER'].includes(r));
+    const isPrivileged = roles?.some((r) => ["ADMIN", "MANAGER"].includes(r));
     if (!isPrivileged)
-      throw new ForbiddenException('Chỉ ADMIN/MANAGER mới có thể xóa sản phẩm trong kho tổng');
+      throw new ForbiddenException(
+        "Chỉ ADMIN/MANAGER mới có thể xóa sản phẩm trong kho tổng",
+      );
     await this.prisma.product.delete({ where: { id } });
     return { success: true };
   }
@@ -140,6 +148,7 @@ export class TaskAutoCatalogService {
         { body: { contains: q.search, mode: "insensitive" } },
       ];
     if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
+    Object.assign(where, this.monthRange(q.month));
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -195,9 +204,11 @@ export class TaskAutoCatalogService {
 
   async removeContent(id: string, roles?: string[]) {
     const c = await this.findOneContent(id);
-    const isPrivileged = roles?.some(r => ['ADMIN', 'MANAGER'].includes(r));
+    const isPrivileged = roles?.some((r) => ["ADMIN", "MANAGER"].includes(r));
     if (!isPrivileged)
-      throw new ForbiddenException('Chỉ ADMIN/MANAGER mới có thể xóa content trong kho tổng');
+      throw new ForbiddenException(
+        "Chỉ ADMIN/MANAGER mới có thể xóa content trong kho tổng",
+      );
     if (c.status === "IN_TASK")
       throw new ConflictException("Content is currently in use by a task");
     await this.prisma.content.delete({ where: { id } });
@@ -209,7 +220,9 @@ export class TaskAutoCatalogService {
   }
 
   async createContentLine(name: string) {
-    const exists = await this.prisma.contentLine.findUnique({ where: { name } });
+    const exists = await this.prisma.contentLine.findUnique({
+      where: { name },
+    });
     if (exists)
       throw new ConflictException(`ContentLine "${name}" already exists`);
     return this.prisma.contentLine.create({ data: { name } });
@@ -277,6 +290,7 @@ export class TaskAutoCatalogService {
         { name: { contains: q.search, mode: "insensitive" } },
         { link: { contains: q.search, mode: "insensitive" } },
       ];
+    Object.assign(where, this.monthRange(q.month))
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -317,7 +331,8 @@ export class TaskAutoCatalogService {
         type:        dto.type as any,
       },
       include: {
-        product: { select: { id: true, name: true } },
+        product:  { select: { id: true, name: true } },
+        added_by: { select: { id: true, full_name: true } },
       },
     });
   }
@@ -328,7 +343,8 @@ export class TaskAutoCatalogService {
       where: { id },
       data: dto,
       include: {
-        product: { select: { id: true, name: true } },
+        product:  { select: { id: true, name: true } },
+        added_by: { select: { id: true, full_name: true } },
       },
     });
   }
@@ -355,6 +371,7 @@ export class TaskAutoCatalogService {
         { name: { contains: q.search, mode: "insensitive" } },
         { sku: { contains: q.search, mode: "insensitive" } },
       ];
+    Object.assign(where, this.monthRange(q.month, 'added_at'))
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -498,6 +515,7 @@ export class TaskAutoCatalogService {
         { title: { contains: q.search, mode: "insensitive" } },
         { body: { contains: q.search, mode: "insensitive" } },
       ];
+    Object.assign(where, this.monthRange(q.month, 'added_at'))
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -627,6 +645,7 @@ export class TaskAutoCatalogService {
         { name: { contains: q.search, mode: "insensitive" } },
         { link: { contains: q.search, mode: "insensitive" } },
       ];
+    Object.assign(where, this.monthRange(q.month, 'added_at'))
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 50;
@@ -674,6 +693,7 @@ export class TaskAutoCatalogService {
           type:             (dto.type ?? src.type) as any,
           name:             dto.name ?? src.name,
           link:             dto.link ?? src.link,
+          nas_link:         dto.nas_link ?? src.nas_link,
           code:             dto.code ?? src.code,
           product_id:       dto.product_id ?? src.product_id,
           editor_product_id: dto.editor_product_id,
@@ -682,6 +702,7 @@ export class TaskAutoCatalogService {
         include: {
           product:        { select: { id: true, name: true } },
           editor_product: { select: { id: true, name: true } },
+          added_by:       { select: { id: true, full_name: true } },
         },
       });
     }
@@ -702,6 +723,7 @@ export class TaskAutoCatalogService {
       include: {
         product:        { select: { id: true, name: true } },
         editor_product: { select: { id: true, name: true } },
+        added_by:       { select: { id: true, full_name: true } },
       },
     });
   }
@@ -717,6 +739,7 @@ export class TaskAutoCatalogService {
       include: {
         product:        { select: { id: true, name: true } },
         editor_product: { select: { id: true, name: true } },
+        added_by:       { select: { id: true, full_name: true } },
       },
     });
   }
@@ -741,6 +764,7 @@ export class TaskAutoCatalogService {
         type:        es.type,
         name:        es.name,
         link:        es.link,
+        nas_link:    es.nas_link,
         code:        es.code,
         product_id:  es.product_id,
         is_active:   es.is_active,

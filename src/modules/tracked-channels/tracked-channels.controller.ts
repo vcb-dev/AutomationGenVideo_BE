@@ -31,21 +31,21 @@ export class TrackedChannelsController {
     private readonly larkService: LarkService,
   ) {}
 
-  @Post('sync-from-lark-assignment')
-  @ApiOperation({
-    summary:
-      'Đồng bộ kênh được gán trên Lark (bảng Channel trong DB) vào kênh theo dõi của tôi — không cần nhập tay',
-  })
-  async syncFromLarkAssignment(
-    @Request() req: { user: { id: string } },
-    @Body() body?: { prioritizePlatform?: string },
-  ) {
-    const r = await this.larkService.importTrackedChannelsForUser(
-      req.user.id,
-      body?.prioritizePlatform?.trim() || undefined,
-    );
-    return { success: true, ...r };
-  }
+  // @Post('sync-from-lark-assignment')
+  // @ApiOperation({
+  //   summary:
+  //     'Đồng bộ kênh được gán trên Lark (bảng Channel trong DB) vào kênh theo dõi của tôi — không cần nhập tay',
+  // })
+  // async syncFromLarkAssignment(
+  //   @Request() req: { user: { id: string } },
+  //   @Body() body?: { prioritizePlatform?: string },
+  // ) {
+  //   const r = await this.larkService.importTrackedChannelsForUser(
+  //     req.user.id,
+  //     body?.prioritizePlatform?.trim() || undefined,
+  //   );
+  //   return { success: true, ...r };
+  // }
 
   @Post()
   @ApiOperation({ summary: 'Add a new tracked channel' })

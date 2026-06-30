@@ -3,12 +3,12 @@ import {
   NotFoundException,
   ForbiddenException,
 } from "@nestjs/common";
-import { PrismaService } from "../../common/prisma/prisma.service";
+import { PrismaService } from "../../../common/prisma/prisma.service";
 import {
   UpsertTeamKpiDto,
   UpsertEditorKpiDto,
   UpsertEditorWeekendKpiDto,
-} from "./dto/kpi.dto";
+} from "../dto/kpi.dto";
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -57,7 +57,6 @@ export class TaskAutoKpiService {
     });
 
     if (existing) {
-      // Delete old allocations and re-create
       await this.prisma.teamKpiAllocation.deleteMany({
         where: { team_kpi_id: existing.id },
       });

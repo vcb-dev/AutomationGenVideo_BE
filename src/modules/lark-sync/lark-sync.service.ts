@@ -88,12 +88,6 @@ export class LarkSyncService implements OnApplicationBootstrap {
     } catch (err: any) {
       this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message ?? err}`);
     }
-    try {
-      const doda = await this.larkService.syncDoDaChannelData();
-      this.logger.log(`✅ Bootstrap Do Da channel sync: ${doda?.synced ?? 0} records`);
-    } catch (err: any) {
-      this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message ?? err}`);
-    }
     this.logger.log('🎉 Bootstrap sync finished!');
   }
 
@@ -114,12 +108,6 @@ export class LarkSyncService implements OnApplicationBootstrap {
       this.logger.log(`✅ KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
     } catch (err: any) {
       this.logger.error(`❌ KPI Đồ Da sync failed: ${err?.message ?? err}`);
-    }
-    try {
-      const doda = await this.larkService.syncDoDaChannelData();
-      this.logger.log(`✅ Do Da channel sync: ${doda?.synced ?? 0} records`);
-    } catch (err: any) {
-      this.logger.error(`❌ Do Da channel sync failed: ${err?.message ?? err}`);
     }
     this.syncLock = false;
   }
@@ -168,25 +156,9 @@ export class LarkSyncService implements OnApplicationBootstrap {
       }
     };
 
-    const channelSyncEnabled = String(process.env.LARK_ENABLE_CHANNEL_SYNC ?? 'true').toLowerCase();
-    const isChannelSyncOn =
-      channelSyncEnabled !== 'false' &&
-      channelSyncEnabled !== '0' &&
-      channelSyncEnabled !== 'no';
-
     try {
-      if (isChannelSyncOn) {
-        await run('Channel sync', () => this.larkService.syncChannelData());
-      } else {
-        this.logger.log('[MasterSync] Channel sync skipped (LARK_ENABLE_CHANNEL_SYNC=false)');
-      }
       await run('KPI sync', () => this.larkService.syncKPIData());
       await run('KPI DoDa sync', () => this.larkService.syncKPIDoDaData());
-      if (isChannelSyncOn) {
-        await run('DoDa channel', () => this.larkService.syncDoDaChannelData());
-      } else {
-        this.logger.log('[MasterSync] DoDa channel sync skipped (LARK_ENABLE_CHANNEL_SYNC=false)');
-      }
 
       // Clear KPI pagination cache after sync
       this.larkService.invalidateKPICache();

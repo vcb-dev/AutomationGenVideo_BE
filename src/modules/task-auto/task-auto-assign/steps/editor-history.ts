@@ -1,15 +1,15 @@
 import { PrismaService } from "@/common/prisma/prisma.service";
-import { EditorStats } from "../types";
+import { EditorAssignmentHistory } from "../types";
 
 /**
- * Lấy thống kê lịch sử phân công (all-time dedup, content đã dùng, team product
- * count tháng này) cho một batch editors trong một lần query.
+ * Tải lịch sử phân công của từng editor (all-time dedup, content đã dùng,
+ * số task team product trong tháng) trong một lần query.
  */
-export async function batchEditorStats(
+export async function loadEditorAssignmentHistory(
   prisma: PrismaService,
   editorIds: string[],
   monthStart: Date,
-): Promise<Map<string, EditorStats>> {
+): Promise<Map<string, EditorAssignmentHistory>> {
   const tasks = await prisma.task.findMany({
     where: {
       assignee_id: { in: editorIds },
@@ -28,18 +28,18 @@ export async function batchEditorStats(
     },
   });
 
-  const result = new Map<string, EditorStats>();
+  const result = new Map<string, EditorAssignmentHistory>();
 
   for (const t of tasks) {
-    const eid = t.assignee_id!;
-    if (!result.has(eid)) {
-      result.set(eid, {
-        existingPairs: new Set(),
-        usedContentKeys: new Set(),
-        teamProductTaskCount: 0,
+    const editorId = t.assignee_id!;
+    if (!result.has(editorId)) {
+      result.set(editorId, {
+        assignedPairKeys: new Set(),
+        assignedContentKeys: new Set(),
+        teamProductTasksThisMonth: 0,
       });
     }
-    const stats = result.get(eid)!;
+    const history = result.get(editorId)!;
 
     // Canonical keys: personal → team → global
     const contentKey = t.editor_content_id
@@ -59,17 +59,13 @@ export async function batchEditorStats(
           : null;
 
     if (contentKey && productKey) {
-      stats.existingPairs.add(`${contentKey}:${productKey}`);
+      history.assignedPairKeys.add(`${contentKey}:${productKey}`);
     }
     if (contentKey) {
-      stats.usedContentKeys.add(contentKey);
+      history.assignedContentKeys.add(contentKey);
     }
-    if (
-      t.team_product_id &&
-      t.assigned_at != null &&
-      t.assigned_at >= monthStart
-    ) {
-      stats.teamProductTaskCount++;
+    if (t.team_product_id && t.assigned_at != null && t.assigned_at >= monthStart) {
+      history.teamProductTasksThisMonth++;
     }
   }
 

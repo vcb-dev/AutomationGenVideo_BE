@@ -1,10 +1,10 @@
 import {
   Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException,
 } from '@nestjs/common'
-import { PrismaService } from '../../common/prisma/prisma.service'
-import { UploadService } from '../social-publishing/upload/upload.service'
-import { MediaLibraryService } from '../social-publishing/upload/media-library.service'
-import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service'
+import { PrismaService } from '../../../common/prisma/prisma.service'
+import { UploadService } from '../../social-publishing/upload/upload.service'
+import { MediaLibraryService } from '../../social-publishing/upload/media-library.service'
+import { GoogleDriveStorageService } from '../../social-publishing/upload/google-drive-storage.service'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { Response } from 'express'
@@ -239,7 +239,6 @@ export class TaskAutoVideoService {
     // res.sendFile handles Range requests automatically + preserves CORS headers from middleware
     res.sendFile(path.resolve(localPath), (err: any) => {
       if (!err) return
-      // Browser aborts range requests while seeking/buffering — completely normal, not an error
       if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.message === 'Request aborted') return
       if (!res.headersSent) {
         this.logger.error(`[VideoStream] sendFile error for task ${taskId}: ${err.message}`)
@@ -290,7 +289,6 @@ export class TaskAutoVideoService {
     let driveFileId: string | undefined
 
     try {
-      // Upload via googleDrive directly so we control file deletion
       const uploaded = await this.googleDrive.uploadFromPath(localPath, pending.filename, pending.mimetype, userObj)
       driveUrl = uploaded.url
       driveFileId = uploaded.fileId
@@ -299,10 +297,8 @@ export class TaskAutoVideoService {
       throw err
     }
 
-    // Delete local file only after Drive upload confirmed
     try { fs.unlinkSync(localPath) } catch {}
 
-    // Save to media library
     if (ownerId) {
       await this.library.save(ownerId, {
         filename: pending.filename, originalname: pending.originalname,
@@ -312,10 +308,7 @@ export class TaskAutoVideoService {
       }).catch(err => this.logger.warn(`[VideoApprove] library.save failed: ${err.message}`))
     }
 
-    // Update task result_url to Drive URL
     await this.prisma.task.update({ where: { id: taskId }, data: { result_url: driveUrl } })
-
-    // Clean taskPendingVideo
     await (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {})
 
     this.logger.log(`[VideoApprove] ✅ Task ${taskId} promoted to Drive: ${driveUrl}`)
@@ -349,7 +342,6 @@ export class TaskAutoVideoService {
     return { deleted: true }
   }
 
-  // Xóa Drive file + pending record (dùng khi REJECT hoặc re-upload)
   async deletePendingVideo(taskId: string) {
     return this._cleanupPendingVideo(taskId)
   }
@@ -365,14 +357,12 @@ export class TaskAutoVideoService {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  // Xóa storage (Drive hoặc local) của một pending record
   private async _deletePendingStorage(pending: any) {
     if (!pending) return
     if (pending.storage === 'google_drive' && pending.drive_file_id) {
       await this.googleDrive.delete(pending.drive_file_id).catch((err: any) =>
         this.logger.warn(`[VideoCleanup] Could not delete Drive file ${pending.drive_file_id}: ${err.message}`)
       )
-      // Xóa luôn record trong media library (đã lưu lúc nộp task)
       await this.library.removeByDriveFileId(pending.drive_file_id).catch((err: any) =>
         this.logger.warn(`[VideoCleanup] Could not remove library entry for Drive file ${pending.drive_file_id}: ${err.message}`)
       )
@@ -382,7 +372,6 @@ export class TaskAutoVideoService {
     }
   }
 
-  // Xóa toàn bộ pending video của task (storage + DB record)
   private async _cleanupPendingVideo(taskId: string) {
     let pending: any
     try {

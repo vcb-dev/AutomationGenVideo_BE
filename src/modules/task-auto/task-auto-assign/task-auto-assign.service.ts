@@ -3,29 +3,29 @@ import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
 import { AssignmentRunStatus, BrandType } from "@prisma/client";
 
-import { isWeekend, monthKey, addCalendarDays } from "./helpers/date.helpers";
-import { largestRemainder } from "./helpers/quota.helpers";
-import { getEligibleEditors } from "./strategies/editor-eligibility.strategy";
-import { batchEditorStats } from "./strategies/editor-stats.strategy";
-import { persistPairings } from "./strategies/persist-pairings.strategy";
+import { isWeekend, monthKey, addCalendarDays } from "./utils/date.utils";
+import { allocateByWeight } from "./utils/quota.utils";
+import { loadEligibleEditors } from "./steps/editor-eligibility";
+import { loadEditorAssignmentHistory } from "./steps/editor-history";
+import { createTasksFromAssignments } from "./steps/task-creator";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { UpdateAutoAssignSettingDto } from "../dto/settings.dto";
 import {
   DEADLINE_CALENDAR_DAYS,
   DEFAULT_TZ,
-  EditorStats,
+  EditorAssignmentHistory,
   FILL_STRATEGY,
-  Pairing,
-  PoolContent,
-  PoolProduct,
-  ProductSource,
-  QuotaItem,
+  ScheduledAssignment,
+  ContentPoolItem,
+  ProductPoolItem,
+  PoolSource,
+  WeightedAllocation,
   TeamResult,
 } from "./types";
 import {
-  buildCandidates,
-  selectPairsForEditor,
-} from "./strategies/candidate.strategy";
+  buildContentProductPairs,
+  selectAssignmentsForEditor,
+} from "./steps/pair-builder";
 
 @Injectable()
 export class TaskAutoAssignService {
@@ -157,7 +157,7 @@ export class TaskAutoAssignService {
       const details: Record<string, any> = {};
 
       for (const team of teams) {
-        const result = await this.processTeam(
+        const result = await this.assignTasksForTeam(
           team.id,
           team.brand_type,
           now,
@@ -201,7 +201,7 @@ export class TaskAutoAssignService {
 
   // ── Per-team orchestration ────────────────────────────────────────────────
 
-  private async processTeam(
+  private async assignTasksForTeam(
     teamId: string,
     teamBrandType: BrandType,
     now: DateTime,
@@ -221,7 +221,7 @@ export class TaskAutoAssignService {
       }),
     ]);
 
-    const editors = await getEligibleEditors(
+    const editors = await loadEligibleEditors(
       this.prisma,
       teamId,
       now,
@@ -235,8 +235,10 @@ export class TaskAutoAssignService {
       return { assigned: 0, skipped: 0 };
     }
 
-    const { contentItems: teamContentItems, productItems: teamProductItems } =
-      await this.getQuotaAllocations(teamId, month);
+    const { contentWeights, productWeights } = await this.loadTeamQuotaWeights(
+      teamId,
+      month,
+    );
 
     const editorIds = editors.map((e) => e.userId);
 
@@ -247,11 +249,7 @@ export class TaskAutoAssignService {
       globalProductPool,
       personalContentsByEditor,
       personalProductsByEditor,
-    } = await this.buildContentProductPoolsByBrandType(
-      teamBrandType,
-      teamId,
-      editorIds,
-    );
+    } = await this.loadAssignmentPools(teamBrandType, teamId, editorIds);
 
     this.logger.log(
       `Team ${teamId} [${teamBrandType}]: ` +
@@ -260,27 +258,29 @@ export class TaskAutoAssignService {
         `personalEditors=${personalContentsByEditor.size}`,
     );
 
-    const editorStats = await batchEditorStats(
+    const historyMap = await loadEditorAssignmentHistory(
       this.prisma,
       editorIds,
       monthStart,
     );
 
     // ── Per-editor selection ──────────────────────────────────────────────
-    const allPairings: Pairing[] = [];
+    const allAssignments: ScheduledAssignment[] = [];
 
     for (const editor of editors) {
       if (editor.remainingDaily <= 0) continue;
 
-      const stats: EditorStats = editorStats.get(editor.userId) ?? {
-        existingPairs: new Set(),
-        usedContentKeys: new Set(),
-        teamProductTaskCount: 0,
+      const history: EditorAssignmentHistory = historyMap.get(
+        editor.userId,
+      ) ?? {
+        assignedPairKeys: new Set(),
+        assignedContentKeys: new Set(),
+        teamProductTasksThisMonth: 0,
       };
 
-      const isPhase1 =
+      const shouldFocusTeamProducts =
         editor.productPlanned > 0 &&
-        stats.teamProductTaskCount < editor.productPlanned;
+        history.teamProductTasksThisMonth < editor.productPlanned;
 
       // Content ordering: new personal → new team → new global → repeat team → repeat global → repeat personal
       const personalContents =
@@ -299,20 +299,20 @@ export class TaskAutoAssignService {
         (c) => !personalSourceContentIds.has(c.id),
       );
 
-      const contentKey = (c: PoolContent) => `${c.source}:${c.id}`;
-      const isNew = (c: PoolContent) =>
-        !stats.usedContentKeys.has(contentKey(c));
+      const contentKey = (c: ContentPoolItem) => `${c.source}:${c.id}`;
+      const isNewContent = (c: ContentPoolItem) =>
+        !history.assignedContentKeys.has(contentKey(c));
 
-      const orderedContents: PoolContent[] = [
-        ...personalContents.filter(isNew),
-        ...filteredTeamContents.filter(isNew),
-        ...filteredGlobalContents.filter(isNew),
-        ...filteredTeamContents.filter((c) => !isNew(c)),
-        ...filteredGlobalContents.filter((c) => !isNew(c)),
-        ...personalContents.filter((c) => !isNew(c)),
+      const orderedContents: ContentPoolItem[] = [
+        ...personalContents.filter(isNewContent),
+        ...filteredTeamContents.filter(isNewContent),
+        ...filteredGlobalContents.filter(isNewContent),
+        ...filteredTeamContents.filter((c) => !isNewContent(c)),
+        ...filteredGlobalContents.filter((c) => !isNewContent(c)),
+        ...personalContents.filter((c) => !isNewContent(c)),
       ];
 
-      // Product ordering: ưu tiên theo tier (team > personal > global) rồi mới theo priority_score cao → thấp
+      // Product ordering: ưu tiên theo tier (team > personal > global) rồi theo priority_score cao → thấp
       const personalProducts =
         personalProductsByEditor.get(editor.userId) ?? [];
       const personalSourceProductIds = new Set(
@@ -329,15 +329,15 @@ export class TaskAutoAssignService {
         (p) => !personalSourceProductIds.has(p.id),
       );
 
-      const PRODUCT_TIER_RANK: Record<ProductSource, number> = {
+      const PRODUCT_TIER_RANK: Record<PoolSource, number> = {
         global: 0,
         personal: 1,
         team: 2,
       };
 
-      // TH1: chỉ dùng kho team (sort priority_score desc)
-      // TH2: global → personal → team, mỗi tier sort priority_score desc
-      const orderedProducts: PoolProduct[] = isPhase1
+      // shouldFocusTeamProducts=true: chỉ dùng kho team (sort priority_score desc)
+      // shouldFocusTeamProducts=false: global → personal → team, mỗi tier sort priority_score desc
+      const orderedProducts: ProductPoolItem[] = shouldFocusTeamProducts
         ? [...teamProductPool].sort(
             (a, b) => b.priority_score - a.priority_score,
           )
@@ -358,11 +358,11 @@ export class TaskAutoAssignService {
         continue;
       }
 
-      const candidates = buildCandidates(orderedContents, orderedProducts);
-      const available = candidates.filter(
-        (c) =>
-          !stats.existingPairs.has(
-            `${c.contentSource}:${c.contentId}:${c.productSource}:${c.productId}`,
+      const pairs = buildContentProductPairs(orderedContents, orderedProducts);
+      const available = pairs.filter(
+        (p) =>
+          !history.assignedPairKeys.has(
+            `${p.contentSource}:${p.contentId}:${p.productSource}:${p.productId}`,
           ),
       );
 
@@ -373,20 +373,20 @@ export class TaskAutoAssignService {
         continue;
       }
 
-      const contentQuota = largestRemainder(
+      const contentQuota = allocateByWeight(
         editor.remainingDaily,
         editor.contentTypeWeights.length > 0
           ? editor.contentTypeWeights
-          : teamContentItems,
+          : contentWeights,
       );
-      const productQuota = largestRemainder(
+      const productQuota = allocateByWeight(
         editor.remainingDaily,
         editor.productTypeWeights.length > 0
           ? editor.productTypeWeights
-          : teamProductItems,
+          : productWeights,
       );
 
-      const selected = selectPairsForEditor(
+      const selected = selectAssignmentsForEditor(
         available,
         contentQuota,
         productQuota,
@@ -396,42 +396,43 @@ export class TaskAutoAssignService {
 
       this.logger.log(
         `Team ${teamId} editor ${editor.userId}: ` +
-          `phase=${isPhase1 ? "TH1" : "TH2"} ` +
-          `teamProductTasks=${stats.teamProductTaskCount}/${editor.productPlanned} ` +
+          `phase=${shouldFocusTeamProducts ? "team-focus" : "balanced"} ` +
+          `teamProductTasks=${history.teamProductTasksThisMonth}/${editor.productPlanned} ` +
           `daily=${editor.remainingDaily} monthly_rem=${editor.remainingMonthly} ` +
           `selected=${selected.length}`,
       );
 
-      for (const candidate of selected) {
-        allPairings.push({ editorId: editor.userId, candidate });
+      for (const pair of selected) {
+        allAssignments.push({ editorId: editor.userId, pair });
       }
     }
 
-    const assigned = await persistPairings(
+    const assigned = await createTasksFromAssignments(
       this.prisma,
       teamId,
+      teamBrandType,
       runId,
       deadline,
-      allPairings,
+      allAssignments,
     );
     return { assigned, skipped: 0 };
   }
 
-  // ── Brand-type filtered pool builder ─────────────────────────────────────
+  // ── Load content & product pools filtered by brand type ───────────────────
 
-  private async buildContentProductPoolsByBrandType(
+  private async loadAssignmentPools(
     brandType: BrandType,
     teamId: string,
     editorIds: string[],
   ): Promise<{
-    teamContentPool: PoolContent[];
-    globalContentPool: PoolContent[];
-    teamProductPool: PoolProduct[];
-    globalProductPool: PoolProduct[];
-    personalContentsByEditor: Map<string, PoolContent[]>;
-    personalProductsByEditor: Map<string, PoolProduct[]>;
+    teamContentPool: ContentPoolItem[];
+    globalContentPool: ContentPoolItem[];
+    teamProductPool: ProductPoolItem[];
+    globalProductPool: ProductPoolItem[];
+    personalContentsByEditor: Map<string, ContentPoolItem[]>;
+    personalProductsByEditor: Map<string, ProductPoolItem[]>;
   }> {
-    // ── Team content (filtered by brand_type) ─────────────────────────────
+    // ── Team content ──────────────────────────────────────────────────────
     const teamContentsRaw = await this.prisma.teamContent.findMany({
       where: {
         team_id: teamId,
@@ -446,7 +447,7 @@ export class TaskAutoAssignService {
       },
       orderBy: { added_at: "asc" },
     });
-    const teamContentPool: PoolContent[] = teamContentsRaw.map((tc) => ({
+    const teamContentPool: ContentPoolItem[] = teamContentsRaw.map((tc) => ({
       id: tc.id,
       content_line_id: tc.content_line_id,
       source: "team" as const,
@@ -458,7 +459,7 @@ export class TaskAutoAssignService {
         .map((tc) => tc.source_content_id!),
     );
 
-    // ── Global content (filtered by brand_type) ───────────────────────────
+    // ── Global content ────────────────────────────────────────────────────
     const allGlobalContents = await this.prisma.content.findMany({
       where: {
         status: { not: "ARCHIVED" },
@@ -470,14 +471,14 @@ export class TaskAutoAssignService {
       select: { id: true, content_line_id: true },
       orderBy: { created_at: "asc" },
     });
-    const globalContentPool: PoolContent[] = allGlobalContents.map((c) => ({
+    const globalContentPool: ContentPoolItem[] = allGlobalContents.map((c) => ({
       id: c.id,
       content_line_id: c.content_line_id,
       source: "global" as const,
       source_content_id: null,
     }));
 
-    // ── Team product (filtered by brand_type) ─────────────────────────────
+    // ── Team product ──────────────────────────────────────────────────────
     const teamProductsRaw = await this.prisma.teamProduct.findMany({
       where: { team_id: teamId, is_active: true, brand_type: brandType },
       select: {
@@ -488,7 +489,7 @@ export class TaskAutoAssignService {
       },
       orderBy: { priority_score: "desc" },
     });
-    const teamProductPool: PoolProduct[] = teamProductsRaw.map((tp) => ({
+    const teamProductPool: ProductPoolItem[] = teamProductsRaw.map((tp) => ({
       id: tp.id,
       product_line_id: tp.product_line_id,
       priority_score: tp.priority_score,
@@ -501,7 +502,7 @@ export class TaskAutoAssignService {
         .map((tp) => tp.source_product_id!),
     );
 
-    // ── Global product (filtered by brand_type) ───────────────────────────
+    // ── Global product ────────────────────────────────────────────────────
     const globalProductsRaw = await this.prisma.product.findMany({
       where: {
         is_active: true,
@@ -513,7 +514,7 @@ export class TaskAutoAssignService {
       select: { id: true, product_line_id: true, priority_score: true },
       orderBy: { priority_score: "desc" },
     });
-    const globalProductPool: PoolProduct[] = globalProductsRaw.map((p) => ({
+    const globalProductPool: ProductPoolItem[] = globalProductsRaw.map((p) => ({
       id: p.id,
       product_line_id: p.product_line_id,
       priority_score: p.priority_score,
@@ -521,7 +522,7 @@ export class TaskAutoAssignService {
       source_product_id: null,
     }));
 
-    // ── Personal content (filtered by brand_type) ─────────────────────────
+    // ── Personal content per editor ───────────────────────────────────────
     const personalContentsRaw = await this.prisma.editorContent.findMany({
       where: {
         user_id: { in: editorIds },
@@ -536,7 +537,7 @@ export class TaskAutoAssignService {
       },
       orderBy: { added_at: "asc" },
     });
-    const personalContentsByEditor = new Map<string, PoolContent[]>();
+    const personalContentsByEditor = new Map<string, ContentPoolItem[]>();
     for (const c of personalContentsRaw) {
       if (!personalContentsByEditor.has(c.user_id))
         personalContentsByEditor.set(c.user_id, []);
@@ -548,7 +549,7 @@ export class TaskAutoAssignService {
       });
     }
 
-    // ── Personal product (filtered by brand_type) ─────────────────────────
+    // ── Personal product per editor ───────────────────────────────────────
     const personalProductsRaw = await this.prisma.editorProduct.findMany({
       where: {
         user_id: { in: editorIds },
@@ -564,7 +565,7 @@ export class TaskAutoAssignService {
       },
       orderBy: { priority_score: "desc" },
     });
-    const personalProductsByEditor = new Map<string, PoolProduct[]>();
+    const personalProductsByEditor = new Map<string, ProductPoolItem[]>();
     for (const p of personalProductsRaw) {
       if (!personalProductsByEditor.has(p.user_id))
         personalProductsByEditor.set(p.user_id, []);
@@ -587,23 +588,23 @@ export class TaskAutoAssignService {
     };
   }
 
-  // ── Team quota allocations ────────────────────────────────────────────────
+  // ── Load team KPI quota weights ───────────────────────────────────────────
 
-  private async getQuotaAllocations(
+  private async loadTeamQuotaWeights(
     teamId: string,
     month: string,
-  ): Promise<{ contentItems: QuotaItem[]; productItems: QuotaItem[] }> {
+  ): Promise<{contentWeights: WeightedAllocation[]; productWeights: WeightedAllocation[] }> {
     const teamKpi = await this.prisma.teamKpi.findUnique({
       where: { team_id_month: { team_id: teamId, month } },
       include: { allocations: true },
     });
-    if (!teamKpi) return { contentItems: [], productItems: [] };
+    if (!teamKpi) return { contentWeights: [], productWeights: [] };
 
     return {
-      contentItems: teamKpi.allocations
+      contentWeights: teamKpi.allocations
         .filter((a) => a.type === "CONTENT_LINE" && a.content_line_id != null)
         .map((a) => ({ key: a.content_line_id!, weight: a.percent })),
-      productItems: teamKpi.allocations
+      productWeights: teamKpi.allocations
         .filter((a) => a.type === "PRODUCT_LINE" && a.product_line_id != null)
         .map((a) => ({ key: a.product_line_id!, weight: a.percent })),
     };

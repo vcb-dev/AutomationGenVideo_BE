@@ -57,7 +57,7 @@ model User {
   social_accounts           SocialAccount[]
   social_posts              SocialPost[]
   teams_leading             Team[]           @relation("TeamLeaderOf")
-  team_membership           TeamMember?      @relation("TeamMembershipOf")
+  team_memberships          TeamMember[]     @relation("TeamMembershipOf")
   editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
   editor_approvals_reviewed EditorApproval[] @relation("EditorApprovalBy")
   editor_kpis               EditorKpi[]      @relation("EditorKpiOf")
@@ -1343,9 +1343,9 @@ model SocialUploadedFile {
   @@map("social_uploaded_files")
 }
 
-// ─────────────────────────────────────────────
-//  TASK AUTO-ASSIGNMENT MODULE (v3 additive)
-// ─────────────────────────────────────────────
+// ────────────────────────────────
+//  TASK AUTO-ASSIGNMENT MODULE
+// ────────────────────────────────
 
 enum TaskStatus {
   PENDING
@@ -1395,6 +1395,12 @@ enum AssignmentOutcome {
   CANCELLED
 }
 
+enum TaskType {
+  MANUAL
+  AUTO
+  EXTRA
+}
+
 enum ApprovalStatus {
   PENDING
   APPROVED
@@ -1411,6 +1417,7 @@ model Team {
   name       String    @unique
   leader_id  String?
   brand_type BrandType @default(TRANG_SUC)
+  market     String    @default("VIETNAM")
   is_active  Boolean   @default(true)
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
@@ -1432,13 +1439,15 @@ model Team {
 model TeamMember {
   id        String   @id @default(uuid())
   team_id   String
-  user_id   String   @unique
+  user_id   String
   joined_at DateTime @default(now())
 
   team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
   user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
 
+  @@unique([team_id, user_id])
   @@index([team_id])
+  @@index([user_id])
   @@map("team_members")
 }
 
@@ -1474,6 +1483,8 @@ model TeamProduct {
 
   @@index([team_id])
   @@index([team_id, brand_type])
+  @@index([team_id, is_active])
+  @@index([team_id, brand_type, is_active])
   @@map("team_products")
 }
 
@@ -1503,6 +1514,8 @@ model TeamContent {
 
   @@index([team_id])
   @@index([team_id, brand_type])
+  @@index([team_id, status])
+  @@index([team_id, brand_type, status])
   @@map("team_contents")
 }
 
@@ -1513,6 +1526,7 @@ model TeamSource {
   type             SourceType
   name             String
   link             String
+  nas_link         String?
   code             String?
   product_id       String?
   /// Liên kết tới TeamProduct (khi source được tạo cùng lúc với team product)
@@ -1528,8 +1542,12 @@ model TeamSource {
   added_by     User        @relation("TeamSourceAddedBy", fields: [added_by_id], references: [id])
   product      Product?    @relation(fields: [product_id], references: [id])
   team_product TeamProduct? @relation("TeamProductSources", fields: [team_product_id], references: [id], onDelete: SetNull)
-  source_source Source?    @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
-  warehouses   TeamSourceWarehouse[]
+  source_source        Source?     @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
+  warehouses           TeamSourceWarehouse[]
+  tasks_as_outro       Task[]      @relation("TaskTeamSourceOutro")
+  tasks_as_extra       Task[]      @relation("TaskTeamSourceExtra")
+  tasks_as_workshop    Task[]      @relation("TaskTeamSourceWorkshop")
+  tasks_as_huyk        Task[]      @relation("TaskTeamSourceHuyk")
 
   @@index([team_id])
   @@index([team_id, brand_type])
@@ -1569,6 +1587,8 @@ model EditorProduct {
 
   @@index([user_id])
   @@index([user_id, brand_type])
+  @@index([user_id, is_active])
+  @@index([user_id, brand_type, is_active])
   @@map("editor_products")
 }
 
@@ -1598,6 +1618,8 @@ model EditorContent {
 
   @@index([user_id])
   @@index([user_id, brand_type])
+  @@index([user_id, status])
+  @@index([user_id, brand_type, status])
   @@map("editor_contents")
 }
 
@@ -1608,6 +1630,7 @@ model EditorSource {
   type              SourceType
   name              String
   link              String
+  nas_link          String?
   code              String?
   product_id        String?
   /// Liên kết tới EditorProduct (khi source được tạo cùng lúc với editor product)
@@ -1623,8 +1646,12 @@ model EditorSource {
   added_by       User          @relation("EditorSourceAddedBy", fields: [added_by_id], references: [id])
   product        Product?      @relation(fields: [product_id], references: [id])
   editor_product EditorProduct? @relation("EditorProductSources", fields: [editor_product_id], references: [id], onDelete: SetNull)
-  source_source  Source?       @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
-  warehouses     EditorSourceWarehouse[]
+  source_source          Source?       @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
+  warehouses             EditorSourceWarehouse[]
+  tasks_as_outro         Task[]        @relation("TaskEditorSourceOutro")
+  tasks_as_extra         Task[]        @relation("TaskEditorSourceExtra")
+  tasks_as_workshop      Task[]        @relation("TaskEditorSourceWorkshop")
+  tasks_as_huyk          Task[]        @relation("TaskEditorSourceHuyk")
 
   @@index([user_id])
   @@index([user_id, brand_type])
@@ -1689,9 +1716,11 @@ model EditorKpi {
   id           String   @id @default(uuid())
   user_id      String
   month        String
-  // Legacy fields kept at 0 (auto-assign still reads total_target)
+  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
   kpi_day      Int      @default(0)
+  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
   kpi_weekend  Int      @default(0)
+  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
   kpi_creative Int      @default(0)
   // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
   total_target Int      @default(0)   // = Tổng video sản xuất (drives auto-assign)
@@ -1841,6 +1870,7 @@ model Source {
   type           SourceType
   name           String
   link           String
+  nas_link       String?
   code           String?
   product_id     String?
   added_by_id    String
@@ -1877,15 +1907,29 @@ model Task {
   editor_content_id  String?
   team_content_id    String?
   content_line_id    String?
-  source_outro_id    String?
-  source_extra_id    String?
-  source_workshop_id String?
-  source_huyk_id     String?
+  source_outro_id             String?
+  source_extra_id             String?
+  source_workshop_id          String?
+  source_huyk_id              String?
+  editor_source_outro_id      String?
+  editor_source_extra_id      String?
+  editor_source_workshop_id   String?
+  editor_source_huyk_id       String?
+  team_source_outro_id        String?
+  team_source_extra_id        String?
+  team_source_workshop_id     String?
+  team_source_huyk_id         String?
   status             TaskStatus @default(PENDING)
+  /// Denormalized từ team.brand_type để tránh JOIN khi filter theo brand
+  brand_type         BrandType?
+  /// Thay thế is_auto + is_extra; MANUAL=tạo tay, AUTO=auto-assign, EXTRA=task thêm
+  task_type          TaskType   @default(MANUAL)
   assignee_id        String?
   assigned_at        DateTime?
   deadline           DateTime?
+  /// @deprecated — dùng task_type thay thế; giữ lại để migrate dần code
   is_auto            Boolean    @default(false)
+  /// @deprecated — dùng task_type thay thế; giữ lại để migrate dần code
   is_extra           Boolean    @default(false)
   run_id             String?
   result_url         String?    @db.Text
@@ -1905,10 +1949,18 @@ model Task {
   editor_content  EditorContent?   @relation(fields: [editor_content_id], references: [id])
   team_content    TeamContent?     @relation(fields: [team_content_id], references: [id])
   content_line    ContentLine?     @relation(fields: [content_line_id], references: [id])
-  source_outro    Source?          @relation("TaskSourceOutro",    fields: [source_outro_id],    references: [id])
-  source_extra    Source?          @relation("TaskSourceExtra",    fields: [source_extra_id],    references: [id])
-  source_workshop Source?          @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
-  source_huyk     Source?          @relation("TaskSourceHuyk",     fields: [source_huyk_id],     references: [id])
+  source_outro           Source?       @relation("TaskSourceOutro",          fields: [source_outro_id],           references: [id])
+  source_extra           Source?       @relation("TaskSourceExtra",          fields: [source_extra_id],           references: [id])
+  source_workshop        Source?       @relation("TaskSourceWorkshop",       fields: [source_workshop_id],        references: [id])
+  source_huyk            Source?       @relation("TaskSourceHuyk",           fields: [source_huyk_id],            references: [id])
+  editor_source_outro    EditorSource? @relation("TaskEditorSourceOutro",    fields: [editor_source_outro_id],    references: [id])
+  editor_source_extra    EditorSource? @relation("TaskEditorSourceExtra",    fields: [editor_source_extra_id],    references: [id])
+  editor_source_workshop EditorSource? @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
+  editor_source_huyk     EditorSource? @relation("TaskEditorSourceHuyk",     fields: [editor_source_huyk_id],     references: [id])
+  team_source_outro      TeamSource?   @relation("TaskTeamSourceOutro",      fields: [team_source_outro_id],      references: [id])
+  team_source_extra      TeamSource?   @relation("TaskTeamSourceExtra",      fields: [team_source_extra_id],      references: [id])
+  team_source_workshop   TeamSource?   @relation("TaskTeamSourceWorkshop",   fields: [team_source_workshop_id],   references: [id])
+  team_source_huyk       TeamSource?   @relation("TaskTeamSourceHuyk",       fields: [team_source_huyk_id],       references: [id])
   assignee        User?            @relation("TaskAssignee", fields: [assignee_id], references: [id])
   reviewed_by     User?            @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
   run             AssignmentRun?   @relation(fields: [run_id], references: [id])
@@ -1922,13 +1974,24 @@ model Task {
   @@index([deadline])
   @@index([deadline, status])
   @@index([run_id])
+  // ── FK reverse lookups (global warehouse) ──
+  @@index([content_id])
+  @@index([product_id])
+  // ── FK reverse lookups (team/editor scope) ──
   @@index([editor_product_id])
   @@index([team_product_id])
   @@index([editor_content_id])
   @@index([team_content_id])
-  /// Hot path: KPI count query per editor (assignedThisMonth)
+  // ── brand/type filters ──
+  @@index([brand_type, status])
+  @@index([task_type])
+  /// Hot path: KPI count query per editor (assignedThisMonth) — new task_type variant
+  @@index([assignee_id, task_type, assigned_at])
+  /// Hot path: getEditorExistingPairs — new task_type variant
+  @@index([assignee_id, task_type])
+  /// @deprecated — kept for backward compat while migrating code to task_type
   @@index([assignee_id, is_extra, assigned_at])
-  /// Hot path: getEditorExistingPairs — lọc tasks đã gán theo editor + loại
+  /// @deprecated — kept for backward compat while migrating code to task_type
   @@index([assignee_id, is_extra])
   @@map("tasks")
 }
@@ -2022,20 +2085,24 @@ model EditorWeekendKpi {
 }
 
 model Notification {
-  id         String   @id @default(uuid())
+  id         String    @id @default(uuid())
   user_id    String
   type       String
   title      String
   body       String?
   task_id    String?
-  is_read    Boolean  @default(false)
-  created_at DateTime @default(now())
+  is_read    Boolean   @default(false)
+  /// Dùng cho cron cleanup — NULL = không tự xóa, có giá trị = xóa sau ngày này
+  expires_at DateTime?
+  created_at DateTime  @default(now())
 
   user User  @relation("NotificationOf", fields: [user_id], references: [id], onDelete: Cascade)
   task Task? @relation(fields: [task_id], references: [id], onDelete: SetNull)
 
   @@index([user_id, is_read])
+  @@index([user_id, created_at(sort: Desc)])
   @@index([created_at(sort: Desc)])
+  @@index([expires_at])
   @@map("notifications")
 }
 

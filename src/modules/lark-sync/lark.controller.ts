@@ -368,71 +368,71 @@ export class LarkController {
         return this.larkService.inspectTableGeneric(baseId, tableId);
     }
 
-    @Post('sync-channel')
-    @ApiOperation({ summary: 'Manually trigger Channel data sync from Lark' })
-    async syncChannelData() {
-        try {
-            await this.larkService.syncChannelData();
-            return { message: 'Channel sync completed successfully' };
-        } catch (error) {
-            return { message: 'Channel sync failed', error: error.message };
-        }
-    }
+    // @Post('sync-channel')
+    // @ApiOperation({ summary: 'Manually trigger Channel data sync from Lark' })
+    // async syncChannelData() {
+    //     try {
+    //         await this.larkService.syncChannelData();
+    //         return { message: 'Channel sync completed successfully' };
+    //     } catch (error) {
+    //         return { message: 'Channel sync failed', error: error.message };
+    //     }
+    // }
 
-    @Post('import-tracked-from-channels')
-    @ApiOperation({
-        summary: 'Import tracked_channels từ bảng Channel (DB) cho mọi user khớp email/owner',
-    })
-    async importTrackedFromChannels() {
-        const r = await this.larkService.importTrackedChannelsFromChannelTable();
-        return { message: 'Import completed', ...r };
-    }
+    // @Post('import-tracked-from-channels')
+    // @ApiOperation({
+    //     summary: 'Import tracked_channels từ bảng Channel (DB) cho mọi user khớp email/owner',
+    // })
+    // async importTrackedFromChannels() {
+    //     const r = await this.larkService.importTrackedChannelsFromChannelTable();
+    //     return { message: 'Import completed', ...r };
+    // }
 
-    @Post('reset-channel')
-    @ApiOperation({ summary: 'Clear and re-sync Channel data (main + Do Da)' })
-    async resetChannelData() {
-        try {
-            await this.larkService.clearChannels();
-            await this.larkService.syncChannelData();
-            await this.larkService.syncDoDaChannelData();
-            return { message: 'Channel reset and sync completed successfully' };
-        } catch (error) {
-            return { message: 'Channel reset failed', error: error.message };
-        }
-    }
+    // @Post('reset-channel')
+    // @ApiOperation({ summary: 'Clear and re-sync Channel data (main + Do Da)' })
+    // async resetChannelData() {
+    //     try {
+    //         await this.larkService.clearChannels();
+    //         // await this.larkService.syncChannelData();
+    //         // await this.larkService.syncDoDaChannelData();
+    //         return { message: 'Channel reset and sync completed successfully' };
+    //     } catch (error) {
+    //         return { message: 'Channel reset failed', error: error.message };
+    //     }
+    // }
 
-    @Get('channel')
-    @Header('Cache-Control', 'private, max-age=120, stale-while-revalidate=300')
-    @ApiOperation({ summary: 'Get Channel data from Database' })
-    async getChannel(
-        @Query('owner') owner?: string,
-        @Query('team') team?: string,
-        @Query('email') email?: string,
-    ) {
-        return this.larkService.getChannelData(owner, team, email?.toLowerCase().trim());
-    }
+    // @Get('channel')
+    // @Header('Cache-Control', 'private, max-age=120, stale-while-revalidate=300')
+    // @ApiOperation({ summary: 'Get Channel data from Database' })
+    // async getChannel(
+    //     @Query('owner') owner?: string,
+    //     @Query('team') team?: string,
+    //     @Query('email') email?: string,
+    // ) {
+    //     return this.larkService.getChannelData(owner, team, email?.toLowerCase().trim());
+    // }
 
-    @Post('enrich-channel-emails')
-    @ApiOperation({ summary: 'Cross-reference Channel.owner with Users.full_name to fill email' })
-    async enrichChannelEmails() {
-        try {
-            const updated = await this.larkService.enrichChannelEmailsFromUsers();
-            return { message: `Email enrichment completed: ${updated} channels updated`, updated };
-        } catch (error) {
-            return { message: 'Email enrichment failed', error: error.message };
-        }
-    }
+    // @Post('enrich-channel-emails')
+    // @ApiOperation({ summary: 'Cross-reference Channel.owner with Users.full_name to fill email' })
+    // async enrichChannelEmails() {
+    //     try {
+    //         const updated = await this.larkService.enrichChannelEmailsFromUsers();
+    //         return { message: `Email enrichment completed: ${updated} channels updated`, updated };
+    //     } catch (error) {
+    //         return { message: 'Email enrichment failed', error: error.message };
+    //     }
+    // }
 
-    @Post('sync-doda-channel')
-    @ApiOperation({ summary: 'Sync Do Da team channels from Lark into Channel table' })
-    async syncDoDaChannel() {
-        try {
-            const result = await this.larkService.syncDoDaChannelData();
-            return { message: 'Do Da channel sync completed', ...result };
-        } catch (error) {
-            return { message: 'Do Da channel sync failed', error: error.message };
-        }
-    }
+    // @Post('sync-doda-channel')
+    // @ApiOperation({ summary: 'Sync Do Da team channels from Lark into Channel table' })
+    // async syncDoDaChannel() {
+    //     try {
+    //         const result = await this.larkService.syncDoDaChannelData();
+    //         return { message: 'Do Da channel sync completed', ...result };
+    //     } catch (error) {
+    //         return { message: 'Do Da channel sync failed', error: error.message };
+    //     }
+    // }
 
     @Post('sync-hr')
     @ApiOperation({ summary: 'Manually trigger HR sync from Lark (User accounts + Permission/Team)' })

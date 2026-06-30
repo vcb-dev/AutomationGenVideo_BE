@@ -27,6 +27,14 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() source_extra_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_workshop_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_huyk_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_source_outro_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_source_extra_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_source_workshop_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() editor_source_huyk_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_source_outro_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_source_extra_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_source_workshop_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() team_source_huyk_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
   @ApiPropertyOptional() @IsDateString() @IsOptional() deadline?: string
 }
@@ -47,6 +55,14 @@ export class UpdateTaskDto {
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_extra_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_workshop_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_huyk_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() editor_source_outro_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() editor_source_extra_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() editor_source_workshop_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() editor_source_huyk_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() team_source_outro_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() team_source_extra_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() team_source_workshop_id?: string | null
+  @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() team_source_huyk_id?: string | null
 }
 
 export class QueryTaskDto {

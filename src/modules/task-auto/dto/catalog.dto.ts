@@ -77,6 +77,7 @@ export class QueryProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional()
   @IsBoolean()
   @IsOptional()
@@ -137,6 +138,7 @@ export class QueryContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()
@@ -163,6 +165,7 @@ export class CreateSourceDto {
 
   @ApiProperty() @IsString() name: string;
   @ApiProperty() @IsString() link: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
@@ -172,6 +175,7 @@ export class UpdateSourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
@@ -250,6 +254,7 @@ export class CreateTeamSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
@@ -260,6 +265,7 @@ export class UpdateTeamSourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
@@ -276,6 +282,7 @@ export class QuerySourceDto {
   @Type(() => Boolean)
   is_active?: boolean;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()
@@ -330,6 +337,7 @@ export class QueryEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() @Type(() => Boolean) is_active?: boolean;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
   @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
 }
@@ -368,6 +376,7 @@ export class QueryEditorContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
   @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
 }
@@ -383,6 +392,7 @@ export class CreateEditorSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
@@ -393,6 +403,7 @@ export class UpdateEditorSourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
@@ -406,6 +417,7 @@ export class QueryEditorSourceDto {
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() @Type(() => Boolean) is_active?: boolean;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
+  @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
   @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
 }

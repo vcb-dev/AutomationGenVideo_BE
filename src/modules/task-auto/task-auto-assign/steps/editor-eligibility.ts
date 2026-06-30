@@ -1,9 +1,9 @@
 import { DateTime } from "luxon";
-import { deriveDailyTarget } from "../helpers/date.helpers";
-import { EditorSlot, QuotaItem } from "../types";
+import { deriveDailyTarget } from "../utils/date.utils";
+import { EditorCapacity, WeightedAllocation } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
-const aTypeToField: Record<
+const contentTypeToKpiField: Record<
   string,
   "ratio_a1" | "ratio_a2" | "ratio_a3" | "ratio_a4" | "ratio_a5"
 > = {
@@ -14,7 +14,7 @@ const aTypeToField: Record<
   A5: "ratio_a5",
 };
 
-const categoryToField: Record<
+const productCategoryToKpiField: Record<
   string,
   "video_traffic" | "video_gmv" | "video_profit"
 > = {
@@ -23,7 +23,7 @@ const categoryToField: Record<
   PROFIT: "video_profit",
 };
 
-export async function getEligibleEditors(
+export async function loadEligibleEditors(
   prisma: PrismaService,
   teamId: string,
   now: DateTime,
@@ -31,7 +31,7 @@ export async function getEligibleEditors(
   monthStart: Date,
   contentLineTypes: { id: string; a_type: string | null }[],
   productLineTypes: { id: string; video_category: string | null }[],
-): Promise<EditorSlot[]> {
+): Promise<EditorCapacity[]> {
   const members = await prisma.teamMember.findMany({
     where: { team_id: teamId },
     include: {
@@ -75,10 +75,9 @@ export async function getEligibleEditors(
   if (!eligible.length) return [];
 
   const userIds = eligible.map((u) => u.id);
-
   const todayStart = now.startOf("day").toJSDate();
 
-  const [autoRows, todayRows] = await Promise.all([
+  const [monthlyTaskCounts, todayTaskCounts] = await Promise.all([
     prisma.task.groupBy({
       by: ["assignee_id"],
       where: {
@@ -100,21 +99,22 @@ export async function getEligibleEditors(
       _count: { id: true },
     }),
   ]);
-  const autoCountMap = new Map(
-    autoRows.map((r) => [r.assignee_id!, r._count.id]),
+
+  const monthlyTaskCountMap = new Map(
+    monthlyTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
   );
-  const todayCountMap = new Map(
-    todayRows.map((r) => [r.assignee_id!, r._count.id]),
+  const todayTaskCountMap = new Map(
+    todayTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
   );
 
-  const slots: EditorSlot[] = [];
+  const editors: EditorCapacity[] = [];
 
   for (const u of eligible) {
     const kpi = u.editor_kpis[0];
     if (!kpi) continue;
 
-    const assignedThisMonth = autoCountMap.get(u.id) ?? 0;
-    const assignedToday = todayCountMap.get(u.id) ?? 0;
+    const assignedThisMonth = monthlyTaskCountMap.get(u.id) ?? 0;
+    const assignedToday = todayTaskCountMap.get(u.id) ?? 0;
     // dailyTarget must be based on state BEFORE today so it stays stable across multiple same-day runs
     const assignedBeforeToday = assignedThisMonth - assignedToday;
     const remainingMonthly = Math.max(0, kpi.total_target - assignedThisMonth);
@@ -130,23 +130,23 @@ export async function getEligibleEditors(
     );
     if (remainingDaily <= 0) continue;
 
-    const contentTypeWeights: QuotaItem[] = contentLineTypes
-      .filter((cl) => cl.a_type && aTypeToField[cl.a_type])
+    const contentTypeWeights: WeightedAllocation[] = contentLineTypes
+      .filter((cl) => cl.a_type && contentTypeToKpiField[cl.a_type])
       .map((cl) => ({
         key: cl.id,
-        weight: kpi[aTypeToField[cl.a_type!]] ?? 0,
+        weight: kpi[contentTypeToKpiField[cl.a_type!]] ?? 0,
       }))
       .filter((i) => i.weight > 0);
 
-    const productTypeWeights: QuotaItem[] = productLineTypes
-      .filter((pl) => pl.video_category && categoryToField[pl.video_category])
+    const productTypeWeights: WeightedAllocation[] = productLineTypes
+      .filter((pl) => pl.video_category && productCategoryToKpiField[pl.video_category])
       .map((pl) => ({
         key: pl.id,
-        weight: kpi[categoryToField[pl.video_category!]] ?? 0,
+        weight: kpi[productCategoryToKpiField[pl.video_category!]] ?? 0,
       }))
       .filter((i) => i.weight > 0);
 
-    slots.push({
+    editors.push({
       userId: u.id,
       remainingDaily,
       remainingMonthly,
@@ -156,5 +156,5 @@ export async function getEligibleEditors(
     });
   }
 
-  return slots;
+  return editors;
 }

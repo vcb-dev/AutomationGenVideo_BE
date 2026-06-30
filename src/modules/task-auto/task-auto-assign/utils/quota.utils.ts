@@ -1,12 +1,12 @@
-import { QuotaItem } from "../types";
+import { WeightedAllocation } from "../types";
 
 /**
  * Phân bổ `total` theo tỷ lệ weight, làm tròn bằng thuật toán largest-remainder
  * để tổng luôn bằng đúng `total`.
  */
-export function largestRemainder(
+export function allocateByWeight(
   total: number,
-  items: QuotaItem[],
+  items: WeightedAllocation[],
 ): Map<string, number> {
   const out = new Map<string, number>();
   if (total <= 0 || !items.length) return out;

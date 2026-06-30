@@ -6,57 +6,56 @@ export const FILL_STRATEGY: "CAPACITY" | "RATIO" = "CAPACITY";
 
 // ── Source types ──────────────────────────────────────────────────────────────
 
-export type ContentSource = "personal" | "team" | "global";
-export type ProductSource = "personal" | "team" | "global";
+export type PoolSource = "personal" | "team" | "global";
 
 // ── Pool entries ──────────────────────────────────────────────────────────────
 
-export type PoolContent = {
+export type ContentPoolItem = {
   id: string;
   content_line_id: string | null;
-  source: ContentSource;
+  source: PoolSource;
   source_content_id?: string | null;
 };
 
-export type PoolProduct = {
+export type ProductPoolItem = {
   id: string;
   product_line_id: string | null;
   priority_score: number;
-  source: ProductSource;
+  source: PoolSource;
   source_product_id?: string | null;
 };
 
 // ── Editor ────────────────────────────────────────────────────────────────────
 
-export type QuotaItem = { key: string; weight: number };
+export type WeightedAllocation = { key: string; weight: number };
 
-export type EditorSlot = {
+export type EditorCapacity = {
   userId: string;
   remainingDaily: number;
   remainingMonthly: number;
   productPlanned: number;
-  contentTypeWeights: QuotaItem[];
-  productTypeWeights: QuotaItem[];
+  contentTypeWeights: WeightedAllocation[];
+  productTypeWeights: WeightedAllocation[];
 };
 
-export type EditorStats = {
-  existingPairs: Set<string>;
-  usedContentKeys: Set<string>;
-  teamProductTaskCount: number;
+export type EditorAssignmentHistory = {
+  assignedPairKeys: Set<string>;
+  assignedContentKeys: Set<string>;
+  teamProductTasksThisMonth: number;
 };
 
-// ── Pairing ───────────────────────────────────────────────────────────────────
+// ── Assignment ────────────────────────────────────────────────────────────────
 
-export type Candidate = {
+export type AssignmentPair = {
   contentId: string;
-  contentSource: ContentSource;
+  contentSource: PoolSource;
   productId: string;
-  productSource: ProductSource;
+  productSource: PoolSource;
   contentLineId: string | null;
   productLineId: string | null;
   priorityScore: number;
 };
 
-export type Pairing = { editorId: string; candidate: Candidate };
+export type ScheduledAssignment = { editorId: string; pair: AssignmentPair };
 
 export type TeamResult = { assigned: number; skipped: number };
