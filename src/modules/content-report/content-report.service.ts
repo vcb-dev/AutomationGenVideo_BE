@@ -356,17 +356,31 @@ export class ContentReportService {
   }
 
   async updateContentVideo(id: string, dto: UpdateContentVideoDto) {
-    const data: any = { ...dto };
-    if (dto.post_date) data.post_date = new Date(dto.post_date);
+    const data: any = {};
 
+    // Resolve editor name → editor_id
     if (dto.editor || dto.editor_id) {
       data.editor_id = await this.resolveUser(dto.editor_id, dto.editor);
-      delete data.editor;
     }
 
-    // Remove FK fields from update if they exist to prevent accidental reassignment
-    delete data.team_id;
-    delete data.period_id;
+    // Only pick fields that exist in Prisma ContentVideo model
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.content !== undefined) data.content = dto.content;
+    if (dto.analysis !== undefined) data.analysis = dto.analysis;
+    if (dto.link !== undefined) data.link = dto.link;
+    if (dto.platform !== undefined) data.platform = dto.platform;
+    if (dto.post_date !== undefined) data.post_date = new Date(dto.post_date);
+    if (dto.views !== undefined) data.views = dto.views;
+    if (dto.likes !== undefined) data.likes = dto.likes;
+    if (dto.comments !== undefined) data.comments = dto.comments;
+    if (dto.shares !== undefined) data.shares = dto.shares;
+    if (dto.thumbnail_url !== undefined) data.thumbnail_url = dto.thumbnail_url;
+    if (dto.video_url !== undefined) data.video_url = dto.video_url;
+    if (dto.highlights !== undefined) data.highlights = dto.highlights;
+    if (dto.improvements !== undefined) data.improvements = dto.improvements;
+    if (dto.leader_comment !== undefined) data.leader_comment = dto.leader_comment;
+    if (dto.notes !== undefined) data.notes = dto.notes;
+    if (dto.order_index !== undefined) data.order_index = dto.order_index;
 
     return this.prisma.contentVideo.update({
       where: { id },
