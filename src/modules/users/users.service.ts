@@ -230,7 +230,6 @@ export class UsersService {
         where: { id },
         data: {
           ...updateData,
-          last_app_update_at: new Date(),
         },
         select: {
           id: true,
@@ -822,10 +821,7 @@ export class UsersService {
       // Update user record with new avatar URL
       const updatedUser = await this.prisma.user.update({
         where: { id: userId },
-        data: { 
-          image_url: uploaded.url,
-          last_app_update_at: new Date(),
-        },
+        data: { image_url: uploaded.url },
         select: {
           id: true,
           email: true,

@@ -239,8 +239,7 @@ export async function createTasksFromAssignments(
             assignee_id: editorId,
             assigned_at: new Date(),
             deadline,
-            is_auto: true,
-            is_extra: false,
+            task_type: "AUTO",
             run_id: runId,
           },
         });

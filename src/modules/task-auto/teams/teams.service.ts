@@ -163,11 +163,26 @@ export class TaskAutoTeamsService {
     added_by:     { select: { id: true, full_name: true } },
     material:     { select: { id: true, name: true } },
     product_line: { select: { id: true, name: true } },
+    source_editor_product: {
+      select: {
+        id: true, sku: true, name: true, image_url: true, image_urls: true,
+        price: true, market: true, price_segment: true, priority_score: true,
+        material_id: true, product_line_id: true, brand_type: true, is_active: true,
+      },
+    },
   }
 
   private teamContentInclude = {
     added_by:     { select: { id: true, full_name: true } },
     content_line: { select: { id: true, name: true } },
+    source_editor_content: {
+      select: {
+        id: true, title: true, body: true, script: true,
+        file_content_url: true, voice_url: true, content_line_id: true,
+        brand_type: true, market: true, status: true,
+        content_line: { select: { id: true, name: true } },
+      },
+    },
   }
 
   private assertCanManageProduct(team: any, userId: string, userRoles: string[], action: 'add' | 'edit' | 'delete') {
@@ -290,30 +305,20 @@ export class TaskAutoTeamsService {
     const entry = await this.prisma.teamProduct.findFirst({ where: { id: teamProductId, team_id: teamId } })
     if (!entry) throw new NotFoundException('Sản phẩm không có trong kho team')
 
-    const productData = {
-      name: entry.name, image_url: entry.image_url, image_urls: entry.image_urls,
-      price: entry.price, market: entry.market, price_segment: entry.price_segment,
-      priority_score: entry.priority_score, material_id: entry.material_id,
-      product_line_id: entry.product_line_id, is_active: entry.is_active,
-    }
+    const existing = await this.prisma.product.findUnique({ where: { source_team_product_id: teamProductId } })
+    if (existing) throw new ConflictException('Sản phẩm này đã được đẩy lên kho tổng')
 
-    if (entry.source_product_id) {
-      const existingGlobalProduct = await this.prisma.product.findUnique({ where: { id: entry.source_product_id } })
-      if (existingGlobalProduct) {
-        const updated = await this.prisma.product.update({ where: { id: entry.source_product_id }, data: productData })
-        return { success: true, message: 'Đã cập nhật sản phẩm gốc trong kho tổng', product: updated }
-      }
-      await this.prisma.teamProduct.update({ where: { id: teamProductId }, data: { source_product_id: null } })
-    }
-
-    const existingSku = await this.prisma.product.findUnique({ where: { sku: entry.sku } })
-    const finalSku = existingSku ? `${entry.sku}-${Date.now()}` : entry.sku
-
-    const newProduct = await this.prisma.product.create({
-      data: { sku: finalSku, brand_type: entry.brand_type, added_by_id: userId, ...productData },
+    const product = await this.prisma.product.create({
+      data: {
+        source_team_product_id: teamProductId,
+        brand_type:             entry.brand_type,
+        priority_score:         entry.priority_score,
+        is_active:              entry.is_active,
+        product_line_id:        entry.product_line_id,
+        added_by_id:            userId,
+      },
     })
-    await this.prisma.teamProduct.update({ where: { id: teamProductId }, data: { source_product_id: newProduct.id } })
-    return { success: true, message: 'Đã tạo sản phẩm mới trong kho tổng', product: newProduct }
+    return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
   async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string) {
@@ -398,27 +403,17 @@ export class TaskAutoTeamsService {
     const entry = await this.prisma.teamContent.findFirst({ where: { id: teamContentId, team_id: teamId } })
     if (!entry) throw new NotFoundException('Content không có trong kho team')
 
-    if (entry.source_content_id) {
-      const updated = await this.prisma.content.update({
-        where: { id: entry.source_content_id },
-        data: {
-          title: entry.title, body: entry.body, script: entry.script,
-          file_content_url: entry.file_content_url, voice_url: entry.voice_url,
-          content_line_id: entry.content_line_id, status: 'AVAILABLE',
-        },
-      })
-      return { success: true, message: 'Đã cập nhật content gốc trong kho tổng', content: updated }
-    }
+    const existing = await this.prisma.content.findUnique({ where: { source_team_content_id: teamContentId } })
+    if (existing) throw new ConflictException('Content này đã được đẩy lên kho tổng')
 
-    const newContent = await this.prisma.content.create({
+    const content = await this.prisma.content.create({
       data: {
-        brand_type: entry.brand_type, market: entry.market as any, title: entry.title, body: entry.body,
-        script: entry.script, file_content_url: entry.file_content_url, voice_url: entry.voice_url,
-        content_line_id: entry.content_line_id, status: 'AVAILABLE', added_by_id: userId,
+        source_team_content_id: teamContentId,
+        brand_type:             entry.brand_type,
+        added_by_id:            userId,
       },
     })
-    await this.prisma.teamContent.update({ where: { id: teamContentId }, data: { source_content_id: newContent.id } })
-    return { success: true, message: 'Đã tạo content mới trong kho tổng', content: newContent }
+    return { success: true, message: 'Đã đẩy content lên kho tổng', content }
   }
 
   private teamSourceInclude = {
@@ -426,6 +421,13 @@ export class TaskAutoTeamsService {
     product:      { select: { id: true, name: true } },
     team_product: { select: { id: true, sku: true, name: true } },
     source_source: { select: { id: true, name: true } },
+    source_editor_source: {
+      select: {
+        id: true, type: true, name: true, link: true, nas_link: true,
+        code: true, brand_type: true, is_active: true, product_id: true,
+        editor_product_id: true,
+      },
+    },
   }
 
   private async assertCanManageSource(team: any, userId: string, userRoles: string[], action: 'add' | 'edit' | 'delete') {
@@ -543,45 +545,18 @@ export class TaskAutoTeamsService {
     const entry = await this.prisma.teamSource.findFirst({ where: { id: teamSourceId, team_id: teamId } })
     if (!entry) throw new NotFoundException('Source không có trong kho team')
 
-    if (entry.source_source_id) {
-      const globalSource = await this.prisma.source.findUnique({ where: { id: entry.source_source_id } })
-      if (globalSource) {
-        let linkedProductId: string | null = null
-        if (entry.product_id) {
-          const exists = await this.prisma.product.findUnique({ where: { id: entry.product_id }, select: { id: true } })
-          linkedProductId = exists ? entry.product_id : null
-        }
-        if (!linkedProductId && entry.team_product_id) {
-          const tp = await this.prisma.teamProduct.findUnique({ where: { id: entry.team_product_id }, select: { source_product_id: true } })
-          linkedProductId = tp?.source_product_id ?? null
-        }
-        const updated = await this.prisma.source.update({
-          where: { id: entry.source_source_id },
-          data: { name: entry.name, link: entry.link, nas_link: entry.nas_link, code: entry.code, product_id: linkedProductId, is_active: entry.is_active },
-        })
-        return { success: true, message: 'Đã cập nhật source gốc trong kho tổng', source: updated }
-      }
-      await this.prisma.teamSource.update({ where: { id: teamSourceId }, data: { source_source_id: null } })
-    }
+    const existing = await this.prisma.source.findUnique({ where: { source_team_source_id: teamSourceId } })
+    if (existing) throw new ConflictException('Source này đã được đẩy lên kho tổng')
 
-    let globalProductId: string | null = null
-    if (entry.product_id) {
-      const exists = await this.prisma.product.findUnique({ where: { id: entry.product_id }, select: { id: true } })
-      globalProductId = exists ? entry.product_id : null
-    }
-    if (!globalProductId && entry.team_product_id) {
-      const tp = await this.prisma.teamProduct.findUnique({ where: { id: entry.team_product_id }, select: { source_product_id: true } })
-      globalProductId = tp?.source_product_id ?? null
-    }
-
-    const newSource = await this.prisma.source.create({
+    const source = await this.prisma.source.create({
       data: {
-        brand_type: entry.brand_type, type: entry.type, name: entry.name, link: entry.link,
-        nas_link: entry.nas_link, code: entry.code, product_id: globalProductId, is_active: entry.is_active, added_by_id: userId,
+        source_team_source_id: teamSourceId,
+        brand_type:            entry.brand_type,
+        is_active:             entry.is_active,
+        added_by_id:           userId,
       },
     })
-    await this.prisma.teamSource.update({ where: { id: teamSourceId }, data: { source_source_id: newSource.id } })
-    return { success: true, message: 'Đã tạo source mới trong kho tổng', source: newSource }
+    return { success: true, message: 'Đã đẩy source lên kho tổng', source }
   }
 
   async setMemberEditorDirect(teamId: string, userId: string, isEditor: boolean, approverId: string, approverRoles: string[]) {

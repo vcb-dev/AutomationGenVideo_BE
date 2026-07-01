@@ -26,7 +26,9 @@ export class ChannelsService {
   }
 
   /** Resolve team_id từ tên team (User.team là string) */
-  private async resolveTeamId(teamName: string | null | undefined): Promise<string | null> {
+  private async resolveTeamId(
+    teamName: string | null | undefined,
+  ): Promise<string | null> {
     if (!teamName) return null;
     const team = await this.prisma.team.findFirst({
       where: { name: { equals: teamName, mode: "insensitive" } },
@@ -102,10 +104,7 @@ export class ChannelsService {
   }
 
   /** Lấy 1 kênh — kiểm tra user chỉ xem kênh cùng team */
-  async findOne(
-    id: string,
-    user: { roles: UserRole[]; team: string | null },
-  ) {
+  async findOne(id: string, user: { roles: UserRole[]; team: string | null }) {
     const channel = await this.findChannelOrThrow(id);
 
     if (channel.channel_team?.name !== user.team) {
@@ -146,10 +145,7 @@ export class ChannelsService {
    * Xóa kênh — chỉ LEADER cùng team.
    * Chặn nếu kênh đang được track bởi TrackedChannel.
    */
-  async remove(
-    id: string,
-    user: { roles: UserRole[]; team: string | null },
-  ) {
+  async remove(id: string, user: { roles: UserRole[]; team: string | null }) {
     if (!this.isLeader(user.roles)) {
       throw new ForbiddenException("Only LEADER can delete channels");
     }

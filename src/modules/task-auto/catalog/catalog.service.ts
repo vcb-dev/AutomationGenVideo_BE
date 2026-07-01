@@ -61,6 +61,22 @@ export class TaskAutoCatalogService {
           material: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
           _count: { select: { tasks: true } },
+          source_team_product: {
+            select: {
+              id: true, sku: true, name: true, image_url: true, image_urls: true,
+              price: true, market: true, price_segment: true, priority_score: true,
+              material: { select: { id: true, name: true } },
+              product_line: { select: { id: true, name: true } },
+              source_editor_product: {
+                select: {
+                  id: true, sku: true, name: true, image_url: true, image_urls: true,
+                  price: true, market: true, price_segment: true, priority_score: true,
+                  material: { select: { id: true, name: true } },
+                  product_line: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
         orderBy: [{ priority_score: "desc" }, { name: "asc" }],
         skip: (page - 1) * limit,
@@ -80,6 +96,22 @@ export class TaskAutoCatalogService {
         added_by: { select: { id: true, full_name: true } },
         sources: { take: 10, orderBy: { created_at: "desc" } },
         _count: { select: { tasks: true } },
+        source_team_product: {
+          select: {
+            id: true, sku: true, name: true, image_url: true, image_urls: true,
+            price: true, market: true, price_segment: true, priority_score: true,
+            material: { select: { id: true, name: true } },
+            product_line: { select: { id: true, name: true } },
+            source_editor_product: {
+              select: {
+                id: true, sku: true, name: true, image_url: true, image_urls: true,
+                price: true, market: true, price_segment: true, priority_score: true,
+                material: { select: { id: true, name: true } },
+                product_line: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
       },
     });
     if (!p) throw new NotFoundException("Product not found");
@@ -158,6 +190,20 @@ export class TaskAutoCatalogService {
         include: {
           content_line: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
+          source_team_content: {
+            select: {
+              id: true, title: true, market: true, script: true, body: true,
+              file_content_url: true, voice_url: true,
+              content_line: { select: { id: true, name: true } },
+              source_editor_content: {
+                select: {
+                  id: true, title: true, market: true, script: true, body: true,
+                  file_content_url: true, voice_url: true,
+                  content_line: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
         orderBy: { created_at: "desc" },
         skip: (page - 1) * limit,
@@ -174,6 +220,20 @@ export class TaskAutoCatalogService {
       include: {
         content_line: true,
         added_by: { select: { id: true, full_name: true } },
+        source_team_content: {
+          select: {
+            id: true, title: true, market: true, script: true, body: true,
+            file_content_url: true, voice_url: true,
+            content_line: { select: { id: true, name: true } },
+            source_editor_content: {
+              select: {
+                id: true, title: true, market: true, script: true, body: true,
+                file_content_url: true, voice_url: true,
+                content_line: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
       },
     });
     if (!c) throw new NotFoundException("Content not found");
@@ -300,6 +360,14 @@ export class TaskAutoCatalogService {
         include: {
           product:  { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
+          source_team_source: {
+            select: {
+              id: true, type: true, name: true, link: true, nas_link: true, code: true, is_active: true,
+              source_editor_source: {
+                select: { id: true, type: true, name: true, link: true, nas_link: true, code: true, is_active: true },
+              },
+            },
+          },
         },
         orderBy: { created_at: "desc" },
         skip: (page - 1) * limit,
@@ -316,6 +384,14 @@ export class TaskAutoCatalogService {
       include: {
         product:  { select: { id: true, name: true } },
         added_by: { select: { id: true, full_name: true } },
+        source_team_source: {
+          select: {
+            id: true, type: true, name: true, link: true, nas_link: true, code: true, is_active: true,
+            source_editor_source: {
+              select: { id: true, type: true, name: true, link: true, nas_link: true, code: true, is_active: true },
+            },
+          },
+        },
       },
     });
     if (!s) throw new NotFoundException("Source not found");
@@ -475,32 +551,6 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async pushEditorProductToGlobal(id: string, requesterId: string, roles: string[]) {
-    const ep = await this.findOneEditorProduct(id);
-    const isPrivileged = roles.some(r => ['ADMIN', 'MANAGER'].includes(r));
-    if (!isPrivileged && ep.user_id !== requesterId)
-      throw new ForbiddenException('Không có quyền push sản phẩm này');
-    const exists = await this.prisma.product.findUnique({ where: { sku: ep.sku } });
-    if (exists) throw new ConflictException(`SKU "${ep.sku}" đã tồn tại trong kho tổng`);
-    const global = await this.prisma.product.create({
-      data: {
-        sku:             ep.sku,
-        name:            ep.name,
-        brand_type:      ep.brand_type,
-        image_url:       ep.image_url,
-        image_urls:      ep.image_urls,
-        price:           ep.price as any,
-        market:          ep.market,
-        price_segment:   ep.price_segment,
-        priority_score:  ep.priority_score,
-        material_id:     ep.material_id,
-        product_line_id: ep.product_line_id,
-        is_active:       ep.is_active,
-        added_by_id:     requesterId,
-      },
-    });
-    return { success: true, global_product_id: global.id };
-  }
 
   // ─── Editor Contents (kho cá nhân) ───────────────────────────────────────
 
@@ -610,26 +660,6 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async pushEditorContentToGlobal(id: string, requesterId: string, roles: string[]) {
-    const ec = await this.findOneEditorContent(id);
-    const isPrivileged = roles.some(r => ['ADMIN', 'MANAGER'].includes(r));
-    if (!isPrivileged && ec.user_id !== requesterId)
-      throw new ForbiddenException('Không có quyền push content này');
-    const global = await this.prisma.content.create({
-      data: {
-        brand_type:       ec.brand_type,
-        market:           ec.market as any,
-        title:            ec.title,
-        body:             ec.body,
-        script:           ec.script,
-        file_content_url: ec.file_content_url,
-        voice_url:        ec.voice_url,
-        content_line_id:  ec.content_line_id,
-        added_by_id:      requesterId,
-      },
-    });
-    return { success: true, global_content_id: global.id };
-  }
 
   // ─── Editor Sources (kho cá nhân) ────────────────────────────────────────
 
@@ -753,27 +783,6 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async pushEditorSourceToGlobal(id: string, requesterId: string, roles: string[]) {
-    const es = await this.findOneEditorSource(id);
-    const isPrivileged = roles.some(r => ['ADMIN', 'MANAGER'].includes(r));
-    if (!isPrivileged && es.user_id !== requesterId)
-      throw new ForbiddenException('Không có quyền push source này');
-    const global = await this.prisma.source.create({
-      data: {
-        brand_type:  es.brand_type,
-        type:        es.type,
-        name:        es.name,
-        link:        es.link,
-        nas_link:    es.nas_link,
-        code:        es.code,
-        product_id:  es.product_id,
-        is_active:   es.is_active,
-        added_by_id: requesterId,
-      },
-    });
-    return { success: true, global_source_id: global.id };
-  }
-
   // ─── Push to team (từ kho editor → kho team) ─────────────────────────────
 
   async pushEditorProductToTeam(editorProductId: string, teamId: string, userId: string) {
@@ -782,27 +791,21 @@ export class TaskAutoCatalogService {
     if (!team) throw new NotFoundException("Team not found");
     if (ep.user_id !== userId)
       throw new ForbiddenException('Chỉ có thể push sản phẩm trong kho của mình');
-    const existing = await this.prisma.teamProduct.findFirst({
-      where: { team_id: teamId, sku: ep.sku },
+
+    const existing = await this.prisma.teamProduct.findUnique({
+      where: { team_id_source_editor_product_id: { team_id: teamId, source_editor_product_id: editorProductId } },
     });
     if (existing) throw new ConflictException('Sản phẩm đã có trong kho team');
 
     const teamProduct = await this.prisma.teamProduct.create({
       data: {
-        team_id:          teamId,
-        added_by_id:      userId,
-        sku:              ep.sku,
-        name:             ep.name,
-        brand_type:       ep.brand_type,
-        image_url:        ep.image_url,
-        image_urls:       ep.image_urls,
-        price:            ep.price as any,
-        market:           ep.market,
-        price_segment:    ep.price_segment,
-        priority_score:   ep.priority_score,
-        material_id:      ep.material_id,
-        product_line_id:  ep.product_line_id,
-        is_active:        ep.is_active,
+        team_id:                  teamId,
+        added_by_id:              userId,
+        source_editor_product_id: editorProductId,
+        brand_type:               ep.brand_type,
+        priority_score:           ep.priority_score,
+        is_active:                ep.is_active,
+        product_line_id:          ep.product_line_id,
       },
     });
 
@@ -812,16 +815,14 @@ export class TaskAutoCatalogService {
     if (editorSources.length > 0) {
       await this.prisma.teamSource.createMany({
         data: editorSources.map(s => ({
-          team_id:         teamId,
-          added_by_id:     userId,
-          brand_type:      s.brand_type,
-          type:            s.type,
-          name:            s.name,
-          link:            s.link,
-          code:            s.code,
-          team_product_id: teamProduct.id,
-          is_active:       s.is_active,
+          team_id:                 teamId,
+          added_by_id:             userId,
+          source_editor_source_id: s.id,
+          brand_type:              s.brand_type,
+          is_active:               s.is_active,
+          team_product_id:         teamProduct.id,
         })),
+        skipDuplicates: true,
       });
     }
 
@@ -834,23 +835,18 @@ export class TaskAutoCatalogService {
     if (!team) throw new NotFoundException("Team not found");
     if (ec.user_id !== userId)
       throw new ForbiddenException('Chỉ có thể push content trong kho của mình');
-    const existing = await this.prisma.teamContent.findFirst({
-      where: { team_id: teamId, content_line_id: ec.content_line_id },
+
+    const existing = await this.prisma.teamContent.findUnique({
+      where: { team_id_source_editor_content_id: { team_id: teamId, source_editor_content_id: editorContentId } },
     });
     if (existing) throw new ConflictException('Content đã có trong kho team');
+
     await this.prisma.teamContent.create({
       data: {
-        team_id:          teamId,
-        added_by_id:      userId,
-        brand_type:       ec.brand_type,
-        market:           ec.market,
-        title:            ec.title,
-        body:             ec.body,
-        script:           ec.script,
-        file_content_url: ec.file_content_url,
-        voice_url:        ec.voice_url,
-        content_line_id:  ec.content_line_id,
-        source_content_id: ec.source_content_id,
+        team_id:                  teamId,
+        added_by_id:              userId,
+        source_editor_content_id: editorContentId,
+        brand_type:               ec.brand_type,
       },
     });
     return { success: true, editor_content_id: editorContentId, team_id: teamId };
@@ -862,22 +858,19 @@ export class TaskAutoCatalogService {
     if (!team) throw new NotFoundException("Team not found");
     if (es.user_id !== userId)
       throw new ForbiddenException('Chỉ có thể push source trong kho của mình');
-    const existing = await this.prisma.teamSource.findFirst({
-      where: { team_id: teamId, source_source_id: es.source_source_id ?? undefined },
+
+    const existing = await this.prisma.teamSource.findUnique({
+      where: { team_id_source_editor_source_id: { team_id: teamId, source_editor_source_id: editorSourceId } },
     });
     if (existing) throw new ConflictException('Source đã có trong kho team');
+
     return this.prisma.teamSource.create({
       data: {
-        team_id:          teamId,
-        added_by_id:      userId,
-        source_source_id: es.source_source_id,
-        brand_type:       es.brand_type,
-        type:             es.type,
-        name:             es.name,
-        link:             es.link,
-        code:             es.code,
-        product_id:       es.product_id,
-        is_active:        es.is_active,
+        team_id:                 teamId,
+        added_by_id:             userId,
+        source_editor_source_id: editorSourceId,
+        brand_type:              es.brand_type,
+        is_active:               es.is_active,
       },
     });
   }

@@ -14,11 +14,7 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoKpiService } from "./kpi.service";
-import {
-  UpsertTeamKpiDto,
-  UpsertEditorKpiDto,
-  UpsertEditorWeekendKpiDto,
-} from "../dto/kpi.dto";
+import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "../dto/kpi.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
@@ -76,32 +72,5 @@ export class TaskAutoKpiController {
   @ApiOperation({ summary: "Delete editor KPI" })
   deleteEditorKpi(@Param("id") id: string) {
     return this.kpi.deleteEditorKpi(id);
-  }
-
-  // ── Editor Weekend KPI ────────────────────────────────────────────────────
-
-  @Get("kpi/weekend-editors")
-  @ApiOperation({ summary: "Get per-Sunday editor KPIs" })
-  getEditorWeekendKpis(@Query("month") month?: string) {
-    return this.kpi.getEditorWeekendKpis(month);
-  }
-
-  @Post("kpi/weekend-editors")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Upsert per-Sunday editor KPI" })
-  upsertEditorWeekendKpi(
-    @Body() dto: UpsertEditorWeekendKpiDto,
-    @Request() req: any,
-  ) {
-    return this.kpi.upsertEditorWeekendKpi(dto, req.user.id, req.user.roles ?? []);
-  }
-
-  @Delete("kpi/weekend-editors/:id")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Delete per-Sunday editor KPI" })
-  deleteEditorWeekendKpi(@Param("id") id: string) {
-    return this.kpi.deleteEditorWeekendKpi(id);
   }
 }

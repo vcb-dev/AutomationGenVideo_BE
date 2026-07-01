@@ -9,15 +9,17 @@ export async function loadEditorAssignmentHistory(
   prisma: PrismaService,
   editorIds: string[],
   monthStart: Date,
+  teamId: string,
 ): Promise<Map<string, EditorAssignmentHistory>> {
   const tasks = await prisma.task.findMany({
     where: {
       assignee_id: { in: editorIds },
-      is_extra: false,
+      task_type: { not: "EXTRA" },
       status: { not: "CANCELLED" },
     },
     select: {
       assignee_id: true,
+      team_id: true,
       content_id: true,
       editor_content_id: true,
       team_content_id: true,
@@ -64,7 +66,7 @@ export async function loadEditorAssignmentHistory(
     if (contentKey) {
       history.assignedContentKeys.add(contentKey);
     }
-    if (t.team_product_id && t.assigned_at != null && t.assigned_at >= monthStart) {
+    if (t.team_product_id && t.assigned_at != null && t.assigned_at >= monthStart && t.team_id === teamId) {
       history.teamProductTasksThisMonth++;
     }
   }

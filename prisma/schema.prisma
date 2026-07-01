@@ -20,40 +20,39 @@ datasource db {
 
 /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
 model User {
-  id                      String           @id @default(uuid())
-  email                   String           @unique
+  id                      String     @id @default(uuid())
+  email                   String     @unique
   password_hash           String?
   full_name               String
-  google_id               String?          @unique
+  google_id               String?    @unique
   manager_id              String?
-  is_active               Boolean          @default(true)
-  created_at              DateTime         @default(now())
-  updated_at              DateTime         @updatedAt
-  custom_permissions      String[]         @default([])
-  lark_permissions        Json?
-  last_app_update_at      DateTime?        @default(now())
-  roles                   UserRole[]       @default([])
+  is_active               Boolean    @default(true)
+  created_at              DateTime   @default(now())
+  updated_at              DateTime   @updatedAt
+  custom_permissions      String[]   @default([])
+  roles                   UserRole[] @default([])
   team                    String?
   team_leader_id          String?
-  /// Bitable record id — đồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
-  lark_employee_record_id String?          @unique
-  employee_id             String?          @unique
+  /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
+  lark_employee_record_id String?    @unique
+  employee_id             String?    @unique
   image_url               String?
   employee_data           Json?
   /// Chức vụ từ Lark (Member / Leader, …)
-  employee_position       String?
+
+  employee_position         String?
   /// Tình trạng Lark: Đang hoạt động / Đã nghỉ
-  employee_status         String?
+  employee_status           String?
   /// Tháng/ngày từ Lark (cột NGÀY)
-  employee_date           DateTime?
-  search_histories        SearchHistory[]
-  tracked_channels        TrackedChannel[]
-  manager                 User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
-  editors                 User[]           @relation("ManagerEditors")
-  team_leader             User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
-  team_members            User[]           @relation("TeamLeaderMembers")
-  reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
-  videos                  Video[]
+  employee_date             DateTime?
+  search_histories          SearchHistory[]
+  tracked_channels          TrackedChannel[]
+  manager                   User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
+  editors                   User[]           @relation("ManagerEditors")
+  team_leader               User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
+  team_members              User[]           @relation("TeamLeaderMembers")
+  reviewed_duplicates       VideoDuplicate[] @relation("ReviewedDuplicates")
+  videos                    Video[]
   social_accounts           SocialAccount[]
   social_posts              SocialPost[]
   teams_leading             Team[]           @relation("TeamLeaderOf")
@@ -62,8 +61,6 @@ model User {
   editor_approvals_reviewed EditorApproval[] @relation("EditorApprovalBy")
   editor_kpis               EditorKpi[]      @relation("EditorKpiOf")
   editor_kpis_set           EditorKpi[]      @relation("EditorKpiSetBy")
-  editor_weekend_kpis       EditorWeekendKpi[] @relation("EditorWeekendKpiOf")
-  editor_weekend_kpis_set   EditorWeekendKpi[] @relation("EditorWeekendKpiSetBy")
   team_kpis_created         TeamKpi[]        @relation("TeamKpiCreatedBy")
   products_added            Product[]        @relation("ProductAddedBy")
   team_products_added       TeamProduct[]    @relation("TeamProductAddedBy")
@@ -678,7 +675,6 @@ model LarkKpiGlobalIndo {
   @@map("lark_kpi_global_indo")
 }
 
-
 /// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
 model LarkKpiDoDaEditor {
   id              String   @id
@@ -1204,7 +1200,6 @@ enum SocialPlatform {
   ZALO
 }
 
-
 enum SocialPostStatus {
   PENDING
   COMPLETED
@@ -1219,27 +1214,27 @@ enum SocialPostSource {
 
 /// Tài khoản mạng xã hội đã kết nối OAuth (token lưu dạng AES-256 encrypted)
 model SocialAccount {
-  id                      String         @id @default(uuid())
-  user_id                 String
-  platform                SocialPlatform
-  platform_id             String
-  name                    String
-  username                String?
-  avatar_url              String?
-  access_token_enc        String         @db.Text
-  refresh_token_enc       String?        @db.Text
-  token_expires_at        DateTime?
-  parent_id               String?
+  id                String          @id @default(uuid())
+  user_id           String
+  platform          SocialPlatform
+  platform_id       String
+  name              String
+  username          String?
+  avatar_url        String?
+  access_token_enc  String          @db.Text
+  refresh_token_enc String?         @db.Text
+  token_expires_at  DateTime?
+  parent_id         String?
   /// Dữ liệu bổ sung tuỳ platform: { pageId, pageToken, igUserId, channelId, … }
-  extra_data              Json?
-  is_active               Boolean        @default(true)
-  is_shared               Boolean        @default(false)
-  created_at              DateTime       @default(now())
-  updated_at              DateTime       @updatedAt
-  user                    User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  parent                  SocialAccount? @relation("AccountHierarchy", fields: [parent_id], references: [id])
-  children                SocialAccount[] @relation("AccountHierarchy")
-  posts                   SocialPost[]
+  extra_data        Json?
+  is_active         Boolean         @default(true)
+  is_shared         Boolean         @default(false)
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  user              User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  parent            SocialAccount?  @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children          SocialAccount[] @relation("AccountHierarchy")
+  posts             SocialPost[]
 
   @@unique([user_id, platform, platform_id])
   @@index([user_id])
@@ -1251,7 +1246,6 @@ model SocialAccount {
   @@index([is_active, token_expires_at])
   @@map("social_accounts")
 }
-
 
 /// Bài đăng: immediate hoặc scheduled (unified model)
 model SocialPost {
@@ -1287,18 +1281,17 @@ model SocialPost {
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
   @@map("social_posts")
-
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
 model SocialOAuthState {
-  id            String   @id
-  user_id       String
-  platform      String
-  expires_at    DateTime
+  id              String   @id
+  user_id         String
+  platform        String
+  expires_at      DateTime
   tiktok_verifier String?
   zalo_verifier   String?
-  created_at    DateTime @default(now())
+  created_at      DateTime @default(now())
 
   @@index([expires_at])
   @@map("social_oauth_states")
@@ -1306,17 +1299,17 @@ model SocialOAuthState {
 
 /// Bài nháp
 model SocialDraft {
-  id          String   @id @default(uuid())
-  user_id     String
-  title       String?
-  message     String   @db.Text
-  media_urls  String[] @default([])
-  platform    SocialPlatform?
-  account_id  String?
-  page_id     String?
-  thumb_url   String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id         String          @id @default(uuid())
+  user_id    String
+  title      String?
+  message    String          @db.Text
+  media_urls String[]        @default([])
+  platform   SocialPlatform?
+  account_id String?
+  page_id    String?
+  thumb_url  String?
+  created_at DateTime        @default(now())
+  updated_at DateTime        @updatedAt
 
   @@index([user_id])
   @@map("social_drafts")
@@ -1324,19 +1317,19 @@ model SocialDraft {
 
 /// Media Library file metadata only. Binary content is stored in Google Drive.
 model SocialUploadedFile {
-  id           String   @id @default(uuid())
-  user_id      String
-  filename     String
-  originalname String
-  mimetype     String
-  size         Int
-  url           String
-  thumbnail_url String?
-  storage       String   @default("google_drive")
-  drive_file_id String?
-  drive_web_view_url String?
+  id                      String   @id @default(uuid())
+  user_id                 String
+  filename                String
+  originalname            String
+  mimetype                String
+  size                    Int
+  url                     String
+  thumbnail_url           String?
+  storage                 String   @default("google_drive")
+  drive_file_id           String?
+  drive_web_view_url      String?
   thumbnail_drive_file_id String?
-  created_at   DateTime @default(now())
+  created_at              DateTime @default(now())
 
   @@index([user_id])
   @@index([created_at(sort: Desc)])
@@ -1396,7 +1389,6 @@ enum AssignmentOutcome {
 }
 
 enum TaskType {
-  MANUAL
   AUTO
   EXTRA
 }
@@ -1422,17 +1414,17 @@ model Team {
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
 
-  leader    User?        @relation("TeamLeaderOf", fields: [leader_id], references: [id])
-  members   TeamMember[]
-  team_kpis TeamKpi[]
-  tasks     Task[]
-  products  TeamProduct[]
-  contents  TeamContent[]
+  leader       User?         @relation("TeamLeaderOf", fields: [leader_id], references: [id])
+  members      TeamMember[]
+  team_kpis    TeamKpi[]
+  editor_kpis  EditorKpi[]
+  tasks        Task[]
+  products     TeamProduct[]
+  contents     TeamContent[]
   team_sources TeamSource[]
-  channels  Channel[]    @relation("ChannelTeam")
+  channels     Channel[]     @relation("ChannelTeam")
 
   @@index([leader_id])
-  @@index([brand_type])
   @@map("teams")
 }
 
@@ -1446,112 +1438,120 @@ model TeamMember {
   user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([team_id, user_id])
-  @@index([team_id])
   @@index([user_id])
   @@map("team_members")
 }
 
 model TeamProduct {
-  id                String    @id @default(uuid())
-  team_id           String
-  /// Data được copy từ kho tổng hoặc tạo mới trực tiếp trong team
-  sku               String
-  name              String
-  brand_type        BrandType @default(DO_DA)
-  image_url         String?
-  image_urls        String[]  @default([])
-  price             Decimal?  @db.Decimal(15, 2)
-  market            String?
-  price_segment     String?
-  priority_score    Int       @default(0)
-  material_id       String?
-  product_line_id   String?
-  is_active         Boolean   @default(true)
-  /// NULL = tạo mới từ team; có giá trị = được copy từ product gốc trong kho tổng
-  source_product_id String?
-  added_by_id       String
-  added_at          DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
+  id                       String    @id @default(uuid())
+  team_id                  String
+  /// NULL khi được push từ editor (dùng source_editor_product_id để lấy data); có giá trị khi tạo trực tiếp trong team
+  sku                      String?
+  name                     String?
+  brand_type               BrandType @default(DO_DA)
+  image_url                String?
+  image_urls               String[]  @default([])
+  price                    Decimal?  @db.Decimal(15, 2)
+  market                   String?
+  price_segment            String?
+  priority_score           Int       @default(0)
+  material_id              String?
+  product_line_id          String?
+  is_active                Boolean   @default(true)
+  /// FK trỏ về EditorProduct khi được push từ kho editor (thay thế copy data)
+  source_editor_product_id String?
+  /// FK trỏ về Product kho tổng khi được tạo từ global (copy template)
+  source_product_id        String?
+  added_by_id              String
+  added_at                 DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
 
-  team          Team         @relation(fields: [team_id], references: [id], onDelete: Cascade)
-  added_by      User         @relation("TeamProductAddedBy", fields: [added_by_id], references: [id])
-  material      Material?    @relation(fields: [material_id], references: [id])
-  product_line  ProductLine? @relation(fields: [product_line_id], references: [id])
-  team_sources  TeamSource[] @relation("TeamProductSources")
-  tasks         Task[]
-  warehouses    TeamProductWarehouse[]
+  team                  Team                   @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by              User                   @relation("TeamProductAddedBy", fields: [added_by_id], references: [id])
+  material              Material?              @relation(fields: [material_id], references: [id])
+  product_line          ProductLine?           @relation(fields: [product_line_id], references: [id])
+  source_editor_product EditorProduct?         @relation("TeamProductEditorRef", fields: [source_editor_product_id], references: [id], onDelete: SetNull)
+  source_product        Product?               @relation("TeamProductGlobalRef", fields: [source_product_id], references: [id])
+  team_sources          TeamSource[]           @relation("TeamProductSources")
+  tasks                 Task[]
+  warehouses            TeamProductWarehouse[]
+  global_product        Product?               @relation("ProductTeamRef")
 
-  @@index([team_id])
-  @@index([team_id, brand_type])
+  @@unique([team_id, source_editor_product_id])
   @@index([team_id, is_active])
-  @@index([team_id, brand_type, is_active])
   @@map("team_products")
 }
 
 model TeamContent {
-  id                String             @id @default(uuid())
-  team_id           String
-  brand_type        BrandType          @default(DO_DA)
-  market            String             @default("VIETNAM")
-  title             String?
-  body              String?
-  script            String?
-  file_content_url  String?
-  voice_url         String?
-  content_line_id   String?
-  status            ContentUsageStatus @default(AVAILABLE)
-  /// NULL = tạo mới từ team; có giá trị = được copy từ content gốc trong kho tổng
-  source_content_id String?
-  added_by_id       String
-  added_at          DateTime           @default(now())
-  updated_at        DateTime           @updatedAt
+  id                       String             @id @default(uuid())
+  team_id                  String
+  brand_type               BrandType          @default(DO_DA)
+  market                   String             @default("VIETNAM")
+  title                    String?
+  body                     String?
+  script                   String?
+  file_content_url         String?
+  voice_url                String?
+  content_line_id          String?
+  status                   ContentUsageStatus @default(AVAILABLE)
+  /// FK trỏ về EditorContent khi được push từ kho editor
+  source_editor_content_id String?
+  /// FK trỏ về Content kho tổng khi được tạo từ global
+  source_content_id        String?
+  added_by_id              String
+  added_at                 DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
 
-  team          Team          @relation(fields: [team_id], references: [id], onDelete: Cascade)
-  added_by      User          @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
-  content_line  ContentLine?  @relation(fields: [content_line_id], references: [id])
-  tasks         Task[]
-  warehouses    TeamContentWarehouse[]
+  team                  Team                   @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by              User                   @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
+  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
+  source_editor_content EditorContent?         @relation("TeamContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  source_content        Content?               @relation("TeamContentGlobalRef", fields: [source_content_id], references: [id])
+  tasks                 Task[]
+  warehouses            TeamContentWarehouse[]
+  global_content        Content?               @relation("ContentTeamRef")
 
-  @@index([team_id])
-  @@index([team_id, brand_type])
-  @@index([team_id, status])
-  @@index([team_id, brand_type, status])
+  @@unique([team_id, source_editor_content_id])
   @@map("team_contents")
 }
 
 model TeamSource {
-  id               String    @id @default(uuid())
-  team_id          String
-  brand_type       BrandType @default(DO_DA)
-  type             SourceType
-  name             String
-  link             String
-  nas_link         String?
-  code             String?
-  product_id       String?
+  id                      String      @id @default(uuid())
+  team_id                 String
+  brand_type              BrandType   @default(DO_DA)
+  /// NULL khi được push từ editor (dùng source_editor_source_id để lấy data); có giá trị khi tạo trực tiếp
+  type                    SourceType?
+  name                    String?
+  link                    String?
+  nas_link                String?
+  code                    String?
+  product_id              String?
   /// Liên kết tới TeamProduct (khi source được tạo cùng lúc với team product)
-  team_product_id  String?
-  /// NULL = tạo mới từ team; có giá trị = được copy từ source gốc trong kho tổng
-  source_source_id String?
-  added_by_id      String
-  is_active        Boolean   @default(true)
-  added_at         DateTime  @default(now())
-  updated_at       DateTime  @updatedAt
+  team_product_id         String?
+  /// FK trỏ về EditorSource khi được push từ kho editor (thay thế copy data)
+  source_editor_source_id String?
+  /// FK trỏ về Source kho tổng khi được tạo từ global (copy template)
+  source_source_id        String?
+  added_by_id             String
+  is_active               Boolean     @default(true)
+  added_at                DateTime    @default(now())
+  updated_at              DateTime    @updatedAt
 
-  team         Team        @relation(fields: [team_id], references: [id], onDelete: Cascade)
-  added_by     User        @relation("TeamSourceAddedBy", fields: [added_by_id], references: [id])
-  product      Product?    @relation(fields: [product_id], references: [id])
-  team_product TeamProduct? @relation("TeamProductSources", fields: [team_product_id], references: [id], onDelete: SetNull)
-  source_source        Source?     @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
+  team                 Team                  @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by             User                  @relation("TeamSourceAddedBy", fields: [added_by_id], references: [id])
+  product              Product?              @relation(fields: [product_id], references: [id])
+  team_product         TeamProduct?          @relation("TeamProductSources", fields: [team_product_id], references: [id], onDelete: SetNull)
+  source_editor_source EditorSource?         @relation("TeamSourceEditorRef", fields: [source_editor_source_id], references: [id], onDelete: SetNull)
+  source_source        Source?               @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
   warehouses           TeamSourceWarehouse[]
-  tasks_as_outro       Task[]      @relation("TaskTeamSourceOutro")
-  tasks_as_extra       Task[]      @relation("TaskTeamSourceExtra")
-  tasks_as_workshop    Task[]      @relation("TaskTeamSourceWorkshop")
-  tasks_as_huyk        Task[]      @relation("TaskTeamSourceHuyk")
+  tasks_as_outro       Task[]                @relation("TaskTeamSourceOutro")
+  tasks_as_extra       Task[]                @relation("TaskTeamSourceExtra")
+  tasks_as_workshop    Task[]                @relation("TaskTeamSourceWorkshop")
+  tasks_as_huyk        Task[]                @relation("TaskTeamSourceHuyk")
+  global_source        Source?               @relation("SourceTeamRef")
 
-  @@index([team_id])
-  @@index([team_id, brand_type])
-  @@index([team_id, type, is_active])
+  @@unique([team_id, source_editor_source_id])
+  @@index([team_id, is_active])
   @@index([team_product_id])
   @@map("team_sources")
 }
@@ -1577,18 +1577,17 @@ model EditorProduct {
   added_at          DateTime  @default(now())
   updated_at        DateTime  @updatedAt
 
-  user           User          @relation("EditorProductOf", fields: [user_id], references: [id], onDelete: Cascade)
-  added_by       User          @relation("EditorProductAddedBy", fields: [added_by_id], references: [id])
-  material       Material?     @relation(fields: [material_id], references: [id])
-  product_line   ProductLine?  @relation(fields: [product_line_id], references: [id])
-  editor_sources EditorSource[] @relation("EditorProductSources")
+  user           User                     @relation("EditorProductOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by       User                     @relation("EditorProductAddedBy", fields: [added_by_id], references: [id])
+  material       Material?                @relation(fields: [material_id], references: [id])
+  product_line   ProductLine?             @relation(fields: [product_line_id], references: [id])
+  source_product Product?                 @relation("EditorProductGlobalRef", fields: [source_product_id], references: [id])
+  editor_sources EditorSource[]           @relation("EditorProductSources")
+  team_products  TeamProduct[]            @relation("TeamProductEditorRef")
   tasks          Task[]
   warehouses     EditorProductWarehouse[]
 
-  @@index([user_id])
-  @@index([user_id, brand_type])
   @@index([user_id, is_active])
-  @@index([user_id, brand_type, is_active])
   @@map("editor_products")
 }
 
@@ -1610,16 +1609,14 @@ model EditorContent {
   added_at          DateTime           @default(now())
   updated_at        DateTime           @updatedAt
 
-  user          User          @relation("EditorContentOf", fields: [user_id], references: [id], onDelete: Cascade)
-  added_by      User          @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
-  content_line  ContentLine?  @relation(fields: [content_line_id], references: [id])
-  tasks         Task[]
-  warehouses    EditorContentWarehouse[]
+  user           User                     @relation("EditorContentOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by       User                     @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
+  content_line   ContentLine?             @relation(fields: [content_line_id], references: [id])
+  source_content Content?                 @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
+  team_contents  TeamContent[]            @relation("TeamContentEditorRef")
+  tasks          Task[]
+  warehouses     EditorContentWarehouse[]
 
-  @@index([user_id])
-  @@index([user_id, brand_type])
-  @@index([user_id, status])
-  @@index([user_id, brand_type, status])
   @@map("editor_contents")
 }
 
@@ -1642,20 +1639,18 @@ model EditorSource {
   added_at          DateTime   @default(now())
   updated_at        DateTime   @updatedAt
 
-  user           User          @relation("EditorSourceOf", fields: [user_id], references: [id], onDelete: Cascade)
-  added_by       User          @relation("EditorSourceAddedBy", fields: [added_by_id], references: [id])
-  product        Product?      @relation(fields: [product_id], references: [id])
-  editor_product EditorProduct? @relation("EditorProductSources", fields: [editor_product_id], references: [id], onDelete: SetNull)
-  source_source          Source?       @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
-  warehouses             EditorSourceWarehouse[]
-  tasks_as_outro         Task[]        @relation("TaskEditorSourceOutro")
-  tasks_as_extra         Task[]        @relation("TaskEditorSourceExtra")
-  tasks_as_workshop      Task[]        @relation("TaskEditorSourceWorkshop")
-  tasks_as_huyk          Task[]        @relation("TaskEditorSourceHuyk")
+  user              User                    @relation("EditorSourceOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by          User                    @relation("EditorSourceAddedBy", fields: [added_by_id], references: [id])
+  product           Product?                @relation(fields: [product_id], references: [id])
+  editor_product    EditorProduct?          @relation("EditorProductSources", fields: [editor_product_id], references: [id], onDelete: SetNull)
+  source_source     Source?                 @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
+  team_sources      TeamSource[]            @relation("TeamSourceEditorRef")
+  warehouses        EditorSourceWarehouse[]
+  tasks_as_outro    Task[]                  @relation("TaskEditorSourceOutro")
+  tasks_as_extra    Task[]                  @relation("TaskEditorSourceExtra")
+  tasks_as_workshop Task[]                  @relation("TaskEditorSourceWorkshop")
+  tasks_as_huyk     Task[]                  @relation("TaskEditorSourceHuyk")
 
-  @@index([user_id])
-  @@index([user_id, brand_type])
-  @@index([user_id, type, is_active])
   @@index([editor_product_id])
   @@map("editor_sources")
 }
@@ -1672,7 +1667,6 @@ model EditorApproval {
   user        User  @relation("EditorApprovalOf", fields: [user_id], references: [id], onDelete: Cascade)
   approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
 
-  @@index([user_id, status])
   @@map("editor_approvals")
 }
 
@@ -1713,60 +1707,69 @@ model TeamKpiAllocation {
 }
 
 model EditorKpi {
-  id           String   @id @default(uuid())
-  user_id      String
-  month        String
-  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
-  kpi_day      Int      @default(0)
-  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
-  kpi_weekend  Int      @default(0)
-  /// @deprecated — không còn dùng; giữ ở 0 để tránh breaking migration; xóa sau sprint Q3
-  kpi_creative Int      @default(0)
+  id                  String  @id @default(uuid())
+  user_id             String
+  team_id             String? // null = legacy row trước khi thêm multi-team
+  month               String
   // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
-  total_target Int      @default(0)   // = Tổng video sản xuất (drives auto-assign)
-  video_win    Int      @default(0)   // Số video win (≥10k views)
-  video_fail   Int      @default(0)   // Số video fail
-  ratio_a1     Int      @default(0)   // Tỷ lệ A1 Kéo traffic
-  ratio_a2     Int      @default(0)   // Tỷ lệ A2 Tạo chuyên gia
-  ratio_a3     Int      @default(0)   // Tỷ lệ A3 Tạo trust
-  ratio_a4     Int      @default(0)   // Tỷ lệ A4 Chuyển đổi
-  ratio_a5     Int      @default(0)   // Tỷ lệ A5 Nhân bản & scale
+  total_target        Int     @default(0) // = Tổng video sản xuất (drives auto-assign)
+  video_win           Int     @default(0) // Số video win (≥10k views)
+  video_fail          Int     @default(0) // Số video fail
   // ── Content ──
-  kpi_extra         Int @default(0)   // Tổng KPI sáng tạo (chỉ thông báo)
-  content_new       Int @default(0)   // Số content mới được làm
-  content_collected Int @default(0)   // Số content sưu tầm về kho team để test
-  content_win_cover Int @default(0)   // Số content win cover lại bởi team
+  kpi_extra           Int     @default(0) // Tổng KPI sáng tạo (chỉ thông báo)
+  content_new         Int     @default(0) // Số content mới được làm
+  content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
+  content_win_cover   Int     @default(0) // Số content win cover lại bởi team
   // ── Product ──
-  product_planned      Int @default(0) // Số SP đẩy video theo kế hoạch
-  product_win_collect  Int @default(0) // Số SP sưu tầm và test video win
-  video_traffic        Int @default(0) // Số video SP dòng Traffic
-  video_gmv            Int @default(0) // Số video SP dòng GMV
-  video_profit         Int @default(0) // Số video SP dòng Profit
+  product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
+  product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
 
-  set_by_id    String
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  set_by_id  String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  user   User @relation("EditorKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
-  set_by User @relation("EditorKpiSetBy", fields: [set_by_id], references: [id])
+  user        User                  @relation("EditorKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  set_by      User                  @relation("EditorKpiSetBy", fields: [set_by_id], references: [id])
+  team        Team?                 @relation(fields: [team_id], references: [id])
+  allocations EditorKpiAllocation[]
 
-  @@unique([user_id, month])
+  @@unique([user_id, team_id, month])
   @@index([month])
-  @@index([user_id])
+  @@index([team_id])
   @@map("editor_kpis")
+}
+
+// Phân bổ KPI editor theo ContentLine/ProductLine — thay cho ratio_a1..5/video_traffic/gmv/profit cố định,
+// mở rộng được khi thêm dòng nội dung/sản phẩm mới (mirror TeamKpiAllocation)
+model EditorKpiAllocation {
+  id              String            @id @default(uuid())
+  editor_kpi_id   String
+  type            KpiAllocationType
+  content_line_id String?
+  product_line_id String?
+  percent         Float
+
+  editor_kpi   EditorKpi    @relation(fields: [editor_kpi_id], references: [id], onDelete: Cascade)
+  content_line ContentLine? @relation(fields: [content_line_id], references: [id])
+  product_line ProductLine? @relation(fields: [product_line_id], references: [id])
+
+  @@index([editor_kpi_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
+  @@map("editor_kpi_allocations")
 }
 
 model ContentLine {
   id     String  @id @default(uuid())
   name   String  @unique
-  /// A1 | A2 | A3 | A4 | A5 — dùng để map sang ratio_a{n} trong EditorKpi
   a_type String?
 
-  contents         Content[]
-  team_contents    TeamContent[]
-  editor_contents  EditorContent[]
-  tasks            Task[]
-  allocations      TeamKpiAllocation[]
+  contents               Content[]
+  team_contents          TeamContent[]
+  editor_contents        EditorContent[]
+  tasks                  Task[]
+  allocations            TeamKpiAllocation[]
+  editor_kpi_allocations EditorKpiAllocation[]
 
   @@map("content_lines")
 }
@@ -1775,13 +1778,13 @@ model ProductLine {
   id             String    @id @default(uuid())
   name           String
   brand_type     BrandType @default(DO_DA)
-  /// TRAFFIC | GMV | PROFIT — dùng để map sang video_traffic/gmv/profit trong EditorKpi
   video_category String?
 
-  products         Product[]
-  team_products    TeamProduct[]
-  editor_products  EditorProduct[]
-  allocations      TeamKpiAllocation[]
+  products               Product[]
+  team_products          TeamProduct[]
+  editor_products        EditorProduct[]
+  allocations            TeamKpiAllocation[]
+  editor_kpi_allocations EditorKpiAllocation[]
 
   @@unique([name, brand_type])
   @@map("product_lines")
@@ -1792,41 +1795,47 @@ model Material {
   name       String
   brand_type BrandType @default(DO_DA)
 
-  products         Product[]
-  team_products    TeamProduct[]
-  editor_products  EditorProduct[]
+  products        Product[]
+  team_products   TeamProduct[]
+  editor_products EditorProduct[]
 
   @@unique([name, brand_type])
   @@map("materials")
 }
 
 model Product {
-  id              String    @id @default(uuid())
-  sku             String    @unique
-  name            String
-  brand_type      BrandType @default(DO_DA)
-  image_url       String?
-  image_urls      String[]  @default([])
-  price           Decimal?  @db.Decimal(15, 2)
-  market          String?
-  price_segment   String?
-  priority_score  Int      @default(0)
-  material_id     String?
-  product_line_id String?
-  added_by_id     String
-  lark_record_id  String?  @unique
-  is_active       Boolean  @default(true)
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id                     String    @id @default(uuid())
+  /// NULL khi được push từ team (dùng source_team_product_id để lấy data); có giá trị khi tạo trực tiếp
+  sku                    String?   @unique
+  name                   String?
+  brand_type             BrandType @default(DO_DA)
+  image_url              String?
+  image_urls             String[]  @default([])
+  price                  Decimal?  @db.Decimal(15, 2)
+  market                 String?
+  price_segment          String?
+  priority_score         Int       @default(0)
+  material_id            String?
+  product_line_id        String?
+  added_by_id            String
+  lark_record_id         String?   @unique
+  is_active              Boolean   @default(true)
+  /// FK trỏ về TeamProduct khi được push từ kho team (thay thế copy data)
+  source_team_product_id String?   @unique
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
 
-  material        Material?       @relation(fields: [material_id], references: [id])
-  product_line    ProductLine?    @relation(fields: [product_line_id], references: [id])
-  added_by        User            @relation("ProductAddedBy", fields: [added_by_id], references: [id])
-  sources         Source[]
-  team_sources    TeamSource[]
-  editor_sources  EditorSource[]
-  tasks           Task[]
-  warehouses      ProductWarehouse[]
+  material            Material?          @relation(fields: [material_id], references: [id])
+  product_line        ProductLine?       @relation(fields: [product_line_id], references: [id])
+  added_by            User               @relation("ProductAddedBy", fields: [added_by_id], references: [id])
+  source_team_product TeamProduct?       @relation("ProductTeamRef", fields: [source_team_product_id], references: [id], onDelete: SetNull)
+  team_versions       TeamProduct[]      @relation("TeamProductGlobalRef")
+  editor_versions     EditorProduct[]    @relation("EditorProductGlobalRef")
+  sources             Source[]
+  team_sources        TeamSource[]
+  editor_sources      EditorSource[]
+  tasks               Task[]
+  warehouses          ProductWarehouse[]
 
   @@index([product_line_id])
   @@index([priority_score(sort: Desc)])
@@ -1834,145 +1843,137 @@ model Product {
 }
 
 model Content {
-  id                  String             @id @default(uuid())
-  brand_type          BrandType          @default(DO_DA)
-  market              ContentMarket      @default(VIETNAM)
-  title               String?
-  body                String?
-  script              String?
-  file_content_url    String?
-  voice_url           String?
-  voice_id            BigInt?
-  content_line_id     String?
-  status              ContentUsageStatus @default(AVAILABLE)
-  view_count          BigInt             @default(0)
-  approved_content_id String?
-  added_by_id         String
-  lark_record_id      String?            @unique
-  created_at          DateTime           @default(now())
-  updated_at          DateTime           @updatedAt
+  id                     String             @id @default(uuid())
+  brand_type             BrandType          @default(DO_DA)
+  market                 ContentMarket      @default(VIETNAM)
+  title                  String?
+  body                   String?
+  script                 String?
+  file_content_url       String?
+  voice_url              String?
+  voice_id               BigInt?
+  content_line_id        String?
+  status                 ContentUsageStatus @default(AVAILABLE)
+  view_count             BigInt             @default(0)
+  approved_content_id    String?
+  added_by_id            String
+  lark_record_id         String?            @unique
+  /// FK trỏ về TeamContent khi được push từ kho team (thay thế copy data)
+  source_team_content_id String?            @unique
+  created_at             DateTime           @default(now())
+  updated_at             DateTime           @updatedAt
 
-  content_line  ContentLine?     @relation(fields: [content_line_id], references: [id])
-  added_by      User             @relation("ContentAddedBy", fields: [added_by_id], references: [id])
-  tasks         Task[]
-  warehouses    ContentWarehouse[]
+  content_line        ContentLine?       @relation(fields: [content_line_id], references: [id])
+  added_by            User               @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  source_team_content TeamContent?       @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
+  team_versions       TeamContent[]      @relation("TeamContentGlobalRef")
+  editor_versions     EditorContent[]    @relation("EditorContentGlobalRef")
+  tasks               Task[]
+  warehouses          ContentWarehouse[]
 
-  @@index([status])
-  @@index([brand_type, status])
-  @@index([content_line_id, status])
   @@index([added_by_id])
   @@map("contents")
 }
 
 model Source {
-  id             String     @id @default(uuid())
-  brand_type     BrandType  @default(DO_DA)
-  type           SourceType
-  name           String
-  link           String
-  nas_link       String?
-  code           String?
-  product_id     String?
-  added_by_id    String
-  lark_record_id String?    @unique
-  is_active      Boolean    @default(true)
-  created_at     DateTime   @default(now())
-  updated_at     DateTime   @updatedAt
+  id                    String      @id @default(uuid())
+  brand_type            BrandType   @default(DO_DA)
+  type                  SourceType?
+  name                  String?
+  link                  String?
+  nas_link              String?
+  code                  String?
+  product_id            String?
+  added_by_id           String
+  lark_record_id        String?     @unique
+  is_active             Boolean     @default(true)
+  /// FK trỏ về TeamSource khi được push từ kho team (thay thế copy data)
+  source_team_source_id String?     @unique
+  created_at            DateTime    @default(now())
+  updated_at            DateTime    @updatedAt
 
-  product          Product?      @relation(fields: [product_id], references: [id])
-  added_by         User          @relation("SourceAddedBy", fields: [added_by_id], references: [id])
-  team_versions    TeamSource[]  @relation("TeamSourceGlobalRef")
-  editor_versions  EditorSource[] @relation("EditorSourceGlobalRef")
-  tasks_outro      Task[]        @relation("TaskSourceOutro")
-  tasks_extra      Task[]        @relation("TaskSourceExtra")
-  tasks_workshop   Task[]        @relation("TaskSourceWorkshop")
-  tasks_huyk       Task[]        @relation("TaskSourceHuyk")
-  warehouses       SourceWarehouse[]
+  product            Product?          @relation(fields: [product_id], references: [id])
+  added_by           User              @relation("SourceAddedBy", fields: [added_by_id], references: [id])
+  source_team_source TeamSource?       @relation("SourceTeamRef", fields: [source_team_source_id], references: [id], onDelete: SetNull)
+  team_versions      TeamSource[]      @relation("TeamSourceGlobalRef")
+  editor_versions    EditorSource[]    @relation("EditorSourceGlobalRef")
+  tasks_outro        Task[]            @relation("TaskSourceOutro")
+  tasks_extra        Task[]            @relation("TaskSourceExtra")
+  tasks_workshop     Task[]            @relation("TaskSourceWorkshop")
+  tasks_huyk         Task[]            @relation("TaskSourceHuyk")
+  warehouses         SourceWarehouse[]
 
-  @@index([type, is_active])
-  @@index([product_id])
-  /// persistPairings: cascading outro lookup per product
-  @@index([product_id, type, is_active])
+  @@index([product_id, is_active])
   @@map("sources")
 }
 
-
 model Task {
-  id                 String     @id @default(uuid())
-  team_id            String
-  content_id         String?
-  product_id         String?
-  editor_product_id  String?
-  team_product_id    String?
-  editor_content_id  String?
-  team_content_id    String?
-  content_line_id    String?
-  source_outro_id             String?
-  source_extra_id             String?
-  source_workshop_id          String?
-  source_huyk_id              String?
-  editor_source_outro_id      String?
-  editor_source_extra_id      String?
-  editor_source_workshop_id   String?
-  editor_source_huyk_id       String?
-  team_source_outro_id        String?
-  team_source_extra_id        String?
-  team_source_workshop_id     String?
-  team_source_huyk_id         String?
-  status             TaskStatus @default(PENDING)
+  id                        String     @id @default(uuid())
+  team_id                   String
+  content_id                String?
+  product_id                String?
+  editor_product_id         String?
+  team_product_id           String?
+  editor_content_id         String?
+  team_content_id           String?
+  content_line_id           String?
+  source_outro_id           String?
+  source_extra_id           String?
+  source_workshop_id        String?
+  source_huyk_id            String?
+  editor_source_outro_id    String?
+  editor_source_extra_id    String?
+  editor_source_workshop_id String?
+  editor_source_huyk_id     String?
+  team_source_outro_id      String?
+  team_source_extra_id      String?
+  team_source_workshop_id   String?
+  team_source_huyk_id       String?
+  status                    TaskStatus @default(PENDING)
   /// Denormalized từ team.brand_type để tránh JOIN khi filter theo brand
-  brand_type         BrandType?
-  /// Thay thế is_auto + is_extra; MANUAL=tạo tay, AUTO=auto-assign, EXTRA=task thêm
-  task_type          TaskType   @default(MANUAL)
-  assignee_id        String?
-  assigned_at        DateTime?
-  deadline           DateTime?
-  /// @deprecated — dùng task_type thay thế; giữ lại để migrate dần code
-  is_auto            Boolean    @default(false)
-  /// @deprecated — dùng task_type thay thế; giữ lại để migrate dần code
-  is_extra           Boolean    @default(false)
-  run_id             String?
-  result_url         String?    @db.Text
-  submitted_at       DateTime?
-  reviewed_by_id     String?
-  reviewed_at        DateTime?
-  reject_reason      String?    @db.Text
-  lark_record_id     String?    @unique
-  created_at         DateTime   @default(now())
-  updated_at         DateTime   @updatedAt
+  brand_type                BrandType?
+  /// AUTO=auto-assign, EXTRA=task sáng tạo
+  task_type                 TaskType   @default(EXTRA)
+  assignee_id               String?
+  assigned_at               DateTime?
+  deadline                  DateTime?
+  run_id                    String?
+  result_url                String?    @db.Text
+  submitted_at              DateTime?
+  reviewed_by_id            String?
+  reviewed_at               DateTime?
+  reject_reason             String?    @db.Text
+  lark_record_id            String?    @unique
+  created_at                DateTime   @default(now())
+  updated_at                DateTime   @updatedAt
 
-  team            Team             @relation(fields: [team_id], references: [id])
-  content         Content?         @relation(fields: [content_id], references: [id])
-  product         Product?         @relation(fields: [product_id], references: [id])
-  editor_product  EditorProduct?   @relation(fields: [editor_product_id], references: [id])
-  team_product    TeamProduct?     @relation(fields: [team_product_id], references: [id])
-  editor_content  EditorContent?   @relation(fields: [editor_content_id], references: [id])
-  team_content    TeamContent?     @relation(fields: [team_content_id], references: [id])
-  content_line    ContentLine?     @relation(fields: [content_line_id], references: [id])
-  source_outro           Source?       @relation("TaskSourceOutro",          fields: [source_outro_id],           references: [id])
-  source_extra           Source?       @relation("TaskSourceExtra",          fields: [source_extra_id],           references: [id])
-  source_workshop        Source?       @relation("TaskSourceWorkshop",       fields: [source_workshop_id],        references: [id])
-  source_huyk            Source?       @relation("TaskSourceHuyk",           fields: [source_huyk_id],            references: [id])
-  editor_source_outro    EditorSource? @relation("TaskEditorSourceOutro",    fields: [editor_source_outro_id],    references: [id])
-  editor_source_extra    EditorSource? @relation("TaskEditorSourceExtra",    fields: [editor_source_extra_id],    references: [id])
-  editor_source_workshop EditorSource? @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
-  editor_source_huyk     EditorSource? @relation("TaskEditorSourceHuyk",     fields: [editor_source_huyk_id],     references: [id])
-  team_source_outro      TeamSource?   @relation("TaskTeamSourceOutro",      fields: [team_source_outro_id],      references: [id])
-  team_source_extra      TeamSource?   @relation("TaskTeamSourceExtra",      fields: [team_source_extra_id],      references: [id])
-  team_source_workshop   TeamSource?   @relation("TaskTeamSourceWorkshop",   fields: [team_source_workshop_id],   references: [id])
-  team_source_huyk       TeamSource?   @relation("TaskTeamSourceHuyk",       fields: [team_source_huyk_id],       references: [id])
-  assignee        User?            @relation("TaskAssignee", fields: [assignee_id], references: [id])
-  reviewed_by     User?            @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
-  run             AssignmentRun?   @relation(fields: [run_id], references: [id])
-  assignments     TaskAssignment[]
-  notifications   Notification[]
-  pending_video   TaskPendingVideo?
+  team                   Team              @relation(fields: [team_id], references: [id])
+  content                Content?          @relation(fields: [content_id], references: [id])
+  product                Product?          @relation(fields: [product_id], references: [id])
+  editor_product         EditorProduct?    @relation(fields: [editor_product_id], references: [id])
+  team_product           TeamProduct?      @relation(fields: [team_product_id], references: [id])
+  editor_content         EditorContent?    @relation(fields: [editor_content_id], references: [id])
+  team_content           TeamContent?      @relation(fields: [team_content_id], references: [id])
+  content_line           ContentLine?      @relation(fields: [content_line_id], references: [id])
+  source_outro           Source?           @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
+  source_extra           Source?           @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
+  source_workshop        Source?           @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
+  source_huyk            Source?           @relation("TaskSourceHuyk", fields: [source_huyk_id], references: [id])
+  editor_source_outro    EditorSource?     @relation("TaskEditorSourceOutro", fields: [editor_source_outro_id], references: [id])
+  editor_source_extra    EditorSource?     @relation("TaskEditorSourceExtra", fields: [editor_source_extra_id], references: [id])
+  editor_source_workshop EditorSource?     @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
+  editor_source_huyk     EditorSource?     @relation("TaskEditorSourceHuyk", fields: [editor_source_huyk_id], references: [id])
+  team_source_outro      TeamSource?       @relation("TaskTeamSourceOutro", fields: [team_source_outro_id], references: [id])
+  team_source_extra      TeamSource?       @relation("TaskTeamSourceExtra", fields: [team_source_extra_id], references: [id])
+  team_source_workshop   TeamSource?       @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
+  team_source_huyk       TeamSource?       @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
+  assignee               User?             @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  reviewed_by            User?             @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
+  run                    AssignmentRun?    @relation(fields: [run_id], references: [id])
+  assignments            TaskAssignment[]
+  notifications          Notification[]
+  pending_video          TaskPendingVideo?
 
-  @@index([status])
-  @@index([team_id, status])
-  @@index([assignee_id, status])
-  @@index([deadline])
-  @@index([deadline, status])
   @@index([run_id])
   // ── FK reverse lookups (global warehouse) ──
   @@index([content_id])
@@ -1982,39 +1983,27 @@ model Task {
   @@index([team_product_id])
   @@index([editor_content_id])
   @@index([team_content_id])
-  // ── brand/type filters ──
-  @@index([brand_type, status])
-  @@index([task_type])
-  /// Hot path: KPI count query per editor (assignedThisMonth) — new task_type variant
-  @@index([assignee_id, task_type, assigned_at])
-  /// Hot path: getEditorExistingPairs — new task_type variant
-  @@index([assignee_id, task_type])
-  /// @deprecated — kept for backward compat while migrating code to task_type
-  @@index([assignee_id, is_extra, assigned_at])
-  /// @deprecated — kept for backward compat while migrating code to task_type
-  @@index([assignee_id, is_extra])
   @@map("tasks")
 }
 
 model TaskPendingVideo {
-  id             String   @id @default(uuid())
-  task_id        String   @unique
-  uploader_id    String
-  filename       String
-  originalname   String
-  mimetype       String
-  size           BigInt
-  url            String
-  storage        String   @default("local")
-  drive_file_id  String?
-  web_view_url   String?
-  created_at     DateTime @default(now())
+  id            String   @id @default(uuid())
+  task_id       String   @unique
+  uploader_id   String
+  filename      String
+  originalname  String
+  mimetype      String
+  size          BigInt
+  url           String
+  storage       String   @default("local")
+  drive_file_id String?
+  web_view_url  String?
+  created_at    DateTime @default(now())
 
   task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
 
   @@map("task_pending_videos")
 }
-
 
 model TaskAssignment {
   id          String             @id @default(uuid())
@@ -2050,8 +2039,6 @@ model AssignmentRun {
   assignments TaskAssignment[]
 
   @@index([run_at(sort: Desc)])
-  /// cronCheck: findFirst({ where: { status: DONE, run_at: { gte, lte } } })
-  @@index([status, run_at(sort: Desc)])
   @@map("assignment_runs")
 }
 
@@ -2065,23 +2052,6 @@ model AutoAssignSetting {
   updated_at      DateTime @updatedAt
 
   @@map("auto_assign_settings")
-}
-
-model EditorWeekendKpi {
-  id         String   @id @default(uuid())
-  user_id    String
-  date       String   // YYYY-MM-DD (chỉ Chủ nhật)
-  kpi        Int      @default(0)
-  set_by_id  String
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  user   User @relation("EditorWeekendKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
-  set_by User @relation("EditorWeekendKpiSetBy", fields: [set_by_id], references: [id])
-
-  @@unique([user_id, date])
-  @@index([date])
-  @@map("editor_weekend_kpis")
 }
 
 model Notification {

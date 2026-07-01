@@ -3,7 +3,12 @@ import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
 import { AssignmentRunStatus, BrandType } from "@prisma/client";
 
-import { isWeekend, monthKey, addCalendarDays } from "./utils/date.utils";
+import {
+  isWeekend,
+  monthKey,
+  addCalendarDays,
+  effectiveAssignmentDate,
+} from "./utils/date.utils";
 import { allocateByWeight } from "./utils/quota.utils";
 import { loadEligibleEditors } from "./steps/editor-eligibility";
 import { loadEditorAssignmentHistory } from "./steps/editor-history";
@@ -145,8 +150,9 @@ export class TaskAutoAssignService {
     const run = await this.prisma.assignmentRun.create({
       data: { status: AssignmentRunStatus.RUNNING },
     });
-    const month = monthKey(now);
-    const monthStart = now.startOf("month").toJSDate();
+    const tomorrow = effectiveAssignmentDate(now);
+    const month = monthKey(tomorrow);
+    const monthStart = tomorrow.startOf("month").toJSDate();
     const deadline = addCalendarDays(now, DEADLINE_CALENDAR_DAYS).toJSDate();
 
     try {
@@ -210,25 +216,12 @@ export class TaskAutoAssignService {
     runId: string,
     deadline: Date,
   ): Promise<TeamResult> {
-    const [contentLineTypes, productLineTypes] = await Promise.all([
-      this.prisma.contentLine.findMany({
-        where: { a_type: { not: null } },
-        select: { id: true, a_type: true },
-      }),
-      this.prisma.productLine.findMany({
-        where: { video_category: { not: null }, brand_type: teamBrandType },
-        select: { id: true, video_category: true },
-      }),
-    ]);
-
     const editors = await loadEligibleEditors(
       this.prisma,
       teamId,
       now,
       month,
       monthStart,
-      contentLineTypes,
-      productLineTypes,
     );
     if (!editors.length) {
       this.logger.log(`Team ${teamId}: no eligible editors`);
@@ -262,6 +255,7 @@ export class TaskAutoAssignService {
       this.prisma,
       editorIds,
       monthStart,
+      teamId,
     );
 
     // ── Per-editor selection ──────────────────────────────────────────────
@@ -335,10 +329,10 @@ export class TaskAutoAssignService {
         team: 2,
       };
 
-      // shouldFocusTeamProducts=true: chỉ dùng kho team (sort priority_score desc)
+      // shouldFocusTeamProducts=true: chỉ dùng kho team đã lọc trùng personal (sort priority_score desc)
       // shouldFocusTeamProducts=false: global → personal → team, mỗi tier sort priority_score desc
       const orderedProducts: ProductPoolItem[] = shouldFocusTeamProducts
-        ? [...teamProductPool].sort(
+        ? [...filteredTeamProducts].sort(
             (a, b) => b.priority_score - a.priority_score,
           )
         : [
@@ -434,29 +428,25 @@ export class TaskAutoAssignService {
   }> {
     // ── Team content ──────────────────────────────────────────────────────
     const teamContentsRaw = await this.prisma.teamContent.findMany({
-      where: {
-        team_id: teamId,
-        status: { not: "ARCHIVED" },
-        brand_type: brandType,
-      },
+      where: { team_id: teamId, status: { not: "ARCHIVED" }, brand_type: brandType },
       select: {
         id: true,
         content_line_id: true,
         source_content_id: true,
+        source_editor_content_id: true,
+        source_editor_content: { select: { content_line_id: true, source_content_id: true } },
         added_at: true,
       },
       orderBy: { added_at: "asc" },
     });
     const teamContentPool: ContentPoolItem[] = teamContentsRaw.map((tc) => ({
       id: tc.id,
-      content_line_id: tc.content_line_id,
+      content_line_id: tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null,
       source: "team" as const,
-      source_content_id: tc.source_content_id,
+      source_content_id: tc.source_content_id ?? tc.source_editor_content?.source_content_id ?? null,
     }));
     const teamSourceContentIds = new Set(
-      teamContentsRaw
-        .filter((tc) => tc.source_content_id)
-        .map((tc) => tc.source_content_id!),
+      teamContentPool.filter((tc) => tc.source_content_id).map((tc) => tc.source_content_id!),
     );
 
     // ── Global content ────────────────────────────────────────────────────
@@ -468,12 +458,19 @@ export class TaskAutoAssignService {
           ? { NOT: { id: { in: [...teamSourceContentIds] } } }
           : {}),
       },
-      select: { id: true, content_line_id: true },
+      select: {
+        id: true,
+        content_line_id: true,
+        source_team_content: { select: { content_line_id: true, source_editor_content: { select: { content_line_id: true } } } },
+      },
       orderBy: { created_at: "asc" },
     });
     const globalContentPool: ContentPoolItem[] = allGlobalContents.map((c) => ({
       id: c.id,
-      content_line_id: c.content_line_id,
+      content_line_id: c.content_line_id
+        ?? c.source_team_content?.content_line_id
+        ?? c.source_team_content?.source_editor_content?.content_line_id
+        ?? null,
       source: "global" as const,
       source_content_id: null,
     }));
@@ -486,20 +483,20 @@ export class TaskAutoAssignService {
         product_line_id: true,
         priority_score: true,
         source_product_id: true,
+        source_editor_product_id: true,
+        source_editor_product: { select: { product_line_id: true, source_product_id: true } },
       },
       orderBy: { priority_score: "desc" },
     });
     const teamProductPool: ProductPoolItem[] = teamProductsRaw.map((tp) => ({
       id: tp.id,
-      product_line_id: tp.product_line_id,
+      product_line_id: tp.product_line_id ?? tp.source_editor_product?.product_line_id ?? null,
       priority_score: tp.priority_score,
       source: "team" as const,
-      source_product_id: tp.source_product_id,
+      source_product_id: tp.source_product_id ?? tp.source_editor_product?.source_product_id ?? null,
     }));
     const teamSourceProductIds = new Set(
-      teamProductsRaw
-        .filter((tp) => tp.source_product_id)
-        .map((tp) => tp.source_product_id!),
+      teamProductPool.filter((tp) => tp.source_product_id).map((tp) => tp.source_product_id!),
     );
 
     // ── Global product ────────────────────────────────────────────────────
@@ -511,12 +508,20 @@ export class TaskAutoAssignService {
           ? { NOT: { id: { in: [...teamSourceProductIds] } } }
           : {}),
       },
-      select: { id: true, product_line_id: true, priority_score: true },
+      select: {
+        id: true,
+        product_line_id: true,
+        priority_score: true,
+        source_team_product: { select: { product_line_id: true, source_editor_product: { select: { product_line_id: true } } } },
+      },
       orderBy: { priority_score: "desc" },
     });
     const globalProductPool: ProductPoolItem[] = globalProductsRaw.map((p) => ({
       id: p.id,
-      product_line_id: p.product_line_id,
+      product_line_id: p.product_line_id
+        ?? p.source_team_product?.product_line_id
+        ?? p.source_team_product?.source_editor_product?.product_line_id
+        ?? null,
       priority_score: p.priority_score,
       source: "global" as const,
       source_product_id: null,
@@ -524,11 +529,7 @@ export class TaskAutoAssignService {
 
     // ── Personal content per editor ───────────────────────────────────────
     const personalContentsRaw = await this.prisma.editorContent.findMany({
-      where: {
-        user_id: { in: editorIds },
-        status: { not: "ARCHIVED" },
-        brand_type: brandType,
-      },
+      where: { user_id: { in: editorIds }, status: { not: "ARCHIVED" }, brand_type: brandType },
       select: {
         id: true,
         content_line_id: true,
@@ -551,11 +552,7 @@ export class TaskAutoAssignService {
 
     // ── Personal product per editor ───────────────────────────────────────
     const personalProductsRaw = await this.prisma.editorProduct.findMany({
-      where: {
-        user_id: { in: editorIds },
-        is_active: true,
-        brand_type: brandType,
-      },
+      where: { user_id: { in: editorIds }, is_active: true, brand_type: brandType },
       select: {
         id: true,
         product_line_id: true,

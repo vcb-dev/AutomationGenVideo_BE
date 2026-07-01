@@ -85,18 +85,6 @@ export class TaskAutoEditorCatalogController {
     return this.catalog.removeEditorProduct(epId, req.user.id, req.user.roles ?? []);
   }
 
-  @Patch("editors/:userId/products/:epId/push-to-global")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Push editor product to global catalog (LEADER/ADMIN/MANAGER)" })
-  pushEditorProductToGlobal(
-    @Param("userId") userId: string,
-    @Param("epId") epId: string,
-    @Request() req: any,
-  ) {
-    return this.catalog.pushEditorProductToGlobal(epId, req.user.id, req.user.roles ?? []);
-  }
-
   @Patch("editors/:userId/products/:epId/push-to-team")
   @ApiOperation({ summary: "Push editor product to team catalog" })
   pushEditorProductToTeam(
@@ -159,18 +147,6 @@ export class TaskAutoEditorCatalogController {
     return this.catalog.removeEditorContent(ecId, req.user.id, req.user.roles ?? []);
   }
 
-  @Patch("editors/:userId/contents/:ecId/push-to-global")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Push editor content to global catalog (LEADER/ADMIN/MANAGER)" })
-  pushEditorContentToGlobal(
-    @Param("userId") userId: string,
-    @Param("ecId") ecId: string,
-    @Request() req: any,
-  ) {
-    return this.catalog.pushEditorContentToGlobal(ecId, req.user.id, req.user.roles ?? []);
-  }
-
   @Patch("editors/:userId/contents/:ecId/push-to-team")
   @ApiOperation({ summary: "Push editor content to team catalog" })
   pushEditorContentToTeam(
@@ -231,18 +207,6 @@ export class TaskAutoEditorCatalogController {
     @Request() req: any,
   ) {
     return this.catalog.removeEditorSource(esId, req.user.id, req.user.roles ?? []);
-  }
-
-  @Patch("editors/:userId/sources/:esId/push-to-global")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Push editor source to global catalog (LEADER/ADMIN/MANAGER)" })
-  pushEditorSourceToGlobal(
-    @Param("userId") userId: string,
-    @Param("esId") esId: string,
-    @Request() req: any,
-  ) {
-    return this.catalog.pushEditorSourceToGlobal(esId, req.user.id, req.user.roles ?? []);
   }
 
   @Patch("editors/:userId/sources/:esId/push-to-team")

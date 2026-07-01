@@ -31,14 +31,39 @@ export class TaskAutoWarehouseService {
     const [products, contents, sources] = await Promise.all([
       this.prisma.product.findMany({
         where: { is_active: true, warehouses: { some: { month } } },
+        include: {
+          source_team_product: {
+            select: {
+              sku: true, name: true, image_url: true, image_urls: true,
+              price: true, market: true, price_segment: true, material_id: true,
+              source_editor_product: { select: { sku: true, name: true, image_url: true, image_urls: true, price: true, market: true, price_segment: true, material_id: true } },
+            },
+          },
+        },
         orderBy: { created_at: "desc" },
       }),
       this.prisma.content.findMany({
         where: { status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
+        include: {
+          source_team_content: {
+            select: {
+              title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true,
+              source_editor_content: { select: { title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
+            },
+          },
+        },
         orderBy: { created_at: "desc" },
       }),
       this.prisma.source.findMany({
         where: { is_active: true, warehouses: { some: { month } } },
+        include: {
+          source_team_source: {
+            select: {
+              type: true, name: true, link: true, nas_link: true, code: true, product_id: true,
+              source_editor_source: { select: { type: true, name: true, link: true, nas_link: true, code: true, product_id: true } },
+            },
+          },
+        },
         orderBy: { created_at: "desc" },
       }),
     ]);
@@ -89,26 +114,23 @@ export class TaskAutoWarehouseService {
   async getTeamWarehouse(teamId: string, month: string) {
     const [products, contents, sources] = await Promise.all([
       this.prisma.teamProduct.findMany({
-        where: {
-          team_id: teamId,
-          is_active: true,
-          warehouses: { some: { month } },
+        where: { team_id: teamId, is_active: true, warehouses: { some: { month } } },
+        include: {
+          source_editor_product: { select: { sku: true, name: true, image_url: true, image_urls: true, price: true, market: true, price_segment: true, material_id: true } },
         },
         orderBy: { added_at: "desc" },
       }),
       this.prisma.teamContent.findMany({
-        where: {
-          team_id: teamId,
-          status: { not: "ARCHIVED" },
-          warehouses: { some: { month } },
+        where: { team_id: teamId, status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
+        include: {
+          source_editor_content: { select: { title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
         },
         orderBy: { added_at: "desc" },
       }),
       this.prisma.teamSource.findMany({
-        where: {
-          team_id: teamId,
-          is_active: true,
-          warehouses: { some: { month } },
+        where: { team_id: teamId, is_active: true, warehouses: { some: { month } } },
+        include: {
+          source_editor_source: { select: { type: true, name: true, link: true, nas_link: true, code: true, product_id: true } },
         },
         orderBy: { added_at: "desc" },
       }),
@@ -254,26 +276,17 @@ export class TaskAutoWarehouseService {
   async getEditorWarehouse(editorId: string, month: string) {
     const [products, contents, sources] = await Promise.all([
       this.prisma.editorProduct.findMany({
-        where: {
-          user_id: editorId,
-          is_active: true,
-          warehouses: { some: { month } },
-        },
+        where: { user_id: editorId, is_active: true, warehouses: { some: { month } } },
         orderBy: { added_at: "desc" },
       }),
       this.prisma.editorContent.findMany({
-        where: {
-          user_id: editorId,
-          status: { not: "ARCHIVED" },
-          warehouses: { some: { month } },
-        },
+        where: { user_id: editorId, status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
         orderBy: { added_at: "desc" },
       }),
       this.prisma.editorSource.findMany({
-        where: {
-          user_id: editorId,
-          is_active: true,
-          warehouses: { some: { month } },
+        where: { user_id: editorId, is_active: true, warehouses: { some: { month } } },
+        include: {
+          source_source: { select: { type: true, name: true, link: true } },
         },
         orderBy: { added_at: "desc" },
       }),

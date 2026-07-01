@@ -26,18 +26,61 @@ export class TaskAutoTasksService {
 
   private taskInclude = {
     team: { select: { id: true, name: true } },
-    content: { select: { id: true, title: true, market: true, status: true } },
+    content: {
+      select: {
+        id: true, title: true, market: true, status: true,
+        content_line: { select: { id: true, name: true } },
+        source_team_content: {
+          select: {
+            id: true, title: true, market: true, script: true, body: true,
+            file_content_url: true, voice_url: true,
+            content_line: { select: { id: true, name: true } },
+            source_editor_content: {
+              select: {
+                id: true, title: true, market: true, script: true, body: true,
+                file_content_url: true, voice_url: true,
+                content_line: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    },
     product: {
       select: {
         id: true,
         name: true,
         sku: true,
+        image_url: true,
+        image_urls: true,
+        price: true,
+        market: true,
+        price_segment: true,
+        priority_score: true,
+        material: { select: { id: true, name: true } },
+        product_line: { select: { id: true, name: true } },
         sources: {
           select: {
             id: true,
             name: true,
             type: true,
             link: true,
+          },
+        },
+        source_team_product: {
+          select: {
+            id: true, sku: true, name: true, image_url: true, image_urls: true,
+            price: true, market: true, price_segment: true, priority_score: true,
+            material: { select: { id: true, name: true } },
+            product_line: { select: { id: true, name: true } },
+            source_editor_product: {
+              select: {
+                id: true, sku: true, name: true, image_url: true, image_urls: true,
+                price: true, market: true, price_segment: true, priority_score: true,
+                material: { select: { id: true, name: true } },
+                product_line: { select: { id: true, name: true } },
+              },
+            },
           },
         },
       },
@@ -78,6 +121,14 @@ export class TaskAutoTasksService {
         priority_score: true,
         material: { select: { id: true, name: true } },
         product_line: { select: { id: true, name: true } },
+        source_editor_product: {
+          select: {
+            id: true, sku: true, name: true, image_url: true, image_urls: true,
+            price: true, market: true, price_segment: true, priority_score: true,
+            material: { select: { id: true, name: true } },
+            product_line: { select: { id: true, name: true } },
+          },
+        },
         team_sources: {
           select: {
             id: true,
@@ -110,23 +161,30 @@ export class TaskAutoTasksService {
         file_content_url: true,
         voice_url: true,
         content_line: { select: { id: true, name: true } },
+        source_editor_content: {
+          select: {
+            id: true, title: true, market: true, script: true, body: true,
+            file_content_url: true, voice_url: true,
+            content_line: { select: { id: true, name: true } },
+          },
+        },
       },
     },
     content_line: { select: { id: true, name: true } },
     assignee: { select: { id: true, full_name: true, email: true } },
     reviewed_by: { select: { id: true, full_name: true } },
-    source_outro:           { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    source_extra:           { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    source_workshop:        { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    source_huyk:            { select: { id: true, name: true, type: true, link: true, nas_link: true } },
+    source_outro:           { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
+    source_extra:           { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
+    source_workshop:        { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
+    source_huyk:            { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
     editor_source_outro:    { select: { id: true, name: true, type: true, link: true, nas_link: true } },
     editor_source_extra:    { select: { id: true, name: true, type: true, link: true, nas_link: true } },
     editor_source_workshop: { select: { id: true, name: true, type: true, link: true, nas_link: true } },
     editor_source_huyk:     { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    team_source_outro:      { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    team_source_extra:      { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    team_source_workshop:   { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    team_source_huyk:       { select: { id: true, name: true, type: true, link: true, nas_link: true } },
+    team_source_outro:      { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
+    team_source_extra:      { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
+    team_source_workshop:   { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
+    team_source_huyk:       { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
     pending_video: true,
   };
 
@@ -136,16 +194,9 @@ export class TaskAutoTasksService {
     if (q.status) where.status = q.status;
     if (q.team_id) where.team_id = q.team_id;
     if (q.assignee_id) where.assignee_id = q.assignee_id;
-    if (q.task_type === "auto") {
-      where.is_auto = true;
-      where.is_extra = false;
-    }
-    if (q.task_type === "extra") {
-      where.is_extra = true;
-    }
-    if (q.task_type === "manual") {
-      where.is_auto = false;
-    }
+    if (q.task_type === "auto") where.task_type = "AUTO";
+    if (q.task_type === "extra") where.task_type = "EXTRA";
+    if (q.task_type === "manual") where.task_type = "MANUAL";
     if (q.deadline_date) {
       where.deadline = {
         gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
@@ -557,15 +608,61 @@ export class TaskAutoTasksService {
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, myKpi] = await Promise.all([
+    const [tasksByStatus, todayDeadline, overdue, myKpiRows] = await Promise.all([
       this.prisma.task.groupBy({ by: ["status"], where: { assignee_id: userId }, _count: { id: true } }),
       this.prisma.task.count({ where: { assignee_id: userId, deadline: { gte: todayStart, lt: todayEnd }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
       this.prisma.task.count({ where: { assignee_id: userId, deadline: { lt: now }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
-      this.prisma.editorKpi.findUnique({ where: { user_id_month: { user_id: userId, month: currentMonth } } }),
+      this.prisma.editorKpi.findMany({
+        where: { user_id: userId, month: currentMonth },
+        include: {
+          allocations: {
+            include: {
+              content_line: { select: { id: true, name: true } },
+              product_line: { select: { id: true, name: true } },
+            },
+          },
+        },
+      }),
     ]);
 
     const taskMap = Object.fromEntries(tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]));
     const completed = taskMap["approved"] ?? 0;
+
+    // Gộp tất cả KPI các team trong tháng (editor thuộc nhiều team)
+    const sum = <K extends keyof typeof myKpiRows[0]>(field: K) =>
+      myKpiRows.reduce((s, k) => s + ((k[field] as number) ?? 0), 0);
+
+    // Gộp phân bổ theo ContentLine/ProductLine từ mọi team KPI trong tháng (cộng dồn weight trùng dòng)
+    const mergeAllocations = (type: "CONTENT_LINE" | "PRODUCT_LINE") => {
+      const merged = new Map<string, { id: string; name: string; weight: number }>();
+      for (const k of myKpiRows) {
+        for (const a of k.allocations) {
+          if (a.type !== type) continue;
+          const line = a.content_line ?? a.product_line;
+          const id = a.content_line_id ?? a.product_line_id;
+          if (!id) continue;
+          const existing = merged.get(id);
+          if (existing) existing.weight += a.percent;
+          else merged.set(id, { id, name: line?.name ?? "—", weight: a.percent });
+        }
+      }
+      return [...merged.values()];
+    };
+
+    const myKpi = myKpiRows.length > 0 ? {
+      month: currentMonth,
+      total_target: sum("total_target"),
+      video_win: sum("video_win"),
+      video_fail: sum("video_fail"),
+      kpi_extra: sum("kpi_extra"),
+      content_new: sum("content_new"),
+      content_collected: sum("content_collected"),
+      content_win_cover: sum("content_win_cover"),
+      product_planned: sum("product_planned"),
+      product_win_collect: sum("product_win_collect"),
+      content_allocations: mergeAllocations("CONTENT_LINE"),
+      product_allocations: mergeAllocations("PRODUCT_LINE"),
+    } : null;
 
     return {
       scope: "personal" as const,
@@ -584,9 +681,8 @@ export class TaskAutoTasksService {
         content_win_cover: myKpi.content_win_cover,
         product_planned: myKpi.product_planned,
         product_win_collect: myKpi.product_win_collect,
-        video_traffic: myKpi.video_traffic,
-        video_gmv: myKpi.video_gmv,
-        video_profit: myKpi.video_profit,
+        content_allocations: myKpi.content_allocations,
+        product_allocations: myKpi.product_allocations,
       } : null,
     };
   }

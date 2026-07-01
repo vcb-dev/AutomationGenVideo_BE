@@ -46,6 +46,7 @@ const n = () => [Type(() => Number), IsInt(), Min(0)];
 
 export class UpsertEditorKpiDto {
   @ApiProperty() @IsString() user_id: string;
+  @ApiProperty() @IsString() team_id: string;  // team này KPI thuộc về
   @ApiProperty() @IsString() month: string; // YYYY-MM
 
   // ── Video production ──
@@ -64,31 +65,6 @@ export class UpsertEditorKpiDto {
   @IsInt()
   @Min(0)
   video_fail: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  ratio_a1: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  ratio_a2: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  ratio_a3: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  ratio_a4: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  ratio_a5: number;
 
   // ── Content ──
   @ApiProperty(intField())
@@ -123,27 +99,10 @@ export class UpsertEditorKpiDto {
   @IsInt()
   @Min(0)
   product_win_collect: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  video_traffic: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  video_gmv: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  video_profit: number;
-}
 
-// ─── EditorWeekendKpi (kept for backward-compat) ─────────────────────────────
-
-export class UpsertEditorWeekendKpiDto {
-  @ApiProperty() @IsString() user_id: string;
-  @ApiProperty() @IsString() date: string;
-  @ApiProperty({ default: 0 }) @Type(() => Number) @IsInt() @Min(0) kpi: number;
+  @ApiProperty({ type: [KpiAllocationDto] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KpiAllocationDto)
+  allocations: KpiAllocationDto[];
 }

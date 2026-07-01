@@ -4,11 +4,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
-import {
-  UpsertTeamKpiDto,
-  UpsertEditorKpiDto,
-  UpsertEditorWeekendKpiDto,
-} from "../dto/kpi.dto";
+import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "../dto/kpi.dto";
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -97,10 +93,7 @@ export class TaskAutoKpiService {
         ...(month ? { month } : {}),
         ...(userId ? { user_id: userId } : {}),
       },
-      include: {
-        user: { select: { id: true, full_name: true, email: true } },
-        set_by: { select: { id: true, full_name: true } },
-      },
+      include: this.editorKpiInclude,
       orderBy: [{ month: "desc" }, { user: { full_name: "asc" } }],
     });
   }
@@ -115,15 +108,16 @@ export class TaskAutoKpiService {
       !roles.includes("ADMIN") &&
       !roles.includes("MANAGER");
     if (isLeaderOnly) {
+      // Leader chỉ được đặt KPI cho editor thuộc đúng team được chỉ định
       const myTeam = await this.prisma.team.findFirst({
-        where: { leader_id: setById },
+        where: { id: dto.team_id, leader_id: setById },
       });
       if (!myTeam)
         throw new ForbiddenException(
-          "Bạn chưa được gán là leader của team nào",
+          "Bạn không phải leader của team này",
         );
       const isMember = await this.prisma.teamMember.findFirst({
-        where: { team_id: myTeam.id, user_id: dto.user_id },
+        where: { team_id: dto.team_id, user_id: dto.user_id },
       });
       if (!isMember)
         throw new ForbiddenException("Người dùng không thuộc team của bạn");
@@ -133,31 +127,48 @@ export class TaskAutoKpiService {
       total_target: dto.total_target,
       video_win: dto.video_win ?? 0,
       video_fail: dto.video_fail ?? 0,
-      ratio_a1: dto.ratio_a1 ?? 0,
-      ratio_a2: dto.ratio_a2 ?? 0,
-      ratio_a3: dto.ratio_a3 ?? 0,
-      ratio_a4: dto.ratio_a4 ?? 0,
-      ratio_a5: dto.ratio_a5 ?? 0,
       kpi_extra: dto.kpi_extra ?? 0,
       content_new: dto.content_new ?? 0,
       content_collected: dto.content_collected ?? 0,
       content_win_cover: dto.content_win_cover ?? 0,
       product_planned: dto.product_planned ?? 0,
       product_win_collect: dto.product_win_collect ?? 0,
-      video_traffic: dto.video_traffic ?? 0,
-      video_gmv: dto.video_gmv ?? 0,
-      video_profit: dto.video_profit ?? 0,
       set_by_id: setById,
     };
 
-    return this.prisma.editorKpi.upsert({
-      where: { user_id_month: { user_id: dto.user_id, month: dto.month } },
-      create: { user_id: dto.user_id, month: dto.month, ...kpiData },
-      update: kpiData,
-      include: {
-        user: { select: { id: true, full_name: true, email: true } },
-        set_by: { select: { id: true, full_name: true } },
+    const existing = await this.prisma.editorKpi.findUnique({
+      where: {
+        user_id_team_id_month: {
+          user_id: dto.user_id,
+          team_id: dto.team_id,
+          month: dto.month,
+        },
       },
+    });
+
+    if (existing) {
+      await this.prisma.editorKpiAllocation.deleteMany({
+        where: { editor_kpi_id: existing.id },
+      });
+      return this.prisma.editorKpi.update({
+        where: { id: existing.id },
+        data: {
+          ...kpiData,
+          allocations: { create: dto.allocations.map((a) => ({ ...a })) },
+        },
+        include: this.editorKpiInclude,
+      });
+    }
+
+    return this.prisma.editorKpi.create({
+      data: {
+        user_id: dto.user_id,
+        team_id: dto.team_id,
+        month: dto.month,
+        ...kpiData,
+        allocations: { create: dto.allocations.map((a) => ({ ...a })) },
+      },
+      include: this.editorKpiInclude,
     });
   }
 
@@ -168,71 +179,21 @@ export class TaskAutoKpiService {
     return { success: true };
   }
 
-  // ─── Editor Weekend KPI (per-Sunday) ─────────────────────────────────────
-
-  async getEditorWeekendKpis(month?: string) {
-    const where = month ? { date: { startsWith: month } } : undefined;
-    return this.prisma.editorWeekendKpi.findMany({
-      where,
-      include: {
-        user: { select: { id: true, full_name: true, email: true } },
-        set_by: { select: { id: true, full_name: true } },
-      },
-      orderBy: [{ date: "asc" }, { user_id: "asc" }],
-    });
-  }
-
-  async upsertEditorWeekendKpi(
-    dto: UpsertEditorWeekendKpiDto,
-    setById: string,
-    roles: string[] = [],
-  ) {
-    const isLeaderOnly =
-      roles.includes("LEADER") &&
-      !roles.includes("ADMIN") &&
-      !roles.includes("MANAGER");
-    if (isLeaderOnly) {
-      const myTeam = await this.prisma.team.findFirst({
-        where: { leader_id: setById },
-      });
-      if (!myTeam)
-        throw new ForbiddenException(
-          "Bạn chưa được gán là leader của team nào",
-        );
-      const isMember = await this.prisma.teamMember.findFirst({
-        where: { team_id: myTeam.id, user_id: dto.user_id },
-      });
-      if (!isMember)
-        throw new ForbiddenException("Người dùng không thuộc team của bạn");
-    }
-    return this.prisma.editorWeekendKpi.upsert({
-      where: { user_id_date: { user_id: dto.user_id, date: dto.date } },
-      create: {
-        user_id: dto.user_id,
-        date: dto.date,
-        kpi: dto.kpi,
-        set_by_id: setById,
-      },
-      update: { kpi: dto.kpi, set_by_id: setById },
-      include: {
-        user: { select: { id: true, full_name: true, email: true } },
-        set_by: { select: { id: true, full_name: true } },
-      },
-    });
-  }
-
-  async deleteEditorWeekendKpi(id: string) {
-    const kpi = await this.prisma.editorWeekendKpi.findUnique({
-      where: { id },
-    });
-    if (!kpi) throw new NotFoundException("EditorWeekendKpi not found");
-    await this.prisma.editorWeekendKpi.delete({ where: { id } });
-    return { success: true };
-  }
-
   private kpiInclude = {
     team: { select: { id: true, name: true } },
     created_by: { select: { id: true, full_name: true } },
+    allocations: {
+      include: {
+        content_line: { select: { id: true, name: true } },
+        product_line: { select: { id: true, name: true } },
+      },
+    },
+  };
+
+  private editorKpiInclude = {
+    user: { select: { id: true, full_name: true, email: true } },
+    set_by: { select: { id: true, full_name: true } },
+    team: { select: { id: true, name: true } },
     allocations: {
       include: {
         content_line: { select: { id: true, name: true } },
