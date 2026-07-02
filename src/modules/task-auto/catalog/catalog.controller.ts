@@ -75,18 +75,15 @@ export class TaskAutoCatalogController {
   // ── Product Lines ─────────────────────────────────────────────────────────
 
   @Get("product-lines")
-  @ApiOperation({ summary: "List product lines" })
-  getProductLines(@Query("brand_type") brandType?: string) {
-    return this.catalog.findProductLines(brandType);
+  @ApiOperation({ summary: "List product lines (dùng chung mọi brand)" })
+  getProductLines() {
+    return this.catalog.findProductLines();
   }
 
   @Post("product-lines")
   @ApiOperation({ summary: "Create a product line (all roles)" })
-  createProductLine(
-    @Body("name") name: string,
-    @Body("brand_type") brandType: string,
-  ) {
-    return this.catalog.createProductLine(name, brandType);
+  createProductLine(@Body("name") name: string) {
+    return this.catalog.createProductLine(name);
   }
 
   @Patch("product-lines/:id")

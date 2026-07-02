@@ -1811,10 +1811,10 @@ model ContentLine {
   @@map("content_lines")
 }
 
+/// Dòng sản phẩm dùng chung cho mọi brand (không phân biệt đồ da / trang sức)
 model ProductLine {
   id             String    @id @default(uuid())
-  name           String
-  brand_type     BrandType @default(DO_DA)
+  name           String    @unique
   video_category String?
 
   products               Product[]
@@ -1824,7 +1824,6 @@ model ProductLine {
   allocations            TeamKpiAllocation[]
   editor_kpi_allocations EditorKpiAllocation[]
 
-  @@unique([name, brand_type])
   @@map("product_lines")
 }
 

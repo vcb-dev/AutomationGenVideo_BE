@@ -184,9 +184,8 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async findProductLines(brandType?: string) {
+  async findProductLines() {
     return this.prisma.productLine.findMany({
-      where: brandType ? { brand_type: brandType as any } : undefined,
       orderBy: { name: "asc" },
     });
   }
@@ -353,16 +352,14 @@ export class TaskAutoCatalogService {
     return { success: true };
   }
 
-  async createProductLine(name: string, brandType: string) {
+  async createProductLine(name: string) {
     const exists = await this.prisma.productLine.findUnique({
-      where: { name_brand_type: { name, brand_type: brandType as any } },
+      where: { name },
     });
     if (exists)
-      throw new ConflictException(
-        `ProductLine "${name}" already exists for this brand`,
-      );
+      throw new ConflictException(`ProductLine "${name}" already exists`);
     return this.prisma.productLine.create({
-      data: { name, brand_type: brandType as any },
+      data: { name },
     });
   }
 
