@@ -4,6 +4,7 @@ import { EditorAssignmentHistory } from "../types";
 /**
  * Tải lịch sử phân công của từng editor (all-time dedup, content đã dùng,
  * SP team riêng biệt đã đẩy trong tháng) trong một lần query.
+ * Tính cả task tạo tay (EXTRA) — cặp content–SP đã giao tay sẽ không bị chia lại.
  */
 export async function loadEditorAssignmentHistory(
   prisma: PrismaService,
@@ -15,7 +16,6 @@ export async function loadEditorAssignmentHistory(
   const tasks = await prisma.task.findMany({
     where: {
       assignee_id: { in: editorIds },
-      task_type: { not: "EXTRA" },
       status: { not: "CANCELLED" },
     },
     select: {

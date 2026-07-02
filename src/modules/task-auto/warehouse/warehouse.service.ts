@@ -13,6 +13,7 @@ import {
   PushToMonthDto,
   AutoCarryDto,
 } from "../dto/warehouse.dto";
+import { BrandType } from "../dto/catalog.dto";
 
 function prevMonth(month: string): string {
   const dt = DateTime.fromFormat(month, "yyyy-MM");
@@ -27,10 +28,15 @@ export class TaskAutoWarehouseService {
 
   // ── Kho tổng (Global) ────────────────────────────────────────────────────
 
-  async getGlobalWarehouse(month: string) {
+  async getGlobalWarehouse(month: string, brandType?: BrandType) {
+    const brandFilter = brandType ? { brand_type: brandType } : {};
     const [products, contents, sources] = await Promise.all([
       this.prisma.product.findMany({
-        where: { is_active: true, warehouses: { some: { month } } },
+        where: {
+          is_active: true,
+          warehouses: { some: { month } },
+          ...brandFilter,
+        },
         include: {
           source_team_product: {
             select: {
@@ -43,7 +49,11 @@ export class TaskAutoWarehouseService {
         orderBy: { created_at: "desc" },
       }),
       this.prisma.content.findMany({
-        where: { status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
+        where: {
+          status: { not: "ARCHIVED" },
+          warehouses: { some: { month } },
+          ...brandFilter,
+        },
         include: {
           source_team_content: {
             select: {
@@ -55,7 +65,11 @@ export class TaskAutoWarehouseService {
         orderBy: { created_at: "desc" },
       }),
       this.prisma.source.findMany({
-        where: { is_active: true, warehouses: { some: { month } } },
+        where: {
+          is_active: true,
+          warehouses: { some: { month } },
+          ...brandFilter,
+        },
         include: {
           source_team_source: {
             select: {

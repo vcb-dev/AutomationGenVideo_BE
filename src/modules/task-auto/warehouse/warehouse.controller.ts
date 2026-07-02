@@ -34,7 +34,7 @@ export class TaskAutoWarehouseController {
   @Get("warehouse/global")
   @ApiOperation({ summary: "Lấy kho tháng tổng (global)" })
   getGlobalWarehouse(@Query() q: GetWarehouseQuery) {
-    return this.warehouse.getGlobalWarehouse(q.month);
+    return this.warehouse.getGlobalWarehouse(q.month, q.brand_type);
   }
 
   @Post("warehouse/global/products")

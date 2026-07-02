@@ -1974,7 +1974,7 @@ model Task {
   status                    TaskStatus @default(PENDING)
   /// Denormalized từ team.brand_type để tránh JOIN khi filter theo brand
   brand_type                BrandType?
-  /// AUTO=auto-assign, EXTRA=task sáng tạo
+  /// AUTO=đẩy SP theo kế hoạch (lane 1 auto-assign), EXTRA=task sáng tạo (lane 2 auto-assign + tạo tay)
   task_type                 TaskType   @default(EXTRA)
   /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
   is_product_push           Boolean    @default(false)
