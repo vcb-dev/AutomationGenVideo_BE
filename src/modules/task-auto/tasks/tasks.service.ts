@@ -543,7 +543,12 @@ export class TaskAutoTasksService {
 
     const team = await this.prisma.team.findFirst({
       where: { leader_id: leaderId },
-      include: { members: { include: { user: { select: { id: true, full_name: true, email: true } } } } },
+      include: {
+        members: {
+          where: { user: { is_active: true } },
+          include: { user: { select: { id: true, full_name: true, email: true } } },
+        },
+      },
     });
 
     if (!team) return { scope: "team" as const, team: null, tasks: { total: 0 }, members: [], kpi: null };

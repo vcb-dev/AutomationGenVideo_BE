@@ -5,7 +5,7 @@ import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from '../dto/team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../dto/catalog.dto'
 import { UserRole } from '@prisma/client'
-import { recomputeUserTeamFields } from '../../../common/utils/team-membership.util'
+import { recomputeUserTeamFields, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -15,7 +15,10 @@ export class TaskAutoTeamsService {
 
   private teamInclude = {
     leader: { select: { id: true, full_name: true, email: true } },
+    // Chỉ hiện thành viên đang hoạt động — tài khoản bị Admin/Leader vô hiệu hóa ở
+    // HR-management không được hiện như đang tham gia team bên trang Nhiệm vụ.
     members: {
+      where: { user: { is_active: true } },
       include: { user: { select: { id: true, full_name: true, email: true, roles: true } } },
     },
     _count: { select: { members: true, tasks: true } },
@@ -52,7 +55,7 @@ export class TaskAutoTeamsService {
     return team
   }
 
-  async create(dto: CreateTeamDto) {
+  async create(dto: CreateTeamDto, creatorId: string) {
     const existing = await this.prisma.team.findUnique({ where: { name: dto.name } })
     if (existing) throw new ConflictException('Team name already exists')
 
@@ -68,6 +71,9 @@ export class TaskAutoTeamsService {
       include: this.teamInclude,
     })
 
+    // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
+    // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
+    await seedEditorKpiForMembers(this.prisma, dto.member_ids ?? [], [team.id], creatorId)
     await this.syncAffectedUsers([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])
     return team
   }
@@ -100,6 +106,9 @@ export class TaskAutoTeamsService {
           this.prisma.teamMember.create({ data: { team_id: id, user_id: uid } })
         ),
       ])
+      // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
+      // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
+      await seedEditorKpiForMembers(this.prisma, member_ids, [id], userId)
     }
 
     const updated = await this.prisma.team.update({

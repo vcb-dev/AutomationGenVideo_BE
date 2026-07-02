@@ -21,6 +21,8 @@ import {
   clearUserTeams,
   isUserUnassigned,
   isTeamLeaderOfUser,
+  assignUserToTeamsByName,
+  replaceUserTeamsByName,
 } from "../../common/utils/team-membership.util";
 
 // Helper: check if roles array contains a staff role (MEMBER)
@@ -77,19 +79,6 @@ export class UsersService {
       }
     }
 
-    // Validate team_leader_id if provided
-    if (createUserDto.team_leader_id) {
-      const teamLeader = await this.prisma.user.findUnique({
-        where: { id: createUserDto.team_leader_id },
-      });
-
-      if (!teamLeader || (!teamLeader.roles.includes(UserRole.LEADER) && !teamLeader.roles.includes(UserRole.MANAGER) && !teamLeader.roles.includes(UserRole.ADMIN))) {
-        throw new BadRequestException(
-          "Invalid team_leader_id: must reference a user with LEADER, MANAGER or ADMIN role",
-        );
-      }
-    }
-
     // Hash password
     const password_hash = createUserDto.password
       ? await bcrypt.hash(createUserDto.password, 10)
@@ -102,9 +91,10 @@ export class UsersService {
         ? [(createUserDto as any).role as UserRole]
         : [];
 
-    // Create user
+    // Create user — strip cả team/team_leader_id khỏi spread: đây là field phái sinh từ
+    // Team/TeamMember, client không được ghi trực tiếp (các luồng HR gán team riêng sau khi tạo).
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _password, role: _role, avatar: _a, ...userData } = createUserDto as any;
+    const { password: _password, role: _role, avatar: _a, team: _team, team_leader_id: _tl, ...userData } = createUserDto as any;
     const img = (createUserDto as any).image_url ?? (createUserDto as any).avatar;
     const user = await this.prisma.user.create({
       data: {
@@ -113,7 +103,6 @@ export class UsersService {
         password_hash,
         roles,
         manager_id: createUserDto.manager_id || null,
-        team_leader_id: createUserDto.team_leader_id || null,
       },
     });
 
@@ -658,6 +647,24 @@ export class UsersService {
     });
   }
 
+  /**
+   * Với role không phải LEADER, mọi tên team trong multi-select phải tồn tại sẵn — validate
+   * TRƯỚC khi ghi bất cứ thứ gì để lỗi không để lại dữ liệu dở dang (user mồ côi, User.team ma).
+   */
+  private async assertAssignableTeamNames(teamNamesRaw: string, roles: UserRole[]) {
+    if (roles.includes(UserRole.LEADER)) return;
+    const names = teamNamesRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!names.length) return;
+    const found = await this.prisma.team.findMany({ where: { name: { in: names } }, select: { name: true } });
+    const foundNames = new Set(found.map((t) => t.name));
+    const missing = names.filter((n) => !foundNames.has(n));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Đội nhóm không tồn tại: ${missing.join(', ')}. Chỉ Leader mới được tạo team mới.`,
+      );
+    }
+  }
+
   /** Tạo nhân sự (MANAGER=ADMIN có full quyền, LEADER chỉ tạo MEMBER) */
   async createHR(callerId: string, callerRoles: UserRole[], dto: CreateUserDto) {
     const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
@@ -682,7 +689,6 @@ export class UsersService {
       // team/team_leader_id trên User chỉ còn là giá trị phái sinh, tính lại sau khi tạo user).
       leaderTeamIds = await getUserTeamIds(this.prisma, callerId);
       delete dto.team;
-      delete dto.team_leader_id;
       // A leader may only set name/email/password for a new hire — strip fields that grant
       // capability beyond that (manager_id ties them into an unrelated manager's hierarchy,
       // custom_permissions can widen app access, is_active should only go through deactivate/
@@ -692,9 +698,22 @@ export class UsersService {
       delete (dto as any).is_active;
     }
 
+    // Validate tên team TRƯỚC khi tạo user: với role không phải LEADER, tên team lạ sẽ bị
+    // assignUserToTeamsByName từ chối — nếu để lỗi đó nổ SAU this.create() thì đã lỡ tạo một
+    // user mồ côi (có tài khoản nhưng request báo lỗi). create() không còn ghi dto.team nữa.
+    const adminTeamNames = isManagerOrAdmin ? (dto.team ?? '').trim() : '';
+    if (adminTeamNames) {
+      await this.assertAssignableTeamNames(adminTeamNames, dto.roles ?? []);
+    }
+
     const user = await this.create(dto);
     if (leaderTeamIds) {
       await assignUserToTeams(this.prisma, user.id, leaderTeamIds, callerId);
+    } else if (adminTeamNames) {
+      // ADMIN/MANAGER chọn/gõ (các) team qua multi-select khi tạo user mới — đi qua Team/TeamMember
+      // thật sự (LEADER: tự tạo/nhận team; role khác: chỉ gán vào team đã có sẵn) thay vì chỉ ghi
+      // chuỗi vào User.team. Không làm vậy thì editor-eligibility.ts sẽ không thấy họ thuộc team nào.
+      await assignUserToTeamsByName(this.prisma, user.id, adminTeamNames, user.roles, callerId);
     }
     return user;
   }
@@ -735,7 +754,6 @@ export class UsersService {
       // định "release" (dto.team === null) trước khi xoá field.
       const wantsRelease = dto.team === null;
       delete dto.team;
-      delete dto.team_leader_id;
 
       if (isUnclaimed) {
         // Claiming a not-yet-assigned member (e.g. a fresh Gmail signup) always attaches them to
@@ -750,11 +768,28 @@ export class UsersService {
       // reassignment decision — dto.team/team_leader_id đã bị xoá ở trên, giữ nguyên giá trị cũ.
     }
 
+    // dto.team !== undefined nghĩa là ADMIN/MANAGER thực sự đổi multi-select (kể cả xoá hết về
+    // rỗng) — undefined nghĩa là field không được gửi lên, không đụng tới team hiện có.
+    const shouldReplaceTeams = isManagerOrAdmin && dto.team !== undefined;
+    const teamNamesForUpdate = dto.team;
+    if (shouldReplaceTeams && teamNamesForUpdate) {
+      // Validate TRƯỚC this.update() — update() ghi dto.team vào User.team và sync sang các bảng
+      // checklist; nếu để replaceUserTeamsByName ném lỗi sau đó thì chuỗi team ma đã nằm lại.
+      const targetRoles = dto.roles?.length
+        ? dto.roles
+        : ((await this.prisma.user.findUnique({ where: { id: targetId }, select: { roles: true } }))?.roles ?? []);
+      await this.assertAssignableTeamNames(teamNamesForUpdate, targetRoles);
+    }
     const updated = await this.update(targetId, dto);
     if (claimToCallerId) {
       await assignUserToTeams(this.prisma, targetId, await getUserTeamIds(this.prisma, claimToCallerId), claimToCallerId);
     } else if (releaseTarget) {
       await clearUserTeams(this.prisma, targetId);
+    } else if (shouldReplaceTeams) {
+      // Cùng lý do như createHR(): ADMIN/MANAGER chọn/gõ (các) team qua multi-select khi sửa user —
+      // phải đi qua Team/TeamMember thật sự, và coi danh sách mới là TOÀN BỘ sự thật (team nào bị
+      // bỏ chọn thì user rời khỏi team đó).
+      await replaceUserTeamsByName(this.prisma, targetId, teamNamesForUpdate, updated.roles, callerId);
     }
     return updated;
   }

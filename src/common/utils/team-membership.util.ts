@@ -1,13 +1,39 @@
+import { BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { PrismaService } from '../prisma/prisma.service';
+
+/**
+ * Prisma client gốc HOẶC transaction client — mọi helper trong file nhận cả hai
+ * để có thể chạy bên trong $transaction (các luồng gán/thay team gồm nhiều bước
+ * ghi, lỗi giữa chừng không được để lại trạng thái dở dang).
+ */
+type Db = PrismaService | Prisma.TransactionClient;
+
+/** Mở transaction nếu nhận client gốc; nếu đã ở trong transaction thì chạy thẳng. */
+async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
+  if ('$transaction' in db) {
+    return (db as PrismaService).$transaction((tx) => fn(tx));
+  }
+  return fn(db);
+}
+
+/**
+ * Tách chuỗi "TeamA, TeamB" (multi-select FE join bằng dấu phẩy) thành mảng tên team.
+ * Dấu phẩy là ký tự phân cách nên tên team KHÔNG được chứa dấu phẩy — đã chặn ở
+ * CreateTeamDto và isValidNewOption phía FE.
+ */
+function parseTeamNames(teamNamesRaw: string | null | undefined): string[] {
+  return (teamNamesRaw ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 /**
  * Tính lại User.team (join tên các Team, phân cách dấu phẩy) và User.team_leader_id
  * (leader_id của một trong các Team) từ TeamMember hiện tại của user — giữ 2 cột phẳng
  * này luôn khớp với Team/TeamMember (nguồn sự thật) để API cũ không cần đổi hình dạng.
  */
-export async function recomputeUserTeamFields(prisma: PrismaService, userId: string): Promise<void> {
-  const memberships = await prisma.teamMember.findMany({
+export async function recomputeUserTeamFields(db: Db, userId: string): Promise<void> {
+  const memberships = await db.teamMember.findMany({
     where: { user_id: userId },
     include: { team: { select: { name: true, leader_id: true } } },
     orderBy: { team: { name: 'asc' } },
@@ -15,75 +41,234 @@ export async function recomputeUserTeamFields(prisma: PrismaService, userId: str
   const teamNames = memberships.map((m) => m.team.name);
   const teamString = teamNames.length ? teamNames.join(',') : null;
   const leaderId = memberships.find((m) => m.team.leader_id)?.team.leader_id ?? null;
-  await prisma.user.update({ where: { id: userId }, data: { team: teamString, team_leader_id: leaderId } });
+  await db.user.update({ where: { id: userId }, data: { team: teamString, team_leader_id: leaderId } });
+}
+
+/** Recompute field phái sinh cho nhiều user (bỏ trùng). */
+async function recomputeUsers(db: Db, userIds: Iterable<string>): Promise<void> {
+  for (const id of new Set(userIds)) {
+    await recomputeUserTeamFields(db, id);
+  }
+}
+
+/**
+ * Khi Team.leader_id đổi (thay leader / thu hồi leader), field phái sinh
+ * team_leader_id của TOÀN BỘ member trong team đó đều lệch — resync hết.
+ */
+async function resyncTeamMembers(db: Db, teamIds: string[]): Promise<void> {
+  if (!teamIds.length) return;
+  const memberships = await db.teamMember.findMany({
+    where: { team_id: { in: teamIds } },
+    select: { user_id: true },
+  });
+  await recomputeUsers(db, memberships.map((m) => m.user_id));
 }
 
 /** Id các Team mà user đang là TeamMember HOẶC là leader_id (dùng để nhân bản "team của tôi" khi leader tạo/claim member). */
-export async function getUserTeamIds(prisma: PrismaService, userId: string): Promise<string[]> {
+export async function getUserTeamIds(db: Db, userId: string): Promise<string[]> {
   const [memberships, ledTeams] = await Promise.all([
-    prisma.teamMember.findMany({ where: { user_id: userId }, select: { team_id: true } }),
-    prisma.team.findMany({ where: { leader_id: userId }, select: { id: true } }),
+    db.teamMember.findMany({ where: { user_id: userId }, select: { team_id: true } }),
+    db.team.findMany({ where: { leader_id: userId }, select: { id: true } }),
   ]);
   return [...new Set([...memberships.map((m) => m.team_id), ...ledTeams.map((t) => t.id)])];
 }
 
 /**
- * Đảm bảo user có dòng EditorKpi cho team + tháng hiện tại (chỉ tiêu mặc định 0) — nếu
- * chưa có, tạo mới; nếu đã có (dù ai set) thì giữ nguyên, không ghi đè số thật.
- * set_by_id bắt buộc phải là 1 User thật nên dùng chính người thực hiện thao tác gán team.
+ * Tạo sẵn EditorKpi (chỉ tiêu 0) tháng hiện tại cho các user-team CHƯA có dòng KPI —
+ * chỉ áp dụng cho user có role MEMBER (editor tiềm năng); tạo KPI cho ADMIN/MANAGER/
+ * LEADER chỉ làm bẩn bảng KPI vì họ không nhận task auto-assign.
+ * skipDuplicates dựa trên unique(user_id, team_id, month) nên không đè KPI thật đã set.
  */
-async function ensureEditorKpiForCurrentMonth(
-  prisma: PrismaService,
-  userId: string,
-  teamId: string,
+export async function seedEditorKpiForMembers(
+  db: Db,
+  userIds: string[],
+  teamIds: string[],
   setById: string,
 ): Promise<void> {
-  const month = DateTime.now().toFormat('yyyy-MM');
-  const existing = await prisma.editorKpi.findUnique({
-    where: { user_id_team_id_month: { user_id: userId, team_id: teamId, month } },
+  if (!userIds.length || !teamIds.length) return;
+  const memberUsers = await db.user.findMany({
+    where: { id: { in: userIds }, roles: { has: 'MEMBER' } },
+    select: { id: true },
   });
-  if (existing) return;
-  await prisma.editorKpi.create({
-    data: { user_id: userId, team_id: teamId, month, total_target: 0, set_by_id: setById },
+  if (!memberUsers.length) return;
+  const month = DateTime.now().toFormat('yyyy-MM');
+  await db.editorKpi.createMany({
+    data: memberUsers.flatMap((u) =>
+      teamIds.map((team_id) => ({ user_id: u.id, team_id, month, total_target: 0, set_by_id: setById })),
+    ),
+    skipDuplicates: true,
   });
 }
 
 /**
- * Gán user vào các Team (theo id) nếu chưa là member, rồi tính lại team/team_leader_id phái sinh.
- * Đồng thời tạo sẵn EditorKpi=0 cho tháng hiện tại ở mỗi team mới — để user "hiện diện" trong
- * team ngay (không bị auto-assign bỏ qua vì thiếu KPI), quản lý chỉ cần sửa lại số thật sau.
+ * Gán user vào các Team (theo id) nếu chưa là member, seed KPI nếu là MEMBER,
+ * rồi tính lại team/team_leader_id phái sinh. Chạy trong transaction.
  */
 export async function assignUserToTeams(
-  prisma: PrismaService,
+  db: Db,
   userId: string,
   teamIds: string[],
   setById: string,
 ): Promise<void> {
-  for (const teamId of teamIds) {
-    const existing = await prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } });
-    if (!existing) {
-      await prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } });
+  await inTransaction(db, async (tx) => {
+    if (teamIds.length) {
+      await tx.teamMember.createMany({
+        data: teamIds.map((team_id) => ({ team_id, user_id: userId })),
+        skipDuplicates: true,
+      });
+      await seedEditorKpiForMembers(tx, [userId], teamIds, setById);
     }
-    await ensureEditorKpiForCurrentMonth(prisma, userId, teamId, setById);
-  }
-  await recomputeUserTeamFields(prisma, userId);
+    await recomputeUserTeamFields(tx, userId);
+  });
 }
 
-/** Xoá toàn bộ TeamMember của user (giải phóng về pool chung), rồi tính lại team/team_leader_id (sẽ thành null). */
-export async function clearUserTeams(prisma: PrismaService, userId: string): Promise<void> {
-  await prisma.teamMember.deleteMany({ where: { user_id: userId } });
-  await recomputeUserTeamFields(prisma, userId);
+interface ResolvedTeams {
+  teamIds: string[];
+  /** Leader cũ của các team vừa bị user này thay — cần recompute field phái sinh của họ. */
+  displacedLeaderIds: string[];
+  /** Các team có leader_id vừa đổi — member của chúng cần resync team_leader_id phái sinh. */
+  leaderChangedTeamIds: string[];
+}
+
+/**
+ * Đổi tên team → id. Với LEADER: team chưa có thì tạo mới, team đã có thì user này
+ * trở thành leader (thay leader cũ — quyết định của ADMIN/MANAGER, nhưng leader cũ
+ * và member của team phải được resync, xem ResolvedTeams). Với role khác: chỉ nhận
+ * team ĐÃ tồn tại — tên lạ bị từ chối rõ ràng thay vì bỏ qua âm thầm (tránh việc
+ * User.team hiển thị một team không hề có trong Team/TeamMember).
+ */
+async function resolveTeamsByName(
+  tx: Db,
+  teamNames: string[],
+  userId: string,
+  roles: string[],
+): Promise<ResolvedTeams> {
+  const existing = await tx.team.findMany({
+    where: { name: { in: teamNames } },
+    select: { id: true, name: true, leader_id: true },
+  });
+
+  if (!roles.includes('LEADER')) {
+    const foundNames = new Set(existing.map((t) => t.name));
+    const missing = teamNames.filter((n) => !foundNames.has(n));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Đội nhóm không tồn tại: ${missing.join(', ')}. Chỉ Leader mới được tạo team mới.`,
+      );
+    }
+    return { teamIds: existing.map((t) => t.id), displacedLeaderIds: [], leaderChangedTeamIds: [] };
+  }
+
+  const byName = new Map(existing.map((t) => [t.name, t]));
+  const teamIds: string[] = [];
+  const displacedLeaderIds: string[] = [];
+  const leaderChangedTeamIds: string[] = [];
+  for (const name of teamNames) {
+    const current = byName.get(name);
+    if (current && current.leader_id !== userId) {
+      if (current.leader_id) displacedLeaderIds.push(current.leader_id);
+      leaderChangedTeamIds.push(current.id);
+    }
+    const team = await tx.team.upsert({
+      where: { name },
+      create: { name, leader_id: userId, is_active: true },
+      update: { leader_id: userId },
+    });
+    teamIds.push(team.id);
+  }
+  return { teamIds, displacedLeaderIds, leaderChangedTeamIds };
+}
+
+/**
+ * Dùng khi ADMIN/MANAGER TẠO MỚI user và chọn/gõ (các) tên team qua multi-select.
+ * Chỉ THÊM membership (user mới không có gì để gỡ). Toàn bộ chạy trong 1 transaction.
+ */
+export async function assignUserToTeamsByName(
+  db: Db,
+  userId: string,
+  teamNamesRaw: string | null | undefined,
+  roles: string[],
+  setById: string,
+): Promise<void> {
+  const teamNames = parseTeamNames(teamNamesRaw);
+  await inTransaction(db, async (tx) => {
+    if (!teamNames.length) {
+      await recomputeUserTeamFields(tx, userId);
+      return;
+    }
+    const { teamIds, displacedLeaderIds, leaderChangedTeamIds } = await resolveTeamsByName(tx, teamNames, userId, roles);
+    await tx.teamMember.createMany({
+      data: teamIds.map((team_id) => ({ team_id, user_id: userId })),
+      skipDuplicates: true,
+    });
+    await seedEditorKpiForMembers(tx, [userId], teamIds, setById);
+    await recomputeUserTeamFields(tx, userId);
+    await recomputeUsers(tx, displacedLeaderIds);
+    await resyncTeamMembers(tx, leaderChangedTeamIds);
+  });
+}
+
+/**
+ * Dùng khi ADMIN/MANAGER SỬA (các) team của user qua multi-select — danh sách mới là
+ * TOÀN BỘ sự thật: team bị bỏ chọn thì user rời membership, và nếu user đang là
+ * leader_id của team đó thì quyền leader cũng bị THU HỒI (leader_id = null) — mọi
+ * kiểm tra phân quyền đều dựa trên Team.leader_id nên không thu hồi là lỗ hổng thật.
+ * Toàn bộ chạy trong 1 transaction; mọi user bị ảnh hưởng đều được resync.
+ */
+export async function replaceUserTeamsByName(
+  db: Db,
+  userId: string,
+  teamNamesRaw: string | null | undefined,
+  roles: string[],
+  setById: string,
+): Promise<void> {
+  const teamNames = parseTeamNames(teamNamesRaw);
+  await inTransaction(db, async (tx) => {
+    const { teamIds, displacedLeaderIds, leaderChangedTeamIds } = teamNames.length
+      ? await resolveTeamsByName(tx, teamNames, userId, roles)
+      : { teamIds: [] as string[], displacedLeaderIds: [] as string[], leaderChangedTeamIds: [] as string[] };
+
+    // Thu hồi quyền leader ở các team không còn trong danh sách.
+    const revokedTeams = await tx.team.findMany({
+      where: { leader_id: userId, id: { notIn: teamIds } },
+      select: { id: true },
+    });
+    if (revokedTeams.length) {
+      await tx.team.updateMany({
+        where: { id: { in: revokedTeams.map((t) => t.id) } },
+        data: { leader_id: null },
+      });
+    }
+
+    await tx.teamMember.deleteMany({ where: { user_id: userId, team_id: { notIn: teamIds } } });
+    if (teamIds.length) {
+      await tx.teamMember.createMany({
+        data: teamIds.map((team_id) => ({ team_id, user_id: userId })),
+        skipDuplicates: true,
+      });
+      await seedEditorKpiForMembers(tx, [userId], teamIds, setById);
+    }
+
+    await recomputeUserTeamFields(tx, userId);
+    await recomputeUsers(tx, displacedLeaderIds);
+    await resyncTeamMembers(tx, [...leaderChangedTeamIds, ...revokedTeams.map((t) => t.id)]);
+  });
+}
+
+/** Xoá toàn bộ TeamMember của user (giải phóng về pool chung), thu hồi quyền leader nếu có, rồi tính lại field phái sinh. */
+export async function clearUserTeams(db: Db, userId: string): Promise<void> {
+  await replaceUserTeamsByName(db, userId, null, [], userId);
 }
 
 /** true nếu user không thuộc Team nào (dùng để xác định "unclaimed", thay cho check team === null cũ). */
-export async function isUserUnassigned(prisma: PrismaService, userId: string): Promise<boolean> {
-  const count = await prisma.teamMember.count({ where: { user_id: userId } });
+export async function isUserUnassigned(db: Db, userId: string): Promise<boolean> {
+  const count = await db.teamMember.count({ where: { user_id: userId } });
   return count === 0;
 }
 
 /** true nếu leaderId là leader_id của Team mà targetUserId đang là member (thay cho check team_leader_id === callerId cũ). */
-export async function isTeamLeaderOfUser(prisma: PrismaService, leaderId: string, targetUserId: string): Promise<boolean> {
-  const membership = await prisma.teamMember.findFirst({
+export async function isTeamLeaderOfUser(db: Db, leaderId: string, targetUserId: string): Promise<boolean> {
+  const membership = await db.teamMember.findFirst({
     where: { user_id: targetUserId, team: { leader_id: leaderId } },
     select: { id: true },
   });
