@@ -1435,5 +1435,99 @@ export class AiIntegrationService {
     });
   }
 
-}
+  /**
+   * Get available voices, including custom cloned ones and system ones.
+   */
+  async listVoices(): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/voice/list/`;
+    this.logger.log(`Calling AI Service: GET ${url}`);
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error listing voices: ${error.message}`);
+            throw new HttpException(
+              error.response?.data || 'Failed to list voices',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to list voices', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
 
+  /**
+   * Clone a voice from uploaded sample audio
+   */
+  async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
+    const FormData = require('form-data');
+    const url = `${this.aiServiceUrl}/api/voice/clone/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file.buffer, {
+        filename: file.originalname,
+        contentType: file.mimetype
+      });
+      formData.append('voice_name', voiceName);
+      formData.append('gender', gender);
+
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, formData, {
+          headers: formData.getHeaders(),
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error cloning voice: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to clone voice',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Generate Text-to-Speech using Minimax
+   */
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/voice/tts/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, {
+          text,
+          voice_id: voiceId,
+          speed,
+          pitch,
+          volume
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error in TTS: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to generate voice',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to generate voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+}
