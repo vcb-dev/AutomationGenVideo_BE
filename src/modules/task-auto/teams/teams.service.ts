@@ -5,6 +5,7 @@ import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from '../dto/team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../dto/catalog.dto'
 import { UserRole } from '@prisma/client'
+import { recomputeUserTeamFields } from '../../../common/utils/team-membership.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -20,39 +21,14 @@ export class TaskAutoTeamsService {
     _count: { select: { members: true, tasks: true } },
   }
 
-  private async syncFromUsers() {
-    const users = await this.prisma.user.findMany({
-      where: { team: { not: null }, is_active: true },
-      select: { id: true, roles: true, team: true },
-    })
-
-    const teamMap = new Map<string, { leader_id: string | null; memberIds: string[] }>()
-    for (const user of users) {
-      if (!user.team) continue
-      if (!teamMap.has(user.team)) teamMap.set(user.team, { leader_id: null, memberIds: [] })
-      const g = teamMap.get(user.team)!
-      g.memberIds.push(user.id)
-      if ((user.roles as string[]).includes('LEADER')) g.leader_id = user.id
-    }
-
-    for (const [name, { leader_id, memberIds }] of teamMap) {
-      const team = await this.prisma.team.upsert({
-        where: { name },
-        create: { name, leader_id, is_active: true },
-        update: { leader_id },
-      })
-
-      for (const userId of memberIds) {
-        const existing = await this.prisma.teamMember.findFirst({ where: { team_id: team.id, user_id: userId } })
-        if (!existing) {
-          await this.prisma.teamMember.create({ data: { team_id: team.id, user_id: userId } })
-        }
-      }
+  /** Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi Team/TeamMember. */
+  private async syncAffectedUsers(userIds: Iterable<string>) {
+    for (const userId of new Set(userIds)) {
+      await recomputeUserTeamFields(this.prisma, userId)
     }
   }
 
   async findAll() {
-    await this.syncFromUsers()
     return this.prisma.team.findMany({
       include: this.teamInclude,
       orderBy: { name: 'asc' },
@@ -80,7 +56,7 @@ export class TaskAutoTeamsService {
     const existing = await this.prisma.team.findUnique({ where: { name: dto.name } })
     if (existing) throw new ConflictException('Team name already exists')
 
-    return this.prisma.team.create({
+    const team = await this.prisma.team.create({
       data: {
         name: dto.name,
         leader_id: dto.leader_id,
@@ -91,6 +67,9 @@ export class TaskAutoTeamsService {
       },
       include: this.teamInclude,
     })
+
+    await this.syncAffectedUsers([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])
+    return team
   }
 
   async update(id: string, dto: UpdateTeamDto, userId: string, userRoles: string[]) {
@@ -104,6 +83,8 @@ export class TaskAutoTeamsService {
     }
 
     const { member_ids, ...rest } = dto
+    const previousMemberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
+    const previousLeaderId = team.leader_id
 
     if (isLeaderOnly) {
       if (member_ids !== undefined)    throw new ForbiddenException('LEADER không được thay đổi danh sách thành viên')
@@ -121,16 +102,27 @@ export class TaskAutoTeamsService {
       ])
     }
 
-    return this.prisma.team.update({
+    const updated = await this.prisma.team.update({
       where: { id },
       data: rest,
       include: this.teamInclude,
     })
+
+    await this.syncAffectedUsers([
+      ...previousMemberIds,
+      ...(member_ids ?? []),
+      ...(previousLeaderId ? [previousLeaderId] : []),
+      ...(updated.leader_id ? [updated.leader_id] : []),
+    ])
+
+    return updated
   }
 
   async remove(id: string) {
-    await this.findOne(id)
+    const team = await this.findOne(id)
+    const memberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
     await this.prisma.team.delete({ where: { id } })
+    await this.syncAffectedUsers(memberIds)
     return { success: true }
   }
 
@@ -138,13 +130,16 @@ export class TaskAutoTeamsService {
     await this.findOne(teamId)
     const existing = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (existing) throw new ConflictException('User is already a member')
-    return this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+    const member = await this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+    await this.syncAffectedUsers([userId])
+    return member
   }
 
   async removeMember(teamId: string, userId: string) {
     const member = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (!member) throw new NotFoundException('Member not found in team')
     await this.prisma.teamMember.delete({ where: { id: member.id } })
+    await this.syncAffectedUsers([userId])
     return { success: true }
   }
 
