@@ -213,19 +213,20 @@ export async function createTasksFromAssignments(
         const task = await tx.task.create({
           data: {
             team_id: teamId,
-            content_id:
-              pair.contentSource === "global" ? pair.contentId : null,
+            content_id: pair.contentSource === "global" ? pair.contentId : null,
             editor_content_id:
               pair.contentSource === "personal" ? pair.contentId : null,
             team_content_id:
               pair.contentSource === "team" ? pair.contentId : null,
-            product_id:
-              pair.productSource === "global" ? pair.productId : null,
+            product_id: pair.productSource === "global" ? pair.productId : null,
             editor_product_id:
               pair.productSource === "personal" ? pair.productId : null,
             team_product_id:
               pair.productSource === "team" ? pair.productId : null,
             content_line_id: pair.contentLineId,
+            product_line_id: pair.productLineId,
+            // SP kho team = SP có kế hoạch đẩy video
+            is_product_push: pair.productSource === "team",
             source_outro_id: resolveOutroSourceId(
               pair,
               editorId,

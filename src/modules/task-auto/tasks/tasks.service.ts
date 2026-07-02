@@ -196,7 +196,6 @@ export class TaskAutoTasksService {
     if (q.assignee_id) where.assignee_id = q.assignee_id;
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
-    if (q.task_type === "manual") where.task_type = "MANUAL";
     if (q.deadline_date) {
       where.deadline = {
         gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
@@ -642,8 +641,8 @@ export class TaskAutoTasksService {
           const id = a.content_line_id ?? a.product_line_id;
           if (!id) continue;
           const existing = merged.get(id);
-          if (existing) existing.weight += a.percent;
-          else merged.set(id, { id, name: line?.name ?? "—", weight: a.percent });
+          if (existing) existing.weight += a.quantity;
+          else merged.set(id, { id, name: line?.name ?? "—", weight: a.quantity });
         }
       }
       return [...merged.values()];

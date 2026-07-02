@@ -73,8 +73,8 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() month?: string        // format: 2025-06
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_date?: string // format: 2025-06-17
 
-  @ApiPropertyOptional({ enum: ['auto', 'extra', 'manual'] })
-  @IsIn(['auto', 'extra', 'manual']) @IsOptional() task_type?: 'auto' | 'extra' | 'manual'
+  @ApiPropertyOptional({ enum: ['auto', 'extra'] })
+  @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1

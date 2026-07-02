@@ -36,12 +36,19 @@ export type EditorCapacity = {
   productPlanned: number;
   contentTypeWeights: WeightedAllocation[];
   productTypeWeights: WeightedAllocation[];
+  // Quota còn lại trong tháng theo từng content/product line (quantity - đã giao),
+  // chỉ có giá trị khi editor có allocation riêng (contentTypeWeights/productTypeWeights > 0)
+  contentLineRemaining: Map<string, number>;
+  productLineRemaining: Map<string, number>;
 };
 
 export type EditorAssignmentHistory = {
   assignedPairKeys: Set<string>;
   assignedContentKeys: Set<string>;
-  teamProductTasksThisMonth: number;
+  // SP team riêng biệt đã đẩy trong tháng (đếm theo sản phẩm, không phải số task)
+  pushedProductIds: Set<string>;
+  // Phần đẩy trước hôm nay — giữ daily target ổn định khi chạy nhiều lần trong ngày
+  pushedProductIdsBeforeToday: Set<string>;
 };
 
 // ── Assignment ────────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ export async function loadEligibleEditors(
                   type: true,
                   content_line_id: true,
                   product_line_id: true,
-                  percent: true,
+                  quantity: true,
                 },
               },
             },
@@ -56,7 +56,12 @@ export async function loadEligibleEditors(
   const todayStart = now.startOf("day").toJSDate();
 
   // Đếm task theo team cụ thể → mỗi team assign độc lập, editor đa-team không bị ảnh hưởng chéo
-  const [monthlyTaskCounts, todayTaskCounts] = await Promise.all([
+  const [
+    monthlyTaskCounts,
+    todayTaskCounts,
+    monthlyByContentLine,
+    monthlyByProductLine,
+  ] = await Promise.all([
     prisma.task.groupBy({
       by: ["assignee_id"],
       where: {
@@ -79,6 +84,28 @@ export async function loadEligibleEditors(
       },
       _count: { id: true },
     }),
+    prisma.task.groupBy({
+      by: ["assignee_id", "content_line_id"],
+      where: {
+        assignee_id: { in: userIds },
+        team_id: teamId,
+        task_type: { not: "EXTRA" },
+        assigned_at: { gte: monthStart },
+        status: { not: "CANCELLED" },
+      },
+      _count: { id: true },
+    }),
+    prisma.task.groupBy({
+      by: ["assignee_id", "product_line_id"],
+      where: {
+        assignee_id: { in: userIds },
+        team_id: teamId,
+        task_type: { not: "EXTRA" },
+        assigned_at: { gte: monthStart },
+        status: { not: "CANCELLED" },
+      },
+      _count: { id: true },
+    }),
   ]);
 
   const monthlyTaskCountMap = new Map(
@@ -87,6 +114,26 @@ export async function loadEligibleEditors(
   const todayTaskCountMap = new Map(
     todayTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
   );
+
+  // editorId -> (lineId -> count đã giao trong tháng)
+  const contentLineCountByEditor = new Map<string, Map<string, number>>();
+  for (const r of monthlyByContentLine) {
+    const editorId = r.assignee_id!;
+    if (!contentLineCountByEditor.has(editorId))
+      contentLineCountByEditor.set(editorId, new Map());
+    contentLineCountByEditor
+      .get(editorId)!
+      .set(r.content_line_id!, r._count.id);
+  }
+  const productLineCountByEditor = new Map<string, Map<string, number>>();
+  for (const r of monthlyByProductLine) {
+    const editorId = r.assignee_id!;
+    if (!productLineCountByEditor.has(editorId))
+      productLineCountByEditor.set(editorId, new Map());
+    productLineCountByEditor
+      .get(editorId)!
+      .set(r.product_line_id!, r._count.id);
+  }
 
   const editors: EditorCapacity[] = [];
 
@@ -113,13 +160,29 @@ export async function loadEligibleEditors(
 
     const contentTypeWeights: WeightedAllocation[] = (kpi.allocations ?? [])
       .filter((a) => a.type === "CONTENT_LINE" && a.content_line_id)
-      .map((a) => ({ key: a.content_line_id!, weight: a.percent }))
+      .map((a) => ({ key: a.content_line_id!, weight: a.quantity }))
       .filter((i) => i.weight > 0);
 
     const productTypeWeights: WeightedAllocation[] = (kpi.allocations ?? [])
       .filter((a) => a.type === "PRODUCT_LINE" && a.product_line_id)
-      .map((a) => ({ key: a.product_line_id!, weight: a.percent }))
+      .map((a) => ({ key: a.product_line_id!, weight: a.quantity }))
       .filter((i) => i.weight > 0);
+
+    const contentDoneByLine = contentLineCountByEditor.get(u.id) ?? new Map();
+    const contentLineRemaining = new Map(
+      contentTypeWeights.map((w) => [
+        w.key,
+        Math.max(0, w.weight - (contentDoneByLine.get(w.key) ?? 0)),
+      ]),
+    );
+
+    const productDoneByLine = productLineCountByEditor.get(u.id) ?? new Map();
+    const productLineRemaining = new Map(
+      productTypeWeights.map((w) => [
+        w.key,
+        Math.max(0, w.weight - (productDoneByLine.get(w.key) ?? 0)),
+      ]),
+    );
 
     editors.push({
       userId: u.id,
@@ -128,6 +191,8 @@ export async function loadEligibleEditors(
       productPlanned: kpi.product_planned ?? 0,
       contentTypeWeights,
       productTypeWeights,
+      contentLineRemaining,
+      productLineRemaining,
     });
   }
 
