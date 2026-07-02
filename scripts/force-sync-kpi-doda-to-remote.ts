@@ -90,13 +90,13 @@ async function main() {
   console.log(`📊 Aggregated Data: ${finalData.length} editor-day records.`);
 
   if (fullReplace && !skipTruncate) {
-    console.log('🗑️  Clearing lark_kpi_do_da_editor (batched DELETE)...');
-    const removed = await deleteTableInBatches(REMOTE_DB_URL, 'lark_kpi_do_da_editor', 200, (n) =>
+    console.log('🗑️  Clearing kpi_do_da_editor (batched DELETE)...');
+    const removed = await deleteTableInBatches(REMOTE_DB_URL, 'kpi_do_da_editor', 200, (n) =>
       console.log(`   → deleted ${n} rows`),
     );
-    console.log(`🗑️  Cleared lark_kpi_do_da_editor (${removed} rows)`);
+    console.log(`🗑️  Cleared kpi_do_da_editor (${removed} rows)`);
   } else if (fullReplace && skipTruncate) {
-    console.log('⏭️  Skip clear lark_kpi_do_da_editor (SYNC_SKIP_TRUNCATE=1)');
+    console.log('⏭️  Skip clear kpi_do_da_editor (SYNC_SKIP_TRUNCATE=1)');
   }
 
   try {
@@ -119,10 +119,10 @@ async function main() {
         try {
           await withRemoteClient(REMOTE_DB_URL, async (prisma) => {
             if (fullReplace) {
-              await prisma.larkKpiDoDaEditor.createMany({ data });
+              await prisma.kpiDoDaEditor.createMany({ data });
             } else {
               for (const row of data) {
-                await prisma.larkKpiDoDaEditor.upsert({
+                await prisma.kpiDoDaEditor.upsert({
                   where: { id: row.id },
                   create: row,
                   update: { completed_day: row.completed_day, month: row.month },

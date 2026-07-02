@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -26,13 +27,44 @@ export async function getUserTeamIds(prisma: PrismaService, userId: string): Pro
   return [...new Set([...memberships.map((m) => m.team_id), ...ledTeams.map((t) => t.id)])];
 }
 
-/** Gán user vào các Team (theo id) nếu chưa là member, rồi tính lại team/team_leader_id phái sinh. */
-export async function assignUserToTeams(prisma: PrismaService, userId: string, teamIds: string[]): Promise<void> {
+/**
+ * Đảm bảo user có dòng EditorKpi cho team + tháng hiện tại (chỉ tiêu mặc định 0) — nếu
+ * chưa có, tạo mới; nếu đã có (dù ai set) thì giữ nguyên, không ghi đè số thật.
+ * set_by_id bắt buộc phải là 1 User thật nên dùng chính người thực hiện thao tác gán team.
+ */
+async function ensureEditorKpiForCurrentMonth(
+  prisma: PrismaService,
+  userId: string,
+  teamId: string,
+  setById: string,
+): Promise<void> {
+  const month = DateTime.now().toFormat('yyyy-MM');
+  const existing = await prisma.editorKpi.findUnique({
+    where: { user_id_team_id_month: { user_id: userId, team_id: teamId, month } },
+  });
+  if (existing) return;
+  await prisma.editorKpi.create({
+    data: { user_id: userId, team_id: teamId, month, total_target: 0, set_by_id: setById },
+  });
+}
+
+/**
+ * Gán user vào các Team (theo id) nếu chưa là member, rồi tính lại team/team_leader_id phái sinh.
+ * Đồng thời tạo sẵn EditorKpi=0 cho tháng hiện tại ở mỗi team mới — để user "hiện diện" trong
+ * team ngay (không bị auto-assign bỏ qua vì thiếu KPI), quản lý chỉ cần sửa lại số thật sau.
+ */
+export async function assignUserToTeams(
+  prisma: PrismaService,
+  userId: string,
+  teamIds: string[],
+  setById: string,
+): Promise<void> {
   for (const teamId of teamIds) {
     const existing = await prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } });
     if (!existing) {
       await prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } });
     }
+    await ensureEditorKpiForCurrentMonth(prisma, userId, teamId, setById);
   }
   await recomputeUserTeamFields(prisma, userId);
 }

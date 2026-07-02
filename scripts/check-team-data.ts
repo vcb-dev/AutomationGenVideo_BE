@@ -22,7 +22,7 @@ async function main() {
     console.log(JSON.stringify(hdUsers, null, 2));
 
     console.log('\n=== HỒ ĐẠT - LARK_KPI (latest 3) ===');
-    const hdKpi = await prisma.larkKPI.findMany({
+    const hdKpi = await prisma.kpi.findMany({
       where: { OR: [
         { name: { contains: 'Hồ Đạt', mode: 'insensitive' } },
         { name: { contains: 'Ho Dat', mode: 'insensitive' } },
@@ -33,7 +33,7 @@ async function main() {
     console.log(JSON.stringify(hdKpi, null, 2));
 
     console.log('\n=== HỒ ĐẠT - LARK_KPI_DO_DA (latest 3) ===');
-    const hdDoda = await prisma.larkKpiDoDa.findMany({
+    const hdDoda = await prisma.kpiDoDa.findMany({
       where: { OR: [
         { name: { contains: 'Hồ Đạt', mode: 'insensitive' } },
         { name: { contains: 'Ho Dat', mode: 'insensitive' } },
@@ -52,7 +52,7 @@ async function main() {
     console.log(JSON.stringify(tmlUsers, null, 2));
 
     console.log('\n=== TRẦN MAI LINH - LARK_KPI (latest 3) ===');
-    const tmlKpi = await prisma.larkKPI.findMany({
+    const tmlKpi = await prisma.kpi.findMany({
       where: { name: { contains: 'Mai Linh', mode: 'insensitive' } },
       orderBy: { report_date: 'desc' }, take: 3,
       select: { name: true, team: true, completed_day: true, kpi_day: true, report_date: true, employee_id: true }
@@ -60,7 +60,7 @@ async function main() {
     console.log(JSON.stringify(tmlKpi, null, 2));
 
     console.log('\n=== TRẦN MAI LINH - LARK_KPI_DO_DA (latest 3) ===');
-    const tmlDoda = await prisma.larkKpiDoDa.findMany({
+    const tmlDoda = await prisma.kpiDoDa.findMany({
       where: { name: { contains: 'Mai Linh', mode: 'insensitive' } },
       orderBy: { report_date: 'desc' }, take: 3,
       select: { name: true, team: true, completed_day: true, kpi_day: true, report_date: true, employee_id: true }

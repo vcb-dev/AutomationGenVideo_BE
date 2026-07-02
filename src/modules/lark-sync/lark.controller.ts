@@ -198,7 +198,7 @@ export class LarkController {
 
     @Get('user-activity')
     @Header('Cache-Control', 'private, max-age=120, stale-while-revalidate=300')
-    @ApiOperation({ summary: 'Get combined user activity reports (LarkReport + LarkKPI)' })
+    @ApiOperation({ summary: 'Get combined user activity reports (ChecklistReport + Kpi)' })
     @ApiResponse({ status: 200, description: 'Returns combined user activity data with avatars from KPI.' })
     async getUserActivityReports(
         @Query('date') date?: string,

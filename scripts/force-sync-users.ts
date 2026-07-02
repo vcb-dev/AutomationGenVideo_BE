@@ -2,8 +2,8 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-    console.log('Fetching all records from lark_permissions...');
-    const permissions = await prisma.larkPermission.findMany();
+    console.log('Fetching all records from report_permissions...');
+    const permissions = await prisma.reportPermission.findMany();
     console.log(`Found ${permissions.length} records. Forcing into users table...`);
 
     let created = 0;

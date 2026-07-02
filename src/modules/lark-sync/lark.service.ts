@@ -133,21 +133,21 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     /**
-     * Bảng `lark_kpi_do_da` (model LarkKpiDoDa). Cùng hình delegate với `larkKPI` trong schema.
-     * Dùng unknown + LarkKPIDelegate để tránh lệch kiểu giữa IDE (client cũ/cache) và `npx prisma generate`.
+     * Bảng `kpi_do_da` (model KpiDoDa). Cùng hình delegate với `kpi` trong schema.
+     * Dùng unknown + KpiDelegate để tránh lệch kiểu giữa IDE (client cũ/cache) và `npx prisma generate`.
      */
-    private get prismaLarkKpiDoDa(): Prisma.LarkKPIDelegate {
-        return (this.prisma as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate }).larkKpiDoDa;
+    private get prismaKpiDoDa(): Prisma.KpiDelegate {
+        return (this.prisma as unknown as { kpiDoDa: Prisma.KpiDelegate }).kpiDoDa;
     }
 
     /** Bảng KPI Đồ Da tách riêng theo Người edit + Ngày edit. */
-    private get prismaLarkKpiDoDaEditor() {
-        return (this.prisma as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+    private get prismaKpiDoDaEditor() {
+        return (this.prisma as unknown as { kpiDoDaEditor: any }).kpiDoDaEditor;
     }
 
     /** Bảng KPI Global Indo. */
-    private get prismaLarkKpiGlobalIndo(): Prisma.LarkKPIDelegate {
-        return (this.prisma as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate }).larkKpiGlobalIndo;
+    private get prismaKpiGlobalIndo(): Prisma.KpiDelegate {
+        return (this.prisma as unknown as { kpiGlobalIndo: Prisma.KpiDelegate }).kpiGlobalIndo;
     }
 
     private remotePrismaClients = new Map<string, PrismaClient>();
@@ -368,10 +368,10 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         try {
             await this.withRetry(
                 async () => {
-                    await remote.larkKPI.deleteMany({});
+                    await remote.kpi.deleteMany({});
                     for (let i = 0; i < rows.length; i += CHUNK) {
                         const chunk = rows.slice(i, i + CHUNK);
-                        if (chunk.length) await remote.larkKPI.createMany({ data: chunk as any, skipDuplicates: true });
+                        if (chunk.length) await remote.kpi.createMany({ data: chunk as any, skipDuplicates: true });
                     }
                 },
                 maxRetries,
@@ -384,14 +384,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         }
     }
 
-    private async mirrorLarkKpiDoDaSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
+    private async mirrorKpiDoDaSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
         const remote = this.createRemotePrismaClient(url);
-        const delegate = (remote as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate | undefined }).larkKpiDoDa;
+        const delegate = (remote as unknown as { kpiDoDa: Prisma.KpiDelegate | undefined }).kpiDoDa;
         if (!delegate) {
             await remote.$disconnect().catch(() => undefined);
-            this.logger.warn('[KPI DoDa] Remote Prisma has no larkKpiDoDa delegate — skip mirror.');
+            this.logger.warn('[KPI DoDa] Remote Prisma has no kpiDoDa delegate — skip mirror.');
             return 0;
         }
         const maxRetries = this.getMirrorRetryCount();
@@ -406,7 +406,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     }
                 },
                 maxRetries,
-                'mirrorLarkKpiDoDaSnapshotToServer',
+                'mirrorKpiDoDaSnapshotToServer',
             );
             this.logger.log(`[KPI DoDa] Mirrored ${rows.length} lark_kpi_do_da row(s) to remote DB.`);
             return rows.length;
@@ -415,14 +415,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         }
     }
 
-    private async mirrorLarkKpiDoDaEditorSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
+    private async mirrorKpiDoDaEditorSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
         const remote = this.createRemotePrismaClient(url);
-        const delegate = (remote as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor;
+        const delegate = (remote as unknown as { kpiDoDaEditor: any }).kpiDoDaEditor;
         if (!delegate) {
             await remote.$disconnect().catch(() => undefined);
-            this.logger.warn('[KPI DoDa Editor] Remote Prisma has no larkKpiDoDaEditor delegate — skip mirror.');
+            this.logger.warn('[KPI DoDa Editor] Remote Prisma has no kpiDoDaEditor delegate — skip mirror.');
             return 0;
         }
         const maxRetries = this.getMirrorRetryCount();
@@ -437,7 +437,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     }
                 },
                 maxRetries,
-                'mirrorLarkKpiDoDaEditorSnapshotToServer',
+                'mirrorKpiDoDaEditorSnapshotToServer',
             );
             this.logger.log(`[KPI DoDa Editor] Mirrored ${rows.length} row(s) to remote DB.`);
             return rows.length;
@@ -529,8 +529,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const CHUNK = 400;
         const maxRetries = this.getMirrorRetryCount();
         const remote = this.createRemotePrismaClient(url);
-        const remoteDoDa = (remote as unknown as { larkKpiDoDa?: Prisma.LarkKPIDelegate }).larkKpiDoDa;
-        const remoteDoDaEditor = (remote as unknown as { larkKpiDoDaEditor?: any }).larkKpiDoDaEditor;
+        const remoteDoDa = (remote as unknown as { kpiDoDa?: Prisma.KpiDelegate }).kpiDoDa;
+        const remoteDoDaEditor = (remote as unknown as { kpiDoDaEditor?: any }).kpiDoDaEditor;
 
         try {
             const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
@@ -540,17 +540,17 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 lte: new Date(`${KPI_MAX_DATE_KEY}T23:59:59.999Z`),
             };
             const [kpis, kpiDoDaRows, kpiDoDaEditorRows] = await Promise.all([
-                this.prisma.larkKPI.findMany({ where: { report_date: kpiDateWindow } }),
-                this.prismaLarkKpiDoDa.findMany({ where: { report_date: kpiDateWindow } }),
-                this.prismaLarkKpiDoDaEditor.findMany({ where: { report_date: kpiDateWindow } }),
+                this.prisma.kpi.findMany({ where: { report_date: kpiDateWindow } }),
+                this.prismaKpiDoDa.findMany({ where: { report_date: kpiDateWindow } }),
+                this.prismaKpiDoDaEditor.findMany({ where: { report_date: kpiDateWindow } }),
             ]);
 
             await this.withRetry(
                 async () => {
-                    await remote.larkKPI.deleteMany({});
+                    await remote.kpi.deleteMany({});
                     for (let i = 0; i < kpis.length; i += CHUNK) {
                         const chunk = kpis.slice(i, i + CHUNK);
-                        if (chunk.length) await remote.larkKPI.createMany({ data: chunk as any, skipDuplicates: true });
+                        if (chunk.length) await remote.kpi.createMany({ data: chunk as any, skipDuplicates: true });
                     }
                 },
                 maxRetries,
@@ -570,7 +570,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     'syncLocalKpiDoDaToServer',
                 );
             } else {
-                this.logger.warn('[Local->Server] Remote Prisma has no larkKpiDoDa delegate - skipped lark_kpi_do_da.');
+                this.logger.warn('[Local->Server] Remote Prisma has no kpiDoDa delegate - skipped lark_kpi_do_da.');
             }
 
             if (remoteDoDaEditor) {
@@ -595,7 +595,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     'syncLocalKpiDoDaEditorToServer',
                 );
             } else {
-                this.logger.warn('[Local->Server] Remote Prisma has no larkKpiDoDaEditor delegate - skipped lark_kpi_do_da_editor.');
+                this.logger.warn('[Local->Server] Remote Prisma has no kpiDoDaEditor delegate - skipped lark_kpi_do_da_editor.');
             }
 
             this.logger.log(
@@ -628,16 +628,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const remote = this.createRemotePrismaClient(url);
 
         try {
-            const rows = await remote.larkKPI.findMany();
+            const rows = await remote.kpi.findMany();
             this.logger.log(`[Server->Local] Lấy ${rows.length} lark_kpi row(s) từ server...`);
 
             await this.withRetry(
                 async () => {
-                    await this.prisma.larkKPI.deleteMany({});
+                    await this.prisma.kpi.deleteMany({});
                     for (let i = 0; i < rows.length; i += CHUNK) {
                         const chunk = rows.slice(i, i + CHUNK);
                         if (chunk.length) {
-                            await this.prisma.larkKPI.createMany({ data: chunk as any, skipDuplicates: true });
+                            await this.prisma.kpi.createMany({ data: chunk as any, skipDuplicates: true });
                         }
                     }
                 },
@@ -735,8 +735,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     async handleCleanup() {
         this.logger.log('Starting scheduled data cleanup for Lark tables (daily at 12:20)...');
         try {
-            // Cleanup Logic for LarkKPI
-            const kpiResult = await this.prisma.larkKPI.deleteMany({
+            // Cleanup Logic for Kpi
+            const kpiResult = await this.prisma.kpi.deleteMany({
                 where: {
                     OR: [
                         { name: null },
@@ -748,8 +748,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 }
             });
 
-            // Cleanup Logic for LarkReport
-            const reportResult = await this.prisma.larkReport.deleteMany({
+            // Cleanup Logic for ChecklistReport
+            const reportResult = await this.prisma.checklistReport.deleteMany({
                 where: {
                     OR: [
                         { name: { equals: 'Unknown' } },
@@ -810,7 +810,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 if (!reportData.name || reportData.name === 'Unknown') continue;
 
-                await this.prisma.larkReport.upsert({
+                await this.prisma.checklistReport.upsert({
                     where: { id: reportData.id },
                     update: {
                         name: reportData.name,
@@ -967,7 +967,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             duplicateOr.push({ name: { equals: String(name).trim(), mode: 'insensitive' as any } });
         }
         if (duplicateOr.length > 0) {
-            const existingTraffic = await this.prisma.larkTraffic.findFirst({
+            const existingTraffic = await this.prisma.trafficReport.findFirst({
                 where: {
                     date: { gte: bounds.start, lte: bounds.end },
                     OR: duplicateOr,
@@ -1058,7 +1058,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         try {
             // Batch insert all rows in a single round-trip
             if (recordsToCreate.length > 0) {
-                await this.prisma.larkTraffic.createMany({
+                await this.prisma.trafficReport.createMany({
                     data: recordsToCreate,
                     skipDuplicates: true,
                 });
@@ -1158,7 +1158,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
         // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update.
         // Không lọc theo team — cùng 1 người chỉ có 1 checklist/ngày dù team thay đổi.
-        const existing = await this.prisma.larkReport.findFirst({
+        const existing = await this.prisma.checklistReport.findFirst({
             where: {
                 date: { gte: bounds.start, lte: bounds.end },
                 OR: [
@@ -1181,7 +1181,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             updated_at: new Date(),
         };
 
-        await this.prisma.larkReport.upsert({
+        await this.prisma.checklistReport.upsert({
             where: { id: reportId },
             create: { ...data, created_at: new Date() },
             update: data
@@ -1247,7 +1247,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Helper to get all reports from DB (for controller)
     async getReportData() {
-        return this.prisma.larkReport.findMany({
+        return this.prisma.checklistReport.findMany({
             orderBy: { created_at: 'desc' },
             take: 1000,
             select: { id: true, name: true, team: true, date: true, email: true, role: true, answers: true, created_at: true, updated_at: true },
@@ -1299,7 +1299,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     // Clear all larkReport data
     async clearAllReports() {
         this.logger.log('Clearing all larkReport data...');
-        const result = await this.prisma.larkReport.deleteMany({});
+        const result = await this.prisma.checklistReport.deleteMany({});
         this.logger.log(`Deleted ${result.count} records from larkReport`);
         return result;
     }
@@ -1367,14 +1367,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         return records;
     }
 
-    private async mirrorLarkKpiGlobalIndoSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
+    private async mirrorKpiGlobalIndoSnapshotToServer(rows: Record<string, unknown>[]): Promise<number> {
         const url = this.getRemoteMirrorDbUrl();
         if (!url) return 0;
         const remote = this.createRemotePrismaClient(url);
-        const delegate = (remote as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate | undefined }).larkKpiGlobalIndo;
+        const delegate = (remote as unknown as { kpiGlobalIndo: Prisma.KpiDelegate | undefined }).kpiGlobalIndo;
         if (!delegate) {
             await remote.$disconnect().catch(() => undefined);
-            this.logger.warn('[KPI Global Indo] Remote Prisma has no larkKpiGlobalIndo delegate — skip mirror.');
+            this.logger.warn('[KPI Global Indo] Remote Prisma has no kpiGlobalIndo delegate — skip mirror.');
             return 0;
         }
         const maxRetries = this.getMirrorRetryCount();
@@ -1389,7 +1389,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     }
                 },
                 maxRetries,
-                'mirrorLarkKpiGlobalIndoSnapshotToServer',
+                'mirrorKpiGlobalIndoSnapshotToServer',
             );
             this.logger.log(`[KPI Global Indo] Mirrored ${rows.length} row(s) to remote DB.`);
             return rows.length;
@@ -1418,9 +1418,9 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
         const targetUsers = targetClient ? targetClient.user : this.prisma.user;
         const targetDelegate = targetClient
-            ? (targetClient as unknown as { larkKpiGlobalIndo: Prisma.LarkKPIDelegate | undefined }).larkKpiGlobalIndo
-            : this.prismaLarkKpiGlobalIndo;
-        if (!targetDelegate) throw new Error('[KPI Global Indo] Target Prisma has no larkKpiGlobalIndo delegate.');
+            ? (targetClient as unknown as { kpiGlobalIndo: Prisma.KpiDelegate | undefined }).kpiGlobalIndo
+            : this.prismaKpiGlobalIndo;
+        if (!targetDelegate) throw new Error('[KPI Global Indo] Target Prisma has no kpiGlobalIndo delegate.');
 
         const normKey = (s: string) =>
             String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ');
@@ -1635,7 +1635,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             });
 
             // ── Bước 4: Lưu vào DB
-            const delegate = targetDelegate as Prisma.LarkKPIDelegate;
+            const delegate = targetDelegate as Prisma.KpiDelegate;
             await delegate.deleteMany({});
             if (rows.length > 0) {
                 const CHUNK = 500;
@@ -1645,7 +1645,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
             let mirroredRemote = 0;
             if (!targetClient && !options?.skipRemoteMirror) {
-                try { mirroredRemote = await this.mirrorLarkKpiGlobalIndoSnapshotToServer(rows); }
+                try { mirroredRemote = await this.mirrorKpiGlobalIndoSnapshotToServer(rows); }
                 catch (e) { this.logger.error('[KPI Global Indo] Mirror failed', e); }
             }
 
@@ -3125,7 +3125,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
         const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
         const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
-        const targetLarkKPI = targetClient ? targetClient.larkKPI : this.prisma.larkKPI;
+        const targetKpi = targetClient ? targetClient.kpi : this.prisma.kpi;
         const targetUsers = targetClient ? targetClient.user : this.prisma.user;
         const isOnStatus = (raw: unknown): boolean => {
             const s = String(raw || '')
@@ -3145,7 +3145,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             }
 
             // We now use upsert to avoid clearing table and causing downtime/data loss
-            // await targetLarkKPI.deleteMany({});
+            // await targetKpi.deleteMany({});
 
             let syncedCount = 0;
             let skippedOutsideDateWindow = 0;
@@ -3208,7 +3208,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     if (sysMatch.employee_status) kpiData.employee_status = sysMatch.employee_status;
                 }
 
-                // LarkKPI (traffic teams): chỉ filter employee status khi match được user trong DB.
+                // Kpi (traffic teams): chỉ filter employee status khi match được user trong DB.
                 // KHÔNG dùng kpiData.state vì đó là trạng thái task (Hoàn thành/Đang làm),
                 // KHÔNG phải trạng thái nhân viên (ON/OFF/Đang hoạt động).
                 if (sysMatch?.employee_status && !isOnStatus(sysMatch.employee_status)) {
@@ -3257,11 +3257,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 this.logger.log(`[KPI] Transactionally replacing ${kpiRecordsToInsert.length} records...`);
 
                 // PgBouncer transaction mode: Xóa toàn bộ trước
-                await targetLarkKPI.deleteMany({});
+                await targetKpi.deleteMany({});
                 
                 // Sau đó ghi mới tuần tự (sequential) để tránh chiếm dụng quá nhiều slot kết nối của PgBouncer cùng lúc
                 for (let i = 0; i < kpiRecordsToInsert.length; i += CHUNK) {
-                    await targetLarkKPI.createMany({
+                    await targetKpi.createMany({
                         data: kpiRecordsToInsert.slice(i, i + CHUNK),
                         skipDuplicates: true
                     });
@@ -3312,21 +3312,21 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const targetClient = directDbUrl ? this.createRemotePrismaClient(directDbUrl) : null;
         const targetUsers = targetClient ? targetClient.user : this.prisma.user;
         const targetDoDa = targetClient
-            ? (targetClient as unknown as { larkKpiDoDa: Prisma.LarkKPIDelegate | undefined }).larkKpiDoDa
-            : this.prismaLarkKpiDoDa;
+            ? (targetClient as unknown as { kpiDoDa: Prisma.KpiDelegate | undefined }).kpiDoDa
+            : this.prismaKpiDoDa;
         const targetDoDaEditor = targetClient
-            ? (targetClient as unknown as { larkKpiDoDaEditor: any }).larkKpiDoDaEditor
-            : this.prismaLarkKpiDoDaEditor;
+            ? (targetClient as unknown as { kpiDoDaEditor: any }).kpiDoDaEditor
+            : this.prismaKpiDoDaEditor;
         if (!this.KPI_DODA_BASE_ID || !this.KPI_DODA_TABLE_ID) {
             this.logger.warn('[KPI DoDa] LARK_KPI_DODA_BASE_ID / LARK_KPI_DODA_TABLE_ID chưa cấu hình — bỏ qua sync.');
             return { synced: 0, total: 0, skippedBeforeMinDate: 0, samples: [], allKeys: [] };
         }
         const isDoDaEditKpiTable = this.KPI_DODA_TABLE_ID === 'tblPIc4EQjd2wfAa';
         if (!targetDoDa && !isDoDaEditKpiTable) {
-            throw new Error('[KPI DoDa] Target Prisma has no larkKpiDoDa delegate.');
+            throw new Error('[KPI DoDa] Target Prisma has no kpiDoDa delegate.');
         }
         if (!targetDoDaEditor && isDoDaEditKpiTable) {
-            throw new Error('[KPI DoDa] Target Prisma has no larkKpiDoDaEditor delegate.');
+            throw new Error('[KPI DoDa] Target Prisma has no kpiDoDaEditor delegate.');
         }
 
         try {
@@ -3617,7 +3617,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     syncedCount = editorRows.length;
                 }
             } else {
-                const doDaDelegate = targetDoDa as Prisma.LarkKPIDelegate;
+                const doDaDelegate = targetDoDa as Prisma.KpiDelegate;
                 await doDaDelegate.deleteMany({});
                 if (rows.length > 0) {
                     const CHUNK = 500;
@@ -3633,8 +3633,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             if (!targetClient && !options?.skipRemoteMirror) {
                 try {
                     mirroredRemote = isDoDaEditKpiTable
-                        ? await this.mirrorLarkKpiDoDaEditorSnapshotToServer(editorRows)
-                        : await this.mirrorLarkKpiDoDaSnapshotToServer(rows);
+                        ? await this.mirrorKpiDoDaEditorSnapshotToServer(editorRows)
+                        : await this.mirrorKpiDoDaSnapshotToServer(rows);
                 } catch (mirrorErr) {
                     this.logger.error('[KPI DoDa] Mirror to SERVER_DATABASE_URL failed — local DoDa KPI table is already updated', mirrorErr);
                 }
@@ -3907,7 +3907,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             
             // Fetch both data and total count in parallel
             const [data, total] = await Promise.all([
-                this.prisma.larkKPI.findMany({
+                this.prisma.kpi.findMany({
                     orderBy: { report_date: 'desc' },
                     skip,
                     take: size,
@@ -3927,7 +3927,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         tag: true,
                     }
                 }),
-                this.prisma.larkKPI.count()
+                this.prisma.kpi.count()
             ]);
 
             return {
@@ -3947,11 +3947,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     async getKPIDoDaData() {
         const isDoDaEditorKpi = this.KPI_DODA_TABLE_ID === 'tblPIc4EQjd2wfAa';
         if (isDoDaEditorKpi) {
-            return this.prismaLarkKpiDoDaEditor.findMany({
+            return this.prismaKpiDoDaEditor.findMany({
                 orderBy: [{ report_date: 'desc' }, { editor_name: 'asc' }],
             });
         }
-        return this.prismaLarkKpiDoDa.findMany({
+        return this.prismaKpiDoDa.findMany({
             orderBy: { report_date: 'desc' },
         });
     }
@@ -3969,7 +3969,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         this.logger.log('✅ KPI cache invalidated');
     }
 
-    // Get combined user activity reports (LarkReport + LarkKPI)
+    // Get combined user activity reports (ChecklistReport + Kpi)
     async getUserActivityReports(filters?: { date?: string; startDate?: string; endDate?: string; team?: string; requesterEmail?: string; timeType?: string }) {
         // ─── PERF: Shared cache key (không include email) ────────────────────────────
         // Trước đây: mỗi user có cache riêng → 70 users = 70 queries nặng song song.
@@ -3997,7 +3997,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 }
                 let team = sysUser?.team || null;
                 if (!team) {
-                    const recentKpis = await this.prisma.larkKPI.findMany({
+                    const recentKpis = await this.prisma.kpi.findMany({
                         where: { OR: [{ state: { not: 'off' } }, { state: null }] },
                         select: { team: true, employee_data: true },
                         orderBy: { report_date: 'desc' },
@@ -4403,8 +4403,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     dailyReportKpis,
                     monthlyReportKpis,
                 ] = await Promise.all([
-                    this.prisma.larkReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } }),
-                    this.prisma.larkKPI.findMany({
+                    this.prisma.checklistReport.findMany({ where: { ...whereClause }, orderBy: { date: 'desc' } }),
+                    this.prisma.kpi.findMany({
                         where: {
                             OR: [
                                 { month: { in: monthsInRange.flatMap(m => m.formats) } },
@@ -4450,7 +4450,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                             link_image: true,
                         }
                     }),
-                    this.prismaLarkKpiDoDaEditor.findMany({
+                    this.prismaKpiDoDaEditor.findMany({
                         where: {
                             report_date: {
                                 gte: monthsInRange[0] ? getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start : larkKpiStartOfDay,
@@ -4462,12 +4462,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         where: { status: 'Đang hoạt động' },
                         select: { owner: true, team_traffic: true }
                     }),
-                    (this.prisma as any).larkReportKPI.findMany({
+                    (this.prisma as any).reportKpi.findMany({
                         where: {
                             report_date: { gte: memberReportStart, lte: memberReportEnd },
                         }
                     }),
-                    (this.prisma as any).larkReportKPI.findMany({
+                    (this.prisma as any).reportKpi.findMany({
                         where: {
                             report_date: {
                                 gte: getVietnamMonthBounds(monthsInRange[0].year, monthsInRange[0].monthNum).start,
@@ -4484,16 +4484,16 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     reportsUnfilteredCount,
                     globalIndoKpisRaw,
                 ] = await Promise.all([
-                    this.prisma.larkTraffic.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
+                    this.prisma.trafficReport.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
                         WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%'
                           AND "content" IS NOT NULL AND "content" != '' AND "content" != '-'
                         ORDER BY "date" DESC, "created_at" DESC LIMIT 200
                     `),
-                    this.prisma.larkKPI.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
-                    this.prisma.larkReport.count({ where: whereClause }),
-                    this.prismaLarkKpiGlobalIndo.findMany({
+                    this.prisma.kpi.count({ where: { OR: [{ state: { not: 'off' } }, { state: null }], report_date: { gte: new Date('2026-03-01T00:00:00Z') } } }),
+                    this.prisma.checklistReport.count({ where: whereClause }),
+                    this.prismaKpiGlobalIndo.findMany({
                         where: {
                             OR: [
                                 { month: { in: monthsInRange.flatMap(m => m.formats) } },
@@ -6218,13 +6218,13 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const fullNameNorm = normalizeName(fullName);
 
         const [reportCandidates, trafficCandidates] = await Promise.all([
-            this.prisma.larkReport.findMany({
+            this.prisma.checklistReport.findMany({
                 where: {
                     date: { gte: startOfDay, lte: endOfDay }
                 },
                 orderBy: { created_at: 'desc' }
             }),
-            this.prisma.larkTraffic.findMany({
+            this.prisma.trafficReport.findMany({
                 where: {
                     date: { gte: startOfDay, lte: endOfDay }
                 },
@@ -6839,7 +6839,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 // If Admin/Manager has no team, pick first one from KPI to avoid 0s (for overall view)
                 if (!userTeam && (requesterRole === 'admin' || requesterRole === 'manager')) {
-                    const firstKpi = await this.prisma.larkKPI.findFirst({
+                    const firstKpi = await this.prisma.kpi.findFirst({
                         where: { team: { not: null } }
                     });
                     if (firstKpi) userTeam = firstKpi.team;
@@ -6847,7 +6847,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 // Nếu leader/member vẫn chưa có team, tìm thêm từ báo cáo / KPI theo email
                 if (!userTeam && (requesterRole === 'leader' || requesterRole === 'member')) {
-                    const lastReport = await this.prisma.larkReport.findFirst({
+                    const lastReport = await this.prisma.checklistReport.findFirst({
                         where: { email: { equals: requesterEmail, mode: 'insensitive' } },
                         orderBy: { created_at: 'desc' }
                     });
@@ -6904,7 +6904,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 }
 
                 // Fetch all KPI history for this user
-                const kpis = await this.prisma.larkKPI.findMany({
+                const kpis = await this.prisma.kpi.findMany({
                     where: {
                         name: { equals: userName.trim(), mode: 'insensitive' }
                     },
@@ -6938,7 +6938,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 const getKpisForMonth = async (mNum: number) => {
                     const formats = [`T${mNum}`, `Tháng ${mNum}`, `tháng ${mNum}`, `${mNum}`, mNum < 10 ? `0${mNum}` : `${mNum}`];
-                    return await this.prisma.larkKPI.findMany({
+                    return await this.prisma.kpi.findMany({
                         where: {
                             month: { in: formats },
                             OR: [{ state: { not: 'off' } }, { state: null }]
@@ -6950,7 +6950,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 // Fallback: If no KPIs for current month, find most recent month with data
                 if (allTeamKpis.length === 0) {
-                    const latestKpi = await this.prisma.larkKPI.findFirst({
+                    const latestKpi = await this.prisma.kpi.findFirst({
                         where: { month: { not: null } },
                         orderBy: { created_at: 'desc' }
                     });
@@ -6970,7 +6970,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
 
                 const [todayReport, employeeUser, userChannelCount] = await Promise.all([
-                    this.prisma.larkReport.findFirst({
+                    this.prisma.checklistReport.findFirst({
                         where: {
                             name: { equals: userName.trim(), mode: 'insensitive' },
                             date: { gte: startOfToday, lte: endOfToday }
@@ -7155,7 +7155,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         delete membersWhere.name;
                     }
 
-                    const allKpis = await this.prisma.larkKPI.findMany({
+                    const allKpis = await this.prisma.kpi.findMany({
                         where: {
                             ...membersWhere,
                             month: { in: monthFormats }
@@ -7167,7 +7167,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     // Use queryRaw for HuykChannel in case client is not yet updated with new model
                     const [huykChannels, recentReports] = await Promise.all([
                         this.prisma.$queryRawUnsafe<any[]>('SELECT * FROM "huyk_channels"').catch(() => []),
-                        this.prisma.larkReport.findMany({
+                        this.prisma.checklistReport.findMany({
                             where: {
                                 name: { in: allKpis.map(k => k.name).filter(Boolean) as string[] }
                             },
@@ -7773,12 +7773,12 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             const allData = records.map(r => this.mapRecordToListTask(r));
 
             // Xóa dữ liệu cũ trước
-            await this.prisma.larkListTask.deleteMany({});
+            await this.prisma.reportedTask.deleteMany({});
 
             // Ghi mới tuần tự theo chunk để tránh nghẽn pool kết nối của PgBouncer
             const CHUNK = 3000;
             for (let i = 0; i < allData.length; i += CHUNK) {
-                await this.prisma.larkListTask.createMany({
+                await this.prisma.reportedTask.createMany({
                     data: allData.slice(i, i + CHUNK),
                     skipDuplicates: true
                 });
@@ -7795,7 +7795,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async getListTaskData() {
-        return this.prisma.larkListTask.findMany({
+        return this.prisma.reportedTask.findMany({
             orderBy: { date: 'desc' },
             take: 500,
         });
@@ -7834,14 +7834,14 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
         // Fetch everything
         const [tasks, allKpisInDb, usersWithChannels, allChannels] = await Promise.all([
-            this.prisma.larkListTask.findMany({
+            this.prisma.reportedTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
                     status: { in: ['Done', 'Đã hoàn thành', 'Hoàn thành'] }
                 },
                 select: { id: true, content_type: true, employee_id: true, employee_name: true, employee_email: true, team: true }
             }),
-            this.prisma.larkKPI.findMany({
+            this.prisma.kpi.findMany({
                 where: {
                     OR: [
                         { month: { in: monthsInRange.flatMap(m => m.formats) } },
@@ -8000,7 +8000,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             isLeader: boolean
         }>();
 
-        // 1. First Pass: Base everyone on LarkKPI metadata and "completed_month" as requested
+        // 1. First Pass: Base everyone on Kpi metadata and "completed_month" as requested
         kpis.forEach(kpi => {
             const nameKey = kpi.name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
             const email = this.extractEmailFromKpi(kpi);
@@ -8058,7 +8058,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             }
         });
 
-        // 2. Second Pass: Distribute LarkListTask into Line Breakdown
+        // 2. Second Pass: Distribute ReportedTask into Line Breakdown
         tasks.forEach(task => {
             const email = (task.employee_email || '').toLowerCase().trim();
             const nameKey = task.employee_name?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
@@ -8177,7 +8177,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         const duration = end.getTime() - start.getTime();
         const prevStart = new Date(start.getTime() - duration - (24 * 60 * 60 * 1000));
         const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000));
-        const prevTasksCount = await this.prisma.larkListTask.count({
+        const prevTasksCount = await this.prisma.reportedTask.count({
             where: {
                 date: { gte: prevStart, lte: prevEnd },
                 ...(teamFilter ? { team: { contains: teamFilter, mode: 'insensitive' } } : {})
@@ -8214,6 +8214,6 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async clearAllListTasks() {
-        return this.prisma.larkListTask.deleteMany();
+        return this.prisma.reportedTask.deleteMany();
     }
 }

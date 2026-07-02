@@ -61,9 +61,6 @@ import { HashtagController } from './hashtag/hashtag.controller';
 import { TiktokCloneController } from './tiktok-clone/tiktok-clone.controller';
 import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
 
-// Extension serve (public — no auth)
-import { ExtensionController } from './extension/extension.controller';
-
 @Module({
   imports: [PrismaModule, MulterModule.register()],
   controllers: [
@@ -80,7 +77,6 @@ import { ExtensionController } from './extension/extension.controller';
     DraftsController,
     HashtagController,
     TiktokCloneController,
-    ExtensionController,
   ],
   providers: [
     // Core

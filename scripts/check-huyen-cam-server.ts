@@ -6,9 +6,9 @@ async function main() {
   const url = process.env.SERVER_DATABASE_URL;
   const prisma = new PrismaClient({ datasources: { db: { url } } });
 
-  console.log('🔍 Searching for "Huyền Cam" in LarkKPI on Server...');
-  
-  const records = await (prisma as any).larkKPI.findMany({
+  console.log('🔍 Searching for "Huyền Cam" in Kpi on Server...');
+
+  const records = await (prisma as any).kpi.findMany({
     where: {
       OR: [
         { name: { contains: 'Huyền Cam' } },

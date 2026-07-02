@@ -17,18 +17,18 @@ async function main() {
   try {
     console.log('⚠️ Đang XÓA DỮ LIỆU raw Lark trên SERVER DB để làm sạch dashboard...');
     
-    const kpi = await p.larkKPI.deleteMany({});
-    const kpiDoDa = await p.larkKpiDoDa.deleteMany({});
-    const kpiEditor = await (p as any).larkKpiDoDaEditor.deleteMany({});
-    const reports = await p.larkReport.deleteMany({});
-    const perms = await p.larkPermission.deleteMany({});
+    const kpi = await p.kpi.deleteMany({});
+    const kpiDoDa = await p.kpiDoDa.deleteMany({});
+    const kpiEditor = await (p as any).kpiDoDaEditor.deleteMany({});
+    const reports = await p.checklistReport.deleteMany({});
+    const perms = await p.reportPermission.deleteMany({});
 
     console.log(`✅ Đã dọn dẹp xong:`);
-    console.log(`   - lark_kpi: ${kpi.count}`);
-    console.log(`   - lark_kpi_do_da: ${kpiDoDa.count}`);
-    console.log(`   - lark_kpi_do_da_editor: ${kpiEditor.count}`);
-    console.log(`   - lark_reports: ${reports.count}`);
-    console.log(`   - lark_permissions: ${perms.count}`);
+    console.log(`   - kpi: ${kpi.count}`);
+    console.log(`   - kpi_do_da: ${kpiDoDa.count}`);
+    console.log(`   - kpi_do_da_editor: ${kpiEditor.count}`);
+    console.log(`   - checklist_reports: ${reports.count}`);
+    console.log(`   - report_permissions: ${perms.count}`);
     
     console.log('\n✨ Server hiện đã sạch dữ liệu raw. Bạn cần chạy lại lệnh Sync KPI/Reports để nạp lại dữ liệu mới nhất.');
   } catch (err: any) {

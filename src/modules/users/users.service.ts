@@ -252,13 +252,13 @@ export class UsersService {
         },
       });
 
-      // Sync LarkReport (match by email hoặc name)
+      // Sync ChecklistReport (match by email hoặc name)
       if (nameChanged || teamChanged || emailChanged) {
-        const larkReportWhere: any = {};
-        if (oldEmail) larkReportWhere.email = oldEmail;
+        const checklistReportWhere: any = {};
+        if (oldEmail) checklistReportWhere.email = oldEmail;
 
         if (oldEmail || oldName) {
-          await tx.larkReport.updateMany({
+          await tx.checklistReport.updateMany({
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
@@ -267,8 +267,8 @@ export class UsersService {
             },
           });
 
-          // Sync LarkReportKPI
-          await tx.larkReportKPI.updateMany({
+          // Sync ReportKpi
+          await tx.reportKpi.updateMany({
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
@@ -277,8 +277,8 @@ export class UsersService {
             },
           });
 
-          // Sync LarkListTask (match by email or name)
-          await tx.larkListTask.updateMany({
+          // Sync ReportedTask (match by email or name)
+          await tx.reportedTask.updateMany({
             where: oldEmail ? { employee_email: oldEmail } : { employee_name: oldName },
             data: {
               ...(nameChanged ? { employee_name: newName } : {}),
@@ -287,9 +287,9 @@ export class UsersService {
             },
           });
 
-          // Sync LarkKPI (match by name)
+          // Sync Kpi (match by name)
           if (nameChanged || teamChanged) {
-            await tx.larkKPI.updateMany({
+            await tx.kpi.updateMany({
               where: { name: oldName },
               data: {
                 ...(nameChanged ? { name: newName } : {}),
@@ -694,7 +694,7 @@ export class UsersService {
 
     const user = await this.create(dto);
     if (leaderTeamIds) {
-      await assignUserToTeams(this.prisma, user.id, leaderTeamIds);
+      await assignUserToTeams(this.prisma, user.id, leaderTeamIds, callerId);
     }
     return user;
   }
@@ -752,7 +752,7 @@ export class UsersService {
 
     const updated = await this.update(targetId, dto);
     if (claimToCallerId) {
-      await assignUserToTeams(this.prisma, targetId, await getUserTeamIds(this.prisma, claimToCallerId));
+      await assignUserToTeams(this.prisma, targetId, await getUserTeamIds(this.prisma, claimToCallerId), claimToCallerId);
     } else if (releaseTarget) {
       await clearUserTeams(this.prisma, targetId);
     }

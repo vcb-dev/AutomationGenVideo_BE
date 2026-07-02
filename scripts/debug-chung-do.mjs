@@ -13,14 +13,14 @@ async function main() {
     console.log('\n=== users table (matching "Chung") ===');
     users.forEach(u => console.log(`  name="${u.full_name}" | email=${u.email} | team="${u.team}" | emp_id=${u.employee_id} | status=${u.employee_status}`));
 
-    // 2. Find Chung Do in lark_kpi
-    const kpis = await db.larkKPI.findMany({
+    // 2. Find Chung Do in kpi
+    const kpis = await db.kpi.findMany({
         where: { name: { contains: 'Chung', mode: 'insensitive' } },
         select: { id: true, name: true, team: true, employee_id: true, employee_status: true, state: true, month: true },
         orderBy: { report_date: 'desc' },
         take: 10
     });
-    console.log('\n=== lark_kpi table (matching "Chung") ===');
+    console.log('\n=== kpi table (matching "Chung") ===');
     kpis.forEach(k => console.log(`  name="${k.name}" | team="${k.team}" | emp_id=${k.employee_id} | status=${k.employee_status} | state=${k.state} | month=${k.month}`));
 }
 

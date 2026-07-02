@@ -532,7 +532,7 @@ model SearchHistory {
   @@map("search_histories")
 }
 
-model LarkReport {
+model ChecklistReport {
   id         String    @id
   name       String
   team       String?
@@ -548,10 +548,10 @@ model LarkReport {
   @@index([date, team])
   @@index([email])
   @@index([name])
-  @@map("lark_reports")
+  @@map("checklist_reports")
 }
 
-model LarkKPI {
+model Kpi {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -591,11 +591,11 @@ model LarkKPI {
   @@index([name])
   @@index([employee_id])
   @@index([report_date(sort: Desc)])
-  @@map("lark_kpi")
+  @@map("kpi")
 }
 
 /// KPI Bitable Đồ Da (wiki metatops — bảng riêng, cấu trúc tương thích mapRecordToKPI)
-model LarkKpiDoDa {
+model KpiDoDa {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -633,11 +633,11 @@ model LarkKpiDoDa {
   @@index([team])
   @@index([name])
   @@index([employee_id])
-  @@map("lark_kpi_do_da")
+  @@map("kpi_do_da")
 }
 
 /// KPI Global Indo — sync từ bảng "Báo cáo KPI ngày" trong wiki External (dùng user_access_token).
-model LarkKpiGlobalIndo {
+model KpiGlobalIndo {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -672,11 +672,11 @@ model LarkKpiGlobalIndo {
 
   @@index([month])
   @@index([report_date])
-  @@map("lark_kpi_global_indo")
+  @@map("kpi_global_indo")
 }
 
 /// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
-model LarkKpiDoDaEditor {
+model KpiDoDaEditor {
   id              String   @id
   editor_name     String
   editor_name_key String?
@@ -696,10 +696,10 @@ model LarkKpiDoDaEditor {
   @@index([report_date_key, team])
   @@index([editor_name])
   @@index([editor_name_key, month])
-  @@map("lark_kpi_do_da_editor")
+  @@map("kpi_do_da_editor")
 }
 
-model LarkTraffic {
+model TrafficReport {
   id               String    @id
   date             DateTime?
   employee         Json?
@@ -742,7 +742,7 @@ model LarkTraffic {
   @@index([month])
   @@index([team])
   @@index([email])
-  @@map("lark_traffic")
+  @@map("traffic_reports")
 }
 
 model ReportOutstanding {
@@ -796,7 +796,7 @@ model Channel {
   @@map("huyk_channels")
 }
 
-model LarkPermission {
+model ReportPermission {
   id          String   @id
   email       String?
   name        String?
@@ -811,7 +811,7 @@ model LarkPermission {
 
   @@index([email])
   @@index([name])
-  @@map("lark_permissions")
+  @@map("report_permissions")
 }
 
 model video_management_reportsettings {
@@ -1023,7 +1023,7 @@ model video_management_appuser {
   @@index([email])
 }
 
-model LarkReportKPI {
+model ReportKpi {
   id              String    @id
   employee_id     String?
   name            String?
@@ -1052,10 +1052,10 @@ model LarkReportKPI {
   @@index([report_date, team])
   @@index([email])
   @@index([name])
-  @@map("lark_report_kpi")
+  @@map("report_kpi")
 }
 
-model LarkListTask {
+model ReportedTask {
   id                String    @id
   caption           String?
   deadline          String?
@@ -1084,7 +1084,7 @@ model LarkListTask {
   @@index([employee_id])
   @@index([employee_email])
   @@index([team])
-  @@map("lark_list_tasks")
+  @@map("reported_tasks")
 }
 
 model video_management_channelanalysis {
