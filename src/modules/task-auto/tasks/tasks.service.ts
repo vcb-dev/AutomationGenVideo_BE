@@ -15,6 +15,15 @@ import {
   ReviewTaskDto,
 } from "../dto/task.dto";
 
+// Các field content/sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa
+const CATALOG_FIELDS = [
+  "content_id", "editor_content_id", "team_content_id",
+  "product_id", "editor_product_id", "team_product_id",
+  "source_outro_id", "source_extra_id", "source_workshop_id", "source_huyk_id",
+  "editor_source_outro_id", "editor_source_extra_id", "editor_source_workshop_id", "editor_source_huyk_id",
+  "team_source_outro_id", "team_source_extra_id", "team_source_workshop_id", "team_source_huyk_id",
+] as const;
+
 @Injectable()
 export class TaskAutoTasksService {
   private readonly logger = new Logger(TaskAutoTasksService.name);
@@ -369,6 +378,15 @@ export class TaskAutoTasksService {
   async update(id: string, dto: UpdateTaskDto, userId: string, roles: string[]) {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) throw new NotFoundException("Task not found");
+
+    if (
+      task.task_type === "AUTO" &&
+      CATALOG_FIELDS.some((f) => dto[f] !== undefined)
+    ) {
+      throw new ForbiddenException(
+        "Task đẩy SP theo kế hoạch không cho phép sửa content/sản phẩm/nguồn",
+      );
+    }
 
     const isPrivileged = roles.some((r) =>
       ["ADMIN", "MANAGER", "LEADER"].includes(r),
