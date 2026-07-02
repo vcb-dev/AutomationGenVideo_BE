@@ -114,14 +114,40 @@ export class ChannelsService {
     return channel;
   }
 
+  /** Kiểm tra owner_id mới (nếu có) phải thuộc cùng team với kênh, hoặc là chính leader */
+  private async assertOwnerInTeam(
+    ownerId: string,
+    teamId: string | null,
+    callerId: string,
+  ) {
+    if (ownerId === callerId) return;
+
+    if (!teamId) {
+      throw new ForbiddenException(
+        "Channel chưa thuộc team nào, không thể gán owner",
+      );
+    }
+
+    const membership = await this.prisma.teamMember.findFirst({
+      where: { team_id: teamId, user_id: ownerId },
+      select: { id: true },
+    });
+    if (!membership) {
+      throw new ForbiddenException(
+        "Owner phải là thành viên trong team của kênh",
+      );
+    }
+  }
+
   /**
    * Cập nhật kênh — chỉ LEADER cùng team.
    * Không cho phép thay đổi team_id qua API.
+   * owner_id (nếu truyền) phải thuộc cùng team với kênh hoặc là chính leader.
    */
   async update(
     id: string,
     dto: UpdateChannelDto,
-    user: { roles: UserRole[]; team: string | null },
+    user: { id: string; roles: UserRole[]; team: string | null },
   ) {
     if (!this.isLeader(user.roles)) {
       throw new ForbiddenException("Only LEADER can update channels");
@@ -129,6 +155,10 @@ export class ChannelsService {
 
     const channel = await this.findChannelOrThrow(id);
     this.assertLeaderOwnsChannel(channel, user.team);
+
+    if (dto.owner_id) {
+      await this.assertOwnerInTeam(dto.owner_id, channel.team_id, user.id);
+    }
 
     // Strip team_id nếu client cố tình truyền vào
     const { ...safeData } = dto;
