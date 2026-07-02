@@ -219,13 +219,22 @@ export class TaskAutoCatalogController {
   @Post("sources")
   @ApiOperation({ summary: "Create a source (all roles)" })
   createSource(@Body() dto: CreateSourceDto, @Request() req: any) {
-    return this.catalog.createSource(dto, req.user.id);
+    return this.catalog.createSource(dto, req.user.id, req.user.roles ?? []);
   }
 
   @Put("sources/:id")
   @ApiOperation({ summary: "Update a source (all roles)" })
-  updateSource(@Param("id") id: string, @Body() dto: UpdateSourceDto) {
-    return this.catalog.updateSource(id, dto);
+  updateSource(
+    @Param("id") id: string,
+    @Body() dto: UpdateSourceDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.updateSource(
+      id,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Delete("sources/:id")

@@ -9,5 +9,6 @@ import { ScaleDataSourceGuard } from '../../../common/guards/scale-data-source.g
   imports: [PrismaModule, TasksModule],
   controllers: [TaskAutoTeamsController],
   providers: [TaskAutoTeamsService, ScaleDataSourceGuard],
+  exports: [TaskAutoTeamsService],
 })
 export class TeamsModule {}

@@ -169,6 +169,8 @@ export class CreateSourceDto {
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+  @ApiPropertyOptional({ description: 'Team đặt hàng source này — sẽ tự copy vào kho team đó' })
+  @IsString() @IsOptional() team_id?: string;
 }
 
 export class UpdateSourceDto {
@@ -179,6 +181,8 @@ export class UpdateSourceDto {
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+  @ApiPropertyOptional({ description: 'Đổi team đặt hàng; gửi null để gỡ khỏi kho team' })
+  @IsOptional() team_id?: string | null;
 }
 
 // ─── Team Product (standalone) ───────────────────────────────────────────────

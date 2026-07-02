@@ -12,7 +12,7 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 // ─── TeamKpi ──────────────────────────────────────────────────────────────────
 
-export class KpiAllocationDto {
+export class TeamKpiAllocationDto {
   @ApiProperty({ enum: ["CONTENT_LINE", "PRODUCT_LINE"] })
   @IsEnum(["CONTENT_LINE", "PRODUCT_LINE"])
   type: "CONTENT_LINE" | "PRODUCT_LINE";
@@ -32,11 +32,31 @@ export class UpsertTeamKpiDto {
   @ApiProperty() @IsString() month: string; // YYYY-MM
   @ApiPropertyOptional() @IsString() @IsOptional() note?: string;
 
-  @ApiProperty({ type: [KpiAllocationDto] })
+  @ApiProperty({ type: [TeamKpiAllocationDto] })
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => KpiAllocationDto)
-  allocations: KpiAllocationDto[];
+  @Type(() => TeamKpiAllocationDto)
+  allocations: TeamKpiAllocationDto[];
+}
+
+// ─── EditorKpi allocation ─────────────────────────────────────────────────────
+
+export class EditorKpiAllocationDto {
+  @ApiProperty({ enum: ["CONTENT_LINE", "PRODUCT_LINE"] })
+  @IsEnum(["CONTENT_LINE", "PRODUCT_LINE"])
+  type: "CONTENT_LINE" | "PRODUCT_LINE";
+
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+
+  @ApiProperty({
+    minimum: 0,
+    description: "Số video cụ thể cho tuyến/dòng này",
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  quantity: number;
 }
 
 // ─── EditorKpi ────────────────────────────────────────────────────────────────
@@ -100,9 +120,9 @@ export class UpsertEditorKpiDto {
   @Min(0)
   product_win_collect: number;
 
-  @ApiProperty({ type: [KpiAllocationDto] })
+  @ApiProperty({ type: [EditorKpiAllocationDto] })
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => KpiAllocationDto)
-  allocations: KpiAllocationDto[];
+  @Type(() => EditorKpiAllocationDto)
+  allocations: EditorKpiAllocationDto[];
 }

@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "../dto/kpi.dto";
@@ -122,6 +123,21 @@ export class TaskAutoKpiService {
       if (!isMember)
         throw new ForbiddenException("Người dùng không thuộc team của bạn");
     }
+
+    const contentQty = dto.allocations
+      .filter((a) => a.type === "CONTENT_LINE")
+      .reduce((s, a) => s + a.quantity, 0);
+    const productQty = dto.allocations
+      .filter((a) => a.type === "PRODUCT_LINE")
+      .reduce((s, a) => s + a.quantity, 0);
+    if (contentQty > 0 && contentQty !== dto.total_target)
+      throw new BadRequestException(
+        `Tổng số video theo tuyến nội dung phải bằng tổng video sản xuất (${dto.total_target}), hiện là ${contentQty}`,
+      );
+    if (productQty > 0 && productQty !== dto.product_planned)
+      throw new BadRequestException(
+        `Tổng số video theo dòng sản phẩm phải bằng SP đẩy video theo kế hoạch (${dto.product_planned}), hiện là ${productQty}`,
+      );
 
     const kpiData = {
       total_target: dto.total_target,

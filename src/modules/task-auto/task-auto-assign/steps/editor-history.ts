@@ -3,12 +3,13 @@ import { EditorAssignmentHistory } from "../types";
 
 /**
  * Tải lịch sử phân công của từng editor (all-time dedup, content đã dùng,
- * số task team product trong tháng) trong một lần query.
+ * SP team riêng biệt đã đẩy trong tháng) trong một lần query.
  */
 export async function loadEditorAssignmentHistory(
   prisma: PrismaService,
   editorIds: string[],
   monthStart: Date,
+  todayStart: Date,
   teamId: string,
 ): Promise<Map<string, EditorAssignmentHistory>> {
   const tasks = await prisma.task.findMany({
@@ -38,7 +39,8 @@ export async function loadEditorAssignmentHistory(
       result.set(editorId, {
         assignedPairKeys: new Set(),
         assignedContentKeys: new Set(),
-        teamProductTasksThisMonth: 0,
+        pushedProductIds: new Set(),
+        pushedProductIdsBeforeToday: new Set(),
       });
     }
     const history = result.get(editorId)!;
@@ -66,8 +68,17 @@ export async function loadEditorAssignmentHistory(
     if (contentKey) {
       history.assignedContentKeys.add(contentKey);
     }
-    if (t.team_product_id && t.assigned_at != null && t.assigned_at >= monthStart && t.team_id === teamId) {
-      history.teamProductTasksThisMonth++;
+    // Đếm SP riêng biệt: SP kho team = SP đẩy theo kế hoạch
+    if (
+      t.team_product_id &&
+      t.assigned_at != null &&
+      t.assigned_at >= monthStart &&
+      t.team_id === teamId
+    ) {
+      history.pushedProductIds.add(t.team_product_id);
+      if (t.assigned_at < todayStart) {
+        history.pushedProductIdsBeforeToday.add(t.team_product_id);
+      }
     }
   }
 

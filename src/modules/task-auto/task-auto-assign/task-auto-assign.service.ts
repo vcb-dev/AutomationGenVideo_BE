@@ -8,8 +8,9 @@ import {
   monthKey,
   addCalendarDays,
   effectiveAssignmentDate,
+  deriveDailyTarget,
 } from "./utils/date.utils";
-import { allocateByWeight } from "./utils/quota.utils";
+import { allocateByWeight, allocateWithCaps } from "./utils/quota.utils";
 import { loadEligibleEditors } from "./steps/editor-eligibility";
 import { loadEditorAssignmentHistory } from "./steps/editor-history";
 import { createTasksFromAssignments } from "./steps/task-creator";
@@ -21,6 +22,7 @@ import {
   EditorAssignmentHistory,
   FILL_STRATEGY,
   ScheduledAssignment,
+  AssignmentPair,
   ContentPoolItem,
   ProductPoolItem,
   PoolSource,
@@ -30,6 +32,7 @@ import {
 import {
   buildContentProductPairs,
   selectAssignmentsForEditor,
+  selectPushAssignments,
 } from "./steps/pair-builder";
 
 @Injectable()
@@ -255,6 +258,7 @@ export class TaskAutoAssignService {
       this.prisma,
       editorIds,
       monthStart,
+      now.startOf("day").toJSDate(),
       teamId,
     );
 
@@ -269,14 +273,25 @@ export class TaskAutoAssignService {
       ) ?? {
         assignedPairKeys: new Set(),
         assignedContentKeys: new Set(),
-        teamProductTasksThisMonth: 0,
+        pushedProductIds: new Set(),
+        pushedProductIdsBeforeToday: new Set(),
       };
 
-      const shouldFocusTeamProducts =
-        editor.productPlanned > 0 &&
-        history.teamProductTasksThisMonth < editor.productPlanned;
+      // Push quota: rải đều product_planned (SP riêng biệt) theo các ngày còn lại
+      // của tháng, giống cơ chế deriveDailyTarget của total_target.
+      const pushDailyTarget = deriveDailyTarget(
+        editor.productPlanned,
+        history.pushedProductIdsBeforeToday.size,
+        now,
+      );
+      const pushedNewToday =
+        history.pushedProductIds.size -
+        history.pushedProductIdsBeforeToday.size;
+      const pushNeed = Math.min(
+        Math.max(0, pushDailyTarget - pushedNewToday),
+        editor.remainingDaily,
+      );
 
-      // Content ordering: new personal → new team → new global → repeat team → repeat global → repeat personal
       const personalContents =
         personalContentsByEditor.get(editor.userId) ?? [];
       const personalSourceContentIds = new Set(
@@ -297,16 +312,26 @@ export class TaskAutoAssignService {
       const isNewContent = (c: ContentPoolItem) =>
         !history.assignedContentKeys.has(contentKey(c));
 
-      const orderedContents: ContentPoolItem[] = [
+      // Lane đẩy SP: content global → cá nhân → team (content mới trước, lặp lại sau)
+      const pushOrderedContents: ContentPoolItem[] = [
+        ...filteredGlobalContents.filter(isNewContent),
+        ...personalContents.filter(isNewContent),
+        ...filteredTeamContents.filter(isNewContent),
+        ...filteredGlobalContents.filter((c) => !isNewContent(c)),
+        ...personalContents.filter((c) => !isNewContent(c)),
+        ...filteredTeamContents.filter((c) => !isNewContent(c)),
+      ];
+
+      // Lane sáng tạo: content cá nhân → team → global (content mới trước, lặp lại sau)
+      const creativeOrderedContents: ContentPoolItem[] = [
         ...personalContents.filter(isNewContent),
         ...filteredTeamContents.filter(isNewContent),
         ...filteredGlobalContents.filter(isNewContent),
+        ...personalContents.filter((c) => !isNewContent(c)),
         ...filteredTeamContents.filter((c) => !isNewContent(c)),
         ...filteredGlobalContents.filter((c) => !isNewContent(c)),
-        ...personalContents.filter((c) => !isNewContent(c)),
       ];
 
-      // Product ordering: ưu tiên theo tier (team > personal > global) rồi theo priority_score cao → thấp
       const personalProducts =
         personalProductsByEditor.get(editor.userId) ?? [];
       const personalSourceProductIds = new Set(
@@ -323,77 +348,134 @@ export class TaskAutoAssignService {
         (p) => !personalSourceProductIds.has(p.id),
       );
 
-      const PRODUCT_TIER_RANK: Record<PoolSource, number> = {
-        global: 0,
-        personal: 1,
-        team: 2,
+      // Lane đẩy SP: luôn kho team — SP chưa đẩy trong tháng trước, rồi priority_score
+      const pushProducts: ProductPoolItem[] = [...filteredTeamProducts].sort(
+        (a, b) =>
+          Number(history.pushedProductIds.has(a.id)) -
+            Number(history.pushedProductIds.has(b.id)) ||
+          b.priority_score - a.priority_score,
+      );
+
+      // Lane sáng tạo: SP cá nhân → global (kho team chỉ dành cho đẩy kế hoạch)
+      const CREATIVE_TIER_RANK: Record<PoolSource, number> = {
+        personal: 0,
+        global: 1,
+        team: 2, // không có trong lane này
       };
+      const creativeProducts: ProductPoolItem[] = [
+        ...personalProducts,
+        ...filteredGlobalProducts,
+      ].sort(
+        (a, b) =>
+          CREATIVE_TIER_RANK[a.source] - CREATIVE_TIER_RANK[b.source] ||
+          b.priority_score - a.priority_score,
+      );
 
-      // shouldFocusTeamProducts=true: chỉ dùng kho team đã lọc trùng personal (sort priority_score desc)
-      // shouldFocusTeamProducts=false: global → personal → team, mỗi tier sort priority_score desc
-      const orderedProducts: ProductPoolItem[] = shouldFocusTeamProducts
-        ? [...filteredTeamProducts].sort(
-            (a, b) => b.priority_score - a.priority_score,
-          )
-        : [
-            ...filteredGlobalProducts,
-            ...personalProducts,
-            ...filteredTeamProducts,
-          ].sort(
-            (a, b) =>
-              PRODUCT_TIER_RANK[a.source] - PRODUCT_TIER_RANK[b.source] ||
-              b.priority_score - a.priority_score,
+      // Quota theo tuyến/dòng: chia cap còn lại giữa 2 lane theo thứ tự
+      const contentCaps = new Map(editor.contentLineRemaining);
+      const productCaps = new Map(editor.productLineRemaining);
+      const quotaFor = (need: number) => ({
+        contentQuota:
+          editor.contentTypeWeights.length > 0
+            ? allocateWithCaps(need, editor.contentTypeWeights, contentCaps)
+            : allocateByWeight(need, contentWeights),
+        productQuota:
+          editor.productTypeWeights.length > 0
+            ? allocateWithCaps(need, editor.productTypeWeights, productCaps)
+            : allocateByWeight(need, productWeights),
+      });
+      const consumeCaps = (pairs: AssignmentPair[]) => {
+        for (const p of pairs) {
+          if (p.contentLineId != null)
+            contentCaps.set(
+              p.contentLineId,
+              Math.max(0, (contentCaps.get(p.contentLineId) ?? 0) - 1),
+            );
+          if (p.productLineId != null)
+            productCaps.set(
+              p.productLineId,
+              Math.max(0, (productCaps.get(p.productLineId) ?? 0) - 1),
+            );
+        }
+      };
+      const pairKeyOf = (p: AssignmentPair) =>
+        `${p.contentSource}:${p.contentId}:${p.productSource}:${p.productId}`;
+
+      // ── Lane 1: đẩy SP theo kế hoạch ────────────────────────────────────
+      let pushSelected: AssignmentPair[] = [];
+      if (pushNeed > 0 && pushProducts.length && pushOrderedContents.length) {
+        const { contentQuota, productQuota } = quotaFor(pushNeed);
+        pushSelected = selectPushAssignments(
+          pushOrderedContents,
+          pushProducts,
+          pushNeed,
+          history.assignedPairKeys,
+          contentQuota,
+          productQuota,
+        );
+        consumeCaps(pushSelected);
+      }
+
+      // ── Lane 2: task sáng tạo (không đẩy SP kế hoạch) ───────────────────
+      const creativeNeed = editor.remainingDaily - pushSelected.length;
+      let creativeSelected: AssignmentPair[] = [];
+      if (
+        creativeNeed > 0 &&
+        creativeProducts.length &&
+        creativeOrderedContents.length
+      ) {
+        const pairs = buildContentProductPairs(
+          creativeOrderedContents,
+          creativeProducts,
+        );
+        const available = pairs.filter(
+          (p) => !history.assignedPairKeys.has(pairKeyOf(p)),
+        );
+        if (available.length) {
+          const { contentQuota, productQuota } = quotaFor(creativeNeed);
+          creativeSelected = selectAssignmentsForEditor(
+            available,
+            contentQuota,
+            productQuota,
+            creativeNeed,
+            FILL_STRATEGY,
           );
+          consumeCaps(creativeSelected);
+        }
+      }
 
-      if (!orderedProducts.length || !orderedContents.length) {
+      // ── Lấp đầy: nếu lane sáng tạo cạn nguồn, bù bằng SP kho team ───────
+      let extraSelected: AssignmentPair[] = [];
+      const shortfall =
+        editor.remainingDaily - pushSelected.length - creativeSelected.length;
+      if (shortfall > 0 && pushProducts.length && pushOrderedContents.length) {
+        const usedKeys = new Set([
+          ...history.assignedPairKeys,
+          ...pushSelected.map(pairKeyOf),
+        ]);
+        extraSelected = selectPushAssignments(
+          pushOrderedContents,
+          pushProducts,
+          shortfall,
+          usedKeys,
+          new Map(),
+          new Map(),
+        );
+      }
+
+      const selected = [...pushSelected, ...extraSelected, ...creativeSelected];
+      if (!selected.length) {
         this.logger.log(
           `Team ${teamId} editor ${editor.userId}: no candidates available`,
         );
         continue;
       }
 
-      const pairs = buildContentProductPairs(orderedContents, orderedProducts);
-      const available = pairs.filter(
-        (p) =>
-          !history.assignedPairKeys.has(
-            `${p.contentSource}:${p.contentId}:${p.productSource}:${p.productId}`,
-          ),
-      );
-
-      if (!available.length) {
-        this.logger.log(
-          `Team ${teamId} editor ${editor.userId}: all pairs already assigned`,
-        );
-        continue;
-      }
-
-      const contentQuota = allocateByWeight(
-        editor.remainingDaily,
-        editor.contentTypeWeights.length > 0
-          ? editor.contentTypeWeights
-          : contentWeights,
-      );
-      const productQuota = allocateByWeight(
-        editor.remainingDaily,
-        editor.productTypeWeights.length > 0
-          ? editor.productTypeWeights
-          : productWeights,
-      );
-
-      const selected = selectAssignmentsForEditor(
-        available,
-        contentQuota,
-        productQuota,
-        editor.remainingDaily,
-        FILL_STRATEGY,
-      );
-
       this.logger.log(
         `Team ${teamId} editor ${editor.userId}: ` +
-          `phase=${shouldFocusTeamProducts ? "team-focus" : "balanced"} ` +
-          `teamProductTasks=${history.teamProductTasksThisMonth}/${editor.productPlanned} ` +
-          `daily=${editor.remainingDaily} monthly_rem=${editor.remainingMonthly} ` +
-          `selected=${selected.length}`,
+          `push=${pushSelected.length}/${pushNeed} extra=${extraSelected.length} creative=${creativeSelected.length} ` +
+          `pushedMonth=${history.pushedProductIds.size}/${editor.productPlanned} ` +
+          `daily=${editor.remainingDaily} monthly_rem=${editor.remainingMonthly}`,
       );
 
       for (const pair of selected) {
@@ -428,25 +510,37 @@ export class TaskAutoAssignService {
   }> {
     // ── Team content ──────────────────────────────────────────────────────
     const teamContentsRaw = await this.prisma.teamContent.findMany({
-      where: { team_id: teamId, status: { not: "ARCHIVED" }, brand_type: brandType },
+      where: {
+        team_id: teamId,
+        status: { not: "ARCHIVED" },
+        brand_type: brandType,
+      },
       select: {
         id: true,
         content_line_id: true,
         source_content_id: true,
         source_editor_content_id: true,
-        source_editor_content: { select: { content_line_id: true, source_content_id: true } },
+        source_editor_content: {
+          select: { content_line_id: true, source_content_id: true },
+        },
         added_at: true,
       },
       orderBy: { added_at: "asc" },
     });
     const teamContentPool: ContentPoolItem[] = teamContentsRaw.map((tc) => ({
       id: tc.id,
-      content_line_id: tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null,
+      content_line_id:
+        tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null,
       source: "team" as const,
-      source_content_id: tc.source_content_id ?? tc.source_editor_content?.source_content_id ?? null,
+      source_content_id:
+        tc.source_content_id ??
+        tc.source_editor_content?.source_content_id ??
+        null,
     }));
     const teamSourceContentIds = new Set(
-      teamContentPool.filter((tc) => tc.source_content_id).map((tc) => tc.source_content_id!),
+      teamContentPool
+        .filter((tc) => tc.source_content_id)
+        .map((tc) => tc.source_content_id!),
     );
 
     // ── Global content ────────────────────────────────────────────────────
@@ -461,16 +555,22 @@ export class TaskAutoAssignService {
       select: {
         id: true,
         content_line_id: true,
-        source_team_content: { select: { content_line_id: true, source_editor_content: { select: { content_line_id: true } } } },
+        source_team_content: {
+          select: {
+            content_line_id: true,
+            source_editor_content: { select: { content_line_id: true } },
+          },
+        },
       },
       orderBy: { created_at: "asc" },
     });
     const globalContentPool: ContentPoolItem[] = allGlobalContents.map((c) => ({
       id: c.id,
-      content_line_id: c.content_line_id
-        ?? c.source_team_content?.content_line_id
-        ?? c.source_team_content?.source_editor_content?.content_line_id
-        ?? null,
+      content_line_id:
+        c.content_line_id ??
+        c.source_team_content?.content_line_id ??
+        c.source_team_content?.source_editor_content?.content_line_id ??
+        null,
       source: "global" as const,
       source_content_id: null,
     }));
@@ -484,19 +584,27 @@ export class TaskAutoAssignService {
         priority_score: true,
         source_product_id: true,
         source_editor_product_id: true,
-        source_editor_product: { select: { product_line_id: true, source_product_id: true } },
+        source_editor_product: {
+          select: { product_line_id: true, source_product_id: true },
+        },
       },
       orderBy: { priority_score: "desc" },
     });
     const teamProductPool: ProductPoolItem[] = teamProductsRaw.map((tp) => ({
       id: tp.id,
-      product_line_id: tp.product_line_id ?? tp.source_editor_product?.product_line_id ?? null,
+      product_line_id:
+        tp.product_line_id ?? tp.source_editor_product?.product_line_id ?? null,
       priority_score: tp.priority_score,
       source: "team" as const,
-      source_product_id: tp.source_product_id ?? tp.source_editor_product?.source_product_id ?? null,
+      source_product_id:
+        tp.source_product_id ??
+        tp.source_editor_product?.source_product_id ??
+        null,
     }));
     const teamSourceProductIds = new Set(
-      teamProductPool.filter((tp) => tp.source_product_id).map((tp) => tp.source_product_id!),
+      teamProductPool
+        .filter((tp) => tp.source_product_id)
+        .map((tp) => tp.source_product_id!),
     );
 
     // ── Global product ────────────────────────────────────────────────────
@@ -512,16 +620,22 @@ export class TaskAutoAssignService {
         id: true,
         product_line_id: true,
         priority_score: true,
-        source_team_product: { select: { product_line_id: true, source_editor_product: { select: { product_line_id: true } } } },
+        source_team_product: {
+          select: {
+            product_line_id: true,
+            source_editor_product: { select: { product_line_id: true } },
+          },
+        },
       },
       orderBy: { priority_score: "desc" },
     });
     const globalProductPool: ProductPoolItem[] = globalProductsRaw.map((p) => ({
       id: p.id,
-      product_line_id: p.product_line_id
-        ?? p.source_team_product?.product_line_id
-        ?? p.source_team_product?.source_editor_product?.product_line_id
-        ?? null,
+      product_line_id:
+        p.product_line_id ??
+        p.source_team_product?.product_line_id ??
+        p.source_team_product?.source_editor_product?.product_line_id ??
+        null,
       priority_score: p.priority_score,
       source: "global" as const,
       source_product_id: null,
@@ -529,7 +643,11 @@ export class TaskAutoAssignService {
 
     // ── Personal content per editor ───────────────────────────────────────
     const personalContentsRaw = await this.prisma.editorContent.findMany({
-      where: { user_id: { in: editorIds }, status: { not: "ARCHIVED" }, brand_type: brandType },
+      where: {
+        user_id: { in: editorIds },
+        status: { not: "ARCHIVED" },
+        brand_type: brandType,
+      },
       select: {
         id: true,
         content_line_id: true,
@@ -552,7 +670,11 @@ export class TaskAutoAssignService {
 
     // ── Personal product per editor ───────────────────────────────────────
     const personalProductsRaw = await this.prisma.editorProduct.findMany({
-      where: { user_id: { in: editorIds }, is_active: true, brand_type: brandType },
+      where: {
+        user_id: { in: editorIds },
+        is_active: true,
+        brand_type: brandType,
+      },
       select: {
         id: true,
         product_line_id: true,
@@ -590,7 +712,10 @@ export class TaskAutoAssignService {
   private async loadTeamQuotaWeights(
     teamId: string,
     month: string,
-  ): Promise<{contentWeights: WeightedAllocation[]; productWeights: WeightedAllocation[] }> {
+  ): Promise<{
+    contentWeights: WeightedAllocation[];
+    productWeights: WeightedAllocation[];
+  }> {
     const teamKpi = await this.prisma.teamKpi.findUnique({
       where: { team_id_month: { team_id: teamId, month } },
       include: { allocations: true },

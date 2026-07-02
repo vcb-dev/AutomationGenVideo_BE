@@ -59,6 +59,8 @@ model User {
   team_memberships          TeamMember[]     @relation("TeamMembershipOf")
   editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
   editor_approvals_reviewed EditorApproval[] @relation("EditorApprovalBy")
+  team_push_requests          TeamPushRequest[] @relation("TeamPushRequestBy")
+  team_push_requests_reviewed TeamPushRequest[] @relation("TeamPushRequestReviewedBy")
   editor_kpis               EditorKpi[]      @relation("EditorKpiOf")
   editor_kpis_set           EditorKpi[]      @relation("EditorKpiSetBy")
   team_kpis_created         TeamKpi[]        @relation("TeamKpiCreatedBy")
@@ -1414,15 +1416,17 @@ model Team {
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
 
-  leader       User?         @relation("TeamLeaderOf", fields: [leader_id], references: [id])
-  members      TeamMember[]
-  team_kpis    TeamKpi[]
-  editor_kpis  EditorKpi[]
-  tasks        Task[]
-  products     TeamProduct[]
-  contents     TeamContent[]
-  team_sources TeamSource[]
-  channels     Channel[]     @relation("ChannelTeam")
+  leader          User?         @relation("TeamLeaderOf", fields: [leader_id], references: [id])
+  members         TeamMember[]
+  team_kpis       TeamKpi[]
+  editor_kpis     EditorKpi[]
+  tasks           Task[]
+  products        TeamProduct[]
+  contents        TeamContent[]
+  team_sources    TeamSource[]
+  channels        Channel[]     @relation("ChannelTeam")
+  ordered_sources Source[]      @relation("SourceOrderedTeam")
+  push_requests   TeamPushRequest[]
 
   @@index([leader_id])
   @@map("teams")
@@ -1586,6 +1590,7 @@ model EditorProduct {
   team_products  TeamProduct[]            @relation("TeamProductEditorRef")
   tasks          Task[]
   warehouses     EditorProductWarehouse[]
+  push_requests  TeamPushRequest[]
 
   @@index([user_id, is_active])
   @@map("editor_products")
@@ -1616,6 +1621,7 @@ model EditorContent {
   team_contents  TeamContent[]            @relation("TeamContentEditorRef")
   tasks          Task[]
   warehouses     EditorContentWarehouse[]
+  push_requests  TeamPushRequest[]
 
   @@map("editor_contents")
 }
@@ -1653,6 +1659,37 @@ model EditorSource {
 
   @@index([editor_product_id])
   @@map("editor_sources")
+}
+
+enum TeamPushRequestType {
+  PRODUCT
+  CONTENT
+}
+
+/// Yêu cầu đẩy product/content từ kho cá nhân → kho team, chờ leader duyệt.
+/// Leader/Admin/Manager đẩy thì bỏ qua hàng đợi (đẩy thẳng, không tạo request).
+model TeamPushRequest {
+  id                String              @id @default(uuid())
+  team_id           String
+  type              TeamPushRequestType
+  editor_product_id String?
+  editor_content_id String?
+  requested_by_id   String
+  status            ApprovalStatus      @default(PENDING)
+  reviewed_by_id    String?
+  reviewed_at       DateTime?
+  note              String?
+  created_at        DateTime            @default(now())
+
+  team           Team           @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  editor_product EditorProduct? @relation(fields: [editor_product_id], references: [id], onDelete: Cascade)
+  editor_content EditorContent? @relation(fields: [editor_content_id], references: [id], onDelete: Cascade)
+  requested_by   User           @relation("TeamPushRequestBy", fields: [requested_by_id], references: [id], onDelete: Cascade)
+  reviewed_by    User?          @relation("TeamPushRequestReviewedBy", fields: [reviewed_by_id], references: [id])
+
+  @@index([team_id, status])
+  @@index([requested_by_id])
+  @@map("team_push_requests")
 }
 
 model EditorApproval {
@@ -1747,7 +1784,7 @@ model EditorKpiAllocation {
   type            KpiAllocationType
   content_line_id String?
   product_line_id String?
-  percent         Float
+  quantity        Int // Số video cụ thể (không phải %) — tổng theo type phải khớp total_target / product_planned
 
   editor_kpi   EditorKpi    @relation(fields: [editor_kpi_id], references: [id], onDelete: Cascade)
   content_line ContentLine? @relation(fields: [content_line_id], references: [id])
@@ -1783,6 +1820,7 @@ model ProductLine {
   products               Product[]
   team_products          TeamProduct[]
   editor_products        EditorProduct[]
+  tasks                  Task[]
   allocations            TeamKpiAllocation[]
   editor_kpi_allocations EditorKpiAllocation[]
 
@@ -1889,12 +1927,15 @@ model Source {
   is_active             Boolean     @default(true)
   /// FK trỏ về TeamSource khi được push từ kho team (thay thế copy data)
   source_team_source_id String?     @unique
+  /// Team đã đặt hàng (order) source này khi tạo — hiển thị cột "Team order" ở kho tổng
+  ordered_team_id       String?
   created_at            DateTime    @default(now())
   updated_at            DateTime    @updatedAt
 
   product            Product?          @relation(fields: [product_id], references: [id])
   added_by           User              @relation("SourceAddedBy", fields: [added_by_id], references: [id])
   source_team_source TeamSource?       @relation("SourceTeamRef", fields: [source_team_source_id], references: [id], onDelete: SetNull)
+  ordered_team       Team?             @relation("SourceOrderedTeam", fields: [ordered_team_id], references: [id], onDelete: SetNull)
   team_versions      TeamSource[]      @relation("TeamSourceGlobalRef")
   editor_versions    EditorSource[]    @relation("EditorSourceGlobalRef")
   tasks_outro        Task[]            @relation("TaskSourceOutro")
@@ -1917,6 +1958,7 @@ model Task {
   editor_content_id         String?
   team_content_id           String?
   content_line_id           String?
+  product_line_id           String?
   source_outro_id           String?
   source_extra_id           String?
   source_workshop_id        String?
@@ -1934,6 +1976,8 @@ model Task {
   brand_type                BrandType?
   /// AUTO=auto-assign, EXTRA=task sáng tạo
   task_type                 TaskType   @default(EXTRA)
+  /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
+  is_product_push           Boolean    @default(false)
   assignee_id               String?
   assigned_at               DateTime?
   deadline                  DateTime?
@@ -1955,6 +1999,7 @@ model Task {
   editor_content         EditorContent?    @relation(fields: [editor_content_id], references: [id])
   team_content           TeamContent?      @relation(fields: [team_content_id], references: [id])
   content_line           ContentLine?      @relation(fields: [content_line_id], references: [id])
+  product_line           ProductLine?      @relation(fields: [product_line_id], references: [id])
   source_outro           Source?           @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
   source_extra           Source?           @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
   source_workshop        Source?           @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
@@ -1983,6 +2028,8 @@ model Task {
   @@index([team_product_id])
   @@index([editor_content_id])
   @@index([team_content_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
   @@map("tasks")
 }
 

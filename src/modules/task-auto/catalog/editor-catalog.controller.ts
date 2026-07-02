@@ -46,7 +46,10 @@ export class TaskAutoEditorCatalogController {
   }
 
   @Post("editors/:userId/products")
-  @ApiOperation({ summary: "Add product to editor personal catalog (copy from global or create new)" })
+  @ApiOperation({
+    summary:
+      "Add product to editor personal catalog (copy from global or create new)",
+  })
   addEditorProduct(
     @Param("userId") userId: string,
     @Body() dto: CreateEditorProductDto,
@@ -72,7 +75,12 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: UpdateEditorProductDto,
     @Request() req: any,
   ) {
-    return this.catalog.updateEditorProduct(epId, dto, req.user.id, req.user.roles ?? []);
+    return this.catalog.updateEditorProduct(
+      epId,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Delete("editors/:userId/products/:epId")
@@ -82,18 +90,30 @@ export class TaskAutoEditorCatalogController {
     @Param("epId") epId: string,
     @Request() req: any,
   ) {
-    return this.catalog.removeEditorProduct(epId, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeEditorProduct(
+      epId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Patch("editors/:userId/products/:epId/push-to-team")
-  @ApiOperation({ summary: "Push editor product to team catalog" })
+  @ApiOperation({
+    summary:
+      "Push editor product to team catalog (member: tạo yêu cầu chờ leader duyệt)",
+  })
   pushEditorProductToTeam(
     @Param("userId") userId: string,
     @Param("epId") epId: string,
     @Body("team_id") teamId: string,
     @Request() req: any,
   ) {
-    return this.catalog.pushEditorProductToTeam(epId, teamId, req.user.id);
+    return this.catalog.pushEditorProductToTeam(
+      epId,
+      teamId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   // ── Editor Contents ───────────────────────────────────────────────────────
@@ -108,7 +128,10 @@ export class TaskAutoEditorCatalogController {
   }
 
   @Post("editors/:userId/contents")
-  @ApiOperation({ summary: "Add content to editor personal catalog (copy from global or create new)" })
+  @ApiOperation({
+    summary:
+      "Add content to editor personal catalog (copy from global or create new)",
+  })
   addEditorContent(
     @Param("userId") userId: string,
     @Body() dto: CreateEditorContentDto,
@@ -134,7 +157,12 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: UpdateEditorContentDto,
     @Request() req: any,
   ) {
-    return this.catalog.updateEditorContent(ecId, dto, req.user.id, req.user.roles ?? []);
+    return this.catalog.updateEditorContent(
+      ecId,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Delete("editors/:userId/contents/:ecId")
@@ -144,18 +172,30 @@ export class TaskAutoEditorCatalogController {
     @Param("ecId") ecId: string,
     @Request() req: any,
   ) {
-    return this.catalog.removeEditorContent(ecId, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeEditorContent(
+      ecId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Patch("editors/:userId/contents/:ecId/push-to-team")
-  @ApiOperation({ summary: "Push editor content to team catalog" })
+  @ApiOperation({
+    summary:
+      "Push editor content to team catalog (member: tạo yêu cầu chờ leader duyệt)",
+  })
   pushEditorContentToTeam(
     @Param("userId") userId: string,
     @Param("ecId") ecId: string,
     @Body("team_id") teamId: string,
     @Request() req: any,
   ) {
-    return this.catalog.pushEditorContentToTeam(ecId, teamId, req.user.id);
+    return this.catalog.pushEditorContentToTeam(
+      ecId,
+      teamId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   // ── Editor Sources ────────────────────────────────────────────────────────
@@ -170,7 +210,10 @@ export class TaskAutoEditorCatalogController {
   }
 
   @Post("editors/:userId/sources")
-  @ApiOperation({ summary: "Add source to editor personal catalog (copy from global or create new)" })
+  @ApiOperation({
+    summary:
+      "Add source to editor personal catalog (copy from global or create new)",
+  })
   addEditorSource(
     @Param("userId") userId: string,
     @Body() dto: CreateEditorSourceDto,
@@ -196,7 +239,12 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: UpdateEditorSourceDto,
     @Request() req: any,
   ) {
-    return this.catalog.updateEditorSource(esId, dto, req.user.id, req.user.roles ?? []);
+    return this.catalog.updateEditorSource(
+      esId,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Delete("editors/:userId/sources/:esId")
@@ -206,7 +254,11 @@ export class TaskAutoEditorCatalogController {
     @Param("esId") esId: string,
     @Request() req: any,
   ) {
-    return this.catalog.removeEditorSource(esId, req.user.id, req.user.roles ?? []);
+    return this.catalog.removeEditorSource(
+      esId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Patch("editors/:userId/sources/:esId/push-to-team")
@@ -218,5 +270,53 @@ export class TaskAutoEditorCatalogController {
     @Request() req: any,
   ) {
     return this.catalog.pushEditorSourceToTeam(esId, teamId, req.user.id);
+  }
+
+  // ── Team push requests (duyệt đẩy kho cá nhân → kho team) ─────────────────
+
+  @Get("editors/:userId/push-requests")
+  @ApiOperation({ summary: "List my team push requests" })
+  listMyPushRequests(
+    @Param("userId") userId: string,
+    @Query("status") status: string | undefined,
+    @Request() req: any,
+  ) {
+    return this.catalog.listMyPushRequests(req.user.id, status);
+  }
+
+  @Get("teams/:teamId/push-requests")
+  @ApiOperation({ summary: "List team push requests (leader/admin/manager)" })
+  listTeamPushRequests(
+    @Param("teamId") teamId: string,
+    @Query("status") status: string | undefined,
+    @Request() req: any,
+  ) {
+    return this.catalog.listTeamPushRequests(
+      teamId,
+      status,
+      req.user.id,
+      req.user.roles ?? [],
+    );
+  }
+
+  @Patch("push-requests/:id/review")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({
+    summary:
+      "Approve/reject team push request (leader of team or admin/manager)",
+  })
+  reviewPushRequest(
+    @Param("id") id: string,
+    @Body() body: { action: "APPROVED" | "REJECTED"; note?: string },
+    @Request() req: any,
+  ) {
+    return this.catalog.reviewTeamPushRequest(
+      id,
+      body.action,
+      body.note,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 }
