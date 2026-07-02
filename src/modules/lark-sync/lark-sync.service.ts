@@ -137,7 +137,8 @@ export class LarkSyncService implements OnApplicationBootstrap {
   // UNIFIED LARK SYNC — Every 3 hours (Cho tất cả các phần còn lại)
   // Runs: wipe-remote-data -> sync-lark-to-server-direct -> force-sync-kpi-to-remote
   // ──────────────────────────────────────────────────────────────────────────
-  @Cron('0 0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+  // @Cron('0 0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+  // Disabled - Lark is no longer the data source; syncKPIData/syncKPIDoDaData are no-ops now anyway.
   async unifiedSync() {
     if (this.syncLock) {
       this.logger.warn('⏭️ Master sync skipped — another sync is in progress');
@@ -169,8 +170,12 @@ export class LarkSyncService implements OnApplicationBootstrap {
     }
   }
 
-  @Cron('0 10 */3 * * *', { name: 'sync-all-fast-script', timeZone: 'Asia/Ho_Chi_Minh' })
+  // @Cron('0 10 */3 * * *', { name: 'sync-all-fast-script', timeZone: 'Asia/Ho_Chi_Minh' })
+  // Disabled - this runs a separate script chain (wipe-remote-data + sync-lark-to-server-direct
+  // + force-sync-kpi-to-remote, etc.) that pulls from Lark directly; Lark is no longer the data source.
   async runSyncAllFastScript() {
+    this.logger.log('[sync:all:fast cron] disabled - Lark is no longer the data source.');
+    return;
     const enabled = String(process.env.LARK_ENABLE_SYNC_ALL_FAST_CRON ?? 'true').toLowerCase();
     if (enabled === '0' || enabled === 'false' || enabled === 'no') {
       this.logger.log('[sync:all:fast cron] disabled by LARK_ENABLE_SYNC_ALL_FAST_CRON');

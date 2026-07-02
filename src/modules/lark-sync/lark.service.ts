@@ -780,6 +780,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async syncReportData() {
+        this.logger.log('[LarkSync] syncReportData disabled - Lark is no longer the data source.');
+        return { synced: 0 };
         try {
             const records = await this.fetchLarkRecordsGeneric(this.REPORT_BASE_ID, this.REPORT_TABLE_ID, 500);
             this.logger.log(`Fetched ${records.length} Report records from Lark (Table: ${this.REPORT_TABLE_ID}). Syncing to database...`);
@@ -849,6 +851,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
      * DEBUG: Fetch all field metadata from the Traffic table in Lark
      */
     async getTrafficTableFields() {
+        this.logger.log('[LarkSync] getTrafficTableFields disabled - Lark is no longer the data source.');
+        return { total: 0, fields: [] };
         const token = await this.getAccessToken();
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.TRAFFIC_TABLE_ID}/fields`;
         const response = await firstValueFrom(
@@ -1401,6 +1405,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
      * Merge theo employee_id/name + ngày rồi lưu vào lark_kpi_global_indo.
      */
     async syncKPIGlobalIndoData(options?: { forceLocalWrite?: boolean; skipRemoteMirror?: boolean }) {
+        this.logger.log('[LarkSync] syncKPIGlobalIndoData disabled - Lark is no longer the data source.');
+        return { synced: 0, total: 0, samples: [], allKeys: [] };
         if (!this.KPI_GLOBAL_INDO_BASE_ID || !this.KPI_GLOBAL_INDO_TABLE_ID) {
             this.logger.warn('[KPI Global Indo] LARK_KPI_GLOBAL_INDO_BASE_ID / LARK_KPI_GLOBAL_INDO_TABLE_ID chưa cấu hình — bỏ qua sync.');
             return { synced: 0, total: 0, samples: [], allKeys: [] };
@@ -1655,6 +1661,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async inspectGlobalIndoTable() {
+        this.logger.log('[LarkSync] inspectGlobalIndoTable disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         if (!this.KPI_GLOBAL_INDO_BASE_ID || !this.KPI_GLOBAL_INDO_TABLE_ID) {
             return { error: 'LARK_KPI_GLOBAL_INDO_BASE_ID / LARK_KPI_GLOBAL_INDO_TABLE_ID chưa cấu hình' };
         }
@@ -1706,6 +1714,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async listTables() {
+        this.logger.log('[LarkSync] listTables disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         const token = await this.getAccessToken();
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables`;
 
@@ -2555,6 +2565,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Temporary method to inspect table structure
     async inspectTableStructure() {
+        this.logger.log('[LarkSync] inspectTableStructure disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         try {
             const records = await this.fetchLarkRecords();
             if (records.length > 0) {
@@ -2670,6 +2682,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Inspect employee table (different BASE/TABLE)
     async inspectEmployeeTable() {
+        this.logger.log('[LarkSync] inspectEmployeeTable disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         try {
             const token = await this.getAccessToken();
             const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.EMPLOYEE_TABLE_ID}/records`;
@@ -2726,6 +2740,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Inspect KPI table
     async inspectKPITable() {
+        this.logger.log('[LarkSync] inspectKPITable disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         try {
             const token = await this.getAccessToken();
             const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_BASE_ID}/tables/${this.KPI_TABLE_ID}/records`;
@@ -2781,6 +2797,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async inspectKPITableDoDa() {
+        this.logger.log('[LarkSync] inspectKPITableDoDa disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         try {
             const token = await this.getAccessToken();
             const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${this.KPI_DODA_BASE_ID}/tables/${this.KPI_DODA_TABLE_ID}/records`;
@@ -2863,6 +2881,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Sync employee data from Lark to database
     async syncEmployeeData() {
+        this.logger.log('[LarkSync] syncEmployeeData disabled - Lark is no longer the data source.');
+        return { synced: 0 };
         try {
             const records = await this.fetchEmployeeRecords();
             this.logger.log(`Fetched ${records.length} employee records from Lark. Syncing to database...`);
@@ -3098,6 +3118,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // Sync KPI data from Lark to database
     async syncKPIData(options?: { forceLocalWrite?: boolean; skipRemoteMirror?: boolean }) {
+        this.logger.log('[LarkSync] syncKPIData disabled - Lark is no longer the data source.');
+        return { synced: 0 };
         // Only sync records within [March 1st of current year .. today] (Vietnam calendar day)
         const KPI_MIN_DATE_KEY = this.getKpiMinDateKey();
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
@@ -3282,6 +3304,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
      * vào bảng lark_kpi_do_da. Cấu trúc cột giống KPI chính — dùng chung mapRecordToKPI.
      */
     async syncKPIDoDaData(options?: { forceLocalWrite?: boolean; skipRemoteMirror?: boolean }) {
+        this.logger.log('[LarkSync] syncKPIDoDaData disabled - Lark is no longer the data source.');
+        return { synced: 0 };
         const KPI_MIN_DATE_KEY = this.getKpiDoDaMinDateKey();
         const KPI_MAX_DATE_KEY = this.getKpiMaxDateKey();
         const directDbUrl = options?.forceLocalWrite ? null : this.getDirectSyncDbUrl();
@@ -6585,6 +6609,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // --- SYNC PERMISSION DATA ---
     async syncPermissionData() {
+        this.logger.log('[LarkSync] syncPermissionData disabled - Lark is no longer the data source.');
+        return;
         if (!this.PERMISSION_TABLE_ID) {
             this.logger.warn('LARK_PERMISSION_TABLE_ID not configured, skipping sync.');
             return;
@@ -7387,6 +7413,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         newTeam?: string;
         newEmail?: string;
     }) {
+        this.logger.log('[LarkSync] pushUserChangesToLark disabled - Lark is no longer the data source.');
+        return;
         const { oldName, oldEmail, newName, newTeam, newEmail } = params;
         const nameChanged = newName && newName !== oldName;
         const teamChanged = newTeam !== undefined;
@@ -7565,7 +7593,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
     // --- HELPER METHODS FOR LarkSyncService ---
     async fetchHRRecords() {
-        return this.fetchAllRecords(this.REPORT_BASE_ID, this.PERMISSION_TABLE_ID);
+        this.logger.log('[LarkSync] fetchHRRecords disabled - Lark is no longer the data source.');
+        return [];
     }
 
     parseRecord(record: any) {
@@ -7616,6 +7645,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async inspectTableGeneric(baseId: string, tableId: string) {
+        this.logger.log('[LarkSync] inspectTableGeneric disabled - Lark is no longer the data source.');
+        return { message: 'Lark inspect disabled' };
         try {
             const records = await this.fetchLarkRecordsGeneric(baseId, tableId);
             if (records.length > 0) {
@@ -7733,6 +7764,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
     }
 
     async syncListTaskData() {
+        this.logger.log('[LarkSync] syncListTaskData disabled - Lark is no longer the data source.');
+        return { synced: 0 };
         try {
             const records = await this.fetchListTaskRecords();
             this.logger.log(`Fetched ${records.length} ListTask records from Lark. Syncing...`);

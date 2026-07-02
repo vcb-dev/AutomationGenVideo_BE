@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { LarkService } from './lark.service';
 
 /**
@@ -17,7 +16,8 @@ export class LarkGlobalIndoCronService {
 
     constructor(private readonly larkService: LarkService) { }
 
-    @Cron('0 */5 * * * *', { name: 'lark-global-indo-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    // @Cron('0 */5 * * * *', { name: 'lark-global-indo-auto-sync', timeZone: 'Asia/Ho_Chi_Minh' })
+    // Disabled - Lark is no longer the data source; syncKPIGlobalIndoData is a no-op now anyway.
     async runScheduledSync() {
         if (this.syncLock) {
             this.logger.warn('⏭️ Global Indo auto-sync skipped — sync trước vẫn đang chạy');
