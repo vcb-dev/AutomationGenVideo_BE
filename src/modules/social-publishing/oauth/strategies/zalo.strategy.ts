@@ -3,10 +3,19 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import { SocialPlatform } from '@prisma/client';
 
+function buildRedirectUri(envVar: string, platform: string): string {
+  if (process.env[envVar]) return process.env[envVar]!;
+  const base = (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000/api')
+    .replace(/\/api$/, '');
+  return `${base}/api/social/oauth/${platform}/callback`;
+}
+
 @Injectable()
 export class ZaloOAuthStrategy {
   private readonly logger = new Logger(ZaloOAuthStrategy.name);
   readonly platform = SocialPlatform.ZALO;
+
+  private get redirectUri() { return buildRedirectUri('ZALO_REDIRECT_URI', 'zalo'); }
 
   /** Tạo codeVerifier và codeChallenge, trả về để oauth.service encode vào state */
   getAuthUrlWithVerifier(): { url: string; codeVerifier: string } {
@@ -28,7 +37,7 @@ export class ZaloOAuthStrategy {
     }
     const params = new URLSearchParams({
       app_id: process.env.ZALO_APP_ID!,
-      redirect_uri: process.env.ZALO_REDIRECT_URI!,
+      redirect_uri: this.redirectUri,
       code_challenge: challenge,
       state,
     });
@@ -64,6 +73,7 @@ export class ZaloOAuthStrategy {
           'Content-Type': 'application/x-www-form-urlencoded',
           'secret_key': process.env.ZALO_APP_SECRET!,
         },
+        timeout: 15000,
       },
     );
 
@@ -78,6 +88,7 @@ export class ZaloOAuthStrategy {
     try {
       const oaRes = await axios.get('https://openapi.zalo.me/v2.0/oa/getoa', {
         headers: { access_token },
+        timeout: 10000,
       });
       if (oaRes.data?.error === 0) {
         const oa = oaRes.data?.data || {};

@@ -2,8 +2,13 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LarkService } from './lark.service';
 import { Cron } from '@nestjs/schedule';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import * as bcrypt from 'bcrypt';
 import { PrismaClient } from '@prisma/client';
+import { buildScopedPrismaDbUrl } from '../../common/prisma/build-prisma-db-url';
+
+const execAsync = promisify(exec);
 
 @Injectable()
 export class LarkSyncService implements OnApplicationBootstrap {
@@ -15,7 +20,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
      * with LarkService cron. Default OFF to keep one single source-of-truth flow.
      */
     private readonly legacySyncEnabled =
-        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'true').toLowerCase() === 'true';
+        String(process.env.LARK_ENABLE_LEGACY_SYNC_SERVICE ?? 'false').toLowerCase() === 'true';
 
     constructor(
         private readonly prisma: PrismaService,
@@ -39,7 +44,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
 
         if (!this.remotePrismaClient) {
             this.remotePrismaClient = new PrismaClient({
-                datasources: { db: { url: serverUrl } },
+                datasources: { db: { url: buildScopedPrismaDbUrl(serverUrl) } },
             });
             this.logger.log('[LarkSync] Direct-to-server mode enabled for HR sync.');
         }
@@ -68,30 +73,30 @@ export class LarkSyncService implements OnApplicationBootstrap {
         // 1. Chạy Unified Sync (Wipe + HR + KPI)
         try {
             await this.unifiedSync();
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Unified Sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Unified Sync failed: ${err?.message ?? err}`);
         }
 
         // 2. Chạy Đồ Da (vì Đồ Da có logic riêng)
         try {
             const kpiDd = await this.larkService.syncKPIDoDaData();
             this.logger.log(`✅ Bootstrap KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap KPI Đồ Da sync failed: ${err?.message ?? err}`);
         }
 
         // 3. Chạy Permissions & Channels
         try {
             await this.larkService.syncPermissionData();
             this.logger.log('✅ Bootstrap Permission sync completed');
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Permission sync failed: ${err?.message ?? err}`);
         }
         try {
             const doda = await this.larkService.syncDoDaChannelData();
             this.logger.log(`✅ Bootstrap Do Da channel sync: ${doda?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Bootstrap Do Da channel sync failed: ${err?.message ?? err}`);
         }
         this.logger.log('🎉 Bootstrap sync finished!');
     }
@@ -111,14 +116,14 @@ export class LarkSyncService implements OnApplicationBootstrap {
         try {
             const kpiDd = await this.larkService.syncKPIDoDaData();
             this.logger.log(`✅ KPI Đồ Da sync: ${kpiDd?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ KPI Đồ Da sync failed: ${err.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ KPI Đồ Da sync failed: ${err?.message ?? err}`);
         }
         try {
             const doda = await this.larkService.syncDoDaChannelData();
             this.logger.log(`✅ Do Da channel sync: ${doda?.synced ?? 0} records`);
-        } catch (err) {
-            this.logger.error(`❌ Do Da channel sync failed: ${err.message}`);
+        } catch (err: any) {
+            this.logger.error(`❌ Do Da channel sync failed: ${err?.message ?? err}`);
         }
         this.syncLock = false;
     }
@@ -129,28 +134,77 @@ export class LarkSyncService implements OnApplicationBootstrap {
     // ──────────────────────────────────────────────────────────────────────────
     @Cron('0 0 */3 * * *', { name: 'unified-lark-sync', timeZone: 'Asia/Ho_Chi_Minh' })
     async unifiedSync() {
-        if (!this.legacySyncEnabled) return;
         if (this.syncLock) {
             this.logger.warn('⏭️ Master sync skipped — another sync is in progress');
             return;
         }
 
         this.syncLock = true;
-        this.logger.log('⏰ Master Lark Sync triggered (Starting All Fast Sync Scripts)');
+        this.logger.log('⏰ Master Lark Sync triggered');
 
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execPromise = util.promisify(exec);
+        const run = async (name: string, fn: () => Promise<any>) => {
+            try {
+                const result = await fn();
+                this.logger.log(`✅ ${name}: ${result?.synced ?? result?.count ?? 'done'}`);
+            } catch (err: any) {
+                this.logger.error(`❌ ${name} failed: ${err?.message ?? err}`);
+            }
+        };
 
         try {
-            this.logger.log('🚀 Running: npm run sync:all:fast...');
-            const { stdout } = await execPromise('npm run sync:all:fast');
-            this.logger.log(`✅ Master Sync Output:\n${stdout}`);
+            await run('Channel sync',    () => this.larkService.syncChannelData());
+            await run('KPI sync',        () => this.larkService.syncKPIData());
+            await run('KPI DoDa sync',   () => this.larkService.syncKPIDoDaData());
+            await run('DoDa channel',    () => this.larkService.syncDoDaChannelData());
+            
+            // Clear KPI pagination cache after sync
+            this.larkService.invalidateKPICache();
+            
             this.logger.log('🎉 MASTER SYNC COMPLETED SUCCESSFULLY!');
-        } catch (err) {
-            this.logger.error(`❌ Master Sync failed: ${err.message}`);
-            if (err.stdout) this.logger.error(`Stdout: ${err.stdout}`);
-            if (err.stderr) this.logger.error(`Stderr: ${err.stderr}`);
+        } finally {
+            this.syncLock = false;
+        }
+    }
+
+    @Cron('0 10 */3 * * *', { name: 'sync-all-fast-script', timeZone: 'Asia/Ho_Chi_Minh' })
+    async runSyncAllFastScript() {
+        const enabled = String(process.env.LARK_ENABLE_SYNC_ALL_FAST_CRON ?? 'true').toLowerCase();
+        if (enabled === '0' || enabled === 'false' || enabled === 'no') {
+            this.logger.log('[sync:all:fast cron] disabled by LARK_ENABLE_SYNC_ALL_FAST_CRON');
+            return;
+        }
+
+        if (this.syncLock) {
+            this.logger.warn('[sync:all:fast cron] skipped — another sync is in progress');
+            return;
+        }
+
+        this.syncLock = true;
+        const cwd = process.cwd();
+        this.logger.log('[sync:all:fast cron] starting package script execution');
+
+        try {
+            const { stdout, stderr } = await execAsync('npm run sync:all:fast', {
+                cwd,
+                env: process.env,
+                maxBuffer: 1024 * 1024 * 10,
+            });
+
+            if (stdout?.trim()) {
+                this.logger.log(`[sync:all:fast cron][stdout]\n${stdout.trim()}`);
+            }
+            if (stderr?.trim()) {
+                this.logger.warn(`[sync:all:fast cron][stderr]\n${stderr.trim()}`);
+            }
+
+            this.logger.log('[sync:all:fast cron] completed successfully');
+        } catch (error: any) {
+            this.logger.error(
+                `[sync:all:fast cron] failed: ${error?.message || error}`,
+                error?.stack,
+            );
+            if (error?.stdout) this.logger.error(`[sync:all:fast cron][stdout]\n${error.stdout}`);
+            if (error?.stderr) this.logger.error(`[sync:all:fast cron][stderr]\n${error.stderr}`);
         } finally {
             this.syncLock = false;
         }

@@ -22,6 +22,24 @@ function parseNumber(val: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function pickNumber(source: Record<string, unknown> | undefined, keys: string[]): number {
+  if (!source) return 0;
+  for (const key of keys) {
+    const value = parseNumber(source[key]);
+    if (value > 0) return value;
+  }
+  return 0;
+}
+
+function sumMetricFromResults(results: unknown[] | undefined, keys: string[]): number {
+  if (!Array.isArray(results)) return 0;
+  return results.reduce<number>((sum, item) => {
+    const record = item as Record<string, unknown>;
+    const raw = record.raw_data as Record<string, unknown> | undefined;
+    return sum + Math.max(pickNumber(record, keys), pickNumber(raw, keys));
+  }, 0);
+}
+
 /**
  * Chuẩn hóa payload /api/search/user-videos/ (Apify) → patch tracked_channels.
  */
@@ -31,7 +49,7 @@ export function extractStatsFromUserVideosResponse(
 ): {
   display_name?: string;
   avatar_url?: string;
-  total_followers: number | null;
+  total_followers?: number | null;
   total_likes: number;
   total_views: number;
   total_videos: number;
@@ -73,14 +91,25 @@ export function extractStatsFromUserVideosResponse(
     const resultsLen = Array.isArray(results) ? results.length : 0;
     const rawTotalVideos = parseNumber(profile.total_videos ?? profile.media_count);
     const rawPostsCount = parseNumber(profile.posts_count ?? profile.postsCount);
+    const resultLikesSum = sumMetricFromResults(results, ['likes_count', 'like_count', 'likes']);
+    const resultViewsSum = sumMetricFromResults(results, [
+      'views_count',
+      'video_view_count',
+      'view_count',
+      'views',
+      'play_count',
+      'plays',
+    ]);
     const finalDisplayName = displayName === fallbackUsername ? undefined : displayName;
 
     return {
       display_name: finalDisplayName,
       avatar_url: avatarUrl || undefined,
-      total_followers: followerCount > 0 ? followerCount : null,
-      total_likes: finalLikes,
-      total_views: parseNumber(profile.total_views),
+      total_followers: followerCount > 0 ? followerCount : undefined,
+      total_likes: finalLikes > 0 ? finalLikes : resultLikesSum,
+      total_views:
+        pickNumber(profile, ['total_views', 'views_count', 'video_view_count', 'view_count', 'views', 'play_count', 'plays']) ||
+        resultViewsSum,
       // Dùng total_videos từ profile nếu > 0, nếu = 0 thì fallback sang posts_count hoặc số kết quả fetch
       total_videos: rawTotalVideos > 0 ? rawTotalVideos : (rawPostsCount > 0 ? rawPostsCount : resultsLen),
       posts_count: rawPostsCount > 0 ? rawPostsCount : (resultsLen > 0 ? resultsLen : undefined),
@@ -103,8 +132,15 @@ export function extractStatsFromUserVideosResponse(
         break;
       }
     }
-    const likes = results.reduce((s, r) => s + parseNumber(r.likes_count), 0);
-    const views = results.reduce((s, r) => s + parseNumber(r.views_count), 0);
+    const likes = sumMetricFromResults(results, ['likes_count', 'like_count', 'likes']);
+    const views = sumMetricFromResults(results, [
+      'views_count',
+      'video_view_count',
+      'view_count',
+      'views',
+      'play_count',
+      'plays',
+    ]);
     const comments = results.reduce((s, r) => s + parseNumber(r.comments_count), 0);
     const engagement_rate = views > 0 ? Math.round(((likes + comments) / views) * 10000) / 100 : 0;
     const finalAuthorName = authorName === fallbackUsername ? undefined : authorName;
@@ -112,7 +148,7 @@ export function extractStatsFromUserVideosResponse(
     return {
       display_name: finalAuthorName,
       avatar_url: avatar || undefined,
-      total_followers: followers > 0 ? followers : null,
+      total_followers: followers > 0 ? followers : undefined,
       total_likes: likes,
       total_views: views,
       total_videos: results.length,

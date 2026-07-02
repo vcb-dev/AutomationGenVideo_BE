@@ -2,14 +2,23 @@ import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
 
+function buildRedirectUri(envVar: string, platform: string): string {
+  if (process.env[envVar]) return process.env[envVar]!;
+  const base = (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000/api')
+    .replace(/\/api$/, '');
+  return `${base}/api/social/oauth/${platform}/callback`;
+}
+
 @Injectable()
 export class InstagramOAuthStrategy {
   readonly platform = SocialPlatform.INSTAGRAM;
 
+  private get redirectUri() { return buildRedirectUri('IG_REDIRECT_URI', 'instagram'); }
+
   getAuthUrl(state: string): string {
     const params = new URLSearchParams({
       client_id: process.env.IG_APP_ID || process.env.FB_APP_ID!,
-      redirect_uri: process.env.IG_REDIRECT_URI!,
+      redirect_uri: this.redirectUri,
       scope: 'instagram_business_basic,instagram_content_publish',
       response_type: 'code',
       state,
@@ -28,23 +37,26 @@ export class InstagramOAuthStrategy {
     form.append('client_id', appId);
     form.append('client_secret', appSecret);
     form.append('grant_type', 'authorization_code');
-    form.append('redirect_uri', process.env.IG_REDIRECT_URI!);
+    form.append('redirect_uri', this.redirectUri);
     form.append('code', code);
 
     const shortRes = await axios.post('https://api.instagram.com/oauth/access_token', form.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
     });
     const { access_token: shortToken, user_id } = shortRes.data;
 
     // Long-lived token
     const longRes = await axios.get('https://graph.instagram.com/access_token', {
       params: { grant_type: 'ig_exchange_token', client_secret: appSecret, access_token: shortToken },
+      timeout: 15000,
     });
     const accessToken = longRes.data.access_token;
     const expiresIn = longRes.data.expires_in || 5184000;
 
     const profileRes = await axios.get(`https://graph.instagram.com/v21.0/${user_id}`, {
       params: { access_token: accessToken, fields: 'id,username,name,profile_picture_url' },
+      timeout: 15000,
     });
     const p = profileRes.data;
 

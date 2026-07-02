@@ -1,13 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
-import { SupabaseStorageService } from './supabase-storage.service';
-import { exec } from 'child_process';
+import { GoogleDriveStorageService } from './google-drive-storage.service';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { UPLOAD_DIR } from './upload.service';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const TABLE_NOT_FOUND = ['P2021', 'P2022', 'P2010'];
 
@@ -24,8 +24,26 @@ function modelReady(prisma: any): boolean {
   return typeof (prisma as any).socialUploadedFile?.findMany === 'function';
 }
 
-const EMPTY_LIST  = { items: [], total: 0, page: 1, limit: 20, pages: 0 };
+const EMPTY_LIST = { items: [], total: 0, page: 1, limit: 20, pages: 0 };
 const EMPTY_STATS = { count: 0, totalBytes: 0, totalMB: 0 };
+
+function safeDriveFilename(originalname: string, fallbackExt: string): string {
+  const ext = path.extname(originalname).toLowerCase() || fallbackExt;
+  const base = path.basename(originalname, path.extname(originalname))
+    .normalize('NFC')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || 'media';
+  return `${base}${ext}`;
+}
+
+function thumbFilenameFor(videoFilename: string): string {
+  const base = path.basename(videoFilename, path.extname(videoFilename))
+    .replace(/^thumb[_\s-]*/i, '')
+    .slice(0, 120) || 'video';
+  return `thumb_${base}.jpg`;
+}
 
 @Injectable()
 export class MediaLibraryService {
@@ -33,10 +51,9 @@ export class MediaLibraryService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly supabase: SupabaseStorageService,
+    private readonly googleDrive: GoogleDriveStorageService,
   ) {}
 
-  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
   private resolveFFmpegPath(): string | null {
     const fromEnv = process.env.FFMPEG_PATH;
     if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
@@ -44,81 +61,161 @@ export class MediaLibraryService {
     return null;
   }
 
-  async uploadAndStore(userId: string, filePath: string, opts: { originalname: string; mimetype: string; baseUrl: string }) {
-    const isVideo    = opts.mimetype.startsWith('video/');
+  async uploadAndStore(
+    userId: string,
+    filePath: string,
+    opts: { originalname: string; mimetype: string; isThumbnail?: boolean; thumbFor?: string },
+    user?: any,
+  ) {
+    const isVideo = opts.mimetype.startsWith('video/');
     const ffmpegPath = this.resolveFFmpegPath();
-    const ext        = path.extname(opts.originalname).toLowerCase() || (isVideo ? '.mp4' : '.jpg');
-    const baseName   = `lib_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const filename   = `${baseName}${ext}`;
-
-    let finalPath = filePath, finalName = filename, finalMime = opts.mimetype, compressed = false;
-
-    if (isVideo && ffmpegPath) {
-      const cName = `${baseName}_c.mp4`, cPath = path.join(UPLOAD_DIR, cName);
-      try {
-        const before = fs.statSync(filePath).size;
-        this.logger.log(`[Library] Nén ${opts.originalname} (${(before / 1024 / 1024).toFixed(1)}MB)…`);
-        const cmd = `"${ffmpegPath}" -y -i "${filePath}" -c:v libx264 -profile:v main -crf 28 -maxrate 4M -bufsize 8M `
-          + `-vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" `
-          + `-r 30 -fps_mode cfr -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100 -ac 2 -map_metadata -1 -movflags +faststart "${cPath}"`;
-        await execAsync(cmd, { timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
-        if (fs.existsSync(cPath)) {
-          const after = fs.statSync(cPath).size;
-          this.logger.log(`[Library] Nén xong: ${(before / 1024 / 1024).toFixed(1)}MB → ${(after / 1024 / 1024).toFixed(1)}MB`);
-          finalPath = cPath; finalName = cName; finalMime = 'video/mp4'; compressed = true;
-        }
-      } catch (e: any) { this.logger.warn(`[Library] FFmpeg thất bại: ${e.message}`); }
+    const ext = path.extname(opts.originalname).toLowerCase() || (isVideo ? '.mp4' : '.jpg');
+    const filename = opts.isThumbnail
+      ? thumbFilenameFor(opts.thumbFor || opts.originalname)
+      : safeDriveFilename(opts.originalname, ext);
+    let fileSize: number;
+    try {
+      fileSize = fs.statSync(filePath).size;
+    } catch (e: any) {
+      throw new Error(`Không đọc được file sau khi upload: ${e.message}`);
     }
 
-    const fileSize = fs.statSync(finalPath).size;
-    let url: string, storage: string;
+    if (isVideo) {
+      this.logger.log(`[Library] Upload video goc, khong nen: ${opts.originalname} (${(fileSize / 1024 / 1024).toFixed(1)}MB)`);
+    }
 
-    if (this.supabase.isAvailable()) {
+    let url: string;
+    let storage: string;
+    let drive_file_id: string | null = null;
+    let drive_web_view_url: string | null = null;
+
+    if (!this.googleDrive.isAvailable()) {
+      throw new Error('Google Drive storage chua duoc cau hinh');
+    }
+    const uploaded = await this.googleDrive.uploadFromPath(
+      filePath,
+      filename,
+      opts.mimetype,
+      user,
+      opts.isThumbnail ? { subfolder: 'thumb' } : undefined,
+    );
+    url = uploaded.url;
+    storage = 'google_drive';
+    drive_file_id = uploaded.fileId;
+    drive_web_view_url = uploaded.webViewUrl || null;
+    this.logger.log(`[Library] Google Drive: ${filename}`);
+
+    let thumbnail_url: string | null = null;
+    let thumbnail_drive_file_id: string | null = null;
+    if (isVideo && ffmpegPath) {
+      const thumbName = thumbFilenameFor(filename);
+      const thumbPath = path.join(UPLOAD_DIR, thumbName);
       try {
-        url = await this.supabase.uploadFromPath(finalPath, finalName, finalMime);
-        storage = 'supabase';
-        this.logger.log(`[Library] ✅ Supabase: ${finalName}`);
+        await execFileAsync(ffmpegPath, ['-y', '-ss', '0', '-i', filePath, '-vframes', '1', '-q:v', '2', thumbPath], { timeout: 30_000 });
+        if (fs.existsSync(thumbPath)) {
+          const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
+          thumbnail_url = uploadedThumb.url;
+          thumbnail_drive_file_id = uploadedThumb.fileId;
+          try { fs.unlinkSync(thumbPath); } catch {}
+        }
       } catch (e: any) {
-        this.logger.warn(`[Library] Supabase thất bại (${e.message}), dùng DB`);
-        url = await this._storeInDb(finalPath, finalName, finalMime, fileSize, opts.baseUrl);
-        storage = 'db';
+        this.logger.warn(`[Library] Tao thumbnail that bai: ${e.message}`);
       }
-    } else {
-      url = await this._storeInDb(finalPath, finalName, finalMime, fileSize, opts.baseUrl);
-      storage = 'db';
-      this.logger.log(`[Library] ✅ Postgres DB: ${finalName}`);
     }
 
     try { fs.unlinkSync(filePath); } catch {}
-    if (compressed && finalPath !== filePath) try { fs.unlinkSync(finalPath); } catch {}
 
-    await this.save(userId, { filename: finalName, originalname: opts.originalname, mimetype: finalMime, size: fileSize, url, storage }).catch(() => {});
-    return { url, filename: finalName, originalname: opts.originalname, mimetype: finalMime, size: fileSize, storage };
+    const saved = await this.save(userId, {
+      filename,
+      originalname: opts.originalname,
+      mimetype: opts.mimetype,
+      size: fileSize,
+      url,
+      thumbnail_url,
+      storage,
+      drive_file_id,
+      drive_web_view_url,
+      thumbnail_drive_file_id,
+    });
+
+    return saved || { url, thumbnail_url, filename, originalname: opts.originalname, mimetype: opts.mimetype, size: fileSize, storage, drive_file_id };
   }
 
-  private async _storeInDb(filePath: string, filename: string, mimetype: string, size: number, baseUrl: string): Promise<string> {
-    const buffer = fs.readFileSync(filePath);
-    await this.prisma.socialMediaFile.create({ data: { post_id: null, filename, mimetype, size, data: buffer } });
-    return `${baseUrl}/api/social/media/${filename}`;
-  }
+  async extractAndUploadThumbnail(driveFileId: string, baseFilename: string, user?: any): Promise<{ url: string; fileId: string } | null> {
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) return null;
 
-  async save(userId: string, file: { filename: string; originalname: string; mimetype: string; size: number; url: string; storage: string }) {
-    if (!modelReady(this.prisma)) { this.logger.warn('[Library] Model chưa sẵn sàng — bỏ qua save metadata'); return null; }
     try {
-      return await (this.prisma as any).socialUploadedFile.create({ data: { user_id: userId, ...file } });
+      const tempVideoPath = path.join(UPLOAD_DIR, `dl_${Date.now()}_${driveFileId}.mp4`);
+      const thumbName = thumbFilenameFor(baseFilename);
+      const thumbPath = path.join(UPLOAD_DIR, thumbName);
+
+      this.logger.log(`[Library] Downloading Drive video ${driveFileId} to extract thumbnail...`);
+      await this.googleDrive.downloadFileToLocal(driveFileId, tempVideoPath);
+
+      this.logger.log(`[Library] Extracting frame 1s with ffmpeg...`);
+      await execFileAsync(ffmpegPath, ['-y', '-ss', '00:00:01', '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', thumbPath], { timeout: 30_000 });
+
+      let result: { url: string; fileId: string } | null = null;
+      if (fs.existsSync(thumbPath)) {
+        this.logger.log(`[Library] Uploading thumbnail to Google Drive...`);
+        const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
+        result = { url: uploadedThumb.url, fileId: uploadedThumb.fileId };
+        this.logger.log(`[Library] Created Drive thumbnail: ${result.url}`);
+        try { fs.unlinkSync(thumbPath); } catch {}
+      }
+      try { fs.unlinkSync(tempVideoPath); } catch {}
+      return result;
+    } catch (e: any) {
+      this.logger.warn(`[Library] Failed to extract Drive thumbnail: ${e.message}`);
+      return null;
+    }
+  }
+
+  async save(userId: string, file: {
+    filename: string;
+    originalname: string;
+    mimetype: string;
+    size: number;
+    url: string;
+    thumbnail_url?: string | null;
+    storage: string;
+    drive_file_id?: string | null;
+    drive_web_view_url?: string | null;
+    thumbnail_drive_file_id?: string | null;
+  }) {
+    this.logger.log(`[Library] Luu metadata cho User: ${userId} | File: ${file.originalname}`);
+    if (!modelReady(this.prisma)) {
+      throw new Error('Prisma model socialUploadedFile chua san sang - can chay prisma generate/build lai');
+    }
+    try {
+      const model = this.getModel();
+      return await model.create({ data: { user_id: userId, ...file } });
     } catch (err: any) {
-      if (isNotReady(err)) { this.logger.warn('[Library] Bảng chưa tồn tại — chạy migration SQL'); return null; }
+      if (isNotReady(err)) {
+        throw new Error('Bang social_uploaded_files chua ton tai hoac chua cap nhat - can chay migration SQL Google Drive');
+      }
+      this.logger.error(`[Library] Loi khi luu vao DB: ${err.message}`);
       throw err;
     }
   }
 
+  private getModel() {
+    return (this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile;
+  }
+
   async list(userId: string, page = 1, limit = 20) {
-    if (!modelReady(this.prisma)) { this.logger.warn('[Library] Prisma generate chưa chạy'); return EMPTY_LIST; }
+    this.logger.log(`[Library] Lay danh sach cho User: ${userId} (Page: ${page})`);
+    if (!modelReady(this.prisma)) {
+      this.logger.warn('[Library] Prisma generate chua chay');
+      return EMPTY_LIST;
+    }
     try {
+      const model = this.getModel();
       const skip = (page - 1) * limit;
       const [items, total] = await Promise.all([
-        (this.prisma as any).socialUploadedFile.findMany({ where: { user_id: userId }, orderBy: { created_at: 'desc' }, skip, take: limit }),
-        (this.prisma as any).socialUploadedFile.count({ where: { user_id: userId } }),
+        model.findMany({ where: { user_id: userId }, orderBy: { created_at: 'desc' }, skip, take: limit }),
+        model.count({ where: { user_id: userId } }),
       ]);
       return { items, total, page, limit, pages: Math.ceil(total / limit) };
     } catch (err: any) {
@@ -130,11 +227,13 @@ export class MediaLibraryService {
   async remove(id: string, userId: string) {
     if (!modelReady(this.prisma)) return null;
     try {
-      const file = await (this.prisma as any).socialUploadedFile.findFirst({ where: { id, user_id: userId } });
+      const model = this.getModel();
+      const file = await model.findFirst({ where: { id, user_id: userId } });
       if (!file) return null;
-      await this.prisma.socialMediaFile.deleteMany({ where: { filename: file.filename } }).catch(() => {});
-      if (file.storage === 'supabase') await this.supabase.delete([file.filename]).catch(() => {});
-      await (this.prisma as any).socialUploadedFile.delete({ where: { id } });
+
+      if (file.drive_file_id) await this.googleDrive.delete(file.drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete failed for ${file.drive_file_id}: ${e.message}`));
+      if (file.thumbnail_drive_file_id) await this.googleDrive.delete(file.thumbnail_drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete failed for thumbnail ${file.thumbnail_drive_file_id}: ${e.message}`));
+      await model.delete({ where: { id } });
       return file;
     } catch (err: any) {
       if (isNotReady(err)) return null;
@@ -145,7 +244,8 @@ export class MediaLibraryService {
   async stats(userId: string) {
     if (!modelReady(this.prisma)) return EMPTY_STATS;
     try {
-      const result = await (this.prisma as any).socialUploadedFile.aggregate({
+      const model = this.getModel();
+      const result = await model.aggregate({
         where: { user_id: userId }, _count: { id: true }, _sum: { size: true },
       });
       return { count: result._count.id, totalBytes: result._sum.size ?? 0, totalMB: Number(((result._sum.size ?? 0) / 1024 / 1024).toFixed(2)) };
@@ -158,7 +258,8 @@ export class MediaLibraryService {
   async getPostHistory(id: string, userId: string) {
     if (!modelReady(this.prisma)) return { posts: [] };
     try {
-      const file = await (this.prisma as any).socialUploadedFile.findFirst({ where: { id, user_id: userId } });
+      const model = this.getModel();
+      const file = await model.findFirst({ where: { id, user_id: userId } });
       if (!file) return { posts: [] };
       const posts = await this.prisma.socialPost.findMany({
         where: { user_id: userId, media_urls: { has: file.url } },
@@ -170,6 +271,117 @@ export class MediaLibraryService {
     } catch (err: any) {
       if (isNotReady(err)) return { posts: [] };
       throw err;
+    }
+  }
+
+  /**
+   * Trích xuất frame tại giây `timeSeconds` từ video Drive,
+   * lưu tạm local, trả về URL để FE preview trước khi confirm.
+   * File tạm tự xóa sau 5 phút.
+   */
+  async previewFrameAtTime(id: string, userId: string, timeSeconds: number): Promise<{ previewUrl: string }> {
+    if (!modelReady(this.prisma)) throw new BadRequestException('Prisma model chưa sẵn sàng');
+
+    const file = await this.getModel().findFirst({ where: { id, user_id: userId } });
+    if (!file) throw new NotFoundException('File không tồn tại');
+    if (!file.drive_file_id) throw new BadRequestException('File chưa có Google Drive ID');
+    if (!file.mimetype?.startsWith('video/')) throw new BadRequestException('Chỉ hỗ trợ chọn ảnh bìa cho video');
+
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) throw new BadRequestException('FFmpeg chưa được cài đặt trên server');
+
+    const ts = Math.max(0, Math.floor(timeSeconds));
+    const tempVideoPath = path.join(UPLOAD_DIR, `dl_prev_${Date.now()}_${file.drive_file_id}.mp4`);
+    const previewName = `prev_${Date.now()}_${id}.jpg`;
+    const previewPath = path.join(UPLOAD_DIR, previewName);
+
+    let previewReady = false;
+    try {
+      this.logger.log(`[Library] Download video ${file.drive_file_id} để preview frame tại ${ts}s`);
+      await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
+
+      await execFileAsync(
+        ffmpegPath,
+        ['-y', '-ss', String(ts), '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', previewPath],
+        { timeout: 60_000 },
+      );
+
+      if (!fs.existsSync(previewPath) || fs.statSync(previewPath).size === 0) {
+        throw new Error(`FFmpeg không xuất được frame tại ${ts}s (video có thể ngắn hơn)`);
+      }
+
+      previewReady = true;
+
+      // Tự xóa file preview sau 5 phút
+      setTimeout(() => {
+        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch (e: any) { this.logger.warn(`[Library] Không xóa được preview file ${previewName}: ${e.message}`); }
+      }, 5 * 60 * 1000);
+
+      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      return { previewUrl: `${base}/api/social/media/${previewName}` };
+    } finally {
+      try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch {}
+      // Nếu lỗi xảy ra trước khi preview sẵn sàng → xóa file partial (nếu có)
+      if (!previewReady) {
+        try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch {}
+      }
+    }
+  }
+
+  /**
+   * Trích xuất frame tại giây `timeSeconds`, upload lên Drive,
+   * cập nhật thumbnail_url trong DB. Xóa thumbnail cũ nếu có.
+   */
+  async setThumbnailAtTime(id: string, userId: string, timeSeconds: number, user?: any): Promise<{ thumbnail_url: string }> {
+    if (!modelReady(this.prisma)) throw new BadRequestException('Prisma model chưa sẵn sàng');
+
+    const file = await this.getModel().findFirst({ where: { id, user_id: userId } });
+    if (!file) throw new NotFoundException('File không tồn tại');
+    if (!file.drive_file_id) throw new BadRequestException('File chưa có Google Drive ID');
+    if (!file.mimetype?.startsWith('video/')) throw new BadRequestException('Chỉ hỗ trợ chọn ảnh bìa cho video');
+
+    const ffmpegPath = this.resolveFFmpegPath();
+    if (!ffmpegPath) throw new BadRequestException('FFmpeg chưa được cài đặt trên server');
+
+    const ts = Math.max(0, Math.floor(timeSeconds));
+    const tempVideoPath = path.join(UPLOAD_DIR, `dl_thumb_${Date.now()}_${file.drive_file_id}.mp4`);
+    const thumbName = thumbFilenameFor(file.filename);
+    const thumbPath = path.join(UPLOAD_DIR, thumbName);
+
+    try {
+      this.logger.log(`[Library] Download video ${file.drive_file_id} để set thumbnail tại ${ts}s`);
+      await this.googleDrive.downloadFileToLocal(file.drive_file_id, tempVideoPath);
+
+      await execFileAsync(
+        ffmpegPath,
+        ['-y', '-ss', String(ts), '-i', tempVideoPath, '-vframes', '1', '-q:v', '2', thumbPath],
+        { timeout: 60_000 },
+      );
+
+      if (!fs.existsSync(thumbPath) || fs.statSync(thumbPath).size === 0) {
+        throw new Error(`FFmpeg không xuất được frame tại ${ts}s (video có thể ngắn hơn)`);
+      }
+
+      this.logger.log(`[Library] Upload thumbnail custom lên Drive: ${thumbName}`);
+      const uploadedThumb = await this.googleDrive.uploadFromPath(thumbPath, thumbName, 'image/jpeg', user, { subfolder: 'thumb' });
+
+      // Cập nhật DB TRƯỚC — chỉ xóa Drive cũ sau khi DB update thành công
+      // (tránh trường hợp DB lỗi → mất thumbnail cũ mà không có cái mới)
+      await this.getModel().update({
+        where: { id },
+        data: { thumbnail_url: uploadedThumb.url, thumbnail_drive_file_id: uploadedThumb.fileId },
+      });
+
+      // Xóa Drive thumbnail cũ sau khi DB đã lưu thumbnail mới thành công
+      if (file.thumbnail_drive_file_id) {
+        await this.googleDrive.delete(file.thumbnail_drive_file_id).catch((e: any) => this.logger.warn(`[Library] Drive delete old thumbnail failed for ${file.thumbnail_drive_file_id}: ${e.message}`));
+      }
+
+      this.logger.log(`[Library] ✅ Đã cập nhật thumbnail tại ${ts}s cho file ${id}`);
+      return { thumbnail_url: uploadedThumb.url };
+    } finally {
+      try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch {}
+      try { if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath); } catch {}
     }
   }
 }

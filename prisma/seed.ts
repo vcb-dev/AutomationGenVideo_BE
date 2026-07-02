@@ -62,6 +62,20 @@ async function main() {
   });
   console.log('✅ Member 2 account created:', editor.email);
 
+  const admin2Password = await bcrypt.hash('admin123', 10);
+  await prisma.user.upsert({
+    where: { email: 'admin2@vietchibao.com' },
+    update: {},
+    create: {
+      email: 'admin2@vietchibao.com',
+      password_hash: admin2Password,
+      full_name: 'Admin 2',
+      roles: [UserRole.ADMIN],
+      is_active: true,
+    },
+  });
+  console.log('✅ Admin 2 account created: admin2@vietchibao.com');
+
   const bdCuongPassword = await bcrypt.hash('Vienchibao@6688', 10);
   await prisma.user.upsert({
     where: { email: 'bdcuong@gmail.com' },
@@ -78,6 +92,7 @@ async function main() {
 
   console.log('\n📋 Test Accounts:');
   console.log('Admin:    admin@vietchibao.com / admin123 → [ADMIN]');
+  console.log('Admin 2:  admin2@vietchibao.com / admin123 → [ADMIN]');
   console.log('Manager:  manager@vietchibao.com / manager123 → [MANAGER]');
   console.log('Member 1: leader@vietchibao.com / leader123 → [MEMBER]');
   console.log('Member 2: editor@vietchibao.com / editor123 → [MEMBER]');

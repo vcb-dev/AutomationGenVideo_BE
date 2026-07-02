@@ -3,14 +3,17 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { CacheService } from "../../common/cache/cache.service";
+import { GoogleDriveStorageService } from "../social-publishing/upload/google-drive-storage.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
+import * as fs from "fs";
 import { LarkService } from "../lark-sync/lark.service";
 
 // Helper: check if roles array contains a staff role (MEMBER)
@@ -35,6 +38,7 @@ export class UsersService {
     private prisma: PrismaService,
     private larkService: LarkService,
     private cacheService: CacheService,
+    private googleDrive: GoogleDriveStorageService,
   ) { }
 
   private userCacheKey(id: string) { return `user:id:${id}`; }
@@ -66,15 +70,15 @@ export class UsersService {
       }
     }
 
-    // Validate team_leader_id if provided (now just manager_id logic effectively)
+    // Validate team_leader_id if provided
     if (createUserDto.team_leader_id) {
       const teamLeader = await this.prisma.user.findUnique({
         where: { id: createUserDto.team_leader_id },
       });
 
-      if (!teamLeader || !teamLeader.roles.includes(UserRole.MANAGER)) {
+      if (!teamLeader || (!teamLeader.roles.includes(UserRole.LEADER) && !teamLeader.roles.includes(UserRole.MANAGER) && !teamLeader.roles.includes(UserRole.ADMIN))) {
         throw new BadRequestException(
-          "Invalid team_leader_id: must reference a user with MANAGER role",
+          "Invalid team_leader_id: must reference a user with LEADER, MANAGER or ADMIN role",
         );
       }
     }
@@ -540,6 +544,219 @@ export class UsersService {
       message: 'Manager assigned successfully',
       user: updatedUser,
     };
+  }
 
+  /** Lấy danh sách nhân sự theo role của người gọi */
+  async getTeamMembers(callerId: string, callerRoles: UserRole[]) {
+    const selectFields = {
+      id: true,
+      email: true,
+      full_name: true,
+      roles: true,
+      team: true,
+      manager_id: true,
+      team_leader_id: true,
+      is_active: true,
+      image_url: true,
+      employee_id: true,
+      employee_position: true,
+      created_at: true,
+      updated_at: true,
+    };
+
+    if (callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER)) {
+      return this.prisma.user.findMany({
+        where: { id: { not: callerId } },
+        select: selectFields as any,
+        orderBy: { created_at: 'desc' },
+      });
+    }
+
+    if (callerRoles.includes(UserRole.LEADER)) {
+      return this.prisma.user.findMany({
+        where: { team_leader_id: callerId },
+        select: selectFields as any,
+        orderBy: { created_at: 'desc' },
+      });
+    }
+
+    return [];
+  }
+
+  /** Tạo nhân sự (MANAGER=ADMIN có full quyền, LEADER chỉ tạo MEMBER) */
+  async createHR(callerId: string, callerRoles: UserRole[], dto: CreateUserDto) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    if (!isManagerOrAdmin && isLeader) {
+      const requestedRoles: UserRole[] = dto.roles?.length
+        ? dto.roles
+        : dto.role ? [dto.role] : [];
+
+      if (requestedRoles.some(r => r !== UserRole.MEMBER)) {
+        throw new ForbiddenException('Leader chỉ được tạo MEMBER');
+      }
+      dto.team_leader_id = callerId;
+    }
+
+    return this.create(dto);
+  }
+
+  /** Cập nhật nhân sự (MANAGER=ADMIN full quyền, LEADER chỉ member team mình) */
+  async updateHR(callerId: string, callerRoles: UserRole[], targetId: string, dto: UpdateUserDto) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    if (!isManagerOrAdmin && isLeader) {
+      const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+      if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+      if (target.team_leader_id !== callerId) {
+        throw new ForbiddenException('Leader chỉ được cập nhật member trong team mình');
+      }
+      if (dto.roles || (dto as any).role) {
+        throw new ForbiddenException('Leader không được thay đổi role');
+      }
+    }
+
+    return this.update(targetId, dto);
+  }
+
+  /** Vô hiệu hóa tài khoản (soft delete) */
+  async deactivate(callerId: string, callerRoles: UserRole[], targetId: string) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+    if (callerId === targetId) {
+      throw new ForbiddenException('Không thể vô hiệu hóa tài khoản của chính mình');
+    }
+
+    if (!isManagerOrAdmin && isLeader) {
+      if (target.team_leader_id !== callerId) {
+        throw new ForbiddenException('Leader chỉ được vô hiệu hóa member trong team mình');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: targetId },
+      data: { is_active: false },
+      select: { id: true, email: true, full_name: true, is_active: true },
+    });
+
+    this.cacheService.invalidate(this.userCacheKey(targetId));
+    this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+
+    return { message: 'Tài khoản đã được vô hiệu hóa', user: updated };
+  }
+
+  /** Kích hoạt lại tài khoản */
+  async reactivate(callerId: string, callerRoles: UserRole[], targetId: string) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+    if (!isManagerOrAdmin && isLeader) {
+      if (target.team_leader_id !== callerId) {
+        throw new ForbiddenException('Leader chỉ được kích hoạt member trong team mình');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: targetId },
+      data: { is_active: true },
+      select: { id: true, email: true, full_name: true, is_active: true },
+    });
+
+    this.cacheService.invalidate(this.userCacheKey(targetId));
+    this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+
+    return { message: 'Tài khoản đã được kích hoạt', user: updated };
+  }
+
+  /**
+   * Upload avatar for user and store in Google Drive (portraits bucket)
+   * Returns the permanent URL
+   */
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    this.logger.log(`[UploadAvatar] User ${userId} uploading avatar: ${file.originalname}`);
+
+    // Validate user exists
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, full_name: true, image_url: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (!this.googleDrive.isAvailable()) {
+      throw new BadRequestException('Google Drive storage is not configured');
+    }
+
+    try {
+      // Generate clean filename
+      const timestamp = Date.now();
+      const ext = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
+      const cleanName = user.email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `avatar_${cleanName}_${timestamp}.${ext}`;
+
+      // Upload to Google Drive
+      const uploaded = await this.googleDrive.uploadFromPath(
+        file.path,
+        filename,
+        file.mimetype,
+        { id: userId, email: user.email }
+      );
+
+      // Update user record with new avatar URL
+      const updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data: { 
+          image_url: uploaded.url,
+          last_app_update_at: new Date(),
+        },
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          image_url: true,
+        },
+      });
+
+      // Invalidate cache
+      this.cacheService.invalidate(this.userCacheKey(userId));
+      this.cacheService.invalidate(this.userEmailCacheKey(user.email));
+
+      this.logger.log(`[UploadAvatar] ✅ Avatar uploaded successfully for user ${userId}: ${uploaded.url}`);
+
+      // Clean up temp file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        this.logger.warn(`[UploadAvatar] Failed to delete temp file ${file.path}: ${err}`);
+      }
+
+      return {
+        success: true,
+        image_url: uploaded.url,
+        message: 'Avatar uploaded successfully',
+        user: updatedUser,
+      };
+    } catch (error) {
+      this.logger.error(`[UploadAvatar] ❌ Failed to upload avatar for user ${userId}:`, error);
+
+      // Clean up temp file on error
+      try {
+        fs.unlinkSync(file.path);
+      } catch {}
+
+      throw new BadRequestException(`Failed to upload avatar: ${error.message}`);
+    }
   }
 }

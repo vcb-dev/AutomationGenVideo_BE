@@ -1,20 +1,14 @@
 import {
   Controller, Post, Body, UseGuards, Request, BadRequestException, Logger,
-  UseInterceptors, UploadedFile,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
-import { UploadService, UPLOAD_DIR } from './upload.service';
-import { SupabaseStorageService } from './supabase-storage.service';
+import { UploadService } from './upload.service';
 import { MediaLibraryService } from './media-library.service';
-import * as fs from 'fs';
-import * as path from 'path';
+import { GoogleDriveStorageService } from './google-drive-storage.service';
+import { PrismaService } from '../../../common/prisma/prisma.service';
 
-const CHUNK_DIR = path.join(UPLOAD_DIR, '_chunks');
-
-@ApiTags('Social Upload (Chunked)')
+@ApiTags('Social Upload (Google Drive Resumable)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('social/upload/chunk')
@@ -23,91 +17,268 @@ export class ChunkedUploadController {
 
   constructor(
     private readonly uploadService: UploadService,
-    private readonly supabase: SupabaseStorageService,
     private readonly library: MediaLibraryService,
+    private readonly googleDrive: GoogleDriveStorageService,
+    private readonly prisma: PrismaService,
   ) {}
 
   @Post('init')
-  @ApiOperation({ summary: 'Khởi tạo chunked upload — nhận uploadId' })
-  init(@Body() body: { filename: string; mimetype: string; totalSize: number }, @Request() req: any) {
-    if (!body.filename || !body.mimetype || !body.totalSize) throw new BadRequestException('Thiếu filename, mimetype hoặc totalSize');
-    if (body.totalSize > 2 * 1024 * 1024 * 1024) throw new BadRequestException('File vượt quá giới hạn 2GB');
-    if (!UploadService.ALLOWED_MIME_RE.test(body.mimetype)) throw new BadRequestException(`Loại file không hỗ trợ: ${body.mimetype}`);
+  @ApiOperation({ summary: 'Create Google Drive resumable upload session' })
+  async init(@Body() body: { filename: string; mimetype: string; totalSize: number }, @Request() req: any) {
+    if (!body.filename || !body.mimetype || !body.totalSize) throw new BadRequestException('Thieu filename, mimetype hoac totalSize');
+    if (body.totalSize > 2 * 1024 * 1024 * 1024) throw new BadRequestException('File vuot qua gioi han 2GB');
+    if (!UploadService.ALLOWED_MIME_RE.test(body.mimetype)) throw new BadRequestException(`Loai file khong ho tro: ${body.mimetype}`);
+    if (!this.googleDrive.isAvailable()) throw new BadRequestException('Google Drive storage chua duoc cau hinh');
 
+    const origin = req.headers?.origin || process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://www.vcbi.vn';
+    const filename = this.uploadService.generateFilename(body.filename, body.mimetype);
+    const { uploadUrl, fileId } = await this.googleDrive.createResumableUpload(filename, body.mimetype, body.totalSize, req.user, origin);
     const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}_${req.user.id}`;
-    const chunkDir = path.join(CHUNK_DIR, uploadId);
-    fs.mkdirSync(chunkDir, { recursive: true });
-    fs.writeFileSync(path.join(chunkDir, '_meta.json'), JSON.stringify({ filename: body.filename, mimetype: body.mimetype, totalSize: body.totalSize, userId: req.user.id }));
-    this.logger.log(`[Chunk] Init upload ${uploadId} — ${body.filename} (${(body.totalSize / 1024 / 1024).toFixed(1)}MB)`);
-    return { uploadId, chunkSize: 5 * 1024 * 1024 };
+
+    await this.expireOldSessions(req.user.id);
+
+    await this.prisma.socialDriveUploadSession.create({
+      data: {
+        id: uploadId,
+        user_id: req.user.id,
+        filename,
+        originalname: body.filename,
+        mimetype: body.mimetype,
+        size: body.totalSize,
+        upload_url: uploadUrl,
+        drive_file_id: fileId || null,
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    this.logger.log(`[DriveUpload] Init ${uploadId} - ${filename} (${(body.totalSize / 1024 / 1024).toFixed(1)}MB)`);
+    return { uploadId, uploadUrl, chunkSize: 8 * 1024 * 1024 };
+  }
+
+  private async expireOldSessions(userId: string) {
+    await this.prisma.socialDriveUploadSession.updateMany({
+      where: {
+        user_id: userId,
+        status: { in: ['PENDING', 'UPLOADING', 'UPLOADED'] },
+        expires_at: { lt: new Date() },
+      },
+      data: { status: 'EXPIRED', error_msg: 'Upload session expired' },
+    }).catch((err: any) => this.logger.warn(`[Upload] expireOldSessions failed: ${err.message}`));
+  }
+
+  @Post('status')
+  @ApiOperation({ summary: 'Query Google Drive resumable upload status' })
+  async status(@Body() body: { uploadId: string }, @Request() req: any) {
+    if (!body.uploadId) throw new BadRequestException('Thieu uploadId');
+
+    const session = await this.prisma.socialDriveUploadSession.findFirst({
+      where: { id: body.uploadId, user_id: req.user.id },
+    });
+    if (!session) {
+      this.logger.warn(`[DriveUpload] status: uploadId=${body.uploadId} không tồn tại hoặc không thuộc userId=${req.user.id}`);
+      throw new BadRequestException('uploadId khong hop le');
+    }
+    if (session.status === 'COMPLETED') {
+      return {
+        status: session.status,
+        uploadedBytes: session.size,
+        totalSize: session.size,
+        completed: true,
+        driveFileId: session.drive_file_id,
+      };
+    }
+    if (session.expires_at && session.expires_at.getTime() < Date.now()) {
+      await this.prisma.socialDriveUploadSession.update({
+        where: { id: session.id },
+        data: { status: 'EXPIRED', error_msg: 'Upload session expired' },
+      });
+      this.logger.warn(`[DriveUpload] status: uploadId=${body.uploadId} đã hết hạn`);
+      throw new BadRequestException('Upload session da het han');
+    }
+
+    try {
+      const driveStatus = await this.googleDrive.getResumableStatus(session.upload_url, session.size);
+      await this.prisma.socialDriveUploadSession.update({
+        where: { id: session.id },
+        data: {
+          status: driveStatus.completed ? 'UPLOADED' : 'UPLOADING',
+          uploaded_bytes: driveStatus.uploadedBytes,
+          drive_file_id: driveStatus.fileId || session.drive_file_id,
+        },
+      });
+      this.logger.log(`[DriveUpload] status: uploadId=${body.uploadId} — ${driveStatus.uploadedBytes}/${session.size} bytes (${driveStatus.completed ? 'DONE' : 'uploading'})`);
+
+      return {
+        status: driveStatus.completed ? 'UPLOADED' : 'UPLOADING',
+        uploadedBytes: driveStatus.uploadedBytes,
+        totalSize: session.size,
+        completed: driveStatus.completed,
+        driveFileId: driveStatus.fileId || session.drive_file_id,
+      };
+    } catch (err: any) {
+      this.logger.error(`[DriveUpload] status: lỗi query Drive cho uploadId=${body.uploadId}: ${err.message}`, err.stack);
+      throw err;
+    }
   }
 
   @Post()
-  @ApiOperation({ summary: 'Upload một chunk — dùng multipart/form-data' })
-  @UseInterceptors(FileInterceptor('chunk', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
-  receiveChunk(
-    @UploadedFile() chunk: Express.Multer.File,
-    @Body('uploadId') uploadId: string,
-    @Body('chunkIndex') chunkIndex: string,
-    @Request() req: any,
-  ) {
-    if (!uploadId || chunkIndex === undefined || !chunk) throw new BadRequestException('Thiếu uploadId, chunkIndex hoặc chunk');
-    const chunkDir = path.join(CHUNK_DIR, uploadId);
-    if (!fs.existsSync(chunkDir)) throw new BadRequestException('uploadId không hợp lệ');
-    const meta = JSON.parse(fs.readFileSync(path.join(chunkDir, '_meta.json'), 'utf8'));
-    if (meta.userId !== req.user.id) throw new BadRequestException('Không có quyền');
-    fs.writeFileSync(path.join(chunkDir, `chunk_${String(Number(chunkIndex)).padStart(6, '0')}`), chunk.buffer);
-    return { received: Number(chunkIndex), size: chunk.buffer.length };
+  @ApiOperation({ summary: 'Deprecated: chunks are uploaded directly to Google Drive by the browser' })
+  async receiveChunk() {
+    throw new BadRequestException('Endpoint nay da bo. FE upload chunk truc tiep len Google Drive resumable uploadUrl.');
   }
 
   @Post('finish')
-  @ApiOperation({ summary: 'Ghép chunks → upload Supabase → trả về URL' })
-  async finishUpload(@Body() body: { uploadId: string; totalChunks: number }, @Request() req: any) {
-    if (!body.uploadId || !body.totalChunks) throw new BadRequestException('Thiếu uploadId hoặc totalChunks');
-    const chunkDir = path.join(CHUNK_DIR, body.uploadId);
-    if (!fs.existsSync(chunkDir)) throw new BadRequestException('uploadId không hợp lệ');
-    const meta = JSON.parse(fs.readFileSync(path.join(chunkDir, '_meta.json'), 'utf8'));
-    if (meta.userId !== req.user.id) throw new BadRequestException('Không có quyền');
+  @ApiOperation({ summary: 'Verify Google Drive upload and save media metadata' })
+  async finishUpload(@Body() body: { uploadId: string; driveFileId?: string }, @Request() req: any) {
+    if (!body.uploadId) throw new BadRequestException('Thieu uploadId');
+    this.logger.log(`[DriveUpload] finish: uploadId=${body.uploadId} userId=${req.user.id}`);
 
-    const finalName = this.uploadService.generateFilename(meta.filename, meta.mimetype);
-    const finalPath = path.join(UPLOAD_DIR, finalName);
-    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    const writeStream = fs.createWriteStream(finalPath);
-    for (let i = 0; i < body.totalChunks; i++) {
-      const chunkPath = path.join(chunkDir, `chunk_${String(i).padStart(6, '0')}`);
-      if (!fs.existsSync(chunkPath)) throw new BadRequestException(`Chunk ${i} bị thiếu`);
-      writeStream.write(fs.readFileSync(chunkPath));
+    const session = await this.prisma.socialDriveUploadSession.findFirst({
+      where: { id: body.uploadId, user_id: req.user.id },
+    });
+    if (!session) {
+      this.logger.warn(`[DriveUpload] finish: uploadId=${body.uploadId} không tồn tại hoặc không thuộc userId=${req.user.id}`);
+      throw new BadRequestException('uploadId khong hop le');
     }
-    await new Promise<void>((resolve, reject) => { writeStream.end(); writeStream.on('finish', resolve); writeStream.on('error', reject); });
-    fs.rmSync(chunkDir, { recursive: true, force: true });
+    if (session.status === 'COMPLETED') {
+      this.logger.log(`[DriveUpload] finish: uploadId=${body.uploadId} đã COMPLETED trước đó — trả về metadata cũ`);
+      if (!session.drive_file_id) throw new BadRequestException('Upload da finish nhung thieu Google Drive file ID');
+      const existing = await this.prisma.socialUploadedFile.findFirst({
+        where: { user_id: req.user.id, drive_file_id: session.drive_file_id },
+        orderBy: { created_at: 'desc' },
+      });
+      if (!existing) throw new BadRequestException('Upload da finish nhung khong tim thay metadata');
+      return {
+        success: true,
+        urls: [{
+          url: existing.url,
+          thumbnail_url: existing.thumbnail_url,
+          filename: existing.filename,
+          originalname: existing.originalname,
+          mimetype: existing.mimetype,
+          size: existing.size,
+          storage: existing.storage,
+          drive_file_id: existing.drive_file_id,
+        }],
+      };
+    }
+    if (session.expires_at && session.expires_at.getTime() < Date.now()) {
+      await this.prisma.socialDriveUploadSession.update({
+        where: { id: session.id },
+        data: { status: 'EXPIRED', error_msg: 'Upload session expired' },
+      });
+      this.logger.warn(`[DriveUpload] finish: uploadId=${body.uploadId} đã hết hạn`);
+      throw new BadRequestException('Upload session da het han');
+    }
 
-    const fileSize = fs.statSync(finalPath).size;
-    this.logger.log(`[Chunk] Assembled ${finalName} (${(fileSize / 1024 / 1024).toFixed(1)}MB)`);
+    let driveFileId = body.driveFileId || session.drive_file_id;
+    if (!driveFileId) {
+      this.logger.log(`[DriveUpload] finish: uploadId=${body.uploadId} — không có driveFileId, query Drive status`);
+      const driveStatus = await this.googleDrive.getResumableStatus(session.upload_url, session.size);
+      driveFileId = driveStatus.fileId;
+      await this.prisma.socialDriveUploadSession.update({
+        where: { id: session.id },
+        data: {
+          status: driveStatus.completed ? 'UPLOADED' : 'UPLOADING',
+          uploaded_bytes: driveStatus.uploadedBytes,
+          drive_file_id: driveFileId || session.drive_file_id,
+        },
+      });
+      this.logger.log(`[DriveUpload] finish: uploadId=${body.uploadId} driveStatus=${driveStatus.completed ? 'completed' : 'incomplete'} fileId=${driveFileId}`);
+    }
+    if (!driveFileId) {
+      this.logger.error(`[DriveUpload] finish: uploadId=${body.uploadId} — không tìm được Drive file ID sau khi query`);
+      throw new BadRequestException('Thieu Google Drive file id sau khi upload');
+    }
 
-    const baseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:3000';
-    const isProduction = process.env.NODE_ENV === 'production';
-    let url: string, storage: 'supabase' | 'local' = 'local';
-    if (this.supabase.isAvailable()) {
+    this.logger.log(`[DriveUpload] finish: lấy metadata Drive fileId=${driveFileId}`);
+    const file = await this.googleDrive.getFile(driveFileId, true);
+    const size = file.size || session.size;
+    this.logger.log(`[DriveUpload] finish: Drive file size=${size}, expected=${session.size}`);
+
+    if (size > 0 && size < session.size) {
+      await this.prisma.socialDriveUploadSession.update({
+        where: { id: session.id },
+        data: { status: 'UPLOADING', uploaded_bytes: size, error_msg: 'Drive file size is smaller than expected' },
+      });
+      this.logger.error(`[DriveUpload] finish: ❌ uploadId=${body.uploadId} — Drive size=${size} < expected=${session.size}, upload chưa hoàn tất`);
+      throw new BadRequestException('Video tren Google Drive chua upload du dung luong');
+    }
+
+    const mimetype = file.mimetype || session.mimetype || '';
+    let thumbnailUrl = file.thumbnailUrl || null;
+    let thumbnailDriveId: string | null = null;
+
+    if (mimetype.startsWith('video/')) {
+      this.logger.log(`[DriveUpload] finish: trích xuất thumbnail cho video fileId=${driveFileId}`);
       try {
-        url = await this.supabase.uploadFromPath(finalPath, finalName, meta.mimetype);
-        fs.unlink(finalPath, () => {});
-        storage = 'supabase';
-      } catch (e: any) {
-        if (isProduction) {
-          this.logger.error(`[Chunk] Supabase upload thất bại trên production: ${e.message}`);
-          throw new BadRequestException(`Upload thất bại: ${e.message}. Vui lòng thử lại.`);
+        const res = await this.library.extractAndUploadThumbnail(file.fileId, session.filename, req.user);
+        if (res) {
+          thumbnailUrl = res.url;
+          thumbnailDriveId = res.fileId;
+          this.logger.log(`[DriveUpload] finish: thumbnail OK — ${res.url}`);
         }
-        this.logger.warn(`[Chunk] Supabase fail, using local (dev): ${e.message}`);
-        url = `${baseUrl}/api/social/media/${finalName}`;
+      } catch (thumbErr: any) {
+        this.logger.warn(`[DriveUpload] finish: extractAndUploadThumbnail thất bại cho ${file.fileId}: ${thumbErr.message}`);
       }
-    } else {
-      if (isProduction) {
-        throw new BadRequestException('Storage chưa được cấu hình. Liên hệ admin.');
-      }
-      url = `${baseUrl}/api/social/media/${finalName}`;
     }
 
-    this.library.save(req.user.id, { filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, url, storage }).catch(() => {});
-    return { success: true, urls: [{ url, filename: finalName, originalname: meta.filename, mimetype: meta.mimetype, size: fileSize, storage }] };
+    await this.library.save(req.user.id, {
+      filename: session.filename,
+      originalname: session.originalname,
+      mimetype,
+      size,
+      url: file.url,
+      thumbnail_url: thumbnailUrl,
+      storage: 'google_drive',
+      drive_file_id: file.fileId,
+      drive_web_view_url: file.webViewUrl || null,
+      thumbnail_drive_file_id: thumbnailDriveId,
+    });
+
+    await this.prisma.socialDriveUploadSession.update({
+      where: { id: session.id },
+      data: { status: 'COMPLETED', drive_file_id: file.fileId },
+    });
+
+    this.logger.log(`[DriveUpload] ✅ finish: uploadId=${body.uploadId} hoàn tất — fileId=${file.fileId} url=${file.url}`);
+    return {
+      success: true,
+      urls: [{
+        url: file.url,
+        thumbnail_url: thumbnailUrl,
+        filename: session.filename,
+        originalname: session.originalname,
+        mimetype,
+        size,
+        storage: 'google_drive',
+        drive_file_id: file.fileId,
+      }],
+    };
+  }
+
+  @Post('cancel')
+  @ApiOperation({ summary: 'Cancel an upload session and delete Drive file if created' })
+  async cancel(@Body() body: { uploadId: string }, @Request() req: any) {
+    if (!body.uploadId) throw new BadRequestException('Thieu uploadId');
+    const session = await this.prisma.socialDriveUploadSession.findFirst({
+      where: { id: body.uploadId, user_id: req.user.id },
+    });
+    if (!session) {
+      this.logger.warn(`[DriveUpload] cancel: uploadId=${body.uploadId} không tìm thấy`);
+      throw new BadRequestException('uploadId khong hop le');
+    }
+    if (session.drive_file_id) {
+      this.logger.log(`[DriveUpload] cancel: xóa Drive file=${session.drive_file_id} cho uploadId=${body.uploadId}`);
+      await this.googleDrive.delete(session.drive_file_id).catch((err: any) => {
+        this.logger.warn(`[DriveUpload] cancel: không xóa được Drive file=${session.drive_file_id}: ${err.message}`);
+      });
+    }
+    await this.prisma.socialDriveUploadSession.update({
+      where: { id: session.id },
+      data: { status: 'CANCELLED' },
+    });
+    this.logger.log(`[DriveUpload] cancel: uploadId=${body.uploadId} đã huỷ`);
+    return { success: true };
   }
 }
