@@ -12,6 +12,7 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -19,12 +20,38 @@ const execFileAsync = promisify(execFile);
 
 type PreparedMedia = { url: string; tempFile: string | null };
 
+/** Semaphore đơn giản: giới hạn số tác vụ nặng (FFmpeg/transcode, Drive download) chạy đồng thời */
+class Semaphore {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+  constructor(private readonly max: number) {}
+
+  acquire(): Promise<() => void> {
+    if (this.active < this.max) {
+      this.active++;
+      return Promise.resolve(() => this.release());
+    }
+    return new Promise(resolve => {
+      this.queue.push(() => {
+        this.active++;
+        resolve(() => this.release());
+      });
+    });
+  }
+
+  private release() {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
+
 function extractDriveFileId(url: string): string | null {
   try {
     const u = new URL(url);
     const id = u.searchParams.get('id');
     if (id) return id;
-  } catch {}
+  } catch { }
   const match = url.match(/\/file\/d\/([^/?#]+)/);
   return match?.[1] || null;
 }
@@ -47,6 +74,20 @@ export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
 
+  // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
+  // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
+  private readonly publishNowSemaphore = new Semaphore(4);
+  // Chặn double-click / submit trùng: nếu 1 request publishNow giống hệt (cùng user +
+  // account + nội dung) đang xử lý, trả lại promise đang chạy thay vì đăng 2 lần.
+  private readonly inFlightPublishNow = new Map<string, Promise<any>>();
+  // Trần ffmpeg DÙNG CHUNG cho CẢ worker lẫn sync publishNow. publishNowSemaphore chỉ chặn
+  // đường sync; worker transcode riêng (cap MAX_HEAVY_JOBS=5). Không có trần chung này thì
+  // worst case 4 (sync) + 5 (worker) = 9 ffmpeg × threads=4 → bão CPU/OOM trên Railway.
+  // Tune qua env SOCIAL_TRANSCODE_CONCURRENCY (mặc định 2).
+  private readonly transcodeSemaphore = new Semaphore(
+    Math.max(1, parseInt(process.env.SOCIAL_TRANSCODE_CONCURRENCY || '2', 10) || 2),
+  );
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
@@ -58,7 +99,7 @@ export class PublishService {
     private readonly yt: YoutubePublisher,
     private readonly zalo: ZaloPublisher,
     private readonly googleDrive: GoogleDriveStorageService,
-  ) {}
+  ) { }
 
   private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
@@ -173,12 +214,53 @@ export class PublishService {
     }));
 
     return {
-      urls:      results.map(r => r.url),
+      urls: results.map(r => r.url),
       tempFiles: results.map(r => r.tempFile).filter((f): f is string => f !== null),
     };
   }
 
   async publishNow(userId: string, dto: {
+    accountId: string;
+    message: string;
+    mediaUrls?: string[];
+    pageId?: string;
+    privacy?: string;
+  }) {
+    const dedupKey = `${userId}:${dto.accountId}:${crypto
+      .createHash('sha1')
+      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}`)
+      .digest('hex')}`;
+
+    const existing = this.inFlightPublishNow.get(dedupKey);
+    if (existing) {
+      this.logger.warn(`[PublishNow] Request trùng (double-click?) cho key=${dedupKey} — trả về kết quả của request đang xử lý`);
+      return existing;
+    }
+
+    const task = this.publishNowInternal(userId, dto).finally(() => {
+      // Giữ key thêm 3s sau khi xong để chặn click trùng đến muộn do network jitter
+      setTimeout(() => this.inFlightPublishNow.delete(dedupKey), 3000);
+    });
+    this.inFlightPublishNow.set(dedupKey, task);
+    return task;
+  }
+
+  private async publishNowInternal(userId: string, dto: {
+    accountId: string;
+    message: string;
+    mediaUrls?: string[];
+    pageId?: string;
+    privacy?: string;
+  }) {
+    const release = await this.publishNowSemaphore.acquire();
+    try {
+      return await this.doPublishNow(userId, dto);
+    } finally {
+      release();
+    }
+  }
+
+  private async doPublishNow(userId: string, dto: {
     accountId: string;
     message: string;
     mediaUrls?: string[];
@@ -192,7 +274,7 @@ export class PublishService {
     this.logger.log(`[PublishNow] ${account.platform} "${account.name}" | platformId=${account.platform_id} | igUserId=${extraData?.igUserId} | pageId=${extraData?.pageId} | mediaUrls=${JSON.stringify(dto.mediaUrls)}`);
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
-                           account.platform === SocialPlatform.THREADS;
+      account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -252,7 +334,7 @@ export class PublishService {
     const extraData = account.extra_data as any;
 
     const needsTranscode = account.platform === SocialPlatform.INSTAGRAM ||
-                           account.platform === SocialPlatform.THREADS;
+      account.platform === SocialPlatform.THREADS;
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
@@ -290,7 +372,9 @@ export class PublishService {
     } catch (err: any) {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[ExecuteScheduled] ❌ postId=${post.id} ${account.platform} "${account.name}": ${apiErr}`, err.stack);
-      throw err;
+      const enrichedErr = new Error(apiErr);
+      enrichedErr.stack = err.stack;
+      throw enrichedErr;
     } finally {
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
@@ -328,6 +412,66 @@ export class PublishService {
     return null;
   }
 
+  /** Tìm ffprobe: env → cạnh ffmpeg → /usr/bin/ffprobe → null */
+  private resolveFFprobePath(): string | null {
+    const fromEnv = process.env.FFPROBE_PATH;
+    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+    const ffmpeg = process.env.FFMPEG_PATH;
+    if (ffmpeg && fs.existsSync(ffmpeg)) {
+      const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    if (fs.existsSync('/usr/bin/ffprobe')) return '/usr/bin/ffprobe';
+    return null;
+  }
+
+  /**
+   * Kiểm tra video đã đạt chuẩn IG/Threads chưa → nếu rồi thì bỏ qua transcode (tiết kiệm 10-40s).
+   * Conservative: bất kỳ nghi ngờ nào (không probe được, đọc thiếu thông tin) → false (vẫn transcode).
+   */
+  private async isVideoCompliant(inputPath: string): Promise<boolean> {
+    const ffprobePath = this.resolveFFprobePath();
+    if (!ffprobePath) return false;
+    try {
+      const { stdout } = await execFileAsync(ffprobePath, [
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_name,pix_fmt,profile,avg_frame_rate,r_frame_rate,bit_rate',
+        '-of', 'json',
+        inputPath,
+      ], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+
+      const v = JSON.parse(stdout)?.streams?.[0];
+      if (!v) return false;
+
+      const codec = String(v.codec_name || '').toLowerCase();
+      const pixFmt = String(v.pix_fmt || '').toLowerCase();
+      const profile = String(v.profile || '').toLowerCase();
+      if (codec !== 'h264') return false;
+      if (pixFmt !== 'yuv420p') return false;
+      if (!['constrained baseline', 'baseline', 'main', 'high'].includes(profile)) return false;
+
+      // CFR: avg_frame_rate ≈ r_frame_rate (VFR sẽ bị IG/Threads từ chối → cần transcode)
+      const parseFps = (s: any): number => {
+        const [n, d] = String(s || '0/1').split('/').map(Number);
+        return d ? n / d : 0;
+      };
+      const avg = parseFps(v.avg_frame_rate);
+      const r = parseFps(v.r_frame_rate);
+      if (avg <= 0 || avg > 60) return false;
+      if (Math.abs(avg - r) > 0.5) return false;
+
+      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được)
+      const bitRate = Number(v.bit_rate || 0);
+      if (bitRate > 12_000_000) return false;
+
+      return true;
+    } catch (e: any) {
+      this.logger.warn(`[Transcode] ffprobe lỗi (${e.message}) → vẫn transcode cho chắc`);
+      return false;
+    }
+  }
+
   private async _doTranscode(localUrl: string): Promise<string> {
     const ffmpegPath = this.resolveFFmpegPath();
     if (!ffmpegPath) return localUrl;
@@ -339,26 +483,42 @@ export class PublishService {
       const inputPath = path.join(uploadBase, filename);
       if (!fs.existsSync(inputPath)) return localUrl;
 
+      // Bỏ qua transcode nếu video đã đạt chuẩn IG/Threads (tiết kiệm 10-40s).
+      // Tắt tối ưu này bằng env SOCIAL_TRANSCODE_SKIP=false nếu gặp video bị nền tảng từ chối.
+      if (process.env.SOCIAL_TRANSCODE_SKIP !== 'false' && await this.isVideoCompliant(inputPath)) {
+        this.logger.log(`[Transcode] ⏭️ Bỏ qua — ${filename} đã đạt chuẩn H.264/yuv420p/CFR`);
+        return localUrl;
+      }
+
       const transcodedName = `tc_${Date.now()}_${filename}`;
       const outputPath = path.join(uploadBase, transcodedName);
 
-      this.logger.log(`[Transcode] Bắt đầu transcode ${filename} → ${transcodedName}...`);
-      const start = Date.now();
       // H.264 high, CRF 20, cap 8Mbps, CFR 30fps, yuv420p, faststart
       // -map_metadata -1: xóa metadata lạ (Hw, te_is_reencode, bitrate tag) khiến IG/Threads reject
       // -fps_mode cfr -r 30: constant frame rate bắt buộc cho Instagram/Threads
       // -pix_fmt yuv420p: pixel format chuẩn
       // '-map 0:a:0?' — dấu '?' làm audio map optional: không crash nếu video không có audio
-      await execFileAsync(ffmpegPath, [
-        '-y', '-i', inputPath,
-        '-map', '0:v:0', '-map', '0:a:0?',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '0',
-        '-profile:v', 'high', '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
-        '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-        '-map_metadata', '-1', '-movflags', '+faststart',
-        outputPath,
-      ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      // threads=4: Railway có CPU limit thấp — threads=0 (auto=60) gây OOM/kill
+      // Gate qua semaphore DÙNG CHUNG (worker + sync) — chờ slot nếu đang đầy.
+      const releaseTranscode = await this.transcodeSemaphore.acquire();
+      let start = Date.now();
+      try {
+        this.logger.log(`[Transcode] Bắt đầu transcode ${filename} → ${transcodedName}...`);
+        start = Date.now(); // reset sau khi có slot → đo đúng thời gian encode, không tính thời gian chờ
+        await execFileAsync(ffmpegPath, [
+          '-y', '-i', inputPath,
+          '-map', '0:v:0', '-map', '0:a:0?',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
+          '-profile:v', 'baseline', '-level', '4.0',
+          '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
+          '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+          '-map_metadata', '-1', '-movflags', '+faststart',
+          outputPath,
+        ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      } finally {
+        releaseTranscode();
+      }
 
       if (!fs.existsSync(outputPath)) {
         this.logger.warn(`[Transcode] File output không tồn tại sau transcode: ${outputPath}`);
@@ -422,8 +582,8 @@ export class PublishService {
         const igUserId = extra.igUserId || opts.platformId;
         if (!igUserId) throw new BadRequestException('Thiếu Instagram User ID — hãy kết nối lại tài khoản');
         return this.ig.publish(token, {
-          caption:     opts.message,
-          mediaUrls:   opts.mediaUrls,
+          caption: opts.message,
+          mediaUrls: opts.mediaUrls,
           igUserId,
           accountType: extra.type, // 'instagram_business' | 'instagram_direct'
         });
@@ -509,17 +669,17 @@ export class PublishService {
 
     const post = await this.prisma.socialPost.create({
       data: {
-        user_id:      userId,
-        account_id:   dto.accountId,
-        platform:     account.platform,
-        message:      dto.message,
-        media_urls:   dto.mediaUrls ?? [],
-        page_id:      dto.pageId,
-        privacy:      dto.privacy,
+        user_id: userId,
+        account_id: dto.accountId,
+        platform: account.platform,
+        message: dto.message,
+        media_urls: dto.mediaUrls ?? [],
+        page_id: dto.pageId,
+        privacy: dto.privacy,
         scheduled_at: new Date(), // đến hạn ngay lập tức
-        source:       SocialPostSource.IMMEDIATE,
-        status:       SocialPostStatus.PENDING,
-        updated_at:   new Date(),
+        source: SocialPostSource.IMMEDIATE,
+        status: SocialPostStatus.PENDING,
+        updated_at: new Date(),
       },
     });
 

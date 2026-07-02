@@ -21,6 +21,8 @@ export class TrackedChannelsService {
       select: { email: true, full_name: true, team: true },
     });
 
+
+
     // Upsert vào Channel table (huyk_channels) — link kênh với công ty
     const channelId = `manual_${createDto.platform}_${createDto.username}`.toLowerCase();
     const platformLabel = this.mapPlatformToLabel(createDto.platform);
@@ -132,7 +134,7 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
             AND hc.team_traffic ILIKE ${likeParam}
             AND tc.platform::text = ${platform.toUpperCase()}
@@ -143,7 +145,7 @@ export class TrackedChannelsService {
           SELECT tc.*
           FROM tracked_channels tc
           JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-          WHERE tc.user_id = ${userId}
+          WHERE tc.user_id::text = ${userId}
             AND tc.is_active = true
             AND hc.team_traffic ILIKE ${likeParam}
           ORDER BY tc.created_at DESC
