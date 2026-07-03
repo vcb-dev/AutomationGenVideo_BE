@@ -1445,6 +1445,14 @@ model Team {
   ordered_sources Source[]      @relation("SourceOrderedTeam")
   push_requests   TeamPushRequest[]
 
+  // Content Report relations
+  content_videos       ContentVideo[]
+  case_studies         CaseStudy[]
+  editor_performances  EditorPerformance[]
+  clone_videos         CloneVideo[]
+  action_items         ActionItem[]
+  kpi_snapshots        TeamKpiSnapshot[]
+
   @@index([leader_id])
   @@map("teams")
 }
@@ -2160,27 +2168,8 @@ model SocialDriveUploadSession {
   @@map("social_drive_upload_sessions")
 }
 
-// ─────────────────────────────────────────────
 //  CONTENT REPORT — Module "Báo cáo content"
 // ─────────────────────────────────────────────
-
-/// Danh sách team (K1, K2, K3...)
-model Team {
-  id         String   @id @default(uuid())
-  name       String   @unique  // "K1", "K2", "K3"...
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  // Relations (1-N)
-  content_videos       ContentVideo[]
-  case_studies         CaseStudy[]
-  editor_performances  EditorPerformance[]
-  clone_videos         CloneVideo[]
-  action_items         ActionItem[]
-  kpi_snapshots        TeamKpiSnapshot[]
-
-  @@map("teams")
-}
 
 /// Kỳ báo cáo — tuần hoặc tháng
 model ReportPeriod {
