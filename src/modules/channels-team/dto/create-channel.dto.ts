@@ -12,6 +12,11 @@ export class CreateChannelDto {
   @IsOptional()
   platform?: string;
 
+  @ApiPropertyOptional({ example: "UCxxxxxxxxxxxxxxxx", description: "ID kênh trên platform (channel_id)" })
+  @IsString()
+  @IsOptional()
+  channel_id?: string;
+
   @ApiPropertyOptional({ example: "https://tiktok.com/@myChannel" })
   @IsString()
   @IsOptional()
