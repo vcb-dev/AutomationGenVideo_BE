@@ -19,7 +19,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
-  ) {}
+  ) { }
 
   async onModuleInit() {
     try {
@@ -181,11 +181,11 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
         picture: p.picture?.data?.url,
         instagram: p.instagram_business_account
           ? {
-              id: p.instagram_business_account.id,
-              name: p.instagram_business_account.name,
-              username: p.instagram_business_account.username,
-              profile_picture_url: p.instagram_business_account.profile_picture_url,
-            }
+            id: p.instagram_business_account.id,
+            name: p.instagram_business_account.name,
+            username: p.instagram_business_account.username,
+            profile_picture_url: p.instagram_business_account.profile_picture_url,
+          }
           : null,
       }));
 
@@ -316,7 +316,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[Sync] Đang tự động cập nhật Token cho các tài khoản con của: ${parentId}`);
     try {
       const pages = await this.fetchFacebookPagesWithTokens(parentId, userId);
-      
+
       for (const p of pages) {
         const encryptedToken = this.crypto.encrypt(p.access_token);
 

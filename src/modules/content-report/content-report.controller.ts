@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  Request,
 } from '@nestjs/common';
 import axios from 'axios';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
@@ -29,6 +30,7 @@ import {
   UpdateCloneVideoDto,
   CreateActionItemDto,
   UpdateActionItemDto,
+  CreateVideoScoreDto,
 } from './dto';
 
 @ApiTags('Content Report')
@@ -253,6 +255,26 @@ export class ContentReportController {
     } catch (error) {
       return { success: false, message: error.message };
     }
+  }
+
+  // ───────────────────── VIDEO SCORING ─────────────────────
+
+  @Post('content-videos/:id/score')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Chấm điểm hoặc cập nhật điểm số video (1-10)' })
+  async upsertVideoScore(
+    @Param('id') contentVideoId: string,
+    @Request() req: any,
+    @Body() dto: CreateVideoScoreDto,
+  ) {
+    return this.contentReportService.upsertVideoScore(contentVideoId, req.user.id, dto);
+  }
+
+  @Get('content-videos/:id/scores')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Lấy toàn bộ điểm chấm chéo của một video' })
+  async getVideoScores(@Param('id') contentVideoId: string) {
+    return this.contentReportService.getVideoScores(contentVideoId);
   }
 
   // ───────────────────── SEED ─────────────────────

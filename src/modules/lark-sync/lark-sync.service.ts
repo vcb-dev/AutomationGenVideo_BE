@@ -69,7 +69,7 @@ export class LarkSyncService implements OnApplicationBootstrap {
 
     private async runBootstrapSync() {
         this.logger.log('🔄 Starting deferred bootstrap (Unified Sync + Đồ Da + Permissions)...');
-        
+
         // 1. Chạy Unified Sync (Wipe + HR + KPI)
         try {
             await this.unifiedSync();
@@ -152,14 +152,14 @@ export class LarkSyncService implements OnApplicationBootstrap {
         };
 
         try {
-            await run('Channel sync',    () => this.larkService.syncChannelData());
-            await run('KPI sync',        () => this.larkService.syncKPIData());
-            await run('KPI DoDa sync',   () => this.larkService.syncKPIDoDaData());
-            await run('DoDa channel',    () => this.larkService.syncDoDaChannelData());
-            
+            await run('Channel sync', () => this.larkService.syncChannelData());
+            await run('KPI sync', () => this.larkService.syncKPIData());
+            await run('KPI DoDa sync', () => this.larkService.syncKPIDoDaData());
+            await run('DoDa channel', () => this.larkService.syncDoDaChannelData());
+
             // Clear KPI pagination cache after sync
             this.larkService.invalidateKPICache();
-            
+
             this.logger.log('🎉 MASTER SYNC COMPLETED SUCCESSFULLY!');
         } finally {
             this.syncLock = false;

@@ -1,6 +1,6 @@
 generator client {
   provider   = "prisma-client-js"
-  engineType = "binary"
+  engineType = "library"
 }
 
 datasource db {
@@ -62,6 +62,7 @@ model User {
   editor_performances     EditorPerformance[]
   clone_videos_edited     CloneVideo[]          @relation("EditorCloneVideos")
   action_items_assigned   ActionItem[]          @relation("AssigneeActionItems")
+  video_scores            VideoScore[]          @relation("UserVideoScores")
 
   @@index([email])
   @@index([roles])
@@ -1378,6 +1379,7 @@ model ContentVideo {
   team   Team         @relation(fields: [team_id], references: [id])
   period ReportPeriod @relation(fields: [period_id], references: [id])
   editor User         @relation("EditorContentVideos", fields: [editor_id], references: [id])
+  scores VideoScore[]
 
   @@index([team_id, period_id, status])
   @@index([editor_id])
@@ -1511,4 +1513,27 @@ model TeamKpiSnapshot {
 
   @@unique([team_id, period_id]) // 1 snapshot / team / kỳ
   @@map("team_kpi_snapshots")
+}
+
+model VideoScore {
+  id               String       @id @default(uuid())
+  content_video_id String
+  scored_by_id     String
+  
+  score_hook       Float
+  score_content    Float
+  score_editing    Float
+  score_cta        Float
+  score_thumbnail  Float
+  score_total      Float
+  
+  comment          String?      @db.Text
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+
+  content_video    ContentVideo @relation(fields: [content_video_id], references: [id], onDelete: Cascade)
+  scored_by        User         @relation("UserVideoScores", fields: [scored_by_id], references: [id], onDelete: Cascade)
+
+  @@unique([content_video_id, scored_by_id])
+  @@map("video_scores")
 }

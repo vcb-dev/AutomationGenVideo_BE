@@ -143,7 +143,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
         for (const [url, client] of this.remotePrismaClients.entries()) {
             const originalDisconnect = (client as any).__originalDisconnect;
             if (originalDisconnect) {
-                await originalDisconnect().catch((e: any) => 
+                await originalDisconnect().catch((e: any) =>
                     this.logger.warn(`Failed to disconnect cached remote PrismaClient: ${e.message}`)
                 );
             }
@@ -1429,7 +1429,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
             let synced = 0;
             if (channelsToInsert.length > 0) {
                 this.logger.log(`Syncing ${channelsToInsert.length} fresh records to Channel atomically...`);
-                
+
                 // Use atomic transaction: drop old non-doda records and batch insert fresh ones 
                 // to prevent connection overload and avoid parallel execution race conditions.
                 await this.prisma.$transaction([
@@ -2733,8 +2733,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                 }
 
                 const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) ||
-                                 (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
-                                 dbUsersMap.get(nameKey);
+                    (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
+                    dbUsersMap.get(nameKey);
                 if (sysMatch) {
                     // Role comes from Users table (handled in getUserActivityReports)
                     // We also fetch current employee_status to skip resigned users.
@@ -2791,7 +2791,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                 // PgBouncer transaction mode: Xóa toàn bộ trước
                 await targetLarkKPI.deleteMany({});
-                
+
                 // Sau đó ghi mới tuần tự (sequential) để tránh chiếm dụng quá nhiều slot kết nối của PgBouncer cùng lúc
                 for (let i = 0; i < kpiRecordsToInsert.length; i += CHUNK) {
                     await targetLarkKPI.createMany({
@@ -3092,8 +3092,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     }
 
                     const sysMatch = (empIdKey ? dbUsersMap.get(empIdKey) : null) ||
-                                     (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
-                                     dbUsersMap.get(nameKey);
+                        (larkUserId ? dbUsersMap.get(larkUserId) : null) ||
+                        dbUsersMap.get(nameKey);
                     if (sysMatch) {
                         // Team strictly follows Lark source (unless it's null/empty, but usually it's set).
                         // Role and user-specific attributes stay in Users table.
@@ -3429,13 +3429,13 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
         // Use cache key that includes pagination
         const cacheKey = `kpi:paginated:${pageNum}:${size}`;
-        
+
         // 10 minute TTL for KPI data
         const KPI_CACHE_TTL_MS = 10 * 60 * 1000;
 
         return this.cacheService.get(cacheKey, KPI_CACHE_TTL_MS, async () => {
             this.logger.log(`[KPI] Fetching from DB - page ${pageNum}, size ${size}`);
-            
+
             // Fetch both data and total count in parallel
             const [data, total] = await Promise.all([
                 this.prisma.larkKPI.findMany({
@@ -4602,8 +4602,8 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
 
                     const kpiEmpId = kpi.employee_id ? String(kpi.employee_id).trim() : null;
                     const authUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) ||
-                                     (kpiEmpId ? larkUserIdMatchMap.get(kpiEmpId) : null) ||
-                                     (nameKey ? nameKeyMatchMap.get(nameKey) : null);
+                        (kpiEmpId ? larkUserIdMatchMap.get(kpiEmpId) : null) ||
+                        (nameKey ? nameKeyMatchMap.get(nameKey) : null);
 
                     const pKey = resolvePersonKey({
                         email: emailKey || this.extractEmailFromKpi(kpi),
@@ -4757,11 +4757,11 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                     const rEmail = r.email?.toLowerCase().trim();
                     const rName = r.name ? normName(r.name) : null;
                     let authUser = (rEmail ? emailKeyMatchMap.get(rEmail) : null) || (rName ? nameKeyMatchMap.get(rName) : null);
-                    
+
                     if (!authUser && (rName === 'chung do' || rEmail === 'dochung2741@gmail.com')) {
                         authUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
                     }
-                    
+
                     // Checklist: index reports by users.team (supports multi-team members)
                     const checklistTeamStr =
                         authUser?.team ||
@@ -4774,7 +4774,7 @@ export class LarkService implements OnModuleInit, OnApplicationBootstrap, OnModu
                         const fallback = (r.team || '').trim() || 'Khác';
                         if (fallback) rTeams.push(fallback);
                     }
-                    
+
                     rTeams.forEach(t => {
                         const rTeamNorm = normalizeTeamKey(t);
                         if (rEmail) reportsByTeamMap.set(`${rEmail}_${rTeamNorm}`, r);

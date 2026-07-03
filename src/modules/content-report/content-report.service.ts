@@ -14,6 +14,7 @@ import {
   UpdateCloneVideoDto,
   CreateActionItemDto,
   UpdateActionItemDto,
+  CreateVideoScoreDto,
 } from './dto';
 
 @Injectable()
@@ -107,7 +108,10 @@ export class ContentReportService {
       await Promise.all([
         this.prisma.contentVideo.findMany({
           where: { ...whereTeamPeriod, status: VideoStatus.WIN },
-          include: { editor: { select: { id: true, full_name: true, image_url: true } } },
+          include: {
+            editor: { select: { id: true, full_name: true, image_url: true } },
+            scores: { include: { scored_by: { select: { id: true, full_name: true } } } },
+          },
           orderBy: [
             { order_index: 'asc' },
             { post_date: 'asc' },
@@ -116,7 +120,10 @@ export class ContentReportService {
         }),
         this.prisma.contentVideo.findMany({
           where: { ...whereTeamPeriod, status: VideoStatus.FAIL },
-          include: { editor: { select: { id: true, full_name: true, image_url: true } } },
+          include: {
+            editor: { select: { id: true, full_name: true, image_url: true } },
+            scores: { include: { scored_by: { select: { id: true, full_name: true } } } },
+          },
           orderBy: [
             { order_index: 'asc' },
             { post_date: 'asc' },
@@ -661,6 +668,71 @@ export class ContentReportService {
     periods.push(monthPeriod);
 
     return { teams, periods };
+  }
+
+  // ───────────────────── VIDEO SCORING ─────────────────────
+
+  async upsertVideoScore(contentVideoId: string, userId: string, dto: CreateVideoScoreDto) {
+    const video = await this.prisma.contentVideo.findUnique({
+      where: { id: contentVideoId },
+    });
+    if (!video) throw new NotFoundException(`Video không tồn tại`);
+
+    // Calculate score_total as average of 5 criteria
+    const total = (dto.score_hook + dto.score_content + dto.score_editing + dto.score_cta + dto.score_thumbnail) / 5;
+    const score_total = Math.round(total * 100) / 100;
+
+    return this.prisma.videoScore.upsert({
+      where: {
+        content_video_id_scored_by_id: {
+          content_video_id: contentVideoId,
+          scored_by_id: userId,
+        },
+      },
+      update: {
+        score_hook: dto.score_hook,
+        score_content: dto.score_content,
+        score_editing: dto.score_editing,
+        score_cta: dto.score_cta,
+        score_thumbnail: dto.score_thumbnail,
+        score_total,
+        comment: dto.comment,
+      },
+      create: {
+        content_video_id: contentVideoId,
+        scored_by_id: userId,
+        score_hook: dto.score_hook,
+        score_content: dto.score_content,
+        score_editing: dto.score_editing,
+        score_cta: dto.score_cta,
+        score_thumbnail: dto.score_thumbnail,
+        score_total,
+        comment: dto.comment,
+      },
+      include: {
+        scored_by: {
+          select: {
+            id: true,
+            full_name: true,
+          },
+        },
+      },
+    });
+  }
+
+  async getVideoScores(contentVideoId: string) {
+    return this.prisma.videoScore.findMany({
+      where: { content_video_id: contentVideoId },
+      include: {
+        scored_by: {
+          select: {
+            id: true,
+            full_name: true,
+          },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
   }
 
   // ───────────────────── HELPERS ─────────────────────
