@@ -1,10 +1,11 @@
-import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, HttpException, Res, UseInterceptors, UploadedFile, Req } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, HttpException, Res, UseInterceptors, UploadedFile, Req, UseGuards } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @ApiTags('AI Integration')
 @Controller('ai')
@@ -576,13 +577,25 @@ export class AiIntegrationController {
   }
 
   @Get('voice/list')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'List available voices' })
   async listVoices() {
     return this.aiService.listVoices();
   }
 
   @Post('voice/clone')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB, matches what the FE UI advertises
+    fileFilter: (_req, file, cb) => {
+      const allowedMimeTypes = /^audio\//;
+      if (allowedMimeTypes.test(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new HttpException(`File type not supported: ${file.mimetype}. Only audio files allowed.`, HttpStatus.BAD_REQUEST), false);
+      }
+    },
+  }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Clone a voice from an audio file' })
   async cloneVoice(
@@ -600,6 +613,8 @@ export class AiIntegrationController {
   }
 
   @Post('voice/tts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Convert text to speech using Minimax' })
   async generateTTS(
     @Body('text') text: string,
@@ -607,6 +622,7 @@ export class AiIntegrationController {
     @Body('speed') speed?: number,
     @Body('pitch') pitch?: number,
     @Body('volume') volume?: number,
+    @Body('language') language?: string,
   ) {
     if (!text) {
       throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
@@ -614,6 +630,6 @@ export class AiIntegrationController {
     if (!voiceId) {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume);
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language);
   }
 }

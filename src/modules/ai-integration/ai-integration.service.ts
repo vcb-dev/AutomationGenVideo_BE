@@ -1475,13 +1475,14 @@ export class AiIntegrationService {
         contentType: file.mimetype
       });
       formData.append('voice_name', voiceName);
-      formData.append('gender', gender);
+      formData.append('gender', gender || 'female');
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
           headers: formData.getHeaders(),
           maxContentLength: Infinity,
-          maxBodyLength: Infinity
+          maxBodyLength: Infinity,
+          timeout: 300000, // voice cloning can take a while; module default (30s) is too short
         }).pipe(
           catchError((error: AxiosError) => {
             this.logger.error(`AI Service error cloning voice: ${error.message}`, error.response?.data);
@@ -1502,7 +1503,7 @@ export class AiIntegrationService {
   /**
    * Generate Text-to-Speech using Minimax
    */
-  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100): Promise<any> {
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string): Promise<any> {
     const url = `${this.aiServiceUrl}/api/voice/tts/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
 
@@ -1513,7 +1514,10 @@ export class AiIntegrationService {
           voice_id: voiceId,
           speed,
           pitch,
-          volume
+          volume,
+          language
+        }, {
+          timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
         }).pipe(
           catchError((error: AxiosError) => {
             this.logger.error(`AI Service error in TTS: ${error.message}`, error.response?.data);
