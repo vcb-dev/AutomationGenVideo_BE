@@ -848,6 +848,67 @@ model video_management_facebookpagecache {
   @@index([expires_at])
 }
 
+/// Fanpage chính chủ do user cấp quyền qua Facebook Login (OAuth)
+model video_management_managedfacebookpage {
+  id                BigInt    @id @default(autoincrement())
+  created_at        DateTime  @db.Timestamptz(6)
+  updated_at        DateTime  @db.Timestamptz(6)
+  page_id           String    @unique @db.VarChar(255)
+  name              String    @db.VarChar(255)
+  username          String?   @db.VarChar(255)
+  category          String    @default("") @db.VarChar(255)
+  avatar_url        String?
+  avatar_drive_url  String?
+  page_access_token String    @default("") @db.Text
+  tasks             Json      @default("[]")
+  followers_count   BigInt    @default(0)
+  likes_count       BigInt    @default(0)
+  is_active         Boolean   @default(true)
+  last_synced_at    DateTime? @db.Timestamptz(6)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  is_scraping       Boolean   @default(false)
+  is_backfilled     Boolean   @default(false)
+  scrape_error      String?   @db.Text
+  raw_data          Json      @default("{}")
+  owned_videos      video_management_ownedvideocontent[]
+
+  @@index([page_id])
+  @@index([is_active])
+  @@index([is_active, name])
+  @@index([is_active, last_synced_at])
+  @@index([is_active, is_scraping])
+}
+
+/// Video/Reels chính chủ kéo từ Graph API Fanpage
+model video_management_ownedvideocontent {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  managed_page_id BigInt
+  post_id         String   @unique @db.VarChar(255)
+  caption         String   @default("")
+  published_at    DateTime @db.Timestamptz(6)
+  permalink_url   String?  @db.VarChar(500)
+  thumbnail_url       String?
+  thumbnail_drive_url String?
+  video_url           String?
+  view_count          BigInt   @default(0)
+  like_count          Int      @default(0)
+  comment_count       Int      @default(0)
+  share_count         Int      @default(0)
+  reach_count         Int      @default(0)
+  link_clicks         Int      @default(0)
+  raw_data            Json     @default("{}")
+  last_updated_at     DateTime @db.Timestamptz(6)
+  managed_page        video_management_managedfacebookpage @relation(fields: [managed_page_id], references: [id], onDelete: Cascade)
+
+  @@index([managed_page_id])
+  @@index([post_id])
+  @@index([published_at])
+  @@index([view_count])
+  @@index([managed_page_id, view_count(sort: Desc)])
+}
+
 model video_management_tiktokusercache {
   id              BigInt   @id @default(autoincrement())
   created_at      DateTime @db.Timestamptz(6)
@@ -1336,6 +1397,483 @@ model SocialUploadedFile {
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_uploaded_files")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SCRAPER SYSTEM — Facebook Fanpage & Reels Discovery
+// ═══════════════════════════════════════════════════════════
+
+model ScraperSearchKeyword {
+  id                   BigInt   @id @default(autoincrement())
+  raw_keyword          String   @db.Text
+  cleaned_keyword      String   @db.VarChar(500)
+  cleaned_keyword_ascii String  @db.VarChar(500)
+  hit_count            Int      @default(0)
+  is_google_active     Boolean  @default(true)
+  last_searched_at     DateTime? @db.Timestamptz(6)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @updatedAt @db.Timestamptz(6)
+  pages                ScraperFanpageKeyword[]
+
+  @@index([cleaned_keyword])
+  @@index([cleaned_keyword_ascii, hit_count(sort: Desc)])
+  @@index([is_google_active, last_searched_at])
+  @@map("scraper_search_keywords")
+}
+
+model ScraperFanpage {
+  id                BigInt    @id @default(autoincrement())
+  profile_id        String    @unique @db.VarChar(50)
+  name              String    @db.VarChar(500)
+  handle            String    @default("") @db.VarChar(255)
+  page_url          String    @default("") @db.VarChar(1000)
+  avatar_url             String?   @db.Text
+  header_image_url       String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
+  header_image_drive_url String    @default("") @db.Text
+  is_verified            Boolean?
+  followers_count   BigInt    @default(0)
+  likes_count       BigInt    @default(0)
+  is_visible_on_ui  Boolean   @default(true)
+  is_periodic_crawl Boolean   @default(false)
+  crawl_interval_days Int     @default(1)
+  is_bookmarked     Boolean   @default(false)
+  is_initial_scraped Boolean  @default(false)
+  scraping_status   String    @default("idle") @db.VarChar(20)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  scrape_error      String?   @db.Text
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+  keywords          ScraperFanpageKeyword[]
+  reels             ScraperFacebookReel[]
+  metrics_history   ScraperFanpageMetrics[]
+
+  @@index([profile_id])
+  @@index([handle])
+  @@index([is_periodic_crawl, last_scraped_at])
+  @@index([is_visible_on_ui, followers_count(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@map("scraper_fanpages")
+}
+
+/// M2M join table: Fanpage ↔ SearchKeyword
+model ScraperFanpageKeyword {
+  id         BigInt             @id @default(autoincrement())
+  fanpage_id BigInt
+  keyword_id BigInt
+  fanpage    ScraperFanpage     @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+  keyword    ScraperSearchKeyword @relation(fields: [keyword_id], references: [id], onDelete: Cascade)
+
+  @@unique([fanpage_id, keyword_id])
+  @@map("scraper_fanpage_keywords")
+}
+
+model ScraperFanpageMetrics {
+  id              BigInt         @id @default(autoincrement())
+  fanpage_id      BigInt
+  followers_count BigInt         @default(0)
+  likes_count     BigInt         @default(0)
+  captured_at     DateTime       @default(now()) @db.Timestamptz(6)
+  fanpage         ScraperFanpage @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+
+  @@index([fanpage_id, captured_at(sort: Desc)])
+  @@map("scraper_fanpage_metrics_history")
+}
+
+model ScraperFacebookReel {
+  id               BigInt         @id @default(autoincrement())
+  fanpage_id       BigInt
+  post_id          String         @unique @db.VarChar(50)
+  shortcode        String         @unique @db.VarChar(50)
+  url              String         @db.VarChar(1000)
+  content          String         @default("") @db.Text
+  hashtags         String[]       @default([])
+  video_url        String?        @db.Text
+  thumbnail_url        String?        @db.Text
+  thumbnail_drive_url  String?        @db.Text
+  duration_seconds     Float?
+  has_audio            Boolean        @default(true)
+  date_posted      DateTime       @db.Timestamptz(6)
+  views_count      BigInt         @default(0)
+  likes_count      BigInt         @default(0)
+  comments_count   BigInt         @default(0)
+  shares_count     BigInt         @default(0)
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  fanpage          ScraperFanpage @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+  metrics_history  ScraperReelMetrics[]
+
+  @@index([fanpage_id, date_posted(sort: Desc)])
+  @@index([views_count(sort: Desc)])
+  @@index([fanpage_id, views_count(sort: Desc)])
+  @@index([post_id])
+  @@index([shortcode])
+  @@map("scraper_facebook_reels")
+}
+
+model ScraperReelMetrics {
+  id             BigInt              @id @default(autoincrement())
+  reel_id        BigInt
+  views_count    BigInt              @default(0)
+  likes_count    BigInt              @default(0)
+  comments_count BigInt              @default(0)
+  shares_count   BigInt              @default(0)
+  captured_at    DateTime            @default(now()) @db.Timestamptz(6)
+  reel           ScraperFacebookReel @relation(fields: [reel_id], references: [id], onDelete: Cascade)
+
+  @@index([reel_id, captured_at(sort: Desc)])
+  @@map("scraper_reel_metrics_history")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIKTOK — Channel & Video
+// ═══════════════════════════════════════════════════════════
+
+model ScraperTikTokVideo {
+  id                   BigInt    @id @default(autoincrement())
+  post_id              String    @unique @db.VarChar(50)
+  shortcode            String    @unique @db.VarChar(50)
+  url                  String    @db.VarChar(1000)
+  description          String    @default("") @db.Text
+  hashtags             String[]  @default([])
+  video_url            String?   @db.Text
+  cdn_url              String?   @db.Text
+  preview_image        String?   @db.Text
+  video_duration       Int       @default(0)
+  region               String    @default("") @db.VarChar(10)
+  author_id            String    @default("") @db.VarChar(50)
+  author_username      String    @default("") @db.VarChar(255)
+  author_display_name  String    @default("") @db.VarChar(500)
+  author_avatar        String?   @db.Text
+  author_url           String    @default("") @db.VarChar(1000)
+  author_followers     BigInt    @default(0)
+  author_is_verified   Boolean   @default(false)
+  play_count           BigInt    @default(0)
+  digg_count           BigInt    @default(0)
+  comment_count        BigInt    @default(0)
+  share_count          BigInt    @default(0)
+  collect_count        BigInt    @default(0)
+  music_title          String    @default("") @db.VarChar(500)
+  music_author         String    @default("") @db.VarChar(255)
+  original_sound       String?   @db.Text
+  search_keyword       String    @default("") @db.VarChar(500)
+  date_posted          DateTime  @db.Timestamptz(6)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([play_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_tiktok_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DOUYIN — Keyword Video Search
+// ═══════════════════════════════════════════════════════════
+
+model ScraperDouyinVideo {
+  id                   BigInt    @id @default(autoincrement())
+  post_id              String    @unique @db.VarChar(50)
+  shortcode            String    @unique @db.VarChar(50)
+  url                  String    @db.VarChar(1000)
+  description          String    @default("") @db.Text
+  hashtags             String[]  @default([])
+  preview_image        String?   @db.Text
+  video_duration       Int       @default(0)
+  region               String    @default("") @db.VarChar(10)
+  author_id            String    @default("") @db.VarChar(50)
+  author_username      String    @default("") @db.VarChar(255)
+  author_display_name  String    @default("") @db.VarChar(500)
+  author_avatar        String?   @db.Text
+  author_followers     BigInt    @default(0)
+  author_is_verified   Boolean   @default(false)
+  digg_count           BigInt    @default(0)
+  comment_count        BigInt    @default(0)
+  share_count          BigInt    @default(0)
+  collect_count        BigInt    @default(0)
+  music_title          String    @default("") @db.VarChar(500)
+  music_author         String    @default("") @db.VarChar(255)
+  search_keyword       String    @default("") @db.VarChar(500)
+  date_posted          DateTime  @db.Timestamptz(6)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([date_posted(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_douyin_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DOUYIN — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperDouyinProfile {
+  id                BigInt    @id @default(autoincrement())
+  sec_user_id       String    @unique @db.VarChar(255)
+  uid               String    @default("") @db.VarChar(50)
+  username          String    @default("") @db.VarChar(255)
+  nickname          String    @default("") @db.VarChar(500)
+  avatar_url        String    @default("") @db.Text
+  avatar_drive_url  String    @default("") @db.Text
+  biography         String    @default("") @db.Text
+  is_verified       Boolean   @default(false)
+  followers_count   BigInt    @default(0)
+  following_count   BigInt    @default(0)
+  likes_count       BigInt    @default(0)
+  videos_count      Int       @default(0)
+  is_bookmarked     Boolean   @default(false)
+  is_tracked        Boolean   @default(false)
+  is_owned          Boolean   @default(false)
+  is_initial_scraped Boolean  @default(false)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  scraping_status   String    @default("idle") @db.VarChar(20)
+  scrape_error      String?   @db.Text
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([uid])
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([is_owned])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_douyin_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIKTOK — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperTikTokProfile {
+  id                     BigInt    @id @default(autoincrement())
+  profile_id             String    @unique @db.VarChar(50)
+  sec_uid                String    @default("") @db.VarChar(255)
+  username               String    @unique @db.VarChar(255)
+  nickname               String    @default("") @db.VarChar(500)
+  url                    String    @db.VarChar(1000)
+  avatar_url             String?   @db.Text
+  avatar_url_hd          String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
+  biography              String?   @db.Text
+  is_verified            Boolean   @default(false)
+  is_private             Boolean   @default(false)
+  predicted_lang         String    @default("") @db.VarChar(10)
+  followers_count        BigInt    @default(0)
+  following_count        BigInt    @default(0)
+  likes_count            BigInt    @default(0)
+  videos_count           Int       @default(0)
+  avg_engagement_rate    Float     @default(0)
+  like_engagement_rate   Float     @default(0)
+  comment_engagement_rate Float    @default(0)
+  account_created_at     DateTime? @db.Timestamptz(6)
+  is_commerce_user       Boolean   @default(false)
+  is_tracked             Boolean   @default(false)
+  is_bookmarked          Boolean   @default(false)
+  is_owned               Boolean   @default(false)
+  is_initial_scraped     Boolean   @default(false)
+  last_scraped_at        DateTime? @db.Timestamptz(6)
+  scraping_status        String    @default("idle") @db.VarChar(20)
+  scrape_error           String?   @db.Text
+  created_at             DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime  @updatedAt @db.Timestamptz(6)
+  videos                 ScraperTikTokProfileVideo[]
+  metrics_history        ScraperTikTokProfileMetrics[]
+
+  @@index([sec_uid])
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([is_owned])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_tiktok_profiles")
+}
+
+model ScraperTikTokProfileVideo {
+  id              BigInt                @id @default(autoincrement())
+  profile_id      BigInt
+  video_id        String                @unique @db.VarChar(50)
+  shortcode       String                @default("") @db.VarChar(50)
+  url             String                @db.VarChar(1000)
+  description     String                @default("") @db.Text
+  hashtags        String[]              @default([])
+  cover_image     String?               @db.Text
+  video_duration  Int                   @default(0)
+  region          String                @default("") @db.VarChar(10)
+  post_type       String                @default("video") @db.VarChar(20)
+  play_count      BigInt                @default(0)
+  digg_count      BigInt                @default(0)
+  comment_count   BigInt                @default(0)
+  share_count     BigInt                @default(0)
+  favorites_count BigInt                @default(0)
+  music_title     String                @default("") @db.VarChar(500)
+  music_author    String                @default("") @db.VarChar(255)
+  original_sound  String                @default("") @db.Text
+  date_posted     DateTime              @db.Timestamptz(6)
+  created_at      DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime              @updatedAt @db.Timestamptz(6)
+  profile         ScraperTikTokProfile  @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([play_count(sort: Desc)])
+  @@map("scraper_tiktok_profile_videos")
+}
+
+model ScraperTikTokProfileMetrics {
+  id                  BigInt               @id @default(autoincrement())
+  profile_id          BigInt
+  followers_count     BigInt               @default(0)
+  following_count     BigInt               @default(0)
+  likes_count         BigInt               @default(0)
+  videos_count        Int                  @default(0)
+  avg_engagement_rate Float                @default(0)
+  captured_at         DateTime             @default(now()) @db.Timestamptz(6)
+  profile             ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_tiktok_profile_metrics")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  INSTAGRAM — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperInstagramProfile {
+  id                  BigInt    @id @default(autoincrement())
+  instagram_id        String?   @unique @db.VarChar(50)
+  username            String    @unique @db.VarChar(255)
+  full_name           String?   @db.VarChar(500)
+  url                 String    @db.VarChar(1000)
+  avatar_url          String?   @db.Text
+  hd_avatar_url       String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
+  biography           String?   @db.Text
+  bio_links           Json?     @db.JsonB
+  external_url        String?   @db.Text
+  is_verified         Boolean   @default(false)
+  is_private          Boolean   @default(false)
+  is_business         Boolean   @default(false)
+  category            String?   @db.VarChar(255)
+  followers_count     BigInt    @default(0)
+  following_count     BigInt    @default(0)
+  posts_count         Int       @default(0)
+  is_tracked          Boolean   @default(false)
+  is_bookmarked       Boolean   @default(false)
+  is_owned            Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  reels               ScraperInstagramReel[]
+  metrics_history     ScraperInstagramProfileMetrics[]
+
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_owned])
+  @@index([is_bookmarked])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_instagram_profiles")
+}
+
+model ScraperInstagramReel {
+  id                  BigInt                  @id @default(autoincrement())
+  profile_id          BigInt
+  post_id             String                  @unique @db.VarChar(50)
+  shortcode           String                  @unique @db.VarChar(50)
+  url                 String                  @db.VarChar(1000)
+  description         String                  @default("") @db.Text
+  hashtags            String[]                @default([])
+  thumbnail_url       String?                 @db.Text
+  thumbnail_drive_url String?                 @db.Text
+  duration_seconds    Float?
+  is_paid_partnership Boolean                 @default(false)
+  views_count         BigInt                  @default(0)
+  play_count          BigInt                  @default(0)
+  likes_count         BigInt                  @default(0)
+  comments_count      BigInt                  @default(0)
+  date_posted         DateTime                @db.Timestamptz(6)
+  created_at          DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime                @updatedAt @db.Timestamptz(6)
+  profile             ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([play_count(sort: Desc)])
+  @@map("scraper_instagram_reels")
+}
+
+model ScraperInstagramProfileMetrics {
+  id              BigInt                  @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt                  @default(0)
+  following_count BigInt                  @default(0)
+  posts_count     Int                     @default(0)
+  captured_at     DateTime                @default(now()) @db.Timestamptz(6)
+  profile         ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_instagram_profile_metrics")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  XIAOHONGSHU — Video Note (keyword search)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperXiaohongshuVideo {
+  id                  BigInt    @id @default(autoincrement())
+  note_id             String    @unique @db.VarChar(50)
+  url                 String    @db.VarChar(2000)
+  title               String    @default("") @db.VarChar(1000)
+  description         String    @default("") @db.Text
+  thumbnail_url       String?   @db.Text
+  thumbnail_drive_url String?   @db.Text
+  author_id           String    @default("") @db.VarChar(100)
+  author_name         String    @default("") @db.VarChar(500)
+  author_avatar       String?   @db.Text
+  duration_seconds    Int       @default(0)
+  liked_count         BigInt    @default(0)
+  collected_count     BigInt    @default(0)
+  comments_count      BigInt    @default(0)
+  shared_count        BigInt    @default(0)
+  keywords            String[]  @default([])
+  date_posted         DateTime  @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  profile_id          BigInt?
+  profile             ScraperXiaohongshuProfile? @relation(fields: [profile_id], references: [id], onDelete: SetNull)
+
+  @@index([liked_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([profile_id])
+  @@map("scraper_xiaohongshu_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  XIAOHONGSHU — User Profile
+// ═══════════════════════════════════════════════════════════
+
+model ScraperXiaohongshuProfile {
+  id                  BigInt    @id @default(autoincrement())
+  user_id             String    @unique @db.VarChar(100)
+  nickname            String    @default("") @db.VarChar(500)
+  avatar_url          String?   @db.Text
+  is_verified         Boolean   @default(false)
+  is_tracked          Boolean   @default(true)
+  is_bookmarked       Boolean   @default(false)
+  is_owned            Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  videos ScraperXiaohongshuVideo[]
+
+  @@index([is_tracked])
+  @@index([is_owned])
+  @@index([scraping_status])
+  @@map("scraper_xiaohongshu_profiles")
 }
 
 // ────────────────────────────────
