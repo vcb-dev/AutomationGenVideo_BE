@@ -574,4 +574,46 @@ export class AiIntegrationController {
   async mixVideoUpload(@Req() req: any) {
     return this.aiService.mixVideoUpload(req);
   }
+
+  @Get('voice/list')
+  @ApiOperation({ summary: 'List available voices' })
+  async listVoices() {
+    return this.aiService.listVoices();
+  }
+
+  @Post('voice/clone')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Clone a voice from an audio file' })
+  async cloneVoice(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('voice_name') voiceName: string,
+    @Body('gender') gender?: string,
+  ) {
+    if (!file) {
+      throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceName) {
+      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.cloneVoice(file, voiceName, gender);
+  }
+
+  @Post('voice/tts')
+  @ApiOperation({ summary: 'Convert text to speech using Minimax' })
+  async generateTTS(
+    @Body('text') text: string,
+    @Body('voice_id') voiceId: string,
+    @Body('speed') speed?: number,
+    @Body('pitch') pitch?: number,
+    @Body('volume') volume?: number,
+  ) {
+    if (!text) {
+      throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceId) {
+      throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume);
+  }
 }

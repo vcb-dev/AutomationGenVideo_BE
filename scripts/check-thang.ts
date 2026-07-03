@@ -15,8 +15,8 @@ async function main() {
     });
     console.log(JSON.stringify(users, null, 2));
 
-    console.log('\n--- SEARCHING FOR THANG/THẮNG IN LARK KPI ---');
-    const kpis = await prisma.larkKPI.findMany({
+    console.log('\n--- SEARCHING FOR THANG/THẮNG IN KPI ---');
+    const kpis = await prisma.kpi.findMany({
       where: {
         OR: [
           { name: { contains: 'Thắng', mode: 'insensitive' } },

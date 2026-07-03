@@ -53,15 +53,29 @@ export class InstagramPublisher {
       postId = res.data.id;
     } else {
       // ── Carousel ────────────────────────────────────────────────────────────
-      const childIds = await Promise.all(
-        mediaUrls.map(url =>
-          this.createContainer(base, igUserId, token, {
+      // Tạo container tuần tự (không bắn đồng thời) + retry để tránh bị rate-limit
+      // khi có nhiều ảnh/video cùng lúc — giống fix đã áp dụng cho Facebook.
+      const childIds: string[] = [];
+      const failReasons: string[] = [];
+      for (let i = 0; i < mediaUrls.length; i++) {
+        const url = mediaUrls[i];
+        try {
+          const id = await this.createContainerWithRetry(base, igUserId, token, {
             mediaUrl: url,
             isCarouselItem: true,
             isVideo: isVideoUrl(url),
-          }),
-        ),
-      );
+          });
+          childIds.push(id);
+        } catch (err: any) {
+          failReasons.push(`media[${i}]: ${err.message}`);
+          this.logger.warn(`[IG] Tạo container thất bại cho media[${i}] sau khi retry: ${err.message}`);
+        }
+        if (i < mediaUrls.length - 1) await new Promise(r => setTimeout(r, 400));
+      }
+      if (failReasons.length > 0) {
+        // Không đăng carousel thiếu ảnh một cách âm thầm — ném lỗi để cả bài được retry.
+        throw new Error(`Chỉ tạo được ${childIds.length}/${mediaUrls.length} media container trên Instagram — ${failReasons.join('; ')}`);
+      }
       await Promise.all(childIds.map(id => this.waitForContainer(base, igUserId, token, id)));
 
       const parentId = await this.createContainer(base, igUserId, token, {
@@ -132,8 +146,42 @@ export class InstagramPublisher {
     } catch (err: any) {
       const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[IG] createContainer failed (${err.response?.status}): ${detail}`);
-      throw new Error(`Instagram createContainer (HTTP ${err.response?.status}): ${detail}`);
+      const wrapped = new Error(`Instagram createContainer (HTTP ${err.response?.status}): ${detail}`);
+      (wrapped as any).status = err.response?.status;
+      throw wrapped;
     }
+  }
+
+  private async createContainerWithRetry(
+    base: string,
+    igUserId: string,
+    token: string,
+    opts: {
+      mediaUrl?: string;
+      caption?: string;
+      isVideo?: boolean;
+      isCarouselItem?: boolean;
+      isCarousel?: boolean;
+      children?: string[];
+    },
+    maxAttempts = 3,
+  ): Promise<string> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.createContainer(base, igUserId, token, opts);
+      } catch (err: any) {
+        lastErr = err;
+        const status = err.status;
+        const retryable = !status || status === 429 || status >= 500;
+        if (attempt < maxAttempts && retryable) {
+          await new Promise(r => setTimeout(r, attempt * 800));
+          continue;
+        }
+        break;
+      }
+    }
+    throw lastErr;
   }
 
   private async waitForContainer(
@@ -141,11 +189,12 @@ export class InstagramPublisher {
     _igUserId: string,
     token: string,
     containerId: string,
-    maxMs = 180000,
+    maxMs = 600000,
   ) {
     const start = Date.now();
+    // Check NGAY lần đầu (không chờ 2s trước) → ảnh thường FINISHED ngay; rồi backoff 1s→3s
+    let delay = 1000;
     while (Date.now() - start < maxMs) {
-      await new Promise(r => setTimeout(r, 2000));
       try {
         const res = await axios.get(`${base}/${containerId}`, {
           params: { fields: 'status_code,status', access_token: token },
@@ -166,7 +215,9 @@ export class InstagramPublisher {
         if (err.message?.includes('Instagram container')) throw err;
         this.logger.warn(`[IG] Container poll lỗi tạm thời (retrying): ${err.message}`);
       }
+      await new Promise(r => setTimeout(r, delay));
+      delay = Math.min(delay + 500, 3000);
     }
-    throw new Error('Instagram container timeout sau 3 phút');
+    throw new Error('Instagram container timeout sau 10 phút');
   }
 }

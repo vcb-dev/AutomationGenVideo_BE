@@ -35,6 +35,7 @@ async function bootstrap() {
   const expressInstance = app.getHttpAdapter().getInstance();
   if (typeof expressInstance.set === "function") {
     expressInstance.set("trust proxy", true);
+    expressInstance.set("etag", false);
   }
 
   // Global validation pipe
@@ -70,11 +71,37 @@ async function bootstrap() {
   });
 
   // CORS configuration
-  const corsOrigins = process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
-    : '*';
+  // Build the allowed-origin set from CORS_ORIGIN, then auto-add www. / non-www variants
+  // so that vcbi.vn and www.vcbi.vn both work without manual duplication in env vars.
+  const rawOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
+    : [];
+
+  let corsOriginOption: string | string[] | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void) = '*';
+  if (rawOrigins.length > 0) {
+    const allowedSet = new Set<string>(rawOrigins);
+    for (const o of rawOrigins) {
+      try {
+        const u = new URL(o);
+        if (u.hostname.startsWith('www.')) {
+          allowedSet.add(`${u.protocol}//${u.hostname.slice(4)}${u.port ? ':' + u.port : ''}`);
+        } else {
+          allowedSet.add(`${u.protocol}//www.${u.hostname}${u.port ? ':' + u.port : ''}`);
+        }
+      } catch { /* invalid URL, skip */ }
+    }
+    corsOriginOption = (origin, callback) => {
+      // Allow server-to-server (no origin), matching origins, and Chrome extensions
+      // (chrome-extension://... — internal client, API is protected by JWT).
+      if (!origin || allowedSet.has(origin) || origin.startsWith('chrome-extension://')) {
+        return callback(null, true);
+      }
+      callback(new Error(`CORS: origin '${origin}' not allowed`));
+    };
+  }
+
   app.enableCors({
-    origin: corsOrigins,
+    origin: corsOriginOption,
     credentials: true,
   });
 

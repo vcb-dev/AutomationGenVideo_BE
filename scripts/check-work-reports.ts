@@ -5,12 +5,12 @@ async function main() {
     try {
         const result = await prisma.$queryRawUnsafe(`
           SELECT DISTINCT DATE_TRUNC('day', report_date) as report_day, COUNT(*) as count
-          FROM "lark_kpi"
+          FROM "kpi"
           GROUP BY report_day
           ORDER BY report_day DESC NULLS LAST
           LIMIT 20;
         `);
-        console.log("Distinct lark_kpi days in DB:", result);
+        console.log("Distinct kpi days in DB:", result);
     } catch (e: any) {
         console.error("Error checking work_reports:", e.message);
     }

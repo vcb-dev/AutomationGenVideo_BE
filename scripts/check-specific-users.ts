@@ -14,8 +14,8 @@ async function main() {
     });
     console.log(JSON.stringify(users, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 
-    console.log('\n--- LARK KPI TABLE (Recent) ---');
-    const kpis = await prisma.larkKPI.findMany({
+    console.log('\n--- KPI TABLE (Recent) ---');
+    const kpis = await prisma.kpi.findMany({
       where: {
         OR: [
           { name: { contains: 'Nguyễn Thị Ánh', mode: 'insensitive' } },
@@ -27,8 +27,8 @@ async function main() {
     });
     console.log(JSON.stringify(kpis, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 
-    console.log('\n--- LARK REPORTS TABLE (Recent) ---');
-    const reports = await prisma.larkReport.findMany({
+    console.log('\n--- CHECKLIST REPORTS TABLE (Recent) ---');
+    const reports = await prisma.checklistReport.findMany({
       where: {
         OR: [
           { name: { contains: 'Nguyễn Thị Ánh', mode: 'insensitive' } },

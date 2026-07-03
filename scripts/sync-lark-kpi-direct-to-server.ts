@@ -122,13 +122,13 @@ async function sync() {
         // 1. Main KPI
         const mainBase = process.env.LARK_KPI_BASE_ID || 'UqgJw2SZOiZsAYk7ciTl11fKgjg';
         const mainTable = process.env.LARK_KPI_TABLE_ID || 'tblh9DeeqDBItrg7';
-        await syncTable(prisma, token, mainBase, mainTable, 'larkKPI');
+        await syncTable(prisma, token, mainBase, mainTable, 'kpi');
 
         // 2. Do Da KPI
         const dodaBase = process.env.LARK_KPI_DODA_BASE_ID;
         const dodaTable = process.env.LARK_KPI_DODA_TABLE_ID;
         if (dodaBase && dodaTable) {
-            await syncTable(prisma, token, dodaBase, dodaTable, 'larkKpiDoDa');
+            await syncTable(prisma, token, dodaBase, dodaTable, 'kpiDoDa');
         }
 
         console.log('✨ ALL SYNC COMPLETED!');

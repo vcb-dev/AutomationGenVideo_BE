@@ -41,11 +41,6 @@ export class CreateUserDto {
   @IsString()
   manager_id?: string;
 
-  @ApiPropertyOptional({ example: "uuid-of-team-leader", description: "Team Leader ID managing this user" })
-  @IsOptional()
-  @IsString()
-  team_leader_id?: string;
-
   @ApiPropertyOptional({ example: true })
   @IsOptional()
   @IsBoolean()
@@ -61,7 +56,7 @@ export class CreateUserDto {
   @IsString()
   image_url?: string;
 
-  @ApiPropertyOptional({ example: "Team A" })
+  @ApiPropertyOptional({ example: "Team A,Team B", description: "Tên (các) team, phân cách dấu phẩy — hệ thống gán qua Team/TeamMember, không ghi thẳng vào User.team" })
   @IsOptional()
   @IsString()
   team?: string;

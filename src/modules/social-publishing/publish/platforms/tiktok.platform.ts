@@ -18,25 +18,31 @@ export class TiktokPublisher {
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
 
     // 1. Init upload
-    const initRes = await axios.post(
-      'https://open.tiktokapis.com/v2/post/publish/video/init/',
-      {
-        post_info: {
-          title: opts.caption.substring(0, 2200),
-          privacy_level: 'PUBLIC_TO_EVERYONE',
-          disable_duet: false,
-          disable_comment: false,
-          disable_stitch: false,
+    let initRes: any;
+    try {
+      initRes = await axios.post(
+        'https://open.tiktokapis.com/v2/post/publish/video/init/',
+        {
+          post_info: {
+            title: opts.caption.substring(0, 2200),
+            privacy_level: 'PUBLIC_TO_EVERYONE',
+            disable_duet: false,
+            disable_comment: false,
+            disable_stitch: false,
+          },
+          source_info: {
+            source: 'FILE_UPLOAD',
+            video_size: fileSize,
+            chunk_size: CHUNK_SIZE,
+            total_chunk_count: totalChunks,
+          },
         },
-        source_info: {
-          source: 'FILE_UPLOAD',
-          video_size: fileSize,
-          chunk_size: CHUNK_SIZE,
-          total_chunk_count: totalChunks,
-        },
-      },
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
-    );
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
+      );
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`TikTok init upload failed: ${detail}`);
+    }
 
     const { publish_id, upload_url } = initRes.data.data;
     this.logger.log(`[TikTok] Init ok — publish_id: ${publish_id}`);
@@ -56,9 +62,11 @@ export class TiktokPublisher {
     return { publishId: publish_id, status: finalStatus };
   }
 
-  private async pollStatus(token: string, publishId: string, maxAttempts = 20): Promise<string> {
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 3000));
+  private async pollStatus(token: string, publishId: string, maxMs = 60000): Promise<string> {
+    // Check NGAY lần đầu (không chờ 3s trước), rồi backoff 2s→4s — ngân sách ~60s như cũ
+    const start = Date.now();
+    let delay = 2000;
+    while (Date.now() - start < maxMs) {
       try {
         const res = await axios.post(
           'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
@@ -66,7 +74,7 @@ export class TiktokPublisher {
           { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' }, timeout: 30000 },
         );
         const status = res.data?.data?.status;
-        this.logger.log(`[TikTok] Poll ${i + 1}: status=${status}`);
+        this.logger.log(`[TikTok] Poll status=${status}`);
         if (['PUBLISH_COMPLETE', 'FAILED'].includes(status)) return status;
       } catch (err: any) {
         const httpStatus = err.response?.status;
@@ -75,6 +83,8 @@ export class TiktokPublisher {
         }
         this.logger.warn(`[TikTok] Poll error (retrying): ${err.message}`);
       }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay + 500, 4000);
     }
     return 'TIMEOUT';
   }
@@ -144,16 +154,21 @@ export class TiktokPublisher {
         }
       }
 
-      await axios.put(uploadUrl, chunk, {
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-          'Content-Length': chunk.length,
-        },
-        timeout: 120000, // 2 phút per chunk
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-      });
+      try {
+        await axios.put(uploadUrl, chunk, {
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Content-Length': chunk.length,
+          },
+          timeout: 120000, // 2 phút per chunk
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+      } catch (err: any) {
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        throw new Error(`TikTok chunk ${chunkIndex + 1} upload failed (${start}-${end}/${fileSize}): ${detail}`);
+      }
 
       this.logger.log(`[TikTok] Chunk ${chunkIndex + 1} uploaded (${start}-${end}/${fileSize})`);
       start = end + 1;

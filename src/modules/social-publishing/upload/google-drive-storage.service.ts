@@ -159,6 +159,12 @@ export class GoogleDriveStorageService {
     const driveName = opts?.displayName || filename;
     const folderId = await this.resolveTargetFolder(user, opts?.subfolder);
     const token = await this.getAccessToken();
+    const fileSize = fs.statSync(filePath).size;
+
+    // Drive multipart upload is capped at 5 MB — use resumable for anything larger
+    if (fileSize > 5 * 1024 * 1024) {
+      return this._uploadLargeFileResumable(filePath, driveName, mimetype, folderId, token, fileSize);
+    }
 
     const form = new FormData();
     form.append('metadata', JSON.stringify({
@@ -191,6 +197,64 @@ export class GoogleDriveStorageService {
 
     const directUrl = this.buildDownloadUrl(fileId, driveName);
     this.logger.log(`[GoogleDrive] Uploaded ${driveName} -> ${fileId}`);
+
+    return {
+      fileId,
+      url: directUrl,
+      webViewUrl: uploadRes.data.webViewLink,
+    };
+  }
+
+  private async _uploadLargeFileResumable(
+    filePath: string,
+    driveName: string,
+    mimetype: string,
+    folderId: string,
+    token: string,
+    fileSize: number,
+  ): Promise<GoogleDriveUploadResult> {
+    this.logger.log(`[GoogleDrive] Starting resumable upload for ${driveName} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    // Step 1: Initiate resumable session
+    const initRes = await axios.post(
+      `${DRIVE_UPLOAD_URL}?uploadType=resumable&supportsAllDrives=true`,
+      { name: driveName, parents: [folderId], mimeType: mimetype },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': mimetype,
+          'X-Upload-Content-Length': String(fileSize),
+        },
+      },
+    );
+
+    const uploadUrl: string = initRes.headers['location'];
+    if (!uploadUrl) throw new Error('[GoogleDrive] Drive did not return a resumable upload URL');
+
+    // Step 2: Upload the full file in a single PUT to the resumable URL
+    const uploadRes = await axios.put(
+      uploadUrl,
+      fs.createReadStream(filePath),
+      {
+        headers: {
+          'Content-Type': mimetype,
+          'Content-Length': String(fileSize),
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: 1_800_000, // 30 min for large videos
+        params: { fields: 'id,webViewLink,webContentLink' },
+      },
+    );
+
+    const fileId = uploadRes.data.id as string;
+    if (process.env.GOOGLE_DRIVE_PUBLIC !== 'false') {
+      await this.makePublic(fileId, token);
+    }
+
+    const directUrl = this.buildDownloadUrl(fileId, driveName);
+    this.logger.log(`[GoogleDrive] Resumable upload complete: ${driveName} -> ${fileId}`);
 
     return {
       fileId,
@@ -443,19 +507,26 @@ export class GoogleDriveStorageService {
         throw new Error('Google Drive refresh token requires GOOGLE_DRIVE_CLIENT_ID/SECRET or GOOGLE_CLIENT_ID/SECRET');
       }
 
-      const res = await axios.post(
-        GOOGLE_TOKEN_URL,
-        new URLSearchParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          refresh_token: refreshToken,
-          grant_type: 'refresh_token',
-        }),
-        {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          timeout: 30_000,
-        },
-      );
+      this.logger.debug(`[GoogleDrive] Token request — client_id: ${clientId?.slice(0, 20)}... refresh_token: ${refreshToken?.slice(0, 10)}...`)
+      let res: any
+      try {
+        res = await axios.post(
+          GOOGLE_TOKEN_URL,
+          new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            refresh_token: refreshToken,
+            grant_type: 'refresh_token',
+          }),
+          {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 30_000,
+          },
+        )
+      } catch (err: any) {
+        this.logger.error(`[GoogleDrive] Token 401 detail: ${JSON.stringify(err.response?.data)}`)
+        throw err
+      }
 
       if (!res.data?.access_token) {
         throw new Error('Google refresh token flow did not return an access token');

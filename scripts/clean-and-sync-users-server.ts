@@ -82,23 +82,57 @@ async function syncUsers() {
 
         console.log('--- SYNCING TO SERVER DB ---');
         let count = 0;
+        const created: { id: string; team: string | null; roles: string[] }[] = [];
         for (const user of userEntries) {
             if (!user.full_name || !user.email) continue;
             try {
-                await serverPrisma.user.create({ 
+                const row = await serverPrisma.user.create({
                     data: {
                         ...user,
                         is_active: true
-                    } 
+                    },
+                    select: { id: true, team: true, roles: true },
                 });
+                created.push(row);
                 count++;
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`Error creating user ${user.email}:`, err.message);
             }
         }
 
         console.log(`SUCCESS: ${count} users synced to server.`);
-    } catch (error) {
+
+        // Re-link team_leader_id: deleteMany() wipes this relation every sync,
+        // so rebuild it from the team a LEADER and its members share.
+        console.log('--- RE-LINKING TEAM LEADERS ---');
+        const byTeam = new Map<string, typeof created>();
+        for (const u of created) {
+            if (!u.team) continue;
+            if (!byTeam.has(u.team)) byTeam.set(u.team, []);
+            byTeam.get(u.team)!.push(u);
+        }
+
+        let linked = 0;
+        for (const [team, members] of byTeam) {
+            const leaders = members.filter((m) => m.roles.includes('LEADER'));
+            if (leaders.length !== 1) {
+                if (leaders.length > 1) {
+                    console.warn(`Skip team "${team}": ${leaders.length} leaders found, ambiguous.`);
+                }
+                continue;
+            }
+            const leader = leaders[0];
+            const teamMates = members.filter((m) => m.id !== leader.id);
+            if (teamMates.length === 0) continue;
+
+            await serverPrisma.user.updateMany({
+                where: { id: { in: teamMates.map((m) => m.id) } },
+                data: { team_leader_id: leader.id },
+            });
+            linked += teamMates.length;
+        }
+        console.log(`Linked team_leader_id for ${linked} users.`);
+    } catch (error: any) {
         console.error('SYNC ERROR:', error.response?.data || error.message);
     } finally {
         await serverPrisma.$disconnect();
