@@ -36,11 +36,10 @@ describe('UsersService.update (BUG-01)', () => {
       user: { findUnique: jest.fn(async () => existingUser), findFirst: jest.fn(async () => null) },
       $transaction: jest.fn(async (cb: any) => cb(tx)),
     };
-    const larkService: any = { withRetry: jest.fn(), pushUserChangesToLark: jest.fn() };
     const cacheService: any = { invalidate: jest.fn() };
     const googleDrive: any = {};
 
-    const service = new UsersService(prisma, larkService, cacheService, googleDrive);
+    const service = new UsersService(prisma, cacheService, googleDrive);
     return { service, get capturedUpdateData() { return capturedUpdateData; } };
   }
 

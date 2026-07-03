@@ -14,7 +14,6 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
 import * as fs from "fs";
-import { LarkService } from "../lark-sync/lark.service";
 import {
   getUserTeamIds,
   assignUserToTeams,
@@ -45,7 +44,6 @@ export class UsersService {
 
   constructor(
     private prisma: PrismaService,
-    private larkService: LarkService,
     private cacheService: CacheService,
     private googleDrive: GoogleDriveStorageService,
   ) { }
@@ -305,34 +303,6 @@ export class UsersService {
 
       return [result];
     });
-
-    // --- Fire-and-forget với Retry: Push lên Lark sau khi DB đã cập nhật ---
-    if (nameChanged || teamChanged || emailChanged) {
-      const pushParams = {
-        oldName,
-        oldEmail,
-        ...(nameChanged ? { newName } : {}),
-        ...(teamChanged ? { newTeam } : {}),
-        ...(emailChanged ? { newEmail } : {}),
-      };
-
-      // Chạy nền (không chặn response), retry tối đa 3 lần
-      this.larkService
-        .withRetry(
-          () => this.larkService.pushUserChangesToLark(pushParams),
-          3,
-          `pushUserChangesToLark(${oldEmail || oldName})`,
-        )
-        .then(() =>
-          this.logger.log(`[LarkSync] ✅ Push lên Lark thành công cho: ${oldEmail || oldName}`),
-        )
-        .catch(err =>
-          this.logger.error(
-            `[LarkSync] ❌ Push lên Lark thất bại sau 3 lần thử cho: ${oldEmail || oldName}`,
-            err.message,
-          ),
-        );
-    }
 
     // Invalidate caches so JWT validation gets fresh data
     this.cacheService.invalidate(this.userCacheKey(id));
