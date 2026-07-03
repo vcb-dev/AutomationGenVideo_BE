@@ -858,6 +858,7 @@ model video_management_managedfacebookpage {
   username          String?   @db.VarChar(255)
   category          String    @default("") @db.VarChar(255)
   avatar_url        String?
+  avatar_drive_url  String?
   page_access_token String    @default("") @db.Text
   tasks             Json      @default("[]")
   followers_count   BigInt    @default(0)
@@ -888,17 +889,18 @@ model video_management_ownedvideocontent {
   caption         String   @default("")
   published_at    DateTime @db.Timestamptz(6)
   permalink_url   String?  @db.VarChar(500)
-  thumbnail_url   String?
-  video_url       String?
-  view_count      BigInt   @default(0)
-  like_count      Int      @default(0)
-  comment_count   Int      @default(0)
-  share_count     Int      @default(0)
-  reach_count     Int      @default(0)
-  link_clicks     Int      @default(0)
-  raw_data        Json     @default("{}")
-  last_updated_at DateTime @db.Timestamptz(6)
-  managed_page    video_management_managedfacebookpage @relation(fields: [managed_page_id], references: [id], onDelete: Cascade)
+  thumbnail_url       String?
+  thumbnail_drive_url String?
+  video_url           String?
+  view_count          BigInt   @default(0)
+  like_count          Int      @default(0)
+  comment_count       Int      @default(0)
+  share_count         Int      @default(0)
+  reach_count         Int      @default(0)
+  link_clicks         Int      @default(0)
+  raw_data            Json     @default("{}")
+  last_updated_at     DateTime @db.Timestamptz(6)
+  managed_page        video_management_managedfacebookpage @relation(fields: [managed_page_id], references: [id], onDelete: Cascade)
 
   @@index([managed_page_id])
   @@index([post_id])
@@ -1425,9 +1427,11 @@ model ScraperFanpage {
   name              String    @db.VarChar(500)
   handle            String    @default("") @db.VarChar(255)
   page_url          String    @default("") @db.VarChar(1000)
-  avatar_url        String?   @db.Text
-  header_image_url  String?   @db.Text
-  is_verified       Boolean?
+  avatar_url             String?   @db.Text
+  header_image_url       String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
+  header_image_drive_url String    @default("") @db.Text
+  is_verified            Boolean?
   followers_count   BigInt    @default(0)
   likes_count       BigInt    @default(0)
   is_visible_on_ui  Boolean   @default(true)
@@ -1485,9 +1489,10 @@ model ScraperFacebookReel {
   content          String         @default("") @db.Text
   hashtags         String[]       @default([])
   video_url        String?        @db.Text
-  thumbnail_url    String?        @db.Text
-  duration_seconds Float?
-  has_audio        Boolean        @default(true)
+  thumbnail_url        String?        @db.Text
+  thumbnail_drive_url  String?        @db.Text
+  duration_seconds     Float?
+  has_audio            Boolean        @default(true)
   date_posted      DateTime       @db.Timestamptz(6)
   views_count      BigInt         @default(0)
   likes_count      BigInt         @default(0)
@@ -1608,6 +1613,7 @@ model ScraperDouyinProfile {
   username          String    @default("") @db.VarChar(255)
   nickname          String    @default("") @db.VarChar(500)
   avatar_url        String    @default("") @db.Text
+  avatar_drive_url  String    @default("") @db.Text
   biography         String    @default("") @db.Text
   is_verified       Boolean   @default(false)
   followers_count   BigInt    @default(0)
@@ -1646,6 +1652,7 @@ model ScraperTikTokProfile {
   url                    String    @db.VarChar(1000)
   avatar_url             String?   @db.Text
   avatar_url_hd          String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
   biography              String?   @db.Text
   is_verified            Boolean   @default(false)
   is_private             Boolean   @default(false)
@@ -1737,6 +1744,7 @@ model ScraperInstagramProfile {
   url                 String    @db.VarChar(1000)
   avatar_url          String?   @db.Text
   hd_avatar_url       String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
   biography           String?   @db.Text
   bio_links           Json?     @db.JsonB
   external_url        String?   @db.Text

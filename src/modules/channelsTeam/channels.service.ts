@@ -145,6 +145,67 @@ export class ChannelsService {
    * Xóa kênh — chỉ LEADER cùng team.
    * Chặn nếu kênh đang được track bởi TrackedChannel.
    */
+  /**
+   * Tra cứu team + owner theo danh sách URL kênh hoặc channel_id nền tảng.
+   * FE gửi lên mảng identifiers (URL hoặc platform ID), BE trả về map.
+   */
+  async lookupByIdentifiers(
+    identifiers: string[],
+  ): Promise<Record<string, { team_name: string | null; owner_name: string | null }>> {
+    if (!identifiers.length) return {};
+    const unique = [...new Set(identifiers.filter(Boolean))];
+    const where = {
+      OR: [
+        { link_channel: { in: unique } },
+        { channel_id: { in: unique } },
+      ],
+    };
+    const ownerSelect = { select: { full_name: true } } as const;
+
+    // Thử JOIN teams trước; nếu bảng teams chưa tồn tại trong DB thì fallback không JOIN
+    type Row = {
+      link_channel: string | null;
+      channel_id: string | null;
+      owner: string | null;
+      channel_owner: { full_name: string } | null;
+      channel_team?: { name: string } | null;
+    };
+    let rows: Row[];
+    try {
+      rows = (await this.prisma.channel.findMany({
+        where,
+        select: {
+          link_channel: true,
+          channel_id: true,
+          owner: true,
+          channel_owner: ownerSelect,
+          channel_team: { select: { name: true } },
+        },
+      })) as Row[];
+    } catch {
+      rows = (await this.prisma.channel.findMany({
+        where,
+        select: {
+          link_channel: true,
+          channel_id: true,
+          owner: true,
+          channel_owner: ownerSelect,
+        },
+      })) as Row[];
+    }
+
+    const result: Record<string, { team_name: string | null; owner_name: string | null }> = {};
+    for (const c of rows) {
+      const info = {
+        team_name: c.channel_team?.name ?? null,
+        owner_name: c.channel_owner?.full_name ?? c.owner ?? null,
+      };
+      if (c.link_channel && unique.includes(c.link_channel)) result[c.link_channel] = info;
+      if (c.channel_id && unique.includes(c.channel_id)) result[c.channel_id] = info;
+    }
+    return result;
+  }
+
   async remove(id: string, user: { roles: UserRole[]; team: string | null }) {
     if (!this.isLeader(user.roles)) {
       throw new ForbiddenException("Only LEADER can delete channels");
