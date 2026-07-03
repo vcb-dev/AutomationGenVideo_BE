@@ -102,7 +102,24 @@ export class ContentReportService {
     const period = await this.prisma.reportPeriod.findUnique({ where: { id: periodId } });
     if (!period) throw new NotFoundException(`Kỳ báo cáo không tồn tại`);
 
-    const whereTeamPeriod = { team_id: team.id, period_id: periodId };
+    // Resolve period IDs to query (if MONTH, include child WEEKs)
+    let periodIds = [periodId];
+    if (period.type === 'MONTH') {
+      const childWeeks = await this.prisma.reportPeriod.findMany({
+        where: {
+          type: 'WEEK',
+          start_date: { gte: period.start_date },
+          end_date: { lte: period.end_date },
+        },
+        select: { id: true }
+      });
+      periodIds = [periodId, ...childWeeks.map(w => w.id)];
+    }
+
+    const whereTeamPeriod = {
+      team_id: team.id,
+      period_id: { in: periodIds }
+    };
 
     const [winVideos, failVideos, caseStudies, editorPerformance, cloneVideos, actionItems, kpiSnapshot, teamMembers] =
       await Promise.all([
