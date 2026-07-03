@@ -254,12 +254,18 @@ export class TaskAutoAssignService {
         `personalEditors=${personalContentsByEditor.size}`,
     );
 
+    const candidateContentIds = {
+      global: globalContentPool.map((c) => c.id),
+      team: teamContentPool.map((c) => c.id),
+      personal: [...personalContentsByEditor.values()].flat().map((c) => c.id),
+    };
     const historyMap = await loadEditorAssignmentHistory(
       this.prisma,
       editorIds,
       monthStart,
       now.startOf("day").toJSDate(),
       teamId,
+      candidateContentIds,
     );
 
     // ── Per-editor selection ──────────────────────────────────────────────

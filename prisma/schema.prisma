@@ -2557,6 +2557,9 @@ model Task {
   pending_video          TaskPendingVideo?
 
   @@index([run_id])
+  // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
+  // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
+  @@index([assignee_id, team_id, assigned_at])
   // ── FK reverse lookups (global warehouse) ──
   @@index([content_id])
   @@index([product_id])
