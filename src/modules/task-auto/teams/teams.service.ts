@@ -546,6 +546,7 @@ export class TaskAutoTeamsService {
       where: { id: teamSourceId },
       data: {
         ...(dto.brand_type !== undefined      && { brand_type: dto.brand_type }),
+        ...(dto.type !== undefined            && { type: dto.type as any }),
         ...(dto.name !== undefined            && { name: dto.name }),
         ...(dto.link !== undefined            && { link: dto.link }),
         ...(dto.nas_link !== undefined        && { nas_link: dto.nas_link }),

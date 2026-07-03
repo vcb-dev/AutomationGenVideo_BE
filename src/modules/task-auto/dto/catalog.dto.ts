@@ -267,6 +267,8 @@ export class CreateTeamSourceDto {
 
 export class UpdateTeamSourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional({ enum: ['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK'] })
+  @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
