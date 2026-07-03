@@ -65,13 +65,18 @@ export class TaskAutoTeamsService {
     const existing = await this.prisma.team.findUnique({ where: { name: dto.name } })
     if (existing) throw new ConflictException('Team name already exists')
 
+    // Leader cũng là thành viên của team (cùng invariant với luồng HR-management) — nếu chỉ
+    // set leader_id mà không có TeamMember, các field phái sinh User.team/team_leader_id của
+    // leader sẽ không nhìn thấy team này.
+    const memberIds = [...new Set([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])]
+
     const team = await this.prisma.team.create({
       data: {
         name: dto.name,
         leader_id: dto.leader_id,
         is_active: dto.is_active ?? true,
-        members: dto.member_ids?.length
-          ? { create: dto.member_ids.map(uid => ({ user_id: uid })) }
+        members: memberIds.length
+          ? { create: memberIds.map(uid => ({ user_id: uid })) }
           : undefined,
       },
       include: this.teamInclude,
@@ -79,8 +84,8 @@ export class TaskAutoTeamsService {
 
     // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
     // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
-    await seedEditorKpiForMembers(this.prisma, dto.member_ids ?? [], [team.id], creatorId)
-    await this.syncAffectedUsers([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])
+    await seedEditorKpiForMembers(this.prisma, memberIds, [team.id], creatorId)
+    await this.syncAffectedUsers(memberIds)
     return team
   }
 
@@ -122,6 +127,15 @@ export class TaskAutoTeamsService {
       data: rest,
       include: this.teamInclude,
     })
+
+    // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
+    // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
+    if (rest.leader_id) {
+      await this.prisma.teamMember.createMany({
+        data: [{ team_id: id, user_id: rest.leader_id }],
+        skipDuplicates: true,
+      })
+    }
 
     await this.syncAffectedUsers([
       ...previousMemberIds,
