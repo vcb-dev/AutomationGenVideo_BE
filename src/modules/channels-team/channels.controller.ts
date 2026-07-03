@@ -10,6 +10,7 @@ import {
   UseInterceptors,
   ClassSerializerInterceptor,
   Request,
+  HttpCode,
 } from "@nestjs/common";
 import { SkipThrottle } from "@nestjs/throttler";
 import {
@@ -39,6 +40,13 @@ export class ChannelsController {
   async create(@Body() dto: CreateChannelDto, @Request() req) {
     const channel = await this.channelsService.create(dto, req.user);
     return new ChannelResponseDto(channel);
+  }
+
+  @Post("scraper-lookup")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Bulk lookup team/owner by channel URLs or platform IDs (no team filter)" })
+  async scraperLookup(@Body() body: { identifiers?: string[] }) {
+    return this.channelsService.lookupByIdentifiers(body.identifiers ?? []);
   }
 
   @Get("my")

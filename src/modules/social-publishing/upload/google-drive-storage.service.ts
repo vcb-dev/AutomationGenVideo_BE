@@ -174,28 +174,39 @@ export class GoogleDriveStorageService {
     }), { contentType: 'application/json' });
     form.append('media', fs.createReadStream(filePath), { filename: driveName, contentType: mimetype });
 
-    const uploadRes = await axios.post(
-      DRIVE_UPLOAD_URL,
-      form,
-      {
-        headers: { ...form.getHeaders(), Authorization: `Bearer ${token}` },
-        params: {
-          uploadType: 'multipart',
-          supportsAllDrives: true,
-          fields: 'id,webViewLink,webContentLink',
+    let uploadRes: any;
+    try {
+      uploadRes = await axios.post(
+        DRIVE_UPLOAD_URL,
+        form,
+        {
+          headers: { ...form.getHeaders(), Authorization: `Bearer ${token}` },
+          params: {
+            uploadType: 'multipart',
+            supportsAllDrives: true,
+            fields: 'id,webViewLink,webContentLink',
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 900_000,
         },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        timeout: 900_000,
-      },
-    );
+      );
+    } catch (err: any) {
+      const status = err.response?.status;
+      const detail = JSON.stringify(err.response?.data ?? err.message);
+      this.logger.error(`[GoogleDrive] Upload failed ${status}: ${detail} | folder=${folderId} file=${driveName}`);
+      throw err;
+    }
 
     const fileId = uploadRes.data.id as string;
     if (process.env.GOOGLE_DRIVE_PUBLIC !== 'false') {
       await this.makePublic(fileId, token);
     }
 
-    const directUrl = this.buildDownloadUrl(fileId, driveName);
+    const isImage = mimetype.startsWith('image/');
+    const directUrl = isImage
+      ? `https://lh3.googleusercontent.com/d/${fileId}`
+      : this.buildDownloadUrl(fileId, driveName);
     this.logger.log(`[GoogleDrive] Uploaded ${driveName} -> ${fileId}`);
 
     return {

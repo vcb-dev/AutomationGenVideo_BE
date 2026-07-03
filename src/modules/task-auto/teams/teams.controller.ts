@@ -15,7 +15,6 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
-import { ScaleDataSourceGuard } from "../../../common/guards/scale-data-source.guard";
 import { TaskAutoTeamsService } from "./teams.service";
 import { TaskAutoTasksService } from "../tasks/tasks.service";
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto } from "../dto/team.dto";
@@ -236,7 +235,6 @@ export class TaskAutoTeamsController {
   }
 
   @Post("teams/:id/sources")
-  @UseGuards(ScaleDataSourceGuard)
   @ApiOperation({ summary: "Add source to team inventory (ADMIN/MANAGER/LEADER/MEMBER/Scale Data)" })
   addTeamSource(
     @Param("id") teamId: string,
@@ -247,7 +245,6 @@ export class TaskAutoTeamsController {
   }
 
   @Patch("teams/:id/sources/:teamSourceId")
-  @UseGuards(ScaleDataSourceGuard)
   @ApiOperation({ summary: "Update team source (ADMIN/MANAGER/LEADER/Scale Data)" })
   updateTeamSource(
     @Param("id") teamId: string,
@@ -259,7 +256,6 @@ export class TaskAutoTeamsController {
   }
 
   @Patch("teams/:id/sources/:teamSourceId/push")
-  @UseGuards(ScaleDataSourceGuard)
   @ApiOperation({ summary: "Push team source to global catalog (ADMIN/MANAGER/LEADER/Scale Data)" })
   pushTeamSource(
     @Param("id") teamId: string,
@@ -270,7 +266,6 @@ export class TaskAutoTeamsController {
   }
 
   @Delete("teams/:id/sources/:teamSourceId")
-  @UseGuards(ScaleDataSourceGuard)
   @ApiOperation({ summary: "Remove source from team inventory (ADMIN/MANAGER/LEADER/Scale Data)" })
   removeTeamSource(
     @Param("id") teamId: string,
