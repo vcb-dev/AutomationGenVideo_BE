@@ -22,7 +22,7 @@ async function main() {
     console.log('Users matching "Huyền Cam":', JSON.stringify(localUser, null, 2));
 
     // 2. Check KPI in local DB
-    const localKpi = await local.larkKPI.findMany({
+    const localKpi = await local.kpi.findMany({
       where: { name: { contains: 'Huyền Cam', mode: 'insensitive' } },
       take: 5,
       orderBy: { report_date: 'desc' },
@@ -39,7 +39,7 @@ async function main() {
     console.log('Users matching "Huyền Cam":', JSON.stringify(serverUser, null, 2));
 
     // 4. Check KPI on server DB
-    const serverKpi = await server.larkKPI.findMany({
+    const serverKpi = await server.kpi.findMany({
       where: { name: { contains: 'Huyền Cam', mode: 'insensitive' } },
       take: 5,
       orderBy: { report_date: 'desc' },
@@ -48,7 +48,7 @@ async function main() {
     console.log(`Server KPI records (${serverKpi.length}):`, JSON.stringify(serverKpi, null, 2));
 
     // 5. Check all K1 team members on server
-    const k1Members = await server.larkKPI.findMany({
+    const k1Members = await server.kpi.findMany({
       where: { team: { contains: 'K1', mode: 'insensitive' } },
       distinct: ['name'],
       select: { name: true, team: true },

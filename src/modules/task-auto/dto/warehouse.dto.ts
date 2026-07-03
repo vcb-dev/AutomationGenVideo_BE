@@ -6,8 +6,10 @@ import {
   IsEnum,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { BrandType } from "./catalog.dto";
 
 const MONTH_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
+const BRAND_TYPES: BrandType[] = ["DO_DA", "TRANG_SUC"];
 
 export type CatalogTier = "global" | "team" | "editor";
 export type CatalogType = "product" | "content" | "source";
@@ -17,6 +19,11 @@ export class GetWarehouseQuery {
   @IsString()
   @Matches(MONTH_REGEX, { message: "month phải có định dạng yyyy-MM" })
   month: string;
+
+  @ApiPropertyOptional({ enum: BRAND_TYPES, description: "Lọc theo loại brand (đồ da / trang sức)" })
+  @IsEnum(BRAND_TYPES)
+  @IsOptional()
+  brand_type?: BrandType;
 }
 
 export class AddToWarehouseDto {

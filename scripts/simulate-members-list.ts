@@ -11,7 +11,7 @@ async function test() {
     // Simulate Admin access: no team filter
     let membersWhere: any = {};
 
-    const allKpis = await prisma.larkKPI.findMany({
+    const allKpis = await prisma.kpi.findMany({
         where: {
             ...membersWhere,
             month: { in: monthFormats }

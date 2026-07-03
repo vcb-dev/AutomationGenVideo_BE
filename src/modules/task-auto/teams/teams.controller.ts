@@ -56,8 +56,8 @@ export class TaskAutoTeamsController {
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER")
   @ApiOperation({ summary: "Create a team" })
-  createTeam(@Body() dto: CreateTeamDto) {
-    return this.teams.create(dto);
+  createTeam(@Body() dto: CreateTeamDto, @Request() req: any) {
+    return this.teams.create(dto, req.user.id);
   }
 
   @Put("teams/:id")

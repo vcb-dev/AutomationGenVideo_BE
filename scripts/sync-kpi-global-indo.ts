@@ -306,14 +306,14 @@ async function main() {
 
   // ── Bước 4: Ghi vào DB ─────────────────────────────────────────────────────
   await withRemoteClient(getRemoteDbUrl(), async (prisma) => {
-    const delegate = (prisma as any).larkKpiGlobalIndo;
-    if (!delegate) throw new Error('larkKpiGlobalIndo delegate not found — chạy: npx prisma generate');
+    const delegate = (prisma as any).kpiGlobalIndo;
+    if (!delegate) throw new Error('kpiGlobalIndo delegate not found — chạy: npx prisma generate');
     await delegate.deleteMany({});
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
       await delegate.createMany({ data: rows.slice(i, i + CHUNK), skipDuplicates: true });
     }
-    console.log(`✅ Synced ${rows.length} rows vào lark_kpi_global_indo`);
+    console.log(`✅ Synced ${rows.length} rows vào kpi_global_indo`);
   });
 }
 

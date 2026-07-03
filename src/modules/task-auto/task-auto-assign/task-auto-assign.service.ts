@@ -245,7 +245,7 @@ export class TaskAutoAssignService {
       globalProductPool,
       personalContentsByEditor,
       personalProductsByEditor,
-    } = await this.loadAssignmentPools(teamBrandType, teamId, editorIds);
+    } = await this.loadAssignmentPools(teamBrandType, teamId, editorIds, month);
 
     this.logger.log(
       `Team ${teamId} [${teamBrandType}]: ` +
@@ -494,12 +494,13 @@ export class TaskAutoAssignService {
     return { assigned, skipped: 0 };
   }
 
-  // ── Load content & product pools filtered by brand type ───────────────────
+  // ── Load content & product pools: lọc theo brand type + kho tháng ─────────
 
   private async loadAssignmentPools(
     brandType: BrandType,
     teamId: string,
     editorIds: string[],
+    month: string,
   ): Promise<{
     teamContentPool: ContentPoolItem[];
     globalContentPool: ContentPoolItem[];
@@ -514,6 +515,7 @@ export class TaskAutoAssignService {
         team_id: teamId,
         status: { not: "ARCHIVED" },
         brand_type: brandType,
+        warehouses: { some: { month } },
       },
       select: {
         id: true,
@@ -548,6 +550,7 @@ export class TaskAutoAssignService {
       where: {
         status: { not: "ARCHIVED" },
         brand_type: brandType,
+        warehouses: { some: { month } },
         ...(teamSourceContentIds.size > 0
           ? { NOT: { id: { in: [...teamSourceContentIds] } } }
           : {}),
@@ -577,7 +580,12 @@ export class TaskAutoAssignService {
 
     // ── Team product ──────────────────────────────────────────────────────
     const teamProductsRaw = await this.prisma.teamProduct.findMany({
-      where: { team_id: teamId, is_active: true, brand_type: brandType },
+      where: {
+        team_id: teamId,
+        is_active: true,
+        brand_type: brandType,
+        warehouses: { some: { month } },
+      },
       select: {
         id: true,
         product_line_id: true,
@@ -612,6 +620,7 @@ export class TaskAutoAssignService {
       where: {
         is_active: true,
         brand_type: brandType,
+        warehouses: { some: { month } },
         ...(teamSourceProductIds.size > 0
           ? { NOT: { id: { in: [...teamSourceProductIds] } } }
           : {}),
@@ -647,6 +656,7 @@ export class TaskAutoAssignService {
         user_id: { in: editorIds },
         status: { not: "ARCHIVED" },
         brand_type: brandType,
+        warehouses: { some: { month } },
       },
       select: {
         id: true,
@@ -674,6 +684,7 @@ export class TaskAutoAssignService {
         user_id: { in: editorIds },
         is_active: true,
         brand_type: brandType,
+        warehouses: { some: { month } },
       },
       select: {
         id: true,

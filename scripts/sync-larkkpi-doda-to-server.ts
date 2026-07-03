@@ -14,18 +14,18 @@ async function main() {
   const server = new PrismaClient({ datasources: { db: { url: serverUrl } } });
 
   const startedAt = Date.now();
-  const kpis = await local.larkKpiDoDa.findMany();
+  const kpis = await local.kpiDoDa.findMany();
   console.log(`[sync-larkkpi-doda-to-server] Loaded ${kpis.length} local records.`);
 
-  // Clear remote lark_kpi_do_da table first using ultra-fast raw SQL
-  console.log('[sync-larkkpi-doda-to-server] Cleaning remote lark_kpi_do_da table...');
-  await server.$executeRawUnsafe('DELETE FROM "lark_kpi_do_da"');
+  // Clear remote kpi_do_da table first using ultra-fast raw SQL
+  console.log('[sync-larkkpi-doda-to-server] Cleaning remote kpi_do_da table...');
+  await server.$executeRawUnsafe('DELETE FROM "kpi_do_da"');
 
   let upserted = 0;
   const CHUNK_SIZE = 100;
   for (let i = 0; i < kpis.length; i += CHUNK_SIZE) {
     const chunk = kpis.slice(i, i + CHUNK_SIZE);
-    await server.larkKpiDoDa.createMany({
+    await server.kpiDoDa.createMany({
       data: chunk as any,
       skipDuplicates: true
     });

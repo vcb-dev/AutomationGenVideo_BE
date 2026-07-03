@@ -22,15 +22,15 @@ async function localToServerSync() {
         console.log('🔗 Connected to Local and Remote DBs...');
 
         // 1. Fetch Local Data
-        console.log('📥 Fetching Local LarkKPI data...');
-        const localKpi = await local.larkKPI.findMany();
-        const localDoDa = await local.larkKpiDoDaEditor.findMany();
-        console.log(`✅ Found ${localKpi.length} LarkKPI and ${localDoDa.length} DoDa records locally.`);
+        console.log('📥 Fetching Local Kpi data...');
+        const localKpi = await local.kpi.findMany();
+        const localDoDa = await local.kpiDoDaEditor.findMany();
+        console.log(`✅ Found ${localKpi.length} Kpi and ${localDoDa.length} DoDa records locally.`);
 
         // 2. Clear Remote Data (OVERWRITE mode)
-        console.log('🗑️  CLEANING Remote DB Server (Deleting all LarkKPI records)...');
-        await remote.larkKPI.deleteMany({});
-        await remote.larkKpiDoDaEditor.deleteMany({});
+        console.log('🗑️  CLEANING Remote DB Server (Deleting all Kpi records)...');
+        await remote.kpi.deleteMany({});
+        await remote.kpiDoDaEditor.deleteMany({});
         console.log('✅ Remote DB cleaned.');
 
         // 3. Insert into Remote (Chunking to avoid payload limits)
@@ -38,27 +38,27 @@ async function localToServerSync() {
 
         const chunkSize = 100;
 
-        // Sync main LarkKPI
+        // Sync main Kpi
         for (let i = 0; i < localKpi.length; i += chunkSize) {
             const chunk = localKpi.slice(i, i + chunkSize);
-            await remote.larkKPI.createMany({
+            await remote.kpi.createMany({
                 data: chunk as any,
                 skipDuplicates: true,
             });
-            console.log(`📡 Uploaded LarkKPI: ${i + chunk.length}/${localKpi.length}`);
+            console.log(`📡 Uploaded Kpi: ${i + chunk.length}/${localKpi.length}`);
         }
 
         // Sync DoDa KPI
         for (let i = 0; i < localDoDa.length; i += chunkSize) {
             const chunk = localDoDa.slice(i, i + chunkSize);
-            await remote.larkKpiDoDaEditor.createMany({
+            await remote.kpiDoDaEditor.createMany({
                 data: chunk as any,
                 skipDuplicates: true,
             });
             console.log(`📡 Uploaded DoDa KPI: ${i + chunk.length}/${localDoDa.length}`);
         }
 
-        console.log('✨ SUCCESS: Server DB LarkKPI has been overwritten with Local data!');
+        console.log('✨ SUCCESS: Server DB Kpi has been overwritten with Local data!');
 
     } catch (error) {
         console.error('❌ SYNC FAILED:', error);

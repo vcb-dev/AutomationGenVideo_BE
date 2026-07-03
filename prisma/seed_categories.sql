@@ -6,18 +6,18 @@
 -- ---------------------------------------------------------------
 -- 1. PRODUCT LINES (dòng sản phẩm)
 -- ---------------------------------------------------------------
-INSERT INTO product_lines (id, name, brand_type, video_category) VALUES
-  (gen_random_uuid(), 'Traffic',    'DO_DA',    'TRAFFIC'),
-  (gen_random_uuid(), 'GMV',        'DO_DA',    'GMV'),
-  (gen_random_uuid(), 'Profit',     'DO_DA',    'PROFIT'),
-  (gen_random_uuid(), 'Nhẫn',       'TRANG_SUC', 'GMV'),
-  (gen_random_uuid(), 'Dây chuyền', 'TRANG_SUC', 'TRAFFIC'),
-  (gen_random_uuid(), 'Vòng tay',   'TRANG_SUC', 'GMV'),
-  (gen_random_uuid(), 'Bông tai',   'TRANG_SUC', 'PROFIT'),
-  (gen_random_uuid(), 'Ví da',      'DO_DA',    'GMV'),
-  (gen_random_uuid(), 'Thắt lưng',  'DO_DA',    'TRAFFIC'),
-  (gen_random_uuid(), 'Túi xách',   'DO_DA',    'PROFIT')
-ON CONFLICT (name, brand_type) DO NOTHING;
+INSERT INTO product_lines (id, name, video_category) VALUES
+  (gen_random_uuid(), 'Traffic',    'TRAFFIC'),
+  (gen_random_uuid(), 'GMV',        'GMV'),
+  (gen_random_uuid(), 'Profit',     'PROFIT'),
+  (gen_random_uuid(), 'Nhẫn',       'GMV'),
+  (gen_random_uuid(), 'Dây chuyền', 'TRAFFIC'),
+  (gen_random_uuid(), 'Vòng tay',   'GMV'),
+  (gen_random_uuid(), 'Bông tai',   'PROFIT'),
+  (gen_random_uuid(), 'Ví da',      'GMV'),
+  (gen_random_uuid(), 'Thắt lưng',  'TRAFFIC'),
+  (gen_random_uuid(), 'Túi xách',   'PROFIT')
+ON CONFLICT (name) DO NOTHING;
 
 -- ---------------------------------------------------------------
 -- 2. MATERIALS (chất liệu)
@@ -45,49 +45,49 @@ VALUES
   (gen_random_uuid(), 'TS-NH-001', 'Nhẫn bạc thái hoa mai nữ',
    'TRANG_SUC', 185000, 'VIETNAM', 'Thấp', 80,
    (SELECT id FROM materials WHERE name = 'Bạc thái' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Nhẫn' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Nhẫn' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-NH-002', 'Nhẫn bạc 925 đính CZ hình tim',
    'TRANG_SUC', 250000, 'VIETNAM', 'Trung', 75,
    (SELECT id FROM materials WHERE name = 'Bạc 925' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Nhẫn' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Nhẫn' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-NH-003', 'Nhẫn vàng 10k nhẵn trơn unisex',
    'TRANG_SUC', 750000, 'VIETNAM', 'Cao', 60,
    (SELECT id FROM materials WHERE name = 'Vàng 10k' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Nhẫn' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Nhẫn' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-DC-001', 'Dây chuyền bạc nữ mặt tròn trơn',
    'TRANG_SUC', 220000, 'VIETNAM', 'Thấp', 85,
    (SELECT id FROM materials WHERE name = 'Bạc nữ' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Dây chuyền' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Dây chuyền' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-DC-002', 'Dây chuyền vàng 10k mặt hoa mai',
    'TRANG_SUC', 980000, 'VIETNAM', 'Cao', 55,
    (SELECT id FROM materials WHERE name = 'Vàng 10k' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Dây chuyền' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Dây chuyền' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-VT-001', 'Vòng tay bạc thái trơn unisex',
    'TRANG_SUC', 165000, 'VIETNAM', 'Thấp', 70,
    (SELECT id FROM materials WHERE name = 'Bạc thái' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Vòng tay' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Vòng tay' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-VT-002', 'Vòng tay đá Moissanite bạc 925',
    'TRANG_SUC', 450000, 'VIETNAM', 'Trung', 65,
    (SELECT id FROM materials WHERE name = 'Đá Moissanite' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Vòng tay' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Vòng tay' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'TS-BT-001', 'Bông tai bạc đính đá CZ giọt nước',
    'TRANG_SUC', 195000, 'VIETNAM', 'Thấp', 72,
    (SELECT id FROM materials WHERE name = 'Đá CZ' AND brand_type = 'TRANG_SUC' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Bông tai' AND brand_type = 'TRANG_SUC' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Bông tai' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW())
 
 ON CONFLICT (sku) DO NOTHING;
@@ -98,31 +98,31 @@ VALUES
   (gen_random_uuid(), 'DD-VI-001', 'Ví da bò nam ngắn gập đôi',
    'DO_DA', 350000, 'VIETNAM', 'Trung', 88,
    (SELECT id FROM materials WHERE name = 'Da bò thật' AND brand_type = 'DO_DA' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Ví da' AND brand_type = 'DO_DA' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Ví da' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'DD-VI-002', 'Ví da PU nữ mini nhiều ngăn',
    'DO_DA', 180000, 'VIETNAM', 'Thấp', 82,
    (SELECT id FROM materials WHERE name = 'Da PU' AND brand_type = 'DO_DA' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Ví da' AND brand_type = 'DO_DA' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Ví da' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'DD-TL-001', 'Thắt lưng da cá sấu khóa kim loại',
    'DO_DA', 520000, 'VIETNAM', 'Cao', 55,
    (SELECT id FROM materials WHERE name = 'Da cá sấu' AND brand_type = 'DO_DA' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Thắt lưng' AND brand_type = 'DO_DA' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Thắt lưng' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'DD-TL-002', 'Thắt lưng da bò unisex classic',
    'DO_DA', 320000, 'VIETNAM', 'Trung', 78,
    (SELECT id FROM materials WHERE name = 'Da bò thật' AND brand_type = 'DO_DA' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Thắt lưng' AND brand_type = 'DO_DA' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Thắt lưng' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW()),
 
   (gen_random_uuid(), 'DD-TX-001', 'Túi da canvas đeo chéo mini',
    'DO_DA', 420000, 'VIETNAM', 'Trung', 68,
    (SELECT id FROM materials WHERE name = 'Da canvas' AND brand_type = 'DO_DA' LIMIT 1),
-   (SELECT id FROM product_lines WHERE name = 'Túi xách' AND brand_type = 'DO_DA' LIMIT 1),
+   (SELECT id FROM product_lines WHERE name = 'Túi xách' LIMIT 1),
    '80dad059-5ff4-427c-a899-ddd624191851', true, NOW(), NOW())
 
 ON CONFLICT (sku) DO NOTHING;

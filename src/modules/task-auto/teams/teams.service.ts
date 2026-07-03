@@ -1,10 +1,12 @@
 import {
   Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException,
 } from '@nestjs/common'
+import { DateTime } from 'luxon'
 import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from '../dto/team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../dto/catalog.dto'
 import { UserRole } from '@prisma/client'
+import { recomputeUserTeamFields, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -12,47 +14,30 @@ type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 export class TaskAutoTeamsService {
   constructor(private prisma: PrismaService) {}
 
+  /** Tháng hiện tại (yyyy-MM) theo giờ VN — dùng để tự thêm item mới đẩy lên kho tổng vào kho tháng đang chạy */
+  private currentMonth(): string {
+    return DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM')
+  }
+
   private teamInclude = {
     leader: { select: { id: true, full_name: true, email: true } },
+    // Chỉ hiện thành viên đang hoạt động — tài khoản bị Admin/Leader vô hiệu hóa ở
+    // HR-management không được hiện như đang tham gia team bên trang Nhiệm vụ.
     members: {
+      where: { user: { is_active: true } },
       include: { user: { select: { id: true, full_name: true, email: true, roles: true } } },
     },
     _count: { select: { members: true, tasks: true } },
   }
 
-  private async syncFromUsers() {
-    const users = await this.prisma.user.findMany({
-      where: { team: { not: null }, is_active: true },
-      select: { id: true, roles: true, team: true },
-    })
-
-    const teamMap = new Map<string, { leader_id: string | null; memberIds: string[] }>()
-    for (const user of users) {
-      if (!user.team) continue
-      if (!teamMap.has(user.team)) teamMap.set(user.team, { leader_id: null, memberIds: [] })
-      const g = teamMap.get(user.team)!
-      g.memberIds.push(user.id)
-      if ((user.roles as string[]).includes('LEADER')) g.leader_id = user.id
-    }
-
-    for (const [name, { leader_id, memberIds }] of teamMap) {
-      const team = await this.prisma.team.upsert({
-        where: { name },
-        create: { name, leader_id, is_active: true },
-        update: { leader_id },
-      })
-
-      for (const userId of memberIds) {
-        const existing = await this.prisma.teamMember.findFirst({ where: { team_id: team.id, user_id: userId } })
-        if (!existing) {
-          await this.prisma.teamMember.create({ data: { team_id: team.id, user_id: userId } })
-        }
-      }
+  /** Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi Team/TeamMember. */
+  private async syncAffectedUsers(userIds: Iterable<string>) {
+    for (const userId of new Set(userIds)) {
+      await recomputeUserTeamFields(this.prisma, userId)
     }
   }
 
   async findAll() {
-    await this.syncFromUsers()
     return this.prisma.team.findMany({
       include: this.teamInclude,
       orderBy: { name: 'asc' },
@@ -76,21 +61,32 @@ export class TaskAutoTeamsService {
     return team
   }
 
-  async create(dto: CreateTeamDto) {
+  async create(dto: CreateTeamDto, creatorId: string) {
     const existing = await this.prisma.team.findUnique({ where: { name: dto.name } })
     if (existing) throw new ConflictException('Team name already exists')
 
-    return this.prisma.team.create({
+    // Leader cũng là thành viên của team (cùng invariant với luồng HR-management) — nếu chỉ
+    // set leader_id mà không có TeamMember, các field phái sinh User.team/team_leader_id của
+    // leader sẽ không nhìn thấy team này.
+    const memberIds = [...new Set([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])]
+
+    const team = await this.prisma.team.create({
       data: {
         name: dto.name,
         leader_id: dto.leader_id,
         is_active: dto.is_active ?? true,
-        members: dto.member_ids?.length
-          ? { create: dto.member_ids.map(uid => ({ user_id: uid })) }
+        members: memberIds.length
+          ? { create: memberIds.map(uid => ({ user_id: uid })) }
           : undefined,
       },
       include: this.teamInclude,
     })
+
+    // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
+    // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
+    await seedEditorKpiForMembers(this.prisma, memberIds, [team.id], creatorId)
+    await this.syncAffectedUsers(memberIds)
+    return team
   }
 
   async update(id: string, dto: UpdateTeamDto, userId: string, userRoles: string[]) {
@@ -104,6 +100,8 @@ export class TaskAutoTeamsService {
     }
 
     const { member_ids, ...rest } = dto
+    const previousMemberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
+    const previousLeaderId = team.leader_id
 
     if (isLeaderOnly) {
       if (member_ids !== undefined)    throw new ForbiddenException('LEADER không được thay đổi danh sách thành viên')
@@ -119,18 +117,41 @@ export class TaskAutoTeamsService {
           this.prisma.teamMember.create({ data: { team_id: id, user_id: uid } })
         ),
       ])
+      // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
+      // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
+      await seedEditorKpiForMembers(this.prisma, member_ids, [id], userId)
     }
 
-    return this.prisma.team.update({
+    const updated = await this.prisma.team.update({
       where: { id },
       data: rest,
       include: this.teamInclude,
     })
+
+    // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
+    // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
+    if (rest.leader_id) {
+      await this.prisma.teamMember.createMany({
+        data: [{ team_id: id, user_id: rest.leader_id }],
+        skipDuplicates: true,
+      })
+    }
+
+    await this.syncAffectedUsers([
+      ...previousMemberIds,
+      ...(member_ids ?? []),
+      ...(previousLeaderId ? [previousLeaderId] : []),
+      ...(updated.leader_id ? [updated.leader_id] : []),
+    ])
+
+    return updated
   }
 
   async remove(id: string) {
-    await this.findOne(id)
+    const team = await this.findOne(id)
+    const memberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
     await this.prisma.team.delete({ where: { id } })
+    await this.syncAffectedUsers(memberIds)
     return { success: true }
   }
 
@@ -138,13 +159,16 @@ export class TaskAutoTeamsService {
     await this.findOne(teamId)
     const existing = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (existing) throw new ConflictException('User is already a member')
-    return this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+    const member = await this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+    await this.syncAffectedUsers([userId])
+    return member
   }
 
   async removeMember(teamId: string, userId: string) {
     const member = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (!member) throw new NotFoundException('Member not found in team')
     await this.prisma.teamMember.delete({ where: { id: member.id } })
+    await this.syncAffectedUsers([userId])
     return { success: true }
   }
 
@@ -318,6 +342,10 @@ export class TaskAutoTeamsService {
         added_by_id:            userId,
       },
     })
+    // Thêm luôn vào kho tháng hiện tại — nếu không, sản phẩm vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
+    await this.prisma.productWarehouse.create({
+      data: { product_id: product.id, month: this.currentMonth() },
+    })
     return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
@@ -412,6 +440,10 @@ export class TaskAutoTeamsService {
         brand_type:             entry.brand_type,
         added_by_id:            userId,
       },
+    })
+    // Thêm luôn vào kho tháng hiện tại — nếu không, content vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
+    await this.prisma.contentWarehouse.create({
+      data: { content_id: content.id, month: this.currentMonth() },
     })
     return { success: true, message: 'Đã đẩy content lên kho tổng', content }
   }
@@ -555,6 +587,10 @@ export class TaskAutoTeamsService {
         is_active:             entry.is_active,
         added_by_id:           userId,
       },
+    })
+    // Thêm luôn vào kho tháng hiện tại — nếu không, source vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
+    await this.prisma.sourceWarehouse.create({
+      data: { source_id: source.id, month: this.currentMonth() },
     })
     return { success: true, message: 'Đã đẩy source lên kho tổng', source }
   }

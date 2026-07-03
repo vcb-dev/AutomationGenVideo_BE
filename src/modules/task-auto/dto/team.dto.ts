@@ -1,9 +1,14 @@
-import { IsString, IsOptional, IsBoolean, IsArray, IsEnum } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEnum, Matches } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { BrandType } from '@prisma/client'
 
+// User.team lưu nhiều team dưới dạng chuỗi phân cách dấu phẩy — tên team chứa dấu phẩy
+// sẽ bị các nơi parse (multi-select HR, splitTeamList...) tách nhầm thành nhiều team.
+const NO_COMMA = /^[^,]+$/
+const NO_COMMA_MSG = 'Tên team không được chứa dấu phẩy'
+
 export class CreateTeamDto {
-  @ApiProperty() @IsString() name: string
+  @ApiProperty() @IsString() @Matches(NO_COMMA, { message: NO_COMMA_MSG }) name: string
   @ApiPropertyOptional() @IsString() @IsOptional() leader_id?: string
   @ApiPropertyOptional({ enum: BrandType }) @IsEnum(BrandType) @IsOptional() brand_type?: BrandType
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean
@@ -12,7 +17,7 @@ export class CreateTeamDto {
 }
 
 export class UpdateTeamDto {
-  @ApiPropertyOptional() @IsString() @IsOptional() name?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() @Matches(NO_COMMA, { message: NO_COMMA_MSG }) name?: string
   @ApiPropertyOptional() @IsString() @IsOptional() leader_id?: string
   @ApiPropertyOptional({ enum: BrandType }) @IsEnum(BrandType) @IsOptional() brand_type?: BrandType
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string

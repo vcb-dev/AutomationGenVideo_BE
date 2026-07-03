@@ -55,7 +55,8 @@ export async function loadEligibleEditors(
   const userIds = eligible.map((u) => u.id);
   const todayStart = now.startOf("day").toJSDate();
 
-  // Đếm task theo team cụ thể → mỗi team assign độc lập, editor đa-team không bị ảnh hưởng chéo
+  // Đếm task theo team cụ thể → mỗi team assign độc lập, editor đa-team không bị ảnh hưởng chéo.
+  // Tính cả task tạo tay (EXTRA) — task giao tay cũng trừ vào quota ngày/tháng.
   const [
     monthlyTaskCounts,
     todayTaskCounts,
@@ -67,7 +68,6 @@ export async function loadEligibleEditors(
       where: {
         assignee_id: { in: userIds },
         team_id: teamId,
-        task_type: { not: "EXTRA" },
         assigned_at: { gte: monthStart },
         status: { not: "CANCELLED" },
       },
@@ -78,7 +78,6 @@ export async function loadEligibleEditors(
       where: {
         assignee_id: { in: userIds },
         team_id: teamId,
-        task_type: { not: "EXTRA" },
         assigned_at: { gte: todayStart },
         status: { not: "CANCELLED" },
       },
@@ -89,7 +88,6 @@ export async function loadEligibleEditors(
       where: {
         assignee_id: { in: userIds },
         team_id: teamId,
-        task_type: { not: "EXTRA" },
         assigned_at: { gte: monthStart },
         status: { not: "CANCELLED" },
       },
@@ -100,7 +98,6 @@ export async function loadEligibleEditors(
       where: {
         assignee_id: { in: userIds },
         team_id: teamId,
-        task_type: { not: "EXTRA" },
         assigned_at: { gte: monthStart },
         status: { not: "CANCELLED" },
       },

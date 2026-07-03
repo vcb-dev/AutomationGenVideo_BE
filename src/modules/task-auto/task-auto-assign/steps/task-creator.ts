@@ -240,7 +240,8 @@ export async function createTasksFromAssignments(
             assignee_id: editorId,
             assigned_at: new Date(),
             deadline,
-            task_type: "AUTO",
+            // AUTO chỉ dành cho lane đẩy SP theo kế hoạch; lane sáng tạo = EXTRA như task tạo tay
+            task_type: pair.productSource === "team" ? "AUTO" : "EXTRA",
             run_id: runId,
           },
         });

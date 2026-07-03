@@ -3,7 +3,6 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
 import * as bcrypt from "bcrypt";
@@ -28,15 +27,6 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
   ) { }
-
-  async register(registerDto: RegisterDto): Promise<TokenResponseDto> {
-    // For EDITOR and CONTENT roles, auto-assign the default manager
-    // Manager assignment will be handled after login via UI selection
-    // if (registerDto.role === "EDITOR" || registerDto.role === "CONTENT") { ... } removed
-
-    const user = await this.usersService.create(registerDto);
-    return this.generateToken(user);
-  }
 
   async login(loginDto: LoginDto): Promise<TokenResponseDto> {
     const user = await this.validateUser(loginDto.email, loginDto.password);
@@ -87,6 +77,9 @@ export class AuthService {
     let user = await this.usersService.findByEmail(emailLowerCase);
 
     if (user) {
+      // KHÔNG throw ở đây: hàm này chạy bên trong passport validate() — exception sẽ bị
+      // AuthGuard('google') chặn thành trang 401 JSON thô trước khi controller kịp redirect.
+      // Trả user (kể cả inactive) để strategy/controller quyết định điều hướng thân thiện.
       // If user exists but no google_id, link it
       if (!(user as any).google_id) {
         const updateData: any = {
@@ -102,43 +95,9 @@ export class AuthService {
       return user;
     }
 
-    // User does not exist - return null to indicate new user
-    // Frontend will handle role selection
+    // Không tìm thấy tài khoản — không còn tự tạo qua Google nữa. Tài khoản phải
+    // được Admin/Leader tạo trước (trang HR-management) mới đăng nhập được.
     return null;
-  }
-
-  async completeGoogleRegistration(googleUser: GoogleUser, role: string) {
-    // Check if user already exists
-    const emailLowerCase = googleUser.email.toLowerCase();
-    const existingUser = await this.usersService.findByEmail(emailLowerCase);
-    if (existingUser) {
-      throw new UnauthorizedException("User already exists");
-    }
-
-    // Prepare user data - always assign MEMBER role for new users
-    const userData: any = {
-      email: emailLowerCase,
-      full_name: `${googleUser.firstName} ${googleUser.lastName}`.trim(),
-      password: "", // Will be set to null by UsersService
-      roles: ["MEMBER"],
-    };
-
-    // Auto-assign default manager for EDITOR and CONTENT roles
-    // Manager assignment will be handled after login via UI selection
-    // if (role === "EDITOR" || role === "CONTENT") { ... } removed
-
-    // Create user
-    const newUser = await this.usersService.create(userData);
-
-    // Update with Google-specific fields
-    await this.usersService.update(newUser.id, {
-      google_id: googleUser.googleId,
-      image_url: googleUser.picture,
-      password_hash: null, // Ensure it is null for Google users
-    } as any);
-
-    // Fetch updated user
-    return this.usersService.findByEmail(googleUser.email);
   }
 
   async generateToken(user: any): Promise<TokenResponseDto> {
@@ -164,23 +123,4 @@ export class AuthService {
     };
   }
 
-  createTempToken(googleUser: GoogleUser): string {
-    return this.jwtService.sign(
-      {
-        googleUser: {
-          email: googleUser.email,
-          firstName: googleUser.firstName,
-          lastName: googleUser.lastName,
-          picture: googleUser.picture,
-          googleId: googleUser.googleId,
-        },
-        isTemp: true,
-      },
-      { expiresIn: "10m" },
-    );
-  }
-
-  verifyTempToken(token: string): any {
-    return this.jwtService.verify(token);
-  }
 }
