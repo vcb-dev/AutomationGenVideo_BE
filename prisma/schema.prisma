@@ -31,7 +31,6 @@ model User {
   updated_at              DateTime   @updatedAt
   roles                   UserRole[] @default([])
   team                    String?
-  team_leader_id          String?
   /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
   lark_employee_record_id String?    @unique
   employee_id             String?    @unique
@@ -48,8 +47,7 @@ model User {
   tracked_channels          TrackedChannel[]
   manager                   User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors                   User[]           @relation("ManagerEditors")
-  team_leader               User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
-  team_members              User[]           @relation("TeamLeaderMembers")
+
   reviewed_duplicates       VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                    Video[]
   social_accounts           SocialAccount[]
@@ -84,7 +82,6 @@ model User {
   @@index([email])
   @@index([roles])
   @@index([manager_id])
-  @@index([team_leader_id])
   @@index([is_active])
   @@index([team])
   @@map("users")

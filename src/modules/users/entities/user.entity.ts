@@ -28,7 +28,6 @@ export class UserEntity {
   team: string | null;
 
   manager_id: string | null;
-  team_leader_id: string | null;
   is_active: boolean;
 
   @ApiProperty({ required: false, nullable: true })

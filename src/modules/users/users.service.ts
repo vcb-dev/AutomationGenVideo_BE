@@ -92,7 +92,7 @@ export class UsersService {
     // Create user — strip cả team/team_leader_id khỏi spread: đây là field phái sinh từ
     // Team/TeamMember, client không được ghi trực tiếp (các luồng HR gán team riêng sau khi tạo).
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _password, role: _role, avatar: _a, team: _team, team_leader_id: _tl, ...userData } = createUserDto as any;
+    const { password: _password, role: _role, avatar: _a, team: _team, ...userData } = createUserDto as any;
     const img = (createUserDto as any).image_url ?? (createUserDto as any).avatar;
     const user = await this.prisma.user.create({
       data: {
@@ -116,7 +116,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         created_at: true,
         updated_at: true,
@@ -134,7 +133,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         created_at: true,
         updated_at: true,
@@ -230,7 +228,6 @@ export class UsersService {
           roles: true,
           team: true,
           manager_id: true,
-          team_leader_id: true,
           is_active: true,
           created_at: true,
           updated_at: true,
@@ -481,7 +478,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         employee_id: true,
         employee_position: true,
@@ -544,7 +540,6 @@ export class UsersService {
       roles: true,
       team: true,
       manager_id: true,
-      team_leader_id: true,
       is_active: true,
       image_url: true,
       employee_id: true,
@@ -603,7 +598,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         image_url: true,
         employee_id: true,
