@@ -1405,7 +1405,6 @@ model SocialUploadedFile {
 
 model ScraperSearchKeyword {
   id                   BigInt   @id @default(autoincrement())
-  raw_keyword          String   @db.Text
   cleaned_keyword      String   @db.VarChar(500)
   cleaned_keyword_ascii String  @db.VarChar(500)
   hit_count            Int      @default(0)
@@ -1428,9 +1427,7 @@ model ScraperFanpage {
   handle            String    @default("") @db.VarChar(255)
   page_url          String    @default("") @db.VarChar(1000)
   avatar_url             String?   @db.Text
-  header_image_url       String?   @db.Text
   avatar_drive_url       String    @default("") @db.Text
-  header_image_drive_url String    @default("") @db.Text
   is_verified            Boolean?
   followers_count   BigInt    @default(0)
   likes_count       BigInt    @default(0)
@@ -1554,7 +1551,6 @@ model ScraperTikTokVideo {
   collect_count        BigInt    @default(0)
   music_title          String    @default("") @db.VarChar(500)
   music_author         String    @default("") @db.VarChar(255)
-  original_sound       String?   @db.Text
   search_keyword       String    @default("") @db.VarChar(500)
   date_posted          DateTime  @db.Timestamptz(6)
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
@@ -1573,7 +1569,6 @@ model ScraperTikTokVideo {
 model ScraperDouyinVideo {
   id                   BigInt    @id @default(autoincrement())
   post_id              String    @unique @db.VarChar(50)
-  shortcode            String    @unique @db.VarChar(50)
   url                  String    @db.VarChar(1000)
   description          String    @default("") @db.Text
   hashtags             String[]  @default([])
@@ -1617,9 +1612,6 @@ model ScraperDouyinProfile {
   biography         String    @default("") @db.Text
   is_verified       Boolean   @default(false)
   followers_count   BigInt    @default(0)
-  following_count   BigInt    @default(0)
-  likes_count       BigInt    @default(0)
-  videos_count      Int       @default(0)
   is_bookmarked     Boolean   @default(false)
   is_tracked        Boolean   @default(false)
   is_owned          Boolean   @default(false)
@@ -1656,16 +1648,10 @@ model ScraperTikTokProfile {
   biography              String?   @db.Text
   is_verified            Boolean   @default(false)
   is_private             Boolean   @default(false)
-  predicted_lang         String    @default("") @db.VarChar(10)
   followers_count        BigInt    @default(0)
   following_count        BigInt    @default(0)
   likes_count            BigInt    @default(0)
   videos_count           Int       @default(0)
-  avg_engagement_rate    Float     @default(0)
-  like_engagement_rate   Float     @default(0)
-  comment_engagement_rate Float    @default(0)
-  account_created_at     DateTime? @db.Timestamptz(6)
-  is_commerce_user       Boolean   @default(false)
   is_tracked             Boolean   @default(false)
   is_bookmarked          Boolean   @default(false)
   is_owned               Boolean   @default(false)
@@ -1676,7 +1662,6 @@ model ScraperTikTokProfile {
   created_at             DateTime  @default(now()) @db.Timestamptz(6)
   updated_at             DateTime  @updatedAt @db.Timestamptz(6)
   videos                 ScraperTikTokProfileVideo[]
-  metrics_history        ScraperTikTokProfileMetrics[]
 
   @@index([sec_uid])
   @@index([username])
@@ -1706,7 +1691,6 @@ model ScraperTikTokProfileVideo {
   favorites_count BigInt                @default(0)
   music_title     String                @default("") @db.VarChar(500)
   music_author    String                @default("") @db.VarChar(255)
-  original_sound  String                @default("") @db.Text
   date_posted     DateTime              @db.Timestamptz(6)
   created_at      DateTime              @default(now()) @db.Timestamptz(6)
   updated_at      DateTime              @updatedAt @db.Timestamptz(6)
@@ -1715,21 +1699,6 @@ model ScraperTikTokProfileVideo {
   @@index([profile_id, date_posted(sort: Desc)])
   @@index([play_count(sort: Desc)])
   @@map("scraper_tiktok_profile_videos")
-}
-
-model ScraperTikTokProfileMetrics {
-  id                  BigInt               @id @default(autoincrement())
-  profile_id          BigInt
-  followers_count     BigInt               @default(0)
-  following_count     BigInt               @default(0)
-  likes_count         BigInt               @default(0)
-  videos_count        Int                  @default(0)
-  avg_engagement_rate Float                @default(0)
-  captured_at         DateTime             @default(now()) @db.Timestamptz(6)
-  profile             ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
-
-  @@index([profile_id, captured_at(sort: Desc)])
-  @@map("scraper_tiktok_profile_metrics")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1787,7 +1756,6 @@ model ScraperInstagramReel {
   thumbnail_drive_url String?                 @db.Text
   duration_seconds    Float?
   is_paid_partnership Boolean                 @default(false)
-  views_count         BigInt                  @default(0)
   play_count          BigInt                  @default(0)
   likes_count         BigInt                  @default(0)
   comments_count      BigInt                  @default(0)
