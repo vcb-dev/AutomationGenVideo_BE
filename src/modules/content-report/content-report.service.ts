@@ -250,6 +250,7 @@ export class ContentReportService {
         notes: v.notes || '',
         thumbnail: v.thumbnail_url || '',
         videoUrl: v.video_url || '',
+        scores: v.scores || [],
       })),
       failVideos: failVideos.map((v, i) => ({
         id: i + 1,
@@ -271,6 +272,7 @@ export class ContentReportService {
         notes: v.notes || '',
         thumbnail: v.thumbnail_url || '',
         videoUrl: v.video_url || '',
+        scores: v.scores || [],
       })),
       caseStudies: caseStudies.map((cs, i) => ({
         id: i + 1,
