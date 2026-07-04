@@ -9,13 +9,13 @@ import {
   addCalendarDays,
   effectiveAssignmentDate,
   deriveDailyTarget,
-} from "./utils/date.utils";
-import { allocateByWeight, allocateWithCaps } from "./utils/quota.utils";
+} from "../../../utils/date.utils";
+import { allocateByWeight, allocateWithCaps } from "../../../utils/quota.utils";
 import { loadEligibleEditors } from "./steps/editor-eligibility";
 import { loadEditorAssignmentHistory } from "./steps/editor-history";
 import { createTasksFromAssignments } from "./steps/task-creator";
 import { PrismaService } from "@/common/prisma/prisma.service";
-import { UpdateAutoAssignSettingDto } from "../dto/settings.dto";
+import { UpdateAutoAssignSettingDto } from "../settings/settings.dto";
 import {
   DEADLINE_CALENDAR_DAYS,
   DEFAULT_TZ,

@@ -14,7 +14,7 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoKpiService } from "./kpi.service";
-import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "../dto/kpi.dto";
+import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "./kpi.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

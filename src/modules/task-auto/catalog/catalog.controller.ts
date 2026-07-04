@@ -27,7 +27,7 @@ import {
   CreateSourceDto,
   UpdateSourceDto,
   QuerySourceDto,
-} from "../dto/catalog.dto";
+} from "./catalog.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
