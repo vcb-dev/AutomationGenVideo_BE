@@ -2443,7 +2443,8 @@ model Source {
   ordered_team       Team?             @relation("SourceOrderedTeam", fields: [ordered_team_id], references: [id], onDelete: SetNull)
   team_versions      TeamSource[]      @relation("TeamSourceGlobalRef")
   editor_versions    EditorSource[]    @relation("EditorSourceGlobalRef")
-  tasks_outro        Task[]            @relation("TaskSourceOutro")
+  tasks_outro        Task[]            @relation("TaskSourceOutr
+  o")
   tasks_extra        Task[]            @relation("TaskSourceExtra")
   tasks_workshop     Task[]            @relation("TaskSourceWorkshop")
   tasks_huyk         Task[]            @relation("TaskSourceHuyk")
