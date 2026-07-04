@@ -92,7 +92,7 @@ export class UsersService {
     // Create user — strip cả team/team_leader_id khỏi spread: đây là field phái sinh từ
     // Team/TeamMember, client không được ghi trực tiếp (các luồng HR gán team riêng sau khi tạo).
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _password, role: _role, avatar: _a, team: _team, team_leader_id: _tl, ...userData } = createUserDto as any;
+    const { password: _password, role: _role, avatar: _a, team: _team, ...userData } = createUserDto as any;
     const img = (createUserDto as any).image_url ?? (createUserDto as any).avatar;
     const user = await this.prisma.user.create({
       data: {
@@ -116,9 +116,7 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -135,9 +133,7 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -232,7 +228,6 @@ export class UsersService {
           roles: true,
           team: true,
           manager_id: true,
-          team_leader_id: true,
           is_active: true,
           created_at: true,
           updated_at: true,
@@ -483,7 +478,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         employee_id: true,
         employee_position: true,
@@ -546,7 +540,6 @@ export class UsersService {
       roles: true,
       team: true,
       manager_id: true,
-      team_leader_id: true,
       is_active: true,
       image_url: true,
       employee_id: true,
@@ -605,7 +598,6 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
         image_url: true,
         employee_id: true,
@@ -661,10 +653,9 @@ export class UsersService {
       delete dto.team;
       // A leader may only set name/email/password for a new hire — strip fields that grant
       // capability beyond that (manager_id ties them into an unrelated manager's hierarchy,
-      // custom_permissions can widen app access, is_active should only go through deactivate/
-      // reactivate). The UI never sends these for a LEADER, this only closes a direct-API gap.
+      // is_active should only go through deactivate/reactivate). The UI never sends these
+      // for a LEADER, this only closes a direct-API gap.
       delete dto.manager_id;
-      delete dto.custom_permissions;
       delete (dto as any).is_active;
     }
 
@@ -715,9 +706,8 @@ export class UsersService {
       // A leader may only edit name/email/team(forced below) for a member they own — strip
       // fields that would let a direct API call bypass deactivate/reactivate's stricter
       // ownership check (is_active) or alter authorization-relevant data outside their scope
-      // (manager_id, custom_permissions). The UI never sends these for a LEADER.
+      // (manager_id). The UI never sends these for a LEADER.
       delete dto.manager_id;
-      delete dto.custom_permissions;
       delete (dto as any).is_active;
       // team/team_leader_id giờ là giá trị phái sinh — không set trực tiếp qua dto, xử lý bằng
       // TeamMember sau khi update() xong (xem claimToCallerId/releaseTarget bên dưới). Chụp lại ý

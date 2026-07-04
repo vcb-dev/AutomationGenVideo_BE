@@ -29,10 +29,8 @@ model User {
   is_active               Boolean    @default(true)
   created_at              DateTime   @default(now())
   updated_at              DateTime   @updatedAt
-  custom_permissions      String[]   @default([])
   roles                   UserRole[] @default([])
   team                    String?
-  team_leader_id          String?
   /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
   lark_employee_record_id String?    @unique
   employee_id             String?    @unique
@@ -49,8 +47,7 @@ model User {
   tracked_channels          TrackedChannel[]
   manager                   User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors                   User[]           @relation("ManagerEditors")
-  team_leader               User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
-  team_members              User[]           @relation("TeamLeaderMembers")
+
   reviewed_duplicates       VideoDuplicate[] @relation("ReviewedDuplicates")
   videos                    Video[]
   social_accounts           SocialAccount[]
@@ -85,7 +82,6 @@ model User {
   @@index([email])
   @@index([roles])
   @@index([manager_id])
-  @@index([team_leader_id])
   @@index([is_active])
   @@index([team])
   @@map("users")
@@ -707,37 +703,31 @@ model TrafficReport {
   employee         Json?
   team             String?
   month            String?
-  traffic_fb       BigInt?
-  traffic_ig       BigInt?
-  traffic_lemon8   BigInt?
-  traffic_thread   BigInt?
-  traffic_tiktok   BigInt?
-  traffic_yt       BigInt?
-  traffic_zalo     BigInt?
-  total_traffic    BigInt?
-  is_confirmed     String?
-  created_at       DateTime  @default(now())
-  updated_at       DateTime  @updatedAt
-  name             String?
-  evidence_files   String?
-  traffic_twitter  BigInt?
-  email            String?
-  evidence_fb      String?
-  evidence_ig      String?
-  evidence_tiktok  String?
-  evidence_yt      String?
-  evidence_thread  String?
-  evidence_lemon8  String?
-  evidence_zalo    String?
-  evidence_twitter String?
-  channel_fb       String?
-  channel_ig       String?
-  channel_tiktok   String?
-  channel_yt       String?
-  channel_thread   String?
-  channel_lemon8   String?
-  channel_zalo     String?
-  channel_twitter  String?
+  traffic_fb      BigInt?
+  traffic_ig      BigInt?
+  traffic_thread  BigInt?
+  traffic_tiktok  BigInt?
+  traffic_yt      BigInt?
+  traffic_zalo    BigInt?
+  total_traffic   BigInt?
+  is_confirmed    String?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+  name            String?
+  evidence_files  String?
+  email           String?
+  evidence_fb     String?
+  evidence_ig     String?
+  evidence_tiktok String?
+  evidence_yt     String?
+  evidence_thread String?
+  evidence_zalo   String?
+  channel_fb      String?
+  channel_ig      String?
+  channel_tiktok  String?
+  channel_yt      String?
+  channel_thread  String?
+  channel_zalo    String?
 
   @@index([date])
   @@index([date, team])

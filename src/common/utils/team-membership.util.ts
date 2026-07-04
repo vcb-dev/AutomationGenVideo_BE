@@ -28,20 +28,18 @@ function parseTeamNames(teamNamesRaw: string | null | undefined): string[] {
 }
 
 /**
- * Tính lại User.team (join tên các Team, phân cách dấu phẩy) và User.team_leader_id
- * (leader_id của một trong các Team) từ TeamMember hiện tại của user — giữ 2 cột phẳng
- * này luôn khớp với Team/TeamMember (nguồn sự thật) để API cũ không cần đổi hình dạng.
+ * Tính lại User.team (join tên các Team, phân cách dấu phẩy) từ TeamMember hiện tại của user
+ * — giữ cột phẳng này luôn khớp với Team/TeamMember (nguồn sự thật) để API cũ không cần đổi hình dạng.
  */
 export async function recomputeUserTeamFields(db: Db, userId: string): Promise<void> {
   const memberships = await db.teamMember.findMany({
     where: { user_id: userId },
-    include: { team: { select: { name: true, leader_id: true } } },
+    include: { team: { select: { name: true } } },
     orderBy: { team: { name: 'asc' } },
   });
   const teamNames = memberships.map((m) => m.team.name);
   const teamString = teamNames.length ? teamNames.join(',') : null;
-  const leaderId = memberships.find((m) => m.team.leader_id)?.team.leader_id ?? null;
-  await db.user.update({ where: { id: userId }, data: { team: teamString, team_leader_id: leaderId } });
+  await db.user.update({ where: { id: userId }, data: { team: teamString } });
 }
 
 /** Recompute field phái sinh cho nhiều user (bỏ trùng). */
@@ -53,7 +51,7 @@ async function recomputeUsers(db: Db, userIds: Iterable<string>): Promise<void> 
 
 /**
  * Khi Team.leader_id đổi (thay leader / thu hồi leader), field phái sinh
- * team_leader_id của TOÀN BỘ member trong team đó đều lệch — resync hết.
+ * User.team của TOÀN BỘ member trong team đó cần được resync hết.
  */
 async function resyncTeamMembers(db: Db, teamIds: string[]): Promise<void> {
   if (!teamIds.length) return;
@@ -102,7 +100,7 @@ export async function seedEditorKpiForMembers(
 
 /**
  * Gán user vào các Team (theo id) nếu chưa là member, seed KPI nếu là MEMBER,
- * rồi tính lại team/team_leader_id phái sinh. Chạy trong transaction.
+ * rồi tính lại team phái sinh. Chạy trong transaction.
  */
 export async function assignUserToTeams(
   db: Db,
@@ -126,7 +124,7 @@ interface ResolvedTeams {
   teamIds: string[];
   /** Leader cũ của các team vừa bị user này thay — cần recompute field phái sinh của họ. */
   displacedLeaderIds: string[];
-  /** Các team có leader_id vừa đổi — member của chúng cần resync team_leader_id phái sinh. */
+  /** Các team có leader_id vừa đổi — member của chúng cần resync field team phái sinh. */
   leaderChangedTeamIds: string[];
 }
 

@@ -29,7 +29,7 @@ import {
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
-} from "../dto/task.dto";
+} from "./task.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

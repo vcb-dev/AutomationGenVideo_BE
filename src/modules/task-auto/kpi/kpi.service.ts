@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
-import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "../dto/kpi.dto";
+import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "./kpi.dto";
 
 @Injectable()
 export class TaskAutoKpiService {

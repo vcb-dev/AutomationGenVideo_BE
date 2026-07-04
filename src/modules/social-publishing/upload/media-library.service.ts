@@ -102,7 +102,7 @@ export class MediaLibraryService {
     url = uploaded.url;
     storage = 'google_drive';
     drive_file_id = uploaded.fileId;
-    drive_web_view_url = uploaded.webViewUrl || null;
+    drive_web_view_url = uploaded.webViewUrl;
     this.logger.log(`[Library] Google Drive: ${filename}`);
 
     let thumbnail_url: string | null = null;

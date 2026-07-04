@@ -19,7 +19,7 @@ interface GoogleServiceAccountCredentials {
 export interface GoogleDriveUploadResult {
   fileId: string;
   url: string;
-  webViewUrl?: string;
+  webViewUrl: string;
 }
 
 export interface GoogleDriveFileMetadata {
@@ -212,7 +212,7 @@ export class GoogleDriveStorageService {
     return {
       fileId,
       url: directUrl,
-      webViewUrl: uploadRes.data.webViewLink,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
   }
 
@@ -270,7 +270,7 @@ export class GoogleDriveStorageService {
     return {
       fileId,
       url: directUrl,
-      webViewUrl: uploadRes.data.webViewLink,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
   }
 
@@ -454,6 +454,10 @@ export class GoogleDriveStorageService {
     });
     if (filename) params.set('filename', filename);
     return `https://drive.google.com/uc?${params.toString()}`;
+  }
+
+  private buildViewUrl(fileId: string): string {
+    return `https://drive.google.com/file/d/${fileId}/view`;
   }
 
   private buildThumbnailUrl(fileId: string): string {
