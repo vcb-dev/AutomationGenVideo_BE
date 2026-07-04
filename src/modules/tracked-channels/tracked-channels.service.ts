@@ -410,25 +410,38 @@ export class TrackedChannelsService {
     );
 
     // Generate trend data (mock for now - in real app, you'd query historical data)
+    // Biến thiên "ngẫu nhiên" được seed theo platform+ngày để mỗi lần refresh
+    // dashboard trả về cùng một dãy số — trước đây dùng Math.random() nên số liệu
+    // và % tăng trưởng đổi loạn xạ theo từng request.
+    const seededFactor = (seed: string): number => {
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) {
+        hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+      }
+      const normalized = (Math.abs(hash) % 1000) / 1000; // 0..1 ổn định theo seed
+      return 0.8 + normalized * 0.4;
+    };
+
     const platformTrends: PlatformTrendDto[] = Object.entries(platformGroups).map(
       ([platform, channels]) => {
         // Generate 30 days of mock trend data
         const trends: TrendDataDto[] = [];
         const now = new Date();
 
+        const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
+        const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
+
         for (let i = 29; i >= 0; i--) {
           const date = new Date(now);
           date.setDate(date.getDate() - i);
+          const dateStr = date.toISOString().split('T')[0];
 
           // Mock data with some growth pattern
           const dayFactor = (30 - i) / 30; // Growth factor
-          const randomFactor = 0.8 + Math.random() * 0.4; // Random variation
-
-          const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
-          const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
+          const randomFactor = seededFactor(`${platform}:${dateStr}`);
 
           trends.push({
-            date: date.toISOString().split('T')[0],
+            date: dateStr,
             likes: Math.floor(totalLikes * dayFactor * randomFactor),
             views: Math.floor(totalViews * dayFactor * randomFactor),
             comments: Math.floor((totalLikes * 0.1) * dayFactor * randomFactor),

@@ -38,6 +38,7 @@ export class TiktokCloneService {
     let videoInfo: TiktokVideoInfo;
     if (dto.videoUrl) {
       // Extension đã cung cấp video URL trực tiếp → dùng luôn
+      this.assertPublicHttpUrl(dto.videoUrl, 'videoUrl');
       videoInfo = {
         videoId: this.extractVideoId(dto.tiktokUrl) || `tiktok_${Date.now()}`,
         downloadUrl: dto.videoUrl,
@@ -127,27 +128,73 @@ export class TiktokCloneService {
 
       const html: string = res.data;
 
-      // Tìm __NEXT_DATA__ JSON
-      const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s);
-      if (nextDataMatch) {
-        const nextData = JSON.parse(nextDataMatch[1]);
-        const videoData = this.deepFind(nextData, 'downloadAddr') || this.deepFind(nextData, 'playAddr');
+      // Tìm JSON nhúng trong trang: TikTok mới dùng __UNIVERSAL_DATA_FOR_REHYDRATION__,
+      // các trang cũ dùng __NEXT_DATA__ — thử cả hai.
+      const embeddedJsonMatch =
+        html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.+?)<\/script>/s) ||
+        html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s);
+      if (embeddedJsonMatch) {
+        const embeddedData = JSON.parse(embeddedJsonMatch[1]);
+        const videoData = this.deepFind(embeddedData, 'downloadAddr') || this.deepFind(embeddedData, 'playAddr');
         if (videoData) {
-          return videoData.replace(/\\u002F/g, '/');
+          return this.unescapeJsonUrl(videoData);
         }
       }
 
       // Fallback: tìm pattern video URL trong HTML
       const playUrlMatch = html.match(/"playAddr":"([^"]+)"/);
-      if (playUrlMatch) return playUrlMatch[1].replace(/\\u002F/g, '/');
+      if (playUrlMatch) return this.unescapeJsonUrl(playUrlMatch[1]);
 
       const downloadMatch = html.match(/"downloadAddr":"([^"]+)"/);
-      if (downloadMatch) return downloadMatch[1].replace(/\\u002F/g, '/');
+      if (downloadMatch) return this.unescapeJsonUrl(downloadMatch[1]);
 
       throw new Error('Không tìm được URL video từ trang TikTok');
     } catch (err: any) {
       this.logger.error(`[Clone] extractDownloadUrl failed: ${err.message}`);
       throw new BadRequestException(`Không thể tải thông tin video TikTok: ${err.message}`);
+    }
+  }
+
+  /**
+   * URL trích từ HTML/JSON của TikTok còn nguyên escape kiểu JSON (/ = "/",
+   * & = "&", \\/ = "/"...). Query string của CDN TikTok luôn chứa "&" nên nếu
+   * chỉ replace / như trước thì URL bị hỏng → download 403. Giải mã đầy đủ ở đây.
+   */
+  private unescapeJsonUrl(raw: string): string {
+    return raw
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\\//g, '/');
+  }
+
+  /**
+   * Chặn SSRF: videoUrl do client (extension) gửi lên sẽ được server fetch trực tiếp,
+   * nên phải là http(s) và không được trỏ vào localhost / dải IP nội bộ.
+   */
+  private assertPublicHttpUrl(rawUrl: string, fieldName: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new BadRequestException(`${fieldName} không phải URL hợp lệ`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new BadRequestException(`${fieldName} phải là URL http/https`);
+    }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const isPrivate =
+      host === 'localhost' ||
+      host === '::1' ||
+      host.endsWith('.local') ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^0\./.test(host) ||
+      /^f[cd][0-9a-f]{2}:/.test(host) ||
+      /^fe80:/.test(host);
+    if (isPrivate) {
+      throw new BadRequestException(`${fieldName} không được trỏ tới địa chỉ nội bộ`);
     }
   }
 
@@ -164,22 +211,35 @@ export class TiktokCloneService {
 
   /** Download video từ URL về Buffer */
   private async downloadVideo(url: string): Promise<Buffer> {
+    let res;
     try {
-      const res = await axios.get(url, {
+      res = await axios.get(url, {
         headers: TIKTOK_HEADERS,
         responseType: 'arraybuffer',
         timeout: 120000, // 2 phút cho video lớn
         maxContentLength: 500 * 1024 * 1024, // 500MB max
       });
-      return Buffer.from(res.data);
     } catch (err: any) {
       this.logger.error(`[Clone] downloadVideo failed: ${err.message}`);
       throw new BadRequestException('Không thể tải video từ TikTok');
     }
+
+    // TikTok trả 200 kèm trang HTML (captcha/block) thay vì video khá thường xuyên —
+    // nếu không chặn ở đây thì file rác sẽ được upload Drive rồi đăng lên Facebook.
+    const contentType = String(res.headers?.['content-type'] || '');
+    const buffer = Buffer.from(res.data);
+    if (contentType.includes('text/html') || buffer.length < 10 * 1024) {
+      this.logger.error(
+        `[Clone] downloadVideo nhận về dữ liệu không phải video (content-type=${contentType}, size=${buffer.length}B)`,
+      );
+      throw new BadRequestException('TikTok không trả về file video (có thể bị chặn/captcha), thử lại sau');
+    }
+    return buffer;
   }
 
   /** Trích xuất video ID từ URL TikTok */
   private extractVideoId(url: string): string | null {
+    if (!url || typeof url !== 'string') return null;
     const patterns = [
       /\/video\/(\d+)/,
       /\/v\/(\d+)/,
