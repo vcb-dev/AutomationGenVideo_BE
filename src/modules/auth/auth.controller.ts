@@ -8,7 +8,6 @@ import {
   ClassSerializerInterceptor,
   Req,
   Res,
-  UnauthorizedException,
 } from "@nestjs/common";
 import { Request, Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
@@ -21,7 +20,6 @@ import {
 } from "@nestjs/swagger";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -33,18 +31,6 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 @UseInterceptors(ClassSerializerInterceptor)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
-
-  @Post("register")
-  @ApiOperation({ summary: "Register a new user" })
-  @ApiResponse({
-    status: 201,
-    description: "User registered successfully",
-    type: TokenResponseDto,
-  })
-  @ApiResponse({ status: 409, description: "Email already exists" })
-  register(@Body() registerDto: RegisterDto): Promise<TokenResponseDto> {
-    return this.authService.register(registerDto);
-  }
 
   @Post("login")
   @ApiOperation({ summary: "Login user" })
@@ -84,53 +70,32 @@ export class AuthController {
   async googleAuthRedirect(@Req() req: any, @Res() res: Response) {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
 
-    // Check if this is a new user or existing user
+    // Tài khoản bị vô hiệu hóa — về login kèm thông báo (check nằm ở strategy dưới dạng
+    // sentinel vì throw trong validate() sẽ bị guard chặn thành 401 JSON thô).
+    if (req.user.isInactiveUser) {
+      res.redirect(
+        `${frontendUrl}/login?error=${encodeURIComponent(
+          "Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ Admin để được kích hoạt lại.",
+        )}`,
+      );
+      return;
+    }
+
+    // Không còn tự tạo tài khoản qua Google — chỉ tài khoản đã được Admin/Leader
+    // tạo sẵn (qua trang HR-management) mới đăng nhập được. Email lạ bị từ chối
+    // ngay tại đây, không có bước chọn role/tự tạo nào nữa.
     if (req.user.isNewUser) {
-      // New user - create a temporary token with Google profile data
-      const tempToken = this.authService.createTempToken(req.user);
-
-      // Redirect to role selection page
       res.redirect(
-        `${frontendUrl}/auth/google/role-selection?tempToken=${tempToken}`,
+        `${frontendUrl}/login?error=${encodeURIComponent(
+          "Tài khoản chưa được tạo. Vui lòng liên hệ Leader/Admin để được cấp quyền truy cập.",
+        )}`,
       );
-    } else {
-      // Existing user - generate regular token and redirect to dashboard
-      const tokenResponse = await this.authService.generateToken(req.user);
-      res.redirect(
-        `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
-      );
+      return;
     }
-  }
 
-  @Post("google/complete")
-  @ApiOperation({ summary: "Complete Google registration with role selection" })
-  @ApiResponse({
-    status: 201,
-    description: "Registration completed successfully",
-    type: TokenResponseDto,
-  })
-  @ApiResponse({ status: 400, description: "Invalid request" })
-  async completeGoogleRegistration(
-    @Body() body: { tempToken: string; role: string },
-  ): Promise<TokenResponseDto> {
-    try {
-      // Verify and decode temporary token
-      const decoded = this.authService.verifyTempToken(body.tempToken);
-
-      if (!decoded.isTemp || !decoded.googleUser) {
-        throw new UnauthorizedException("Invalid temporary token");
-      }
-
-      // Complete registration with selected role
-      const user = await this.authService.completeGoogleRegistration(
-        decoded.googleUser,
-        body.role,
-      );
-
-      // Generate regular access token
-      return this.authService.generateToken(user);
-    } catch (error) {
-      throw new UnauthorizedException("Failed to complete registration");
-    }
+    const tokenResponse = await this.authService.generateToken(req.user);
+    res.redirect(
+      `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
+    );
   }
 }

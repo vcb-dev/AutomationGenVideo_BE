@@ -33,6 +33,7 @@ async function bootstrap() {
   const expressInstance = app.getHttpAdapter().getInstance();
   if (typeof expressInstance.set === "function") {
     expressInstance.set("trust proxy", true);
+    expressInstance.set("etag", false);
   }
 
   // Global validation pipe
@@ -79,8 +80,11 @@ async function bootstrap() {
       } catch { /* invalid URL, skip */ }
     }
     corsOriginOption = (origin, callback) => {
-      // Allow server-to-server (no origin) and matching origins
-      if (!origin || allowedSet.has(origin)) return callback(null, true);
+      // Allow server-to-server (no origin), matching origins, and Chrome extensions
+      // (chrome-extension://... — internal client, API is protected by JWT).
+      if (!origin || allowedSet.has(origin) || origin.startsWith('chrome-extension://')) {
+        return callback(null, true);
+      }
       callback(new Error(`CORS: origin '${origin}' not allowed`));
     };
   }

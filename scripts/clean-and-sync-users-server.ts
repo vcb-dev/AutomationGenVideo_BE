@@ -95,7 +95,7 @@ async function syncUsers() {
                 });
                 created.push(row);
                 count++;
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`Error creating user ${user.email}:`, err.message);
             }
         }
@@ -132,7 +132,7 @@ async function syncUsers() {
             linked += teamMates.length;
         }
         console.log(`Linked team_leader_id for ${linked} users.`);
-    } catch (error) {
+    } catch (error: any) {
         console.error('SYNC ERROR:', error.response?.data || error.message);
     } finally {
         await serverPrisma.$disconnect();

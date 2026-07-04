@@ -10,6 +10,7 @@ import { GoogleDriveStorageService } from './upload/google-drive-storage.service
 import { MediaLibraryController } from './upload/media-library.controller';
 import { MediaLibraryService } from './upload/media-library.service';
 import { ChunkedUploadController } from './upload/chunked-upload.controller';
+import { InternalUploadController } from './upload/internal-upload.controller';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -61,9 +62,6 @@ import { HashtagController } from './hashtag/hashtag.controller';
 import { TiktokCloneController } from './tiktok-clone/tiktok-clone.controller';
 import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
 
-// Extension serve (public — no auth)
-import { ExtensionController } from './extension/extension.controller';
-
 @Module({
   imports: [PrismaModule, MulterModule.register()],
   controllers: [
@@ -71,6 +69,7 @@ import { ExtensionController } from './extension/extension.controller';
     MediaController,
     MediaLibraryController,
     ChunkedUploadController,
+    InternalUploadController,
     AccountsController,
     OAuthController,
     PublishController,
@@ -80,7 +79,6 @@ import { ExtensionController } from './extension/extension.controller';
     DraftsController,
     HashtagController,
     TiktokCloneController,
-    ExtensionController,
   ],
   providers: [
     // Core

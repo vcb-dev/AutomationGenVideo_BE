@@ -52,11 +52,15 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
     // Check if user exists
     const validatedUser = await this.authService.validateGoogleUser(googleUser);
 
-    if (validatedUser) {
+    if (validatedUser && !(validatedUser as any).is_active) {
+      // Tài khoản đã bị vô hiệu hóa — dùng sentinel (không throw) để googleAuthRedirect
+      // đưa về /login kèm thông báo; throw ở đây sẽ thành trang 401 JSON thô.
+      done(null, { isInactiveUser: true });
+    } else if (validatedUser) {
       // Existing user - return user object
       done(null, validatedUser);
     } else {
-      // New user - return Google profile data with a flag
+      // New user (email chưa được Admin/Leader tạo tài khoản) - return flag
       done(null, { ...googleUser, isNewUser: true });
     }
   }

@@ -20,42 +20,67 @@ datasource db {
 
 /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
 model User {
-  id                      String           @id @default(uuid())
-  email                   String           @unique
+  id                      String     @id @default(uuid())
+  email                   String     @unique
   password_hash           String?
   full_name               String
-  google_id               String?          @unique
+  google_id               String?    @unique
   manager_id              String?
-  is_active               Boolean          @default(true)
-  created_at              DateTime         @default(now())
-  updated_at              DateTime         @updatedAt
-  custom_permissions      String[]         @default([])
-  lark_permissions        Json?
-  last_app_update_at      DateTime?        @default(now())
-  roles                   UserRole[]       @default([])
+  is_active               Boolean    @default(true)
+  created_at              DateTime   @default(now())
+  updated_at              DateTime   @updatedAt
+  custom_permissions      String[]   @default([])
+  roles                   UserRole[] @default([])
   team                    String?
   team_leader_id          String?
-  /// Bitable record id — đồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
-  lark_employee_record_id String?          @unique
-  employee_id             String?          @unique
+  /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
+  lark_employee_record_id String?    @unique
+  employee_id             String?    @unique
   image_url               String?
   employee_data           Json?
   /// Chức vụ từ Lark (Member / Leader, …)
-  employee_position       String?
+
+  employee_position         String?
   /// Tình trạng Lark: Đang hoạt động / Đã nghỉ
-  employee_status         String?
+  employee_status           String?
   /// Tháng/ngày từ Lark (cột NGÀY)
-  employee_date           DateTime?
-  search_histories        SearchHistory[]
-  tracked_channels        TrackedChannel[]
-  manager                 User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
-  editors                 User[]           @relation("ManagerEditors")
-  team_leader             User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
-  team_members            User[]           @relation("TeamLeaderMembers")
-  reviewed_duplicates     VideoDuplicate[] @relation("ReviewedDuplicates")
-  videos                  Video[]
-  social_accounts         SocialAccount[]
-  social_posts            SocialPost[]
+  employee_date             DateTime?
+  search_histories          SearchHistory[]
+  tracked_channels          TrackedChannel[]
+  manager                   User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
+  editors                   User[]           @relation("ManagerEditors")
+  team_leader               User?            @relation("TeamLeaderMembers", fields: [team_leader_id], references: [id])
+  team_members              User[]           @relation("TeamLeaderMembers")
+  reviewed_duplicates       VideoDuplicate[] @relation("ReviewedDuplicates")
+  videos                    Video[]
+  social_accounts           SocialAccount[]
+  social_posts              SocialPost[]
+  teams_leading             Team[]           @relation("TeamLeaderOf")
+  team_memberships          TeamMember[]     @relation("TeamMembershipOf")
+  editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
+  editor_approvals_reviewed EditorApproval[] @relation("EditorApprovalBy")
+  team_push_requests          TeamPushRequest[] @relation("TeamPushRequestBy")
+  team_push_requests_reviewed TeamPushRequest[] @relation("TeamPushRequestReviewedBy")
+  editor_kpis               EditorKpi[]      @relation("EditorKpiOf")
+  editor_kpis_set           EditorKpi[]      @relation("EditorKpiSetBy")
+  team_kpis_created         TeamKpi[]        @relation("TeamKpiCreatedBy")
+  products_added            Product[]        @relation("ProductAddedBy")
+  team_products_added       TeamProduct[]    @relation("TeamProductAddedBy")
+  team_contents_added       TeamContent[]    @relation("TeamContentAddedBy")
+  contents_added            Content[]        @relation("ContentAddedBy")
+  sources_added             Source[]         @relation("SourceAddedBy")
+  team_sources_added        TeamSource[]     @relation("TeamSourceAddedBy")
+  editor_products           EditorProduct[]  @relation("EditorProductOf")
+  editor_products_added     EditorProduct[]  @relation("EditorProductAddedBy")
+  editor_contents           EditorContent[]  @relation("EditorContentOf")
+  editor_contents_added     EditorContent[]  @relation("EditorContentAddedBy")
+  editor_sources            EditorSource[]   @relation("EditorSourceOf")
+  editor_sources_added      EditorSource[]   @relation("EditorSourceAddedBy")
+  tasks_assigned            Task[]           @relation("TaskAssignee")
+  tasks_reviewed            Task[]           @relation("TaskReviewer")
+  task_assignments          TaskAssignment[] @relation("AssignmentUser")
+  notifications             Notification[]   @relation("NotificationOf")
+  owned_channels            Channel[]        @relation("ChannelOwnerUser")
 
   @@index([email])
   @@index([roles])
@@ -509,7 +534,7 @@ model SearchHistory {
   @@map("search_histories")
 }
 
-model LarkReport {
+model ChecklistReport {
   id         String    @id
   name       String
   team       String?
@@ -525,10 +550,10 @@ model LarkReport {
   @@index([date, team])
   @@index([email])
   @@index([name])
-  @@map("lark_reports")
+  @@map("checklist_reports")
 }
 
-model LarkKPI {
+model Kpi {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -568,11 +593,11 @@ model LarkKPI {
   @@index([name])
   @@index([employee_id])
   @@index([report_date(sort: Desc)])
-  @@map("lark_kpi")
+  @@map("kpi")
 }
 
 /// KPI Bitable Đồ Da (wiki metatops — bảng riêng, cấu trúc tương thích mapRecordToKPI)
-model LarkKpiDoDa {
+model KpiDoDa {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -610,11 +635,11 @@ model LarkKpiDoDa {
   @@index([team])
   @@index([name])
   @@index([employee_id])
-  @@map("lark_kpi_do_da")
+  @@map("kpi_do_da")
 }
 
 /// KPI Global Indo — sync từ bảng "Báo cáo KPI ngày" trong wiki External (dùng user_access_token).
-model LarkKpiGlobalIndo {
+model KpiGlobalIndo {
   id                   String    @id
   employee_id          String?
   name                 String?
@@ -649,11 +674,11 @@ model LarkKpiGlobalIndo {
 
   @@index([month])
   @@index([report_date])
-  @@map("lark_kpi_global_indo")
+  @@map("kpi_global_indo")
 }
 
 /// KPI Đồ Da tính từ bảng edit video (theo Người edit + Ngày edit).
-model LarkKpiDoDaEditor {
+model KpiDoDaEditor {
   id              String   @id
   editor_name     String
   editor_name_key String?
@@ -673,10 +698,10 @@ model LarkKpiDoDaEditor {
   @@index([report_date_key, team])
   @@index([editor_name])
   @@index([editor_name_key, month])
-  @@map("lark_kpi_do_da_editor")
+  @@map("kpi_do_da_editor")
 }
 
-model LarkTraffic {
+model TrafficReport {
   id               String    @id
   date             DateTime?
   employee         Json?
@@ -719,7 +744,7 @@ model LarkTraffic {
   @@index([month])
   @@index([team])
   @@index([email])
-  @@map("lark_traffic")
+  @@map("traffic_reports")
 }
 
 model ReportOutstanding {
@@ -750,20 +775,30 @@ model Channel {
   link_channel String?
   status       String?
   team_traffic String?
+  /// Tên chủ kênh (string, dùng cho Lark sync)
   owner        String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
   email        String?
+  /// FK tới User — dùng cho module channelsTeam (quản lý kênh của team)
+  owner_id     String?
+  /// FK tới Team — dùng cho module channelsTeam
+  team_id      String?
+
+  channel_owner User? @relation("ChannelOwnerUser", fields: [owner_id], references: [id], onDelete: SetNull)
+  channel_team  Team? @relation("ChannelTeam", fields: [team_id], references: [id], onDelete: SetNull)
 
   @@index([owner])
   @@index([email])
   @@index([team_traffic])
   @@index([email, status])
   @@index([platform, status])
+  @@index([owner_id])
+  @@index([team_id])
   @@map("huyk_channels")
 }
 
-model LarkPermission {
+model ReportPermission {
   id          String   @id
   email       String?
   name        String?
@@ -778,7 +813,7 @@ model LarkPermission {
 
   @@index([email])
   @@index([name])
-  @@map("lark_permissions")
+  @@map("report_permissions")
 }
 
 model video_management_reportsettings {
@@ -811,6 +846,67 @@ model video_management_facebookpagecache {
 
   @@index([username])
   @@index([expires_at])
+}
+
+/// Fanpage chính chủ do user cấp quyền qua Facebook Login (OAuth)
+model video_management_managedfacebookpage {
+  id                BigInt    @id @default(autoincrement())
+  created_at        DateTime  @db.Timestamptz(6)
+  updated_at        DateTime  @db.Timestamptz(6)
+  page_id           String    @unique @db.VarChar(255)
+  name              String    @db.VarChar(255)
+  username          String?   @db.VarChar(255)
+  category          String    @default("") @db.VarChar(255)
+  avatar_url        String?
+  avatar_drive_url  String?
+  page_access_token String    @default("") @db.Text
+  tasks             Json      @default("[]")
+  followers_count   BigInt    @default(0)
+  likes_count       BigInt    @default(0)
+  is_active         Boolean   @default(true)
+  last_synced_at    DateTime? @db.Timestamptz(6)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  is_scraping       Boolean   @default(false)
+  is_backfilled     Boolean   @default(false)
+  scrape_error      String?   @db.Text
+  raw_data          Json      @default("{}")
+  owned_videos      video_management_ownedvideocontent[]
+
+  @@index([page_id])
+  @@index([is_active])
+  @@index([is_active, name])
+  @@index([is_active, last_synced_at])
+  @@index([is_active, is_scraping])
+}
+
+/// Video/Reels chính chủ kéo từ Graph API Fanpage
+model video_management_ownedvideocontent {
+  id              BigInt   @id @default(autoincrement())
+  created_at      DateTime @db.Timestamptz(6)
+  updated_at      DateTime @db.Timestamptz(6)
+  managed_page_id BigInt
+  post_id         String   @unique @db.VarChar(255)
+  caption         String   @default("")
+  published_at    DateTime @db.Timestamptz(6)
+  permalink_url   String?  @db.VarChar(500)
+  thumbnail_url       String?
+  thumbnail_drive_url String?
+  video_url           String?
+  view_count          BigInt   @default(0)
+  like_count          Int      @default(0)
+  comment_count       Int      @default(0)
+  share_count         Int      @default(0)
+  reach_count         Int      @default(0)
+  link_clicks         Int      @default(0)
+  raw_data            Json     @default("{}")
+  last_updated_at     DateTime @db.Timestamptz(6)
+  managed_page        video_management_managedfacebookpage @relation(fields: [managed_page_id], references: [id], onDelete: Cascade)
+
+  @@index([managed_page_id])
+  @@index([post_id])
+  @@index([published_at])
+  @@index([view_count])
+  @@index([managed_page_id, view_count(sort: Desc)])
 }
 
 model video_management_tiktokusercache {
@@ -990,7 +1086,7 @@ model video_management_appuser {
   @@index([email])
 }
 
-model LarkReportKPI {
+model ReportKpi {
   id              String    @id
   employee_id     String?
   name            String?
@@ -1019,10 +1115,10 @@ model LarkReportKPI {
   @@index([report_date, team])
   @@index([email])
   @@index([name])
-  @@map("lark_report_kpi")
+  @@map("report_kpi")
 }
 
-model LarkListTask {
+model ReportedTask {
   id                String    @id
   caption           String?
   deadline          String?
@@ -1051,7 +1147,7 @@ model LarkListTask {
   @@index([employee_id])
   @@index([employee_email])
   @@index([team])
-  @@map("lark_list_tasks")
+  @@map("reported_tasks")
 }
 
 model video_management_channelanalysis {
@@ -1167,7 +1263,6 @@ enum SocialPlatform {
   ZALO
 }
 
-
 enum SocialPostStatus {
   PENDING
   COMPLETED
@@ -1182,27 +1277,27 @@ enum SocialPostSource {
 
 /// Tài khoản mạng xã hội đã kết nối OAuth (token lưu dạng AES-256 encrypted)
 model SocialAccount {
-  id                      String         @id @default(uuid())
-  user_id                 String
-  platform                SocialPlatform
-  platform_id             String
-  name                    String
-  username                String?
-  avatar_url              String?
-  access_token_enc        String         @db.Text
-  refresh_token_enc       String?        @db.Text
-  token_expires_at        DateTime?
-  parent_id               String?
+  id                String          @id @default(uuid())
+  user_id           String
+  platform          SocialPlatform
+  platform_id       String
+  name              String
+  username          String?
+  avatar_url        String?
+  access_token_enc  String          @db.Text
+  refresh_token_enc String?         @db.Text
+  token_expires_at  DateTime?
+  parent_id         String?
   /// Dữ liệu bổ sung tuỳ platform: { pageId, pageToken, igUserId, channelId, … }
-  extra_data              Json?
-  is_active               Boolean        @default(true)
-  is_shared               Boolean        @default(false)
-  created_at              DateTime       @default(now())
-  updated_at              DateTime       @updatedAt
-  user                    User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  parent                  SocialAccount? @relation("AccountHierarchy", fields: [parent_id], references: [id])
-  children                SocialAccount[] @relation("AccountHierarchy")
-  posts                   SocialPost[]
+  extra_data        Json?
+  is_active         Boolean         @default(true)
+  is_shared         Boolean         @default(false)
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  user              User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  parent            SocialAccount?  @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children          SocialAccount[] @relation("AccountHierarchy")
+  posts             SocialPost[]
 
   @@unique([user_id, platform, platform_id])
   @@index([user_id])
@@ -1214,7 +1309,6 @@ model SocialAccount {
   @@index([is_active, token_expires_at])
   @@map("social_accounts")
 }
-
 
 /// Bài đăng: immediate hoặc scheduled (unified model)
 model SocialPost {
@@ -1250,18 +1344,17 @@ model SocialPost {
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
   @@map("social_posts")
-
 }
 
 /// OAuth state store (thay thế in-memory Map, tránh mất state khi BE reload)
 model SocialOAuthState {
-  id            String   @id
-  user_id       String
-  platform      String
-  expires_at    DateTime
+  id              String   @id
+  user_id         String
+  platform        String
+  expires_at      DateTime
   tiktok_verifier String?
   zalo_verifier   String?
-  created_at    DateTime @default(now())
+  created_at      DateTime @default(now())
 
   @@index([expires_at])
   @@map("social_oauth_states")
@@ -1269,17 +1362,17 @@ model SocialOAuthState {
 
 /// Bài nháp
 model SocialDraft {
-  id          String   @id @default(uuid())
-  user_id     String
-  title       String?
-  message     String   @db.Text
-  media_urls  String[] @default([])
-  platform    SocialPlatform?
-  account_id  String?
-  page_id     String?
-  thumb_url   String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id         String          @id @default(uuid())
+  user_id    String
+  title      String?
+  message    String          @db.Text
+  media_urls String[]        @default([])
+  platform   SocialPlatform?
+  account_id String?
+  page_id    String?
+  thumb_url  String?
+  created_at DateTime        @default(now())
+  updated_at DateTime        @updatedAt
 
   @@index([user_id])
   @@map("social_drafts")
@@ -1287,42 +1380,1377 @@ model SocialDraft {
 
 /// Media Library file metadata only. Binary content is stored in Google Drive.
 model SocialUploadedFile {
-  id           String   @id @default(uuid())
-  user_id      String
-  filename     String
-  originalname String
-  mimetype     String
-  size         Int
-  url           String
-  thumbnail_url String?
-  storage       String   @default("google_drive")
-  drive_file_id String?
-  drive_web_view_url String?
+  id                      String   @id @default(uuid())
+  user_id                 String
+  filename                String
+  originalname            String
+  mimetype                String
+  size                    Int
+  url                     String
+  thumbnail_url           String?
+  storage                 String   @default("google_drive")
+  drive_file_id           String?
+  drive_web_view_url      String?
   thumbnail_drive_file_id String?
-  created_at   DateTime @default(now())
+  created_at              DateTime @default(now())
 
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_uploaded_files")
 }
 
-model SocialDriveUploadSession {
-  id           String   @id
-  user_id      String
-  filename     String
-  originalname String
-  mimetype     String
-  size         Int
-  upload_url   String   @db.Text
+// ═══════════════════════════════════════════════════════════
+//  SCRAPER SYSTEM — Facebook Fanpage & Reels Discovery
+// ═══════════════════════════════════════════════════════════
+
+model ScraperSearchKeyword {
+  id                   BigInt   @id @default(autoincrement())
+  cleaned_keyword      String   @db.VarChar(500)
+  cleaned_keyword_ascii String  @db.VarChar(500)
+  hit_count            Int      @default(0)
+  is_google_active     Boolean  @default(true)
+  last_searched_at     DateTime? @db.Timestamptz(6)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @updatedAt @db.Timestamptz(6)
+  pages                ScraperFanpageKeyword[]
+
+  @@index([cleaned_keyword])
+  @@index([cleaned_keyword_ascii, hit_count(sort: Desc)])
+  @@index([is_google_active, last_searched_at])
+  @@map("scraper_search_keywords")
+}
+
+model ScraperFanpage {
+  id                BigInt    @id @default(autoincrement())
+  profile_id        String    @unique @db.VarChar(50)
+  name              String    @db.VarChar(500)
+  handle            String    @default("") @db.VarChar(255)
+  page_url          String    @default("") @db.VarChar(1000)
+  avatar_url             String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
+  is_verified            Boolean?
+  followers_count   BigInt    @default(0)
+  likes_count       BigInt    @default(0)
+  is_visible_on_ui  Boolean   @default(true)
+  is_periodic_crawl Boolean   @default(false)
+  crawl_interval_days Int     @default(1)
+  is_bookmarked     Boolean   @default(false)
+  is_initial_scraped Boolean  @default(false)
+  scraping_status   String    @default("idle") @db.VarChar(20)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  scrape_error      String?   @db.Text
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+  keywords          ScraperFanpageKeyword[]
+  reels             ScraperFacebookReel[]
+  metrics_history   ScraperFanpageMetrics[]
+
+  @@index([profile_id])
+  @@index([handle])
+  @@index([is_periodic_crawl, last_scraped_at])
+  @@index([is_visible_on_ui, followers_count(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@map("scraper_fanpages")
+}
+
+/// M2M join table: Fanpage ↔ SearchKeyword
+model ScraperFanpageKeyword {
+  id         BigInt             @id @default(autoincrement())
+  fanpage_id BigInt
+  keyword_id BigInt
+  fanpage    ScraperFanpage     @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+  keyword    ScraperSearchKeyword @relation(fields: [keyword_id], references: [id], onDelete: Cascade)
+
+  @@unique([fanpage_id, keyword_id])
+  @@map("scraper_fanpage_keywords")
+}
+
+model ScraperFanpageMetrics {
+  id              BigInt         @id @default(autoincrement())
+  fanpage_id      BigInt
+  followers_count BigInt         @default(0)
+  likes_count     BigInt         @default(0)
+  captured_at     DateTime       @default(now()) @db.Timestamptz(6)
+  fanpage         ScraperFanpage @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+
+  @@index([fanpage_id, captured_at(sort: Desc)])
+  @@map("scraper_fanpage_metrics_history")
+}
+
+model ScraperFacebookReel {
+  id               BigInt         @id @default(autoincrement())
+  fanpage_id       BigInt
+  post_id          String         @unique @db.VarChar(50)
+  shortcode        String         @unique @db.VarChar(50)
+  url              String         @db.VarChar(1000)
+  content          String         @default("") @db.Text
+  hashtags         String[]       @default([])
+  video_url        String?        @db.Text
+  thumbnail_url        String?        @db.Text
+  thumbnail_drive_url  String?        @db.Text
+  duration_seconds     Float?
+  has_audio            Boolean        @default(true)
+  date_posted      DateTime       @db.Timestamptz(6)
+  views_count      BigInt         @default(0)
+  likes_count      BigInt         @default(0)
+  comments_count   BigInt         @default(0)
+  shares_count     BigInt         @default(0)
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  fanpage          ScraperFanpage @relation(fields: [fanpage_id], references: [id], onDelete: Cascade)
+  metrics_history  ScraperReelMetrics[]
+
+  @@index([fanpage_id, date_posted(sort: Desc)])
+  @@index([views_count(sort: Desc)])
+  @@index([fanpage_id, views_count(sort: Desc)])
+  @@index([post_id])
+  @@index([shortcode])
+  @@map("scraper_facebook_reels")
+}
+
+model ScraperReelMetrics {
+  id             BigInt              @id @default(autoincrement())
+  reel_id        BigInt
+  views_count    BigInt              @default(0)
+  likes_count    BigInt              @default(0)
+  comments_count BigInt              @default(0)
+  shares_count   BigInt              @default(0)
+  captured_at    DateTime            @default(now()) @db.Timestamptz(6)
+  reel           ScraperFacebookReel @relation(fields: [reel_id], references: [id], onDelete: Cascade)
+
+  @@index([reel_id, captured_at(sort: Desc)])
+  @@map("scraper_reel_metrics_history")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIKTOK — Channel & Video
+// ═══════════════════════════════════════════════════════════
+
+model ScraperTikTokVideo {
+  id                   BigInt    @id @default(autoincrement())
+  post_id              String    @unique @db.VarChar(50)
+  shortcode            String    @unique @db.VarChar(50)
+  url                  String    @db.VarChar(1000)
+  description          String    @default("") @db.Text
+  hashtags             String[]  @default([])
+  video_url            String?   @db.Text
+  cdn_url              String?   @db.Text
+  preview_image        String?   @db.Text
+  video_duration       Int       @default(0)
+  region               String    @default("") @db.VarChar(10)
+  author_id            String    @default("") @db.VarChar(50)
+  author_username      String    @default("") @db.VarChar(255)
+  author_display_name  String    @default("") @db.VarChar(500)
+  author_avatar        String?   @db.Text
+  author_url           String    @default("") @db.VarChar(1000)
+  author_followers     BigInt    @default(0)
+  author_is_verified   Boolean   @default(false)
+  play_count           BigInt    @default(0)
+  digg_count           BigInt    @default(0)
+  comment_count        BigInt    @default(0)
+  share_count          BigInt    @default(0)
+  collect_count        BigInt    @default(0)
+  music_title          String    @default("") @db.VarChar(500)
+  music_author         String    @default("") @db.VarChar(255)
+  search_keyword       String    @default("") @db.VarChar(500)
+  date_posted          DateTime  @db.Timestamptz(6)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([play_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_tiktok_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DOUYIN — Keyword Video Search
+// ═══════════════════════════════════════════════════════════
+
+model ScraperDouyinVideo {
+  id                   BigInt    @id @default(autoincrement())
+  post_id              String    @unique @db.VarChar(50)
+  url                  String    @db.VarChar(1000)
+  description          String    @default("") @db.Text
+  hashtags             String[]  @default([])
+  preview_image        String?   @db.Text
+  video_duration       Int       @default(0)
+  region               String    @default("") @db.VarChar(10)
+  author_id            String    @default("") @db.VarChar(50)
+  author_username      String    @default("") @db.VarChar(255)
+  author_display_name  String    @default("") @db.VarChar(500)
+  author_avatar        String?   @db.Text
+  author_followers     BigInt    @default(0)
+  author_is_verified   Boolean   @default(false)
+  digg_count           BigInt    @default(0)
+  comment_count        BigInt    @default(0)
+  share_count          BigInt    @default(0)
+  collect_count        BigInt    @default(0)
+  music_title          String    @default("") @db.VarChar(500)
+  music_author         String    @default("") @db.VarChar(255)
+  search_keyword       String    @default("") @db.VarChar(500)
+  date_posted          DateTime  @db.Timestamptz(6)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([date_posted(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_douyin_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DOUYIN — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperDouyinProfile {
+  id                BigInt    @id @default(autoincrement())
+  sec_user_id       String    @unique @db.VarChar(255)
+  uid               String    @default("") @db.VarChar(50)
+  username          String    @default("") @db.VarChar(255)
+  nickname          String    @default("") @db.VarChar(500)
+  avatar_url        String    @default("") @db.Text
+  avatar_drive_url  String    @default("") @db.Text
+  biography         String    @default("") @db.Text
+  is_verified       Boolean   @default(false)
+  followers_count   BigInt    @default(0)
+  is_bookmarked     Boolean   @default(false)
+  is_tracked        Boolean   @default(false)
+  is_owned          Boolean   @default(false)
+  is_initial_scraped Boolean  @default(false)
+  last_scraped_at   DateTime? @db.Timestamptz(6)
+  scraping_status   String    @default("idle") @db.VarChar(20)
+  scrape_error      String?   @db.Text
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([uid])
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([is_owned])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_douyin_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIKTOK — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperTikTokProfile {
+  id                     BigInt    @id @default(autoincrement())
+  profile_id             String    @unique @db.VarChar(50)
+  sec_uid                String    @default("") @db.VarChar(255)
+  username               String    @unique @db.VarChar(255)
+  nickname               String    @default("") @db.VarChar(500)
+  url                    String    @db.VarChar(1000)
+  avatar_url             String?   @db.Text
+  avatar_url_hd          String?   @db.Text
+  avatar_drive_url       String    @default("") @db.Text
+  biography              String?   @db.Text
+  is_verified            Boolean   @default(false)
+  is_private             Boolean   @default(false)
+  followers_count        BigInt    @default(0)
+  following_count        BigInt    @default(0)
+  likes_count            BigInt    @default(0)
+  videos_count           Int       @default(0)
+  is_tracked             Boolean   @default(false)
+  is_bookmarked          Boolean   @default(false)
+  is_owned               Boolean   @default(false)
+  is_initial_scraped     Boolean   @default(false)
+  last_scraped_at        DateTime? @db.Timestamptz(6)
+  scraping_status        String    @default("idle") @db.VarChar(20)
+  scrape_error           String?   @db.Text
+  created_at             DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime  @updatedAt @db.Timestamptz(6)
+  videos                 ScraperTikTokProfileVideo[]
+
+  @@index([sec_uid])
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([is_owned])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_tiktok_profiles")
+}
+
+model ScraperTikTokProfileVideo {
+  id              BigInt                @id @default(autoincrement())
+  profile_id      BigInt
+  video_id        String                @unique @db.VarChar(50)
+  shortcode       String                @default("") @db.VarChar(50)
+  url             String                @db.VarChar(1000)
+  description     String                @default("") @db.Text
+  hashtags        String[]              @default([])
+  cover_image     String?               @db.Text
+  video_duration  Int                   @default(0)
+  region          String                @default("") @db.VarChar(10)
+  post_type       String                @default("video") @db.VarChar(20)
+  play_count      BigInt                @default(0)
+  digg_count      BigInt                @default(0)
+  comment_count   BigInt                @default(0)
+  share_count     BigInt                @default(0)
+  favorites_count BigInt                @default(0)
+  music_title     String                @default("") @db.VarChar(500)
+  music_author    String                @default("") @db.VarChar(255)
+  date_posted     DateTime              @db.Timestamptz(6)
+  created_at      DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime              @updatedAt @db.Timestamptz(6)
+  profile         ScraperTikTokProfile  @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([play_count(sort: Desc)])
+  @@map("scraper_tiktok_profile_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  INSTAGRAM — Profile (User) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperInstagramProfile {
+  id                  BigInt    @id @default(autoincrement())
+  instagram_id        String?   @unique @db.VarChar(50)
+  username            String    @unique @db.VarChar(255)
+  full_name           String?   @db.VarChar(500)
+  url                 String    @db.VarChar(1000)
+  avatar_url          String?   @db.Text
+  hd_avatar_url       String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
+  biography           String?   @db.Text
+  bio_links           Json?     @db.JsonB
+  external_url        String?   @db.Text
+  is_verified         Boolean   @default(false)
+  is_private          Boolean   @default(false)
+  is_business         Boolean   @default(false)
+  category            String?   @db.VarChar(255)
+  followers_count     BigInt    @default(0)
+  following_count     BigInt    @default(0)
+  posts_count         Int       @default(0)
+  is_tracked          Boolean   @default(false)
+  is_bookmarked       Boolean   @default(false)
+  is_owned            Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  reels               ScraperInstagramReel[]
+  metrics_history     ScraperInstagramProfileMetrics[]
+
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_owned])
+  @@index([is_bookmarked])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_instagram_profiles")
+}
+
+model ScraperInstagramReel {
+  id                  BigInt                  @id @default(autoincrement())
+  profile_id          BigInt
+  post_id             String                  @unique @db.VarChar(50)
+  shortcode           String                  @unique @db.VarChar(50)
+  url                 String                  @db.VarChar(1000)
+  description         String                  @default("") @db.Text
+  hashtags            String[]                @default([])
+  thumbnail_url       String?                 @db.Text
+  thumbnail_drive_url String?                 @db.Text
+  duration_seconds    Float?
+  is_paid_partnership Boolean                 @default(false)
+  play_count          BigInt                  @default(0)
+  likes_count         BigInt                  @default(0)
+  comments_count      BigInt                  @default(0)
+  date_posted         DateTime                @db.Timestamptz(6)
+  created_at          DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime                @updatedAt @db.Timestamptz(6)
+  profile             ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([play_count(sort: Desc)])
+  @@map("scraper_instagram_reels")
+}
+
+model ScraperInstagramProfileMetrics {
+  id              BigInt                  @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt                  @default(0)
+  following_count BigInt                  @default(0)
+  posts_count     Int                     @default(0)
+  captured_at     DateTime                @default(now()) @db.Timestamptz(6)
+  profile         ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_instagram_profile_metrics")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  XIAOHONGSHU — Video Note (keyword search)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperXiaohongshuVideo {
+  id                  BigInt    @id @default(autoincrement())
+  note_id             String    @unique @db.VarChar(50)
+  url                 String    @db.VarChar(2000)
+  title               String    @default("") @db.VarChar(1000)
+  description         String    @default("") @db.Text
+  thumbnail_url       String?   @db.Text
+  thumbnail_drive_url String?   @db.Text
+  author_id           String    @default("") @db.VarChar(100)
+  author_name         String    @default("") @db.VarChar(500)
+  author_avatar       String?   @db.Text
+  duration_seconds    Int       @default(0)
+  liked_count         BigInt    @default(0)
+  collected_count     BigInt    @default(0)
+  comments_count      BigInt    @default(0)
+  shared_count        BigInt    @default(0)
+  keywords            String[]  @default([])
+  date_posted         DateTime  @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  profile_id          BigInt?
+  profile             ScraperXiaohongshuProfile? @relation(fields: [profile_id], references: [id], onDelete: SetNull)
+
+  @@index([liked_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([profile_id])
+  @@map("scraper_xiaohongshu_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  XIAOHONGSHU — User Profile
+// ═══════════════════════════════════════════════════════════
+
+model ScraperXiaohongshuProfile {
+  id                  BigInt    @id @default(autoincrement())
+  user_id             String    @unique @db.VarChar(100)
+  nickname            String    @default("") @db.VarChar(500)
+  avatar_url          String?   @db.Text
+  is_verified         Boolean   @default(false)
+  is_tracked          Boolean   @default(true)
+  is_bookmarked       Boolean   @default(false)
+  is_owned            Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  videos ScraperXiaohongshuVideo[]
+
+  @@index([is_tracked])
+  @@index([is_owned])
+  @@index([scraping_status])
+  @@map("scraper_xiaohongshu_profiles")
+}
+
+// ────────────────────────────────
+//  TASK AUTO-ASSIGNMENT MODULE
+// ────────────────────────────────
+
+enum TaskStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AssignmentRunStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum ContentUsageStatus {
+  AVAILABLE
+  IN_TASK
+  USED
+  ARCHIVED
+}
+
+enum ContentMarket {
+  GLOBAL
+  VIETNAM
+}
+
+enum SourceType {
+  PRODUCT_STOCK
+  COLLECTED
+  OUTRO
+  WORKSHOP
+  HUYK
+}
+
+enum KpiAllocationType {
+  CONTENT_LINE
+  PRODUCT_LINE
+}
+
+enum AssignmentOutcome {
+  COMPLETED
+  OVERDUE
+  REASSIGNED
+  CANCELLED
+}
+
+enum TaskType {
+  AUTO
+  EXTRA
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum BrandType {
+  DO_DA
+  TRANG_SUC
+}
+
+model Team {
+  id         String    @id @default(uuid())
+  name       String    @unique
+  leader_id  String?
+  brand_type BrandType @default(TRANG_SUC)
+  market     String    @default("VIETNAM")
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  leader          User?         @relation("TeamLeaderOf", fields: [leader_id], references: [id])
+  members         TeamMember[]
+  team_kpis       TeamKpi[]
+  editor_kpis     EditorKpi[]
+  tasks           Task[]
+  products        TeamProduct[]
+  contents        TeamContent[]
+  team_sources    TeamSource[]
+  channels        Channel[]     @relation("ChannelTeam")
+  ordered_sources Source[]      @relation("SourceOrderedTeam")
+  push_requests   TeamPushRequest[]
+
+  @@index([leader_id])
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  team_id   String
+  user_id   String
+  joined_at DateTime @default(now())
+
+  team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([team_id, user_id])
+  @@index([user_id])
+  @@map("team_members")
+}
+
+model TeamProduct {
+  id                       String    @id @default(uuid())
+  team_id                  String
+  /// NULL khi được push từ editor (dùng source_editor_product_id để lấy data); có giá trị khi tạo trực tiếp trong team
+  sku                      String?
+  name                     String?
+  brand_type               BrandType @default(DO_DA)
+  image_url                String?
+  image_urls               String[]  @default([])
+  price                    Decimal?  @db.Decimal(15, 2)
+  market                   String?
+  price_segment            String?
+  priority_score           Int       @default(0)
+  material_id              String?
+  product_line_id          String?
+  is_active                Boolean   @default(true)
+  /// FK trỏ về EditorProduct khi được push từ kho editor (thay thế copy data)
+  source_editor_product_id String?
+  /// FK trỏ về Product kho tổng khi được tạo từ global (copy template)
+  source_product_id        String?
+  added_by_id              String
+  added_at                 DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
+
+  team                  Team                   @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by              User                   @relation("TeamProductAddedBy", fields: [added_by_id], references: [id])
+  material              Material?              @relation(fields: [material_id], references: [id])
+  product_line          ProductLine?           @relation(fields: [product_line_id], references: [id])
+  source_editor_product EditorProduct?         @relation("TeamProductEditorRef", fields: [source_editor_product_id], references: [id], onDelete: SetNull)
+  source_product        Product?               @relation("TeamProductGlobalRef", fields: [source_product_id], references: [id])
+  team_sources          TeamSource[]           @relation("TeamProductSources")
+  tasks                 Task[]
+  warehouses            TeamProductWarehouse[]
+  global_product        Product?               @relation("ProductTeamRef")
+
+  @@unique([team_id, source_editor_product_id])
+  @@index([team_id, is_active])
+  @@map("team_products")
+}
+
+model TeamContent {
+  id                       String             @id @default(uuid())
+  team_id                  String
+  brand_type               BrandType          @default(DO_DA)
+  market                   String             @default("VIETNAM")
+  title                    String?
+  body                     String?
+  script                   String?
+  file_content_url         String?
+  voice_url                String?
+  content_line_id          String?
+  status                   ContentUsageStatus @default(AVAILABLE)
+  /// FK trỏ về EditorContent khi được push từ kho editor
+  source_editor_content_id String?
+  /// FK trỏ về Content kho tổng khi được tạo từ global
+  source_content_id        String?
+  added_by_id              String
+  added_at                 DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
+
+  team                  Team                   @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by              User                   @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
+  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
+  source_editor_content EditorContent?         @relation("TeamContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  source_content        Content?               @relation("TeamContentGlobalRef", fields: [source_content_id], references: [id])
+  tasks                 Task[]
+  warehouses            TeamContentWarehouse[]
+  global_content        Content?               @relation("ContentTeamRef")
+
+  @@unique([team_id, source_editor_content_id])
+  @@map("team_contents")
+}
+
+model TeamSource {
+  id                      String      @id @default(uuid())
+  team_id                 String
+  brand_type              BrandType   @default(DO_DA)
+  /// NULL khi được push từ editor (dùng source_editor_source_id để lấy data); có giá trị khi tạo trực tiếp
+  type                    SourceType?
+  name                    String?
+  link                    String?
+  nas_link                String?
+  code                    String?
+  product_id              String?
+  /// Liên kết tới TeamProduct (khi source được tạo cùng lúc với team product)
+  team_product_id         String?
+  /// FK trỏ về EditorSource khi được push từ kho editor (thay thế copy data)
+  source_editor_source_id String?
+  /// FK trỏ về Source kho tổng khi được tạo từ global (copy template)
+  source_source_id        String?
+  added_by_id             String
+  is_active               Boolean     @default(true)
+  added_at                DateTime    @default(now())
+  updated_at              DateTime    @updatedAt
+
+  team                 Team                  @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by             User                  @relation("TeamSourceAddedBy", fields: [added_by_id], references: [id])
+  product              Product?              @relation(fields: [product_id], references: [id])
+  team_product         TeamProduct?          @relation("TeamProductSources", fields: [team_product_id], references: [id], onDelete: SetNull)
+  source_editor_source EditorSource?         @relation("TeamSourceEditorRef", fields: [source_editor_source_id], references: [id], onDelete: SetNull)
+  source_source        Source?               @relation("TeamSourceGlobalRef", fields: [source_source_id], references: [id])
+  warehouses           TeamSourceWarehouse[]
+  tasks_as_outro       Task[]                @relation("TaskTeamSourceOutro")
+  tasks_as_extra       Task[]                @relation("TaskTeamSourceExtra")
+  tasks_as_workshop    Task[]                @relation("TaskTeamSourceWorkshop")
+  tasks_as_huyk        Task[]                @relation("TaskTeamSourceHuyk")
+  global_source        Source?               @relation("SourceTeamRef")
+
+  @@unique([team_id, source_editor_source_id])
+  @@index([team_id, is_active])
+  @@index([team_product_id])
+  @@map("team_sources")
+}
+
+model EditorProduct {
+  id                String    @id @default(uuid())
+  user_id           String
+  sku               String
+  name              String
+  brand_type        BrandType @default(DO_DA)
+  image_url         String?
+  image_urls        String[]  @default([])
+  price             Decimal?  @db.Decimal(15, 2)
+  market            String?
+  price_segment     String?
+  priority_score    Int       @default(0)
+  material_id       String?
+  product_line_id   String?
+  is_active         Boolean   @default(true)
+  /// NULL = tạo mới; có giá trị = được copy từ sản phẩm trong kho tổng
+  source_product_id String?
+  added_by_id       String
+  added_at          DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  user           User                     @relation("EditorProductOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by       User                     @relation("EditorProductAddedBy", fields: [added_by_id], references: [id])
+  material       Material?                @relation(fields: [material_id], references: [id])
+  product_line   ProductLine?             @relation(fields: [product_line_id], references: [id])
+  source_product Product?                 @relation("EditorProductGlobalRef", fields: [source_product_id], references: [id])
+  editor_sources EditorSource[]           @relation("EditorProductSources")
+  team_products  TeamProduct[]            @relation("TeamProductEditorRef")
+  tasks          Task[]
+  warehouses     EditorProductWarehouse[]
+  push_requests  TeamPushRequest[]
+
+  @@index([user_id, is_active])
+  @@map("editor_products")
+}
+
+model EditorContent {
+  id                String             @id @default(uuid())
+  user_id           String
+  brand_type        BrandType          @default(DO_DA)
+  market            String             @default("VIETNAM")
+  title             String?
+  body              String?
+  script            String?
+  file_content_url  String?
+  voice_url         String?
+  content_line_id   String?
+  status            ContentUsageStatus @default(AVAILABLE)
+  /// NULL = tạo mới; có giá trị = được copy từ content trong kho tổng
+  source_content_id String?
+  added_by_id       String
+  added_at          DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
+
+  user           User                     @relation("EditorContentOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by       User                     @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
+  content_line   ContentLine?             @relation(fields: [content_line_id], references: [id])
+  source_content Content?                 @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
+  team_contents  TeamContent[]            @relation("TeamContentEditorRef")
+  tasks          Task[]
+  warehouses     EditorContentWarehouse[]
+  push_requests  TeamPushRequest[]
+
+  @@map("editor_contents")
+}
+
+model EditorSource {
+  id                String     @id @default(uuid())
+  user_id           String
+  brand_type        BrandType  @default(DO_DA)
+  type              SourceType
+  name              String
+  link              String
+  nas_link          String?
+  code              String?
+  product_id        String?
+  /// Liên kết tới EditorProduct (khi source được tạo cùng lúc với editor product)
+  editor_product_id String?
+  /// NULL = tạo mới; có giá trị = được copy từ source trong kho tổng
+  source_source_id  String?
+  added_by_id       String
+  is_active         Boolean    @default(true)
+  added_at          DateTime   @default(now())
+  updated_at        DateTime   @updatedAt
+
+  user              User                    @relation("EditorSourceOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by          User                    @relation("EditorSourceAddedBy", fields: [added_by_id], references: [id])
+  product           Product?                @relation(fields: [product_id], references: [id])
+  editor_product    EditorProduct?          @relation("EditorProductSources", fields: [editor_product_id], references: [id], onDelete: SetNull)
+  source_source     Source?                 @relation("EditorSourceGlobalRef", fields: [source_source_id], references: [id])
+  team_sources      TeamSource[]            @relation("TeamSourceEditorRef")
+  warehouses        EditorSourceWarehouse[]
+  tasks_as_outro    Task[]                  @relation("TaskEditorSourceOutro")
+  tasks_as_extra    Task[]                  @relation("TaskEditorSourceExtra")
+  tasks_as_workshop Task[]                  @relation("TaskEditorSourceWorkshop")
+  tasks_as_huyk     Task[]                  @relation("TaskEditorSourceHuyk")
+
+  @@index([editor_product_id])
+  @@map("editor_sources")
+}
+
+enum TeamPushRequestType {
+  PRODUCT
+  CONTENT
+}
+
+/// Yêu cầu đẩy product/content từ kho cá nhân → kho team, chờ leader duyệt.
+/// Leader/Admin/Manager đẩy thì bỏ qua hàng đợi (đẩy thẳng, không tạo request).
+model TeamPushRequest {
+  id                String              @id @default(uuid())
+  team_id           String
+  type              TeamPushRequestType
+  editor_product_id String?
+  editor_content_id String?
+  requested_by_id   String
+  status            ApprovalStatus      @default(PENDING)
+  reviewed_by_id    String?
+  reviewed_at       DateTime?
+  note              String?
+  created_at        DateTime            @default(now())
+
+  team           Team           @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  editor_product EditorProduct? @relation(fields: [editor_product_id], references: [id], onDelete: Cascade)
+  editor_content EditorContent? @relation(fields: [editor_content_id], references: [id], onDelete: Cascade)
+  requested_by   User           @relation("TeamPushRequestBy", fields: [requested_by_id], references: [id], onDelete: Cascade)
+  reviewed_by    User?          @relation("TeamPushRequestReviewedBy", fields: [reviewed_by_id], references: [id])
+
+  @@index([team_id, status])
+  @@index([requested_by_id])
+  @@map("team_push_requests")
+}
+
+model EditorApproval {
+  id             String         @id @default(uuid())
+  user_id        String
+  status         ApprovalStatus @default(PENDING)
+  approved_by_id String?
+  approved_at    DateTime?
+  note           String?
+  created_at     DateTime       @default(now())
+
+  user        User  @relation("EditorApprovalOf", fields: [user_id], references: [id], onDelete: Cascade)
+  approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
+
+  @@map("editor_approvals")
+}
+
+model TeamKpi {
+  id            String   @id @default(uuid())
+  team_id       String
+  month         String
+  note          String?
+  created_by_id String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  team        Team                @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  created_by  User                @relation("TeamKpiCreatedBy", fields: [created_by_id], references: [id])
+  allocations TeamKpiAllocation[]
+
+  @@unique([team_id, month])
+  @@index([month])
+  @@map("team_kpis")
+}
+
+model TeamKpiAllocation {
+  id              String            @id @default(uuid())
+  team_kpi_id     String
+  type            KpiAllocationType
+  content_line_id String?
+  product_line_id String?
+  percent         Float
+
+  team_kpi     TeamKpi      @relation(fields: [team_kpi_id], references: [id], onDelete: Cascade)
+  content_line ContentLine? @relation(fields: [content_line_id], references: [id])
+  product_line ProductLine? @relation(fields: [product_line_id], references: [id])
+
+  @@index([team_kpi_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
+  @@map("team_kpi_allocations")
+}
+
+model EditorKpi {
+  id                  String  @id @default(uuid())
+  user_id             String
+  team_id             String? // null = legacy row trước khi thêm multi-team
+  month               String
+  // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
+  total_target        Int     @default(0) // = Tổng video sản xuất (drives auto-assign)
+  video_win           Int     @default(0) // Số video win (≥10k views)
+  video_fail          Int     @default(0) // Số video fail
+  // ── Content ──
+  kpi_extra           Int     @default(0) // Tổng KPI sáng tạo (chỉ thông báo)
+  content_new         Int     @default(0) // Số content mới được làm
+  content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
+  content_win_cover   Int     @default(0) // Số content win cover lại bởi team
+  // ── Product ──
+  product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
+  product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
+
+  set_by_id  String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user        User                  @relation("EditorKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  set_by      User                  @relation("EditorKpiSetBy", fields: [set_by_id], references: [id])
+  team        Team?                 @relation(fields: [team_id], references: [id])
+  allocations EditorKpiAllocation[]
+
+  @@unique([user_id, team_id, month])
+  @@index([month])
+  @@index([team_id])
+  @@map("editor_kpis")
+}
+
+// Phân bổ KPI editor theo ContentLine/ProductLine — thay cho ratio_a1..5/video_traffic/gmv/profit cố định,
+// mở rộng được khi thêm dòng nội dung/sản phẩm mới (mirror TeamKpiAllocation)
+model EditorKpiAllocation {
+  id              String            @id @default(uuid())
+  editor_kpi_id   String
+  type            KpiAllocationType
+  content_line_id String?
+  product_line_id String?
+  quantity        Int // Số video cụ thể (không phải %) — tổng theo type phải khớp total_target / product_planned
+
+  editor_kpi   EditorKpi    @relation(fields: [editor_kpi_id], references: [id], onDelete: Cascade)
+  content_line ContentLine? @relation(fields: [content_line_id], references: [id])
+  product_line ProductLine? @relation(fields: [product_line_id], references: [id])
+
+  @@index([editor_kpi_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
+  @@map("editor_kpi_allocations")
+}
+
+model ContentLine {
+  id     String  @id @default(uuid())
+  name   String  @unique
+  a_type String?
+
+  contents               Content[]
+  team_contents          TeamContent[]
+  editor_contents        EditorContent[]
+  tasks                  Task[]
+  allocations            TeamKpiAllocation[]
+  editor_kpi_allocations EditorKpiAllocation[]
+
+  @@map("content_lines")
+}
+
+/// Dòng sản phẩm dùng chung cho mọi brand (không phân biệt đồ da / trang sức)
+model ProductLine {
+  id             String    @id @default(uuid())
+  name           String    @unique
+  video_category String?
+
+  products               Product[]
+  team_products          TeamProduct[]
+  editor_products        EditorProduct[]
+  tasks                  Task[]
+  allocations            TeamKpiAllocation[]
+  editor_kpi_allocations EditorKpiAllocation[]
+
+  @@map("product_lines")
+}
+
+model Material {
+  id         String    @id @default(uuid())
+  name       String
+  brand_type BrandType @default(DO_DA)
+
+  products        Product[]
+  team_products   TeamProduct[]
+  editor_products EditorProduct[]
+
+  @@unique([name, brand_type])
+  @@map("materials")
+}
+
+model Product {
+  id                     String    @id @default(uuid())
+  /// NULL khi được push từ team (dùng source_team_product_id để lấy data); có giá trị khi tạo trực tiếp
+  sku                    String?   @unique
+  name                   String?
+  brand_type             BrandType @default(DO_DA)
+  image_url              String?
+  image_urls             String[]  @default([])
+  price                  Decimal?  @db.Decimal(15, 2)
+  market                 String?
+  price_segment          String?
+  priority_score         Int       @default(0)
+  material_id            String?
+  product_line_id        String?
+  added_by_id            String
+  lark_record_id         String?   @unique
+  is_active              Boolean   @default(true)
+  /// FK trỏ về TeamProduct khi được push từ kho team (thay thế copy data)
+  source_team_product_id String?   @unique
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  material            Material?          @relation(fields: [material_id], references: [id])
+  product_line        ProductLine?       @relation(fields: [product_line_id], references: [id])
+  added_by            User               @relation("ProductAddedBy", fields: [added_by_id], references: [id])
+  source_team_product TeamProduct?       @relation("ProductTeamRef", fields: [source_team_product_id], references: [id], onDelete: SetNull)
+  team_versions       TeamProduct[]      @relation("TeamProductGlobalRef")
+  editor_versions     EditorProduct[]    @relation("EditorProductGlobalRef")
+  sources             Source[]
+  team_sources        TeamSource[]
+  editor_sources      EditorSource[]
+  tasks               Task[]
+  warehouses          ProductWarehouse[]
+
+  @@index([product_line_id])
+  @@index([priority_score(sort: Desc)])
+  @@map("products")
+}
+
+model Content {
+  id                     String             @id @default(uuid())
+  brand_type             BrandType          @default(DO_DA)
+  market                 ContentMarket      @default(VIETNAM)
+  title                  String?
+  body                   String?
+  script                 String?
+  file_content_url       String?
+  voice_url              String?
+  voice_id               BigInt?
+  content_line_id        String?
+  status                 ContentUsageStatus @default(AVAILABLE)
+  view_count             BigInt             @default(0)
+  approved_content_id    String?
+  added_by_id            String
+  lark_record_id         String?            @unique
+  /// FK trỏ về TeamContent khi được push từ kho team (thay thế copy data)
+  source_team_content_id String?            @unique
+  created_at             DateTime           @default(now())
+  updated_at             DateTime           @updatedAt
+
+  content_line        ContentLine?       @relation(fields: [content_line_id], references: [id])
+  added_by            User               @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  source_team_content TeamContent?       @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
+  team_versions       TeamContent[]      @relation("TeamContentGlobalRef")
+  editor_versions     EditorContent[]    @relation("EditorContentGlobalRef")
+  tasks               Task[]
+  warehouses          ContentWarehouse[]
+
+  @@index([added_by_id])
+  @@map("contents")
+}
+
+model Source {
+  id                    String      @id @default(uuid())
+  brand_type            BrandType   @default(DO_DA)
+  type                  SourceType?
+  name                  String?
+  link                  String?
+  nas_link              String?
+  code                  String?
+  product_id            String?
+  added_by_id           String
+  lark_record_id        String?     @unique
+  is_active             Boolean     @default(true)
+  /// FK trỏ về TeamSource khi được push từ kho team (thay thế copy data)
+  source_team_source_id String?     @unique
+  /// Team đã đặt hàng (order) source này khi tạo — hiển thị cột "Team order" ở kho tổng
+  ordered_team_id       String?
+  created_at            DateTime    @default(now())
+  updated_at            DateTime    @updatedAt
+
+  product            Product?          @relation(fields: [product_id], references: [id])
+  added_by           User              @relation("SourceAddedBy", fields: [added_by_id], references: [id])
+  source_team_source TeamSource?       @relation("SourceTeamRef", fields: [source_team_source_id], references: [id], onDelete: SetNull)
+  ordered_team       Team?             @relation("SourceOrderedTeam", fields: [ordered_team_id], references: [id], onDelete: SetNull)
+  team_versions      TeamSource[]      @relation("TeamSourceGlobalRef")
+  editor_versions    EditorSource[]    @relation("EditorSourceGlobalRef")
+  tasks_outro        Task[]            @relation("TaskSourceOutro")
+  tasks_extra        Task[]            @relation("TaskSourceExtra")
+  tasks_workshop     Task[]            @relation("TaskSourceWorkshop")
+  tasks_huyk         Task[]            @relation("TaskSourceHuyk")
+  warehouses         SourceWarehouse[]
+
+  @@index([product_id, is_active])
+  @@map("sources")
+}
+
+model Task {
+  id                        String     @id @default(uuid())
+  team_id                   String
+  content_id                String?
+  product_id                String?
+  editor_product_id         String?
+  team_product_id           String?
+  editor_content_id         String?
+  team_content_id           String?
+  content_line_id           String?
+  product_line_id           String?
+  source_outro_id           String?
+  source_extra_id           String?
+  source_workshop_id        String?
+  source_huyk_id            String?
+  editor_source_outro_id    String?
+  editor_source_extra_id    String?
+  editor_source_workshop_id String?
+  editor_source_huyk_id     String?
+  team_source_outro_id      String?
+  team_source_extra_id      String?
+  team_source_workshop_id   String?
+  team_source_huyk_id       String?
+  status                    TaskStatus @default(PENDING)
+  /// Denormalized từ team.brand_type để tránh JOIN khi filter theo brand
+  brand_type                BrandType?
+  /// AUTO=đẩy SP theo kế hoạch (lane 1 auto-assign), EXTRA=task sáng tạo (lane 2 auto-assign + tạo tay)
+  task_type                 TaskType   @default(EXTRA)
+  /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
+  is_product_push           Boolean    @default(false)
+  assignee_id               String?
+  assigned_at               DateTime?
+  deadline                  DateTime?
+  run_id                    String?
+  result_url                String?    @db.Text
+  submitted_at              DateTime?
+  reviewed_by_id            String?
+  reviewed_at               DateTime?
+  reject_reason             String?    @db.Text
+  lark_record_id            String?    @unique
+  created_at                DateTime   @default(now())
+  updated_at                DateTime   @updatedAt
+
+  team                   Team              @relation(fields: [team_id], references: [id])
+  content                Content?          @relation(fields: [content_id], references: [id])
+  product                Product?          @relation(fields: [product_id], references: [id])
+  editor_product         EditorProduct?    @relation(fields: [editor_product_id], references: [id])
+  team_product           TeamProduct?      @relation(fields: [team_product_id], references: [id])
+  editor_content         EditorContent?    @relation(fields: [editor_content_id], references: [id])
+  team_content           TeamContent?      @relation(fields: [team_content_id], references: [id])
+  content_line           ContentLine?      @relation(fields: [content_line_id], references: [id])
+  product_line           ProductLine?      @relation(fields: [product_line_id], references: [id])
+  source_outro           Source?           @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
+  source_extra           Source?           @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
+  source_workshop        Source?           @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
+  source_huyk            Source?           @relation("TaskSourceHuyk", fields: [source_huyk_id], references: [id])
+  editor_source_outro    EditorSource?     @relation("TaskEditorSourceOutro", fields: [editor_source_outro_id], references: [id])
+  editor_source_extra    EditorSource?     @relation("TaskEditorSourceExtra", fields: [editor_source_extra_id], references: [id])
+  editor_source_workshop EditorSource?     @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
+  editor_source_huyk     EditorSource?     @relation("TaskEditorSourceHuyk", fields: [editor_source_huyk_id], references: [id])
+  team_source_outro      TeamSource?       @relation("TaskTeamSourceOutro", fields: [team_source_outro_id], references: [id])
+  team_source_extra      TeamSource?       @relation("TaskTeamSourceExtra", fields: [team_source_extra_id], references: [id])
+  team_source_workshop   TeamSource?       @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
+  team_source_huyk       TeamSource?       @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
+  assignee               User?             @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  reviewed_by            User?             @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
+  run                    AssignmentRun?    @relation(fields: [run_id], references: [id])
+  assignments            TaskAssignment[]
+  notifications          Notification[]
+  pending_video          TaskPendingVideo?
+
+  @@index([run_id])
+  // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
+  // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
+  @@index([assignee_id, team_id, assigned_at])
+  // ── FK reverse lookups (global warehouse) ──
+  @@index([content_id])
+  @@index([product_id])
+  // ── FK reverse lookups (team/editor scope) ──
+  @@index([editor_product_id])
+  @@index([team_product_id])
+  @@index([editor_content_id])
+  @@index([team_content_id])
+  @@index([content_line_id])
+  @@index([product_line_id])
+  @@map("tasks")
+}
+
+model TaskPendingVideo {
+  id            String   @id @default(uuid())
+  task_id       String   @unique
+  uploader_id   String
+  filename      String
+  originalname  String
+  mimetype      String
+  size          BigInt
+  url           String
+  storage       String   @default("local")
   drive_file_id String?
-  uploaded_bytes Int      @default(0)
-  status       String   @default("PENDING")
-  error_msg    String?
-  expires_at   DateTime?
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  web_view_url  String?
+  created_at    DateTime @default(now())
+
+  task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
+
+  @@map("task_pending_videos")
+}
+
+model TaskAssignment {
+  id          String             @id @default(uuid())
+  task_id     String
+  user_id     String
+  assigned_at DateTime           @default(now())
+  deadline    DateTime
+  outcome     AssignmentOutcome?
+  run_id      String?
+  note        String?
+
+  task Task           @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  user User           @relation("AssignmentUser", fields: [user_id], references: [id])
+  run  AssignmentRun? @relation(fields: [run_id], references: [id])
+
+  @@index([task_id])
+  @@index([user_id, assigned_at])
+  @@index([run_id])
+  @@map("task_assignments")
+}
+
+model AssignmentRun {
+  id             String              @id @default(uuid())
+  run_at         DateTime            @default(now())
+  status         AssignmentRunStatus @default(RUNNING)
+  total_assigned Int                 @default(0)
+  total_skipped  Int                 @default(0)
+  details        Json?
+  error_msg      String?
+  finished_at    DateTime?
+
+  tasks       Task[]
+  assignments TaskAssignment[]
+
+  @@index([run_at(sort: Desc)])
+  @@map("assignment_runs")
+}
+
+model AutoAssignSetting {
+  id              Int      @id @default(1)
+  schedule_time   String   @default("17:00")
+  timezone        String   @default("Asia/Ho_Chi_Minh")
+  weekend_enabled Boolean  @default(true)
+  is_active       Boolean  @default(true)
+  updated_by      String?
+  updated_at      DateTime @updatedAt
+
+  @@map("auto_assign_settings")
+}
+
+model Notification {
+  id         String    @id @default(uuid())
+  user_id    String
+  type       String
+  title      String
+  body       String?
+  task_id    String?
+  is_read    Boolean   @default(false)
+  /// Dùng cho cron cleanup — NULL = không tự xóa, có giá trị = xóa sau ngày này
+  expires_at DateTime?
+  created_at DateTime  @default(now())
+
+  user User  @relation("NotificationOf", fields: [user_id], references: [id], onDelete: Cascade)
+  task Task? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, is_read])
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@index([expires_at])
+  @@map("notifications")
+}
+
+model SocialDriveUploadSession {
+  id             String    @id
+  user_id        String
+  filename       String
+  originalname   String
+  mimetype       String
+  size           Int
+  upload_url     String    @db.Text
+  drive_file_id  String?
+  uploaded_bytes Int       @default(0)
+  status         String    @default("PENDING")
+  error_msg      String?
+  expires_at     DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
 
   @@index([user_id])
   @@index([created_at(sort: Desc)])
   @@map("social_drive_upload_sessions")
+}
+
+// ─────────────────────────────────────────────
+//  WAREHOUSE JUNCTION TABLES (kho tháng)
+// ─────────────────────────────────────────────
+
+model ProductWarehouse {
+  product_id String
+  month      String
+
+  product Product @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@id([product_id, month])
+  @@index([month])
+  @@map("product_warehouses")
+}
+
+model ContentWarehouse {
+  content_id String
+  month      String
+
+  content Content @relation(fields: [content_id], references: [id], onDelete: Cascade)
+
+  @@id([content_id, month])
+  @@index([month])
+  @@map("content_warehouses")
+}
+
+model SourceWarehouse {
+  source_id String
+  month     String
+
+  source Source @relation(fields: [source_id], references: [id], onDelete: Cascade)
+
+  @@id([source_id, month])
+  @@index([month])
+  @@map("source_warehouses")
+}
+
+model TeamProductWarehouse {
+  team_product_id String
+  month           String
+
+  team_product TeamProduct @relation(fields: [team_product_id], references: [id], onDelete: Cascade)
+
+  @@id([team_product_id, month])
+  @@index([month])
+  @@map("team_product_warehouses")
+}
+
+model TeamContentWarehouse {
+  team_content_id String
+  month           String
+
+  team_content TeamContent @relation(fields: [team_content_id], references: [id], onDelete: Cascade)
+
+  @@id([team_content_id, month])
+  @@index([month])
+  @@map("team_content_warehouses")
+}
+
+model TeamSourceWarehouse {
+  team_source_id String
+  month          String
+
+  team_source TeamSource @relation(fields: [team_source_id], references: [id], onDelete: Cascade)
+
+  @@id([team_source_id, month])
+  @@index([month])
+  @@map("team_source_warehouses")
+}
+
+model EditorProductWarehouse {
+  editor_product_id String
+  month             String
+
+  editor_product EditorProduct @relation(fields: [editor_product_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_product_id, month])
+  @@index([month])
+  @@map("editor_product_warehouses")
+}
+
+model EditorContentWarehouse {
+  editor_content_id String
+  month             String
+
+  editor_content EditorContent @relation(fields: [editor_content_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_content_id, month])
+  @@index([month])
+  @@map("editor_content_warehouses")
+}
+
+model EditorSourceWarehouse {
+  editor_source_id String
+  month            String
+
+  editor_source EditorSource @relation(fields: [editor_source_id], references: [id], onDelete: Cascade)
+
+  @@id([editor_source_id, month])
+  @@index([month])
+  @@map("editor_source_warehouses")
 }

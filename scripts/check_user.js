@@ -13,7 +13,7 @@ async function main() {
     console.log("Users:");
     console.log(JSON.stringify(users, null, 2));
 
-    const kpis = await prisma.larkKPI.findMany({
+    const kpis = await prisma.kpi.findMany({
         where: {
             name: { contains: 'Việt', mode: 'insensitive' }
         },

@@ -66,7 +66,7 @@ async function syncReports() {
             if (reportDate < minDate) continue;
             
             // Simplified mapping
-            await prisma.larkReport.upsert({
+            await prisma.checklistReport.upsert({
                 where: { id: r.record_id },
                 create: {
                     id: r.record_id,

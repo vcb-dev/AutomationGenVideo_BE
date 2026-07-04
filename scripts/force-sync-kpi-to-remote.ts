@@ -17,7 +17,7 @@ const LARK_APP_SECRET = process.env.LARK_APP_SECRET || 'ZsmUP7zkoBVsIO1qLSCifekK
 const LARK_BASE_ID = "UqgJw2SZOiZsAYk7ciTl11fKgjg";
 const LARK_TABLE_ID = "tblh9DeeqDBItrg7";
 
-const TABLE = 'lark_kpi';
+const TABLE = 'kpi';
 const COLUMNS = `"id","employee_id","name","tag","team","image_url","kpi_day","kpi_month","kpii_status","completed_day","completed_month","task_new","task_new_month","task_auto","task_auto_month","task_creative","revenue_month","traffic_month","report_date","month","state","link_image","created_at","updated_at"`;
 const UPDATE_SET = COLUMNS.split(',')
   .filter((c) => c !== '"id"' && c !== '"created_at"' && c !== '"updated_at"')

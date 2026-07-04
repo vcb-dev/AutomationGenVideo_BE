@@ -255,6 +255,21 @@ export class MediaLibraryService {
     }
   }
 
+  async removeByDriveFileId(driveFileId: string): Promise<void> {
+    if (!modelReady(this.prisma)) return;
+    try {
+      const model = this.getModel();
+      const file = await model.findFirst({ where: { drive_file_id: driveFileId } });
+      if (file) {
+        await model.delete({ where: { id: file.id } });
+        this.logger.log(`[Library] Removed media library entry for Drive file ${driveFileId}`);
+      }
+    } catch (err: any) {
+      if (isNotReady(err)) return;
+      this.logger.warn(`[Library] removeByDriveFileId failed for ${driveFileId}: ${err.message}`);
+    }
+  }
+
   async getPostHistory(id: string, userId: string) {
     if (!modelReady(this.prisma)) return { posts: [] };
     try {

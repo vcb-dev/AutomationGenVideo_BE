@@ -40,8 +40,8 @@ async function main() {
   // 2) Local -> Server
   run('Sync users local -> server', 'npm run sync:users:to-server');
   run('Sync channels local -> server', 'npm run sync:channel:to-server');
-  run('Sync lark_kpi local -> server', 'npm run sync:larkkpi:to-server');
-  run('Sync lark_kpi_do_da local -> server', 'npm run sync:larkkpi-doda:to-server');
+  run('Sync kpi local -> server', 'npm run sync:larkkpi:to-server');
+  run('Sync kpi_do_da local -> server', 'npm run sync:larkkpi-doda:to-server');
 
   // eslint-disable-next-line no-console
   console.log('[deploy-sync] Completed full flow: Lark -> Local -> Server');

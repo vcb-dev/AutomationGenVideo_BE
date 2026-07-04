@@ -19,7 +19,7 @@ export class CloneTiktokDto {
 
   @ApiPropertyOptional({ description: 'URL video trực tiếp (extension cung cấp, bỏ qua bước fetch TikTok)' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true, protocols: ['http', 'https'] }, { message: 'videoUrl phải là URL http/https hợp lệ' })
   videoUrl?: string;
 
   @ApiPropertyOptional({ description: 'URL thumbnail TikTok' })

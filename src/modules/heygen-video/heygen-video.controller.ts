@@ -1,6 +1,7 @@
-import { Controller, Post, Get, Body, Param, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
 import { HeygenVideoService } from './heygen-video.service';
 import { GenerateVideoDto } from './dto/generate-video.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @Controller('heygen-video')
 export class HeygenVideoController {
@@ -31,6 +32,7 @@ export class HeygenVideoController {
   }
 
   @Get('voices')
+  @UseGuards(JwtAuthGuard)
   async getVoices() {
     try {
       return await this.heygenVideoService.getVoices();
@@ -66,7 +68,14 @@ export class HeygenVideoController {
   }
 
   @Post('clone-voice')
+  @UseGuards(JwtAuthGuard)
   async cloneVoice(@Body() body: { video_url: string; voice_name: string }) {
+    if (!body?.video_url) {
+      throw new HttpException('video_url is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!body?.voice_name) {
+      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
+    }
     try {
       return await this.heygenVideoService.cloneVoice(body.video_url, body.voice_name);
     } catch (error) {
