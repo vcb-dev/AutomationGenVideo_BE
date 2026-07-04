@@ -118,7 +118,6 @@ export class UsersService {
         manager_id: true,
         team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -137,7 +136,6 @@ export class UsersService {
         manager_id: true,
         team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -661,10 +659,9 @@ export class UsersService {
       delete dto.team;
       // A leader may only set name/email/password for a new hire — strip fields that grant
       // capability beyond that (manager_id ties them into an unrelated manager's hierarchy,
-      // custom_permissions can widen app access, is_active should only go through deactivate/
-      // reactivate). The UI never sends these for a LEADER, this only closes a direct-API gap.
+      // is_active should only go through deactivate/reactivate). The UI never sends these
+      // for a LEADER, this only closes a direct-API gap.
       delete dto.manager_id;
-      delete dto.custom_permissions;
       delete (dto as any).is_active;
     }
 
@@ -715,9 +712,8 @@ export class UsersService {
       // A leader may only edit name/email/team(forced below) for a member they own — strip
       // fields that would let a direct API call bypass deactivate/reactivate's stricter
       // ownership check (is_active) or alter authorization-relevant data outside their scope
-      // (manager_id, custom_permissions). The UI never sends these for a LEADER.
+      // (manager_id). The UI never sends these for a LEADER.
       delete dto.manager_id;
-      delete dto.custom_permissions;
       delete (dto as any).is_active;
       // team/team_leader_id giờ là giá trị phái sinh — không set trực tiếp qua dto, xử lý bằng
       // TeamMember sau khi update() xong (xem claimToCallerId/releaseTarget bên dưới). Chụp lại ý

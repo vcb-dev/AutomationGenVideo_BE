@@ -60,10 +60,4 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   team?: string;
-
-  @ApiPropertyOptional({ type: [String], example: ['performance', 'dashboard'] })
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  custom_permissions?: string[];
 }

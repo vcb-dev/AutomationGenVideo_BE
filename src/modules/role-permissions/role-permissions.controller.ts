@@ -42,12 +42,11 @@ export class RolePermissionsController {
     @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get allowed tabs for current user' })
     async getMyTabs(@Request() req) {
-        // Use roles/custom_permissions already on the JWT-validated user object
+        // Use roles already on the JWT-validated user object
         // to avoid an extra DB round-trip on every page navigation.
         const jwtUser = req.user;
         if (!jwtUser) return [];
         const roles = jwtUser.roles ?? [];
-        const custom = jwtUser.custom_permissions ?? [];
-        return this.service.getPermissionsForUser(roles, custom);
+        return this.service.getPermissionsForUser(roles);
     }
 }

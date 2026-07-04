@@ -31,9 +31,6 @@ export class UserEntity {
   team_leader_id: string | null;
   is_active: boolean;
 
-  @ApiProperty({ type: [String] })
-  custom_permissions: string[];
-
   @ApiProperty({ required: false, nullable: true })
   lark_employee_record_id: string | null;
 

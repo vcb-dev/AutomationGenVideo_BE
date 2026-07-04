@@ -36,29 +36,25 @@ export class RolePermissionsService {
     async getUserPermissions(userId: string) {
         return this.prisma.user.findUnique({
             where: { id: userId },
-            select: { roles: true, custom_permissions: true },
+            select: { roles: true },
         });
     }
 
-    async getPermissionsForUser(roles: UserRole[], customPermissions: string[] = []) {
-        if ((!roles || roles.length === 0) && (!customPermissions || customPermissions.length === 0)) {
+    async getPermissionsForUser(roles: UserRole[]) {
+        if (!roles || roles.length === 0) {
             return [];
         }
 
         const rolesKey = roles.sort().join(',');
-        const customKey = customPermissions.sort().join(',');
-        const cacheKey = `role-perm:${rolesKey}:${customKey}`;
+        const cacheKey = `role-perm:${rolesKey}`;
 
         return this.cacheService.get(cacheKey, 5 * 60 * 1000, async () => {
-            const rolePermissions = roles.length > 0
-                ? await this.prisma.rolePermission.findMany({
-                    where: { role: { in: roles } },
-                })
-                : [];
+            const rolePermissions = await this.prisma.rolePermission.findMany({
+                where: { role: { in: roles } },
+            });
 
             const roleMenuIds = rolePermissions.flatMap((p) => p.menu_ids);
-            const allMenuIds = [...roleMenuIds, ...customPermissions];
-            return Array.from(new Set(allMenuIds));
+            return Array.from(new Set(roleMenuIds));
         });
     }
 }
