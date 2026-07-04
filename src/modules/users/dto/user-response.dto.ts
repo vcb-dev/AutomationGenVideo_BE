@@ -24,9 +24,6 @@ export class UserResponseDto {
   @ApiProperty({ required: false })
   team?: string;
 
-  @ApiProperty({ required: false, description: "Team Leader ID managing this user" })
-  team_leader_id?: string;
-
   @ApiProperty()
   is_active: boolean;
 

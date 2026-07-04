@@ -22,11 +22,11 @@ async function main() {
   // Cast $1::uuid để PostgreSQL hiểu đúng kiểu dữ liệu
   await prisma.$executeRawUnsafe(`
     INSERT INTO "users" (
-      "id", "email", "full_name", "roles", "is_active", 
-      "custom_permissions", "created_at", "updated_at"
+      "id", "email", "full_name", "roles", "is_active",
+      "created_at", "updated_at"
     ) VALUES (
-      $1::uuid, $2, $3, ARRAY['MEMBER']::"UserRole"[], true, 
-      ARRAY[]::text[], NOW(), NOW()
+      $1::uuid, $2, $3, ARRAY['MEMBER']::"UserRole"[], true,
+      NOW(), NOW()
     )
   `, id, email, fullName);
 

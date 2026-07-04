@@ -270,7 +270,7 @@ export class LarkService implements OnModuleInit {
             }
         }
 
-        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
         const recordsToCreate = [];
 
         // 1. Process breakdown-based submissions
@@ -1434,7 +1434,7 @@ export class LarkService implements OnModuleInit {
                     const mergeTraffic = (existing: any, current: any) => {
                         const res = { ...existing };
                         if (!res.details) res.details = [];
-                        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+                        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
                         res.total_traffic = (res.total_traffic || BigInt(0)) + (current.total_traffic || BigInt(0));
                         platforms.forEach(p => {
                             const tk = `traffic_${p}`, ck = `channel_${p}`, ek = `evidence_${p}`;
@@ -2231,9 +2231,7 @@ export class LarkService implements OnModuleInit {
                             tiktok: Number(personTraffic.traffic_tiktok || 0),
                             yt: Number(personTraffic.traffic_yt || 0),
                             thread: Number(personTraffic.traffic_thread || 0),
-                            lemon8: Number(personTraffic.traffic_lemon8 || 0),
                             zalo: Number(personTraffic.traffic_zalo || 0),
-                            twitter: Number(personTraffic.traffic_twitter || 0),
                             total: Number(personTraffic.total_traffic || 0),
                             details: personTraffic.details || []
                         } : null,
@@ -2391,9 +2389,7 @@ export class LarkService implements OnModuleInit {
                                     tiktok: Number(personTraffic.traffic_tiktok || 0),
                                     yt: Number(personTraffic.traffic_yt || 0),
                                     thread: Number(personTraffic.traffic_thread || 0),
-                                    lemon8: Number(personTraffic.traffic_lemon8 || 0),
                                     zalo: Number(personTraffic.traffic_zalo || 0),
-                                    twitter: Number(personTraffic.traffic_twitter || 0),
                                     total: Number(personTraffic.total_traffic || 0),
                                     details: personTraffic.details || [],
                                 }
@@ -2899,7 +2895,7 @@ export class LarkService implements OnModuleInit {
 
         let traffic: any = null;
         let details: any[] = [];
-        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
 
         if (trafficRecords.length > 0) {
             traffic = { ...trafficRecords[0] };
@@ -2959,7 +2955,7 @@ export class LarkService implements OnModuleInit {
 
         // Process traffic evidence URLs to use proxy
         if (traffic) {
-            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'lemon8', 'zalo', 'twitter'];
+            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
             platforms.forEach(p => {
                 const key = `evidence_${p}`;
                 if (traffic[key]) {
