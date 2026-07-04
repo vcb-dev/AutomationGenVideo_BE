@@ -7,6 +7,7 @@ import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
 import { UserRole } from '@prisma/client'
 import { recomputeUserTeamFields, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
+import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -253,7 +254,7 @@ export class TaskAutoTeamsService {
     this.assertCanManageProduct(team, userId, userRoles, 'add')
 
     if (dto.source_product_id) {
-      const source = await this.prisma.product.findUnique({ where: { id: dto.source_product_id } })
+      const source = await resolveProductSnapshot(this.prisma, dto.source_product_id)
       if (!source) throw new NotFoundException('Không tìm thấy sản phẩm gốc')
 
       return this.prisma.teamProduct.create({
@@ -363,7 +364,7 @@ export class TaskAutoTeamsService {
     this.assertCanManageContent(team, userId, userRoles, 'add')
 
     if (dto.source_content_id) {
-      const source = await this.prisma.content.findUnique({ where: { id: dto.source_content_id } })
+      const source = await resolveContentSnapshot(this.prisma, dto.source_content_id)
       if (!source) throw new NotFoundException('Không tìm thấy content gốc')
 
       return this.prisma.teamContent.create({
