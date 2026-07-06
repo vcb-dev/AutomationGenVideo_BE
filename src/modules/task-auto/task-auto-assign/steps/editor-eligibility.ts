@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { deriveDailyTarget } from "../utils/date.utils";
+import { deriveDailyTarget } from "../../../../utils/date.utils";
 import { EditorCapacity, WeightedAllocation } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
 

@@ -3,8 +3,8 @@ import {
 } from '@nestjs/common'
 import { DateTime } from 'luxon'
 import { PrismaService } from '../../../common/prisma/prisma.service'
-import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from '../dto/team.dto'
-import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../dto/catalog.dto'
+import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
+import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
 import { UserRole } from '@prisma/client'
 import { recomputeUserTeamFields, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
 

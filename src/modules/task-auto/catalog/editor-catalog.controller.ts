@@ -25,7 +25,7 @@ import {
   CreateEditorSourceDto,
   UpdateEditorSourceDto,
   QueryEditorSourceDto,
-} from "../dto/catalog.dto";
+} from "./catalog.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

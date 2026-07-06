@@ -1,4 +1,4 @@
-import { WeightedAllocation } from "../types";
+import { WeightedAllocation } from "../modules/task-auto/task-auto-assign/types";
 
 /**
  * Phân bổ `total` theo tỷ lệ weight, làm tròn bằng thuật toán largest-remainder

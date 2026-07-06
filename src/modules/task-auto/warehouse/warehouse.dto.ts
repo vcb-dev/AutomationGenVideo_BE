@@ -6,7 +6,7 @@ import {
   IsEnum,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { BrandType } from "./catalog.dto";
+import { BrandType } from "../catalog/catalog.dto";
 
 const MONTH_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
 const BRAND_TYPES: BrandType[] = ["DO_DA", "TRANG_SUC"];

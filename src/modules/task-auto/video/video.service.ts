@@ -186,7 +186,7 @@ export class TaskAutoVideoService {
       fs.rmSync(tmpPath, { force: true }) // luôn xóa file tạm
     }
 
-    const webViewUrl = driveResult.webViewUrl || `https://drive.google.com/file/d/${driveResult.fileId}/view`
+    const webViewUrl = driveResult.webViewUrl
 
     // Lưu metadata để có thể xóa Drive file khi task bị REJECT
     try {

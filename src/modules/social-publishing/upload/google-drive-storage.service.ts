@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as FormData from 'form-data';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as jwt from 'jsonwebtoken';
 
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -9,6 +11,16 @@ const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
 const METADATA_TOKEN_URL = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+
+// Douyin CDN — một số node chỉ accessible từ IP Trung Quốc, cần browser headers giả
+// + timeout ngắn hơn để không giữ job cron quá lâu khi chúng fail.
+const CHINA_CDN_DOMAINS = ['douyinpic.com', 'bytecdn.cn', 'ibyteimg.com', 'douyinstatic.com', 'douyinvod.com'];
+const CHINA_CDN_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+  'Referer': 'https://www.douyin.com/',
+};
 
 interface GoogleServiceAccountCredentials {
   client_email: string;
@@ -19,7 +31,7 @@ interface GoogleServiceAccountCredentials {
 export interface GoogleDriveUploadResult {
   fileId: string;
   url: string;
-  webViewUrl?: string;
+  webViewUrl: string;
 }
 
 export interface GoogleDriveFileMetadata {
@@ -212,8 +224,42 @@ export class GoogleDriveStorageService {
     return {
       fileId,
       url: directUrl,
-      webViewUrl: uploadRes.data.webViewLink,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
+  }
+
+  /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền. */
+  async uploadThumbnailFromUrl(sourceUrl: string, filename: string): Promise<string> {
+    if (!sourceUrl) return '';
+    if (sourceUrl.includes('drive.google.com') || sourceUrl.includes('googleusercontent.com')) return sourceUrl;
+    if (!this.isAvailable()) return '';
+
+    const isChinaCdn = CHINA_CDN_DOMAINS.some(domain => sourceUrl.includes(domain));
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        headers: isChinaCdn ? CHINA_CDN_HEADERS : {},
+        timeout: isChinaCdn ? 8_000 : 15_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+    } catch (err: any) {
+      this.logger.warn(`[ThumbnailMigration] Download failed (${sourceUrl.slice(0, 70)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `thumb_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const uploaded = await this.uploadFromPath(tmpPath, filename, 'image/jpeg');
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[ThumbnailMigration] Upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
   }
 
   private async _uploadLargeFileResumable(
@@ -270,7 +316,7 @@ export class GoogleDriveStorageService {
     return {
       fileId,
       url: directUrl,
-      webViewUrl: uploadRes.data.webViewLink,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
   }
 
@@ -454,6 +500,10 @@ export class GoogleDriveStorageService {
     });
     if (filename) params.set('filename', filename);
     return `https://drive.google.com/uc?${params.toString()}`;
+  }
+
+  private buildViewUrl(fileId: string): string {
+    return `https://drive.google.com/file/d/${fileId}/view`;
   }
 
   private buildThumbnailUrl(fileId: string): string {

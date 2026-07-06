@@ -13,7 +13,7 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoAssignService } from "../task-auto-assign/task-auto-assign.service";
-import { UpdateAutoAssignSettingDto } from "../dto/settings.dto";
+import { UpdateAutoAssignSettingDto } from "./settings.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

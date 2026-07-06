@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Logger,
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import {
@@ -13,15 +14,28 @@ import {
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
-} from "../dto/task.dto";
+} from "./task.dto";
 
 // Các field content/sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa
 const CATALOG_FIELDS = [
-  "content_id", "editor_content_id", "team_content_id",
-  "product_id", "editor_product_id", "team_product_id",
-  "source_outro_id", "source_extra_id", "source_workshop_id", "source_huyk_id",
-  "editor_source_outro_id", "editor_source_extra_id", "editor_source_workshop_id", "editor_source_huyk_id",
-  "team_source_outro_id", "team_source_extra_id", "team_source_workshop_id", "team_source_huyk_id",
+  "content_id",
+  "editor_content_id",
+  "team_content_id",
+  "product_id",
+  "editor_product_id",
+  "team_product_id",
+  "source_outro_id",
+  "source_extra_id",
+  "source_workshop_id",
+  "source_huyk_id",
+  "editor_source_outro_id",
+  "editor_source_extra_id",
+  "editor_source_workshop_id",
+  "editor_source_huyk_id",
+  "team_source_outro_id",
+  "team_source_extra_id",
+  "team_source_workshop_id",
+  "team_source_huyk_id",
 ] as const;
 
 @Injectable()
@@ -31,23 +45,36 @@ export class TaskAutoTasksService {
   constructor(
     private prisma: PrismaService,
     private videoService: TaskAutoVideoService,
-  ) { }
+  ) {}
 
   private taskInclude = {
     team: { select: { id: true, name: true } },
     content: {
       select: {
-        id: true, title: true, market: true, status: true,
+        id: true,
+        title: true,
+        market: true,
+        status: true,
         content_line: { select: { id: true, name: true } },
         source_team_content: {
           select: {
-            id: true, title: true, market: true, script: true, body: true,
-            file_content_url: true, voice_url: true,
+            id: true,
+            title: true,
+            market: true,
+            script: true,
+            body: true,
+            file_content_url: true,
+            voice_url: true,
             content_line: { select: { id: true, name: true } },
             source_editor_content: {
               select: {
-                id: true, title: true, market: true, script: true, body: true,
-                file_content_url: true, voice_url: true,
+                id: true,
+                title: true,
+                market: true,
+                script: true,
+                body: true,
+                file_content_url: true,
+                voice_url: true,
                 content_line: { select: { id: true, name: true } },
               },
             },
@@ -78,14 +105,28 @@ export class TaskAutoTasksService {
         },
         source_team_product: {
           select: {
-            id: true, sku: true, name: true, image_url: true, image_urls: true,
-            price: true, market: true, price_segment: true, priority_score: true,
+            id: true,
+            sku: true,
+            name: true,
+            image_url: true,
+            image_urls: true,
+            price: true,
+            market: true,
+            price_segment: true,
+            priority_score: true,
             material: { select: { id: true, name: true } },
             product_line: { select: { id: true, name: true } },
             source_editor_product: {
               select: {
-                id: true, sku: true, name: true, image_url: true, image_urls: true,
-                price: true, market: true, price_segment: true, priority_score: true,
+                id: true,
+                sku: true,
+                name: true,
+                image_url: true,
+                image_urls: true,
+                price: true,
+                market: true,
+                price_segment: true,
+                priority_score: true,
                 material: { select: { id: true, name: true } },
                 product_line: { select: { id: true, name: true } },
               },
@@ -132,8 +173,15 @@ export class TaskAutoTasksService {
         product_line: { select: { id: true, name: true } },
         source_editor_product: {
           select: {
-            id: true, sku: true, name: true, image_url: true, image_urls: true,
-            price: true, market: true, price_segment: true, priority_score: true,
+            id: true,
+            sku: true,
+            name: true,
+            image_url: true,
+            image_urls: true,
+            price: true,
+            market: true,
+            price_segment: true,
+            priority_score: true,
             material: { select: { id: true, name: true } },
             product_line: { select: { id: true, name: true } },
           },
@@ -172,8 +220,13 @@ export class TaskAutoTasksService {
         content_line: { select: { id: true, name: true } },
         source_editor_content: {
           select: {
-            id: true, title: true, market: true, script: true, body: true,
-            file_content_url: true, voice_url: true,
+            id: true,
+            title: true,
+            market: true,
+            script: true,
+            body: true,
+            file_content_url: true,
+            voice_url: true,
             content_line: { select: { id: true, name: true } },
           },
         },
@@ -182,18 +235,198 @@ export class TaskAutoTasksService {
     content_line: { select: { id: true, name: true } },
     assignee: { select: { id: true, full_name: true, email: true } },
     reviewed_by: { select: { id: true, full_name: true } },
-    source_outro:           { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
-    source_extra:           { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
-    source_workshop:        { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
-    source_huyk:            { select: { id: true, name: true, type: true, link: true, nas_link: true, source_team_source: { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } } } },
-    editor_source_outro:    { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    editor_source_extra:    { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    editor_source_workshop: { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    editor_source_huyk:     { select: { id: true, name: true, type: true, link: true, nas_link: true } },
-    team_source_outro:      { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
-    team_source_extra:      { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
-    team_source_workshop:   { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
-    team_source_huyk:       { select: { id: true, name: true, type: true, link: true, nas_link: true, source_editor_source: { select: { id: true, name: true, type: true, link: true, nas_link: true } } } },
+    source_outro: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_team_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+            source_editor_source: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                link: true,
+                nas_link: true,
+              },
+            },
+          },
+        },
+      },
+    },
+    source_extra: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_team_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+            source_editor_source: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                link: true,
+                nas_link: true,
+              },
+            },
+          },
+        },
+      },
+    },
+    source_workshop: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_team_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+            source_editor_source: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                link: true,
+                nas_link: true,
+              },
+            },
+          },
+        },
+      },
+    },
+    source_huyk: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_team_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+            source_editor_source: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                link: true,
+                nas_link: true,
+              },
+            },
+          },
+        },
+      },
+    },
+    editor_source_outro: {
+      select: { id: true, name: true, type: true, link: true, nas_link: true },
+    },
+    editor_source_extra: {
+      select: { id: true, name: true, type: true, link: true, nas_link: true },
+    },
+    editor_source_workshop: {
+      select: { id: true, name: true, type: true, link: true, nas_link: true },
+    },
+    editor_source_huyk: {
+      select: { id: true, name: true, type: true, link: true, nas_link: true },
+    },
+    team_source_outro: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_editor_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+          },
+        },
+      },
+    },
+    team_source_extra: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_editor_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+          },
+        },
+      },
+    },
+    team_source_workshop: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_editor_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+          },
+        },
+      },
+    },
+    team_source_huyk: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        link: true,
+        nas_link: true,
+        source_editor_source: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            link: true,
+            nas_link: true,
+          },
+        },
+      },
+    },
     pending_video: true,
   };
 
@@ -251,13 +484,14 @@ export class TaskAutoTasksService {
         notifications: { take: 5, orderBy: { created_at: "desc" } },
       },
     });
+    if (!task) throw new NotFoundException("Task not found");
+
     const productSources =
       task.product?.sources ??
       task.editor_product?.editor_sources ??
       task.team_product?.team_sources ??
       [];
 
-    if (!task) throw new NotFoundException("Task not found");
     return {
       ...task,
       product_sources: productSources,
@@ -318,64 +552,101 @@ export class TaskAutoTasksService {
       }
     }
 
-    const hasProduct = dto.product_id || dto.editor_product_id || dto.team_product_id;
-    if (dto.assignee_id && hasProduct) {
-      const duplicate = await this.prisma.task.findFirst({
-        where: {
-          assignee_id: dto.assignee_id,
-          ...(dto.content_id ? { content_id: dto.content_id } : {}),
-          ...(dto.editor_content_id ? { editor_content_id: dto.editor_content_id } : {}),
-          ...(dto.team_content_id ? { team_content_id: dto.team_content_id } : {}),
-          ...(dto.product_id ? { product_id: dto.product_id } : {}),
-          ...(dto.editor_product_id ? { editor_product_id: dto.editor_product_id } : {}),
-          ...(dto.team_product_id ? { team_product_id: dto.team_product_id } : {}),
-        },
-        select: { id: true },
-      });
-      if (duplicate) {
-        throw new BadRequestException(
-          "Editor này đã có task với cặp content + sản phẩm này",
-        );
-      }
-    }
+    const hasProduct =
+      dto.product_id || dto.editor_product_id || dto.team_product_id;
 
-    const task = await this.prisma.task.create({
-      data: {
-        team_id: dto.team_id,
-        content_id: dto.content_id ?? null,
-        editor_content_id: dto.editor_content_id ?? null,
-        team_content_id: dto.team_content_id ?? null,
-        product_id: dto.product_id ?? null,
-        editor_product_id: dto.editor_product_id ?? null,
-        team_product_id: dto.team_product_id ?? null,
-        content_line_id: dto.content_line_id ?? resolvedContentLineId,
-        source_outro_id:           dto.source_outro_id           ?? null,
-        source_extra_id:           dto.source_extra_id           ?? null,
-        source_workshop_id:        dto.source_workshop_id        ?? null,
-        source_huyk_id:            dto.source_huyk_id            ?? null,
-        editor_source_outro_id:    dto.editor_source_outro_id    ?? null,
-        editor_source_extra_id:    dto.editor_source_extra_id    ?? null,
-        editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
-        editor_source_huyk_id:     dto.editor_source_huyk_id     ?? null,
-        team_source_outro_id:      dto.team_source_outro_id      ?? null,
-        team_source_extra_id:      dto.team_source_extra_id      ?? null,
-        team_source_workshop_id:   dto.team_source_workshop_id   ?? null,
-        team_source_huyk_id:       dto.team_source_huyk_id       ?? null,
-        assignee_id: dto.assignee_id,
-        deadline: dto.deadline ? new Date(dto.deadline) : undefined,
-        status: dto.assignee_id ? "ASSIGNED" : "PENDING",
-        assigned_at: dto.assignee_id ? new Date() : undefined,
-      },
-      include: this.taskInclude,
-    });
+    const task = await this.prisma
+      .$transaction(
+        async (tx) => {
+          if (dto.assignee_id && hasProduct) {
+            const duplicate = await tx.task.findFirst({
+              where: {
+                assignee_id: dto.assignee_id,
+                ...(dto.content_id ? { content_id: dto.content_id } : {}),
+                ...(dto.editor_content_id
+                  ? { editor_content_id: dto.editor_content_id }
+                  : {}),
+                ...(dto.team_content_id
+                  ? { team_content_id: dto.team_content_id }
+                  : {}),
+                ...(dto.product_id ? { product_id: dto.product_id } : {}),
+                ...(dto.editor_product_id
+                  ? { editor_product_id: dto.editor_product_id }
+                  : {}),
+                ...(dto.team_product_id
+                  ? { team_product_id: dto.team_product_id }
+                  : {}),
+              },
+              select: { id: true },
+            });
+            if (duplicate) {
+              throw new BadRequestException(
+                "Editor này đã có task với cặp content + sản phẩm này",
+              );
+            }
+          }
+
+          return tx.task.create({
+            data: {
+              team_id: dto.team_id,
+              content_id: dto.content_id ?? null,
+              editor_content_id: dto.editor_content_id ?? null,
+              team_content_id: dto.team_content_id ?? null,
+              product_id: dto.product_id ?? null,
+              editor_product_id: dto.editor_product_id ?? null,
+              team_product_id: dto.team_product_id ?? null,
+              content_line_id: dto.content_line_id ?? resolvedContentLineId,
+              source_outro_id: dto.source_outro_id ?? null,
+              source_extra_id: dto.source_extra_id ?? null,
+              source_workshop_id: dto.source_workshop_id ?? null,
+              source_huyk_id: dto.source_huyk_id ?? null,
+              editor_source_outro_id: dto.editor_source_outro_id ?? null,
+              editor_source_extra_id: dto.editor_source_extra_id ?? null,
+              editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
+              editor_source_huyk_id: dto.editor_source_huyk_id ?? null,
+              team_source_outro_id: dto.team_source_outro_id ?? null,
+              team_source_extra_id: dto.team_source_extra_id ?? null,
+              team_source_workshop_id: dto.team_source_workshop_id ?? null,
+              team_source_huyk_id: dto.team_source_huyk_id ?? null,
+              assignee_id: dto.assignee_id,
+              deadline: dto.deadline ? new Date(dto.deadline) : undefined,
+              status: dto.assignee_id ? "ASSIGNED" : "PENDING",
+              assigned_at: dto.assignee_id ? new Date() : undefined,
+            },
+            include: this.taskInclude,
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      )
+      .catch((err) => {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2034"
+        ) {
+          throw new BadRequestException(
+            "Editor này đã có task với cặp content + sản phẩm này",
+          );
+        }
+        throw err;
+      });
 
     if (dto.assignee_id) {
-      await this.notify(dto.assignee_id, "TASK_ASSIGNED", "Task mới được giao", task.id);
+      await this.notify(
+        dto.assignee_id,
+        "TASK_ASSIGNED",
+        "Task mới được giao",
+        task.id,
+      );
     }
     return task;
   }
 
-  async update(id: string, dto: UpdateTaskDto, userId: string, roles: string[]) {
+  async update(
+    id: string,
+    dto: UpdateTaskDto,
+    userId: string,
+    roles: string[],
+  ) {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) throw new NotFoundException("Task not found");
 
@@ -394,9 +665,33 @@ export class TaskAutoTasksService {
     const isAssignee = task.assignee_id === userId;
 
     if (dto.status) {
-      const allowed = this.allowedTransition(task.status, dto.status, isPrivileged, isAssignee);
+      const allowed = this.allowedTransition(
+        task.status,
+        dto.status,
+        isPrivileged,
+        isAssignee,
+      );
       if (!allowed) {
-        throw new ForbiddenException(`Cannot move from ${task.status} to ${dto.status}`);
+        throw new ForbiddenException(
+          `Cannot move from ${task.status} to ${dto.status}`,
+        );
+      }
+    }
+
+    if (
+      dto.assignee_id !== undefined &&
+      dto.assignee_id !== task.assignee_id &&
+      !isPrivileged
+    ) {
+      if (dto.assignee_id !== userId) {
+        throw new ForbiddenException("Chỉ có thể tự nhận task cho chính mình");
+      }
+      const membership = await this.prisma.teamMember.findFirst({
+        where: { user_id: userId, team_id: task.team_id },
+        select: { team_id: true },
+      });
+      if (!membership) {
+        throw new ForbiddenException("Bạn không thuộc team này");
       }
     }
 
@@ -404,19 +699,16 @@ export class TaskAutoTasksService {
     if (dto.deadline) data.deadline = new Date(dto.deadline);
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;
-      if (dto.assignee_id && task.status === 'PENDING') {
-        data.status = 'ASSIGNED';
-      } else if (!dto.assignee_id && task.status === 'ASSIGNED') {
-        data.status = 'PENDING';
+      if (dto.assignee_id && task.status === "PENDING") {
+        data.status = "ASSIGNED";
+      } else if (!dto.assignee_id && task.status === "ASSIGNED") {
+        data.status = "PENDING";
       }
     }
     if (dto.status === "SUBMITTED") data.submitted_at = new Date();
     if (dto.status === "APPROVED" || dto.status === "REJECTED") {
       data.reviewed_by_id = userId;
       data.reviewed_at = new Date();
-    }
-    if (dto.status === "CANCELLED" && !isPrivileged) {
-      throw new ForbiddenException("Only ADMIN/MANAGER/LEADER can cancel tasks");
     }
 
     const updated = await this.prisma.task.update({
@@ -426,7 +718,12 @@ export class TaskAutoTasksService {
     });
 
     if (dto.assignee_id && !task.assignee_id) {
-      await this.notify(dto.assignee_id, "TASK_ASSIGNED", "Task mới được giao cho bạn", id);
+      await this.notify(
+        dto.assignee_id,
+        "TASK_ASSIGNED",
+        "Task mới được giao cho bạn",
+        id,
+      );
     }
     if (dto.status === "SUBMITTED" && task.assignee_id) {
       const team = await this.prisma.team.findUnique({
@@ -434,14 +731,29 @@ export class TaskAutoTasksService {
         select: { leader_id: true },
       });
       if (team?.leader_id) {
-        await this.notify(team.leader_id, "TASK_SUBMITTED", "Task đã được nộp", id);
+        await this.notify(
+          team.leader_id,
+          "TASK_SUBMITTED",
+          "Task đã được nộp",
+          id,
+        );
       }
     }
     if (dto.status === "APPROVED" && task.assignee_id) {
-      await this.notify(task.assignee_id, "TASK_APPROVED", "Task của bạn đã được duyệt", id);
+      await this.notify(
+        task.assignee_id,
+        "TASK_APPROVED",
+        "Task của bạn đã được duyệt",
+        id,
+      );
     }
     if (dto.status === "REJECTED" && task.assignee_id) {
-      await this.notify(task.assignee_id, "TASK_REJECTED", "Task của bạn bị từ chối", id);
+      await this.notify(
+        task.assignee_id,
+        "TASK_REJECTED",
+        "Task của bạn bị từ chối",
+        id,
+      );
     }
 
     return updated;
@@ -450,14 +762,19 @@ export class TaskAutoTasksService {
   async submit(id: string, dto: SubmitTaskDto, userId: string) {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) throw new NotFoundException("Task not found");
-    if (task.assignee_id !== userId) throw new ForbiddenException("Not your task");
+    if (task.assignee_id !== userId)
+      throw new ForbiddenException("Not your task");
     if (!["ASSIGNED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Task is not in a submittable state");
     }
 
     const updated = await this.prisma.task.update({
       where: { id },
-      data: { status: "SUBMITTED", submitted_at: new Date(), result_url: dto.result_url },
+      data: {
+        status: "SUBMITTED",
+        submitted_at: new Date(),
+        result_url: dto.result_url,
+      },
       include: this.taskInclude,
     });
 
@@ -466,7 +783,12 @@ export class TaskAutoTasksService {
       select: { leader_id: true },
     });
     if (team?.leader_id) {
-      await this.notify(team.leader_id, "TASK_SUBMITTED", "Task đã được nộp", id);
+      await this.notify(
+        team.leader_id,
+        "TASK_SUBMITTED",
+        "Task đã được nộp",
+        id,
+      );
     }
 
     return updated;
@@ -491,27 +813,37 @@ export class TaskAutoTasksService {
     });
 
     if (task.assignee_id) {
-      const title = dto.action === "APPROVED" ? "Task đã được duyệt" : "Task bị từ chối";
+      const title =
+        dto.action === "APPROVED" ? "Task đã được duyệt" : "Task bị từ chối";
       await this.notify(task.assignee_id, `TASK_${dto.action}`, title, id);
     }
 
     if (dto.action === "APPROVED") {
-      await this.videoService.uploadPendingToDrive(id).catch(err =>
-        this.logger.warn(`[review] uploadPendingToDrive failed for task ${id}: ${err.message}`),
-      );
+      await this.videoService
+        .uploadPendingToDrive(id)
+        .catch((err) =>
+          this.logger.warn(
+            `[review] uploadPendingToDrive failed for task ${id}: ${err.message}`,
+          ),
+        );
     }
 
     if (dto.action === "REJECTED") {
-      await this.videoService.deletePendingVideo(id).catch(err =>
-        this.logger.warn(`[review] deletePendingVideo failed for task ${id}: ${err.message}`),
-      );
+      await this.videoService
+        .deletePendingVideo(id)
+        .catch((err) =>
+          this.logger.warn(
+            `[review] deletePendingVideo failed for task ${id}: ${err.message}`,
+          ),
+        );
     }
 
     return updated;
   }
 
   async getDashboard(userId: string, roles: string[]) {
-    const isAdminOrManager = roles.includes("ADMIN") || roles.includes("MANAGER");
+    const isAdminOrManager =
+      roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard();
     if (isLeaderOnly) return this.getLeaderDashboard(userId);
@@ -522,26 +854,61 @@ export class TaskAutoTasksService {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
-    const [tasksByStatus, todayDeadline, overdue, monthlyCompleted, contentCounts, totalEditors, approvedEditors, pendingApprovals] = await Promise.all([
+    const [
+      tasksByStatus,
+      todayDeadline,
+      overdue,
+      monthlyCompleted,
+      contentCounts,
+      totalEditors,
+      approvedEditors,
+      pendingApprovals,
+    ] = await Promise.all([
       this.prisma.task.groupBy({ by: ["status"], _count: { id: true } }),
-      this.prisma.task.count({ where: { deadline: { gte: todayStart, lt: todayEnd }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
-      this.prisma.task.count({ where: { deadline: { lt: now }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
-      this.prisma.task.count({ where: { status: "APPROVED", reviewed_at: { gte: monthStart, lt: monthEnd } } }),
+      this.prisma.task.count({
+        where: {
+          deadline: { gte: todayStart, lt: todayEnd },
+          status: { notIn: ["APPROVED", "CANCELLED"] },
+        },
+      }),
+      this.prisma.task.count({
+        where: {
+          deadline: { lt: now },
+          status: { notIn: ["APPROVED", "CANCELLED"] },
+        },
+      }),
+      this.prisma.task.count({
+        where: {
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+      }),
       this.prisma.content.groupBy({ by: ["status"], _count: { id: true } }),
       this.prisma.user.count({ where: { is_active: true } }),
       this.prisma.editorApproval.count({ where: { status: "APPROVED" } }),
       this.prisma.editorApproval.count({ where: { status: "PENDING" } }),
     ]);
 
-    const taskMap = Object.fromEntries(tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]));
-    const contentMap = Object.fromEntries(contentCounts.map((r) => [r.status.toLowerCase(), r._count.id]));
+    const taskMap = Object.fromEntries(
+      tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
+    );
+    const contentMap = Object.fromEntries(
+      contentCounts.map((r) => [r.status.toLowerCase(), r._count.id]),
+    );
 
     return {
       scope: "global" as const,
-      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      tasks: {
+        total: Object.values(taskMap).reduce((s, v) => s + v, 0),
+        ...taskMap,
+      },
       today_deadline: todayDeadline,
       overdue,
       monthly_completed: monthlyCompleted,
@@ -551,7 +918,11 @@ export class TaskAutoTasksService {
         used: contentMap["used"] ?? 0,
         archived: contentMap["archived"] ?? 0,
       },
-      editors: { total: totalEditors, approved: approvedEditors, pending_approval: pendingApprovals },
+      editors: {
+        total: totalEditors,
+        approved: approvedEditors,
+        pending_approval: pendingApprovals,
+      },
     };
   }
 
@@ -564,26 +935,46 @@ export class TaskAutoTasksService {
       include: {
         members: {
           where: { user: { is_active: true } },
-          include: { user: { select: { id: true, full_name: true, email: true } } },
+          include: {
+            user: { select: { id: true, full_name: true, email: true } },
+          },
         },
       },
     });
 
-    if (!team) return { scope: "team" as const, team: null, tasks: { total: 0 }, members: [], kpi: null };
+    if (!team)
+      return {
+        scope: "team" as const,
+        team: null,
+        tasks: { total: 0 },
+        members: [],
+        kpi: null,
+      };
 
     const memberIds = team.members.map((m) => m.user_id);
 
     const [tasksByStatus, memberTaskRows, editorKpis] = await Promise.all([
-      this.prisma.task.groupBy({ by: ["status"], where: { team_id: team.id }, _count: { id: true } }),
       this.prisma.task.groupBy({
-        by: ["assignee_id", "status"],
-        where: { assignee_id: { in: memberIds }, status: { notIn: ["CANCELLED"] } },
+        by: ["status"],
+        where: { team_id: team.id },
         _count: { id: true },
       }),
-      this.prisma.editorKpi.findMany({ where: { user_id: { in: memberIds }, month: currentMonth } }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id", "status"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: { notIn: ["CANCELLED"] },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.editorKpi.findMany({
+        where: { user_id: { in: memberIds }, month: currentMonth },
+      }),
     ]);
 
-    const taskMap = Object.fromEntries(tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]));
+    const taskMap = Object.fromEntries(
+      tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
+    );
     const memberStats: Record<string, Record<string, number>> = {};
     for (const r of memberTaskRows) {
       const uid = r.assignee_id!;
@@ -611,52 +1002,94 @@ export class TaskAutoTasksService {
 
     const kpiTotal = editorKpis.reduce((s, k) => s + k.total_target, 0);
     const kpiVideoWin = editorKpis.reduce((s, k) => s + (k.video_win ?? 0), 0);
-    const kpiContentNew = editorKpis.reduce((s, k) => s + (k.content_new ?? 0), 0);
-    const kpiProductPlanned = editorKpis.reduce((s, k) => s + (k.product_planned ?? 0), 0);
+    const kpiContentNew = editorKpis.reduce(
+      (s, k) => s + (k.content_new ?? 0),
+      0,
+    );
+    const kpiProductPlanned = editorKpis.reduce(
+      (s, k) => s + (k.product_planned ?? 0),
+      0,
+    );
     const kpiCompleted = taskMap["approved"] ?? 0;
 
     return {
       scope: "team" as const,
       team: { id: team.id, name: team.name, member_count: team.members.length },
-      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      tasks: {
+        total: Object.values(taskMap).reduce((s, v) => s + v, 0),
+        ...taskMap,
+      },
       members,
-      kpi: { month: currentMonth, total_target: kpiTotal, completed: kpiCompleted, video_win: kpiVideoWin, content_new: kpiContentNew, product_planned: kpiProductPlanned },
+      kpi: {
+        month: currentMonth,
+        total_target: kpiTotal,
+        completed: kpiCompleted,
+        video_win: kpiVideoWin,
+        content_new: kpiContentNew,
+        product_planned: kpiProductPlanned,
+      },
     };
   }
 
   private async getPersonalDashboard(userId: string) {
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, myKpiRows] = await Promise.all([
-      this.prisma.task.groupBy({ by: ["status"], where: { assignee_id: userId }, _count: { id: true } }),
-      this.prisma.task.count({ where: { assignee_id: userId, deadline: { gte: todayStart, lt: todayEnd }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
-      this.prisma.task.count({ where: { assignee_id: userId, deadline: { lt: now }, status: { notIn: ["APPROVED", "CANCELLED"] } } }),
-      this.prisma.editorKpi.findMany({
-        where: { user_id: userId, month: currentMonth },
-        include: {
-          allocations: {
-            include: {
-              content_line: { select: { id: true, name: true } },
-              product_line: { select: { id: true, name: true } },
+    const [tasksByStatus, todayDeadline, overdue, myKpiRows] =
+      await Promise.all([
+        this.prisma.task.groupBy({
+          by: ["status"],
+          where: { assignee_id: userId },
+          _count: { id: true },
+        }),
+        this.prisma.task.count({
+          where: {
+            assignee_id: userId,
+            deadline: { gte: todayStart, lt: todayEnd },
+            status: { notIn: ["APPROVED", "CANCELLED"] },
+          },
+        }),
+        this.prisma.task.count({
+          where: {
+            assignee_id: userId,
+            deadline: { lt: now },
+            status: { notIn: ["APPROVED", "CANCELLED"] },
+          },
+        }),
+        this.prisma.editorKpi.findMany({
+          where: { user_id: userId, month: currentMonth },
+          include: {
+            allocations: {
+              include: {
+                content_line: { select: { id: true, name: true } },
+                product_line: { select: { id: true, name: true } },
+              },
             },
           },
-        },
-      }),
-    ]);
+        }),
+      ]);
 
-    const taskMap = Object.fromEntries(tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]));
+    const taskMap = Object.fromEntries(
+      tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
+    );
     const completed = taskMap["approved"] ?? 0;
 
     // Gộp tất cả KPI các team trong tháng (editor thuộc nhiều team)
-    const sum = <K extends keyof typeof myKpiRows[0]>(field: K) =>
+    const sum = <K extends keyof (typeof myKpiRows)[0]>(field: K) =>
       myKpiRows.reduce((s, k) => s + ((k[field] as number) ?? 0), 0);
 
     // Gộp phân bổ theo ContentLine/ProductLine từ mọi team KPI trong tháng (cộng dồn weight trùng dòng)
     const mergeAllocations = (type: "CONTENT_LINE" | "PRODUCT_LINE") => {
-      const merged = new Map<string, { id: string; name: string; weight: number }>();
+      const merged = new Map<
+        string,
+        { id: string; name: string; weight: number }
+      >();
       for (const k of myKpiRows) {
         for (const a of k.allocations) {
           if (a.type !== type) continue;
@@ -665,47 +1098,56 @@ export class TaskAutoTasksService {
           if (!id) continue;
           const existing = merged.get(id);
           if (existing) existing.weight += a.quantity;
-          else merged.set(id, { id, name: line?.name ?? "—", weight: a.quantity });
+          else
+            merged.set(id, { id, name: line?.name ?? "—", weight: a.quantity });
         }
       }
       return [...merged.values()];
     };
 
-    const myKpi = myKpiRows.length > 0 ? {
-      month: currentMonth,
-      total_target: sum("total_target"),
-      video_win: sum("video_win"),
-      video_fail: sum("video_fail"),
-      kpi_extra: sum("kpi_extra"),
-      content_new: sum("content_new"),
-      content_collected: sum("content_collected"),
-      content_win_cover: sum("content_win_cover"),
-      product_planned: sum("product_planned"),
-      product_win_collect: sum("product_win_collect"),
-      content_allocations: mergeAllocations("CONTENT_LINE"),
-      product_allocations: mergeAllocations("PRODUCT_LINE"),
-    } : null;
+    const myKpi =
+      myKpiRows.length > 0
+        ? {
+            month: currentMonth,
+            total_target: sum("total_target"),
+            video_win: sum("video_win"),
+            video_fail: sum("video_fail"),
+            kpi_extra: sum("kpi_extra"),
+            content_new: sum("content_new"),
+            content_collected: sum("content_collected"),
+            content_win_cover: sum("content_win_cover"),
+            product_planned: sum("product_planned"),
+            product_win_collect: sum("product_win_collect"),
+            content_allocations: mergeAllocations("CONTENT_LINE"),
+            product_allocations: mergeAllocations("PRODUCT_LINE"),
+          }
+        : null;
 
     return {
       scope: "personal" as const,
-      tasks: { total: Object.values(taskMap).reduce((s, v) => s + v, 0), ...taskMap },
+      tasks: {
+        total: Object.values(taskMap).reduce((s, v) => s + v, 0),
+        ...taskMap,
+      },
       today_deadline: todayDeadline,
       overdue,
-      kpi: myKpi ? {
-        month: myKpi.month,
-        completed,
-        total_target: myKpi.total_target,
-        video_win: myKpi.video_win,
-        video_fail: myKpi.video_fail,
-        kpi_extra: myKpi.kpi_extra,
-        content_new: myKpi.content_new,
-        content_collected: myKpi.content_collected,
-        content_win_cover: myKpi.content_win_cover,
-        product_planned: myKpi.product_planned,
-        product_win_collect: myKpi.product_win_collect,
-        content_allocations: myKpi.content_allocations,
-        product_allocations: myKpi.product_allocations,
-      } : null,
+      kpi: myKpi
+        ? {
+            month: myKpi.month,
+            completed,
+            total_target: myKpi.total_target,
+            video_win: myKpi.video_win,
+            video_fail: myKpi.video_fail,
+            kpi_extra: myKpi.kpi_extra,
+            content_new: myKpi.content_new,
+            content_collected: myKpi.content_collected,
+            content_win_cover: myKpi.content_win_cover,
+            product_planned: myKpi.product_planned,
+            product_win_collect: myKpi.product_win_collect,
+            content_allocations: myKpi.content_allocations,
+            product_allocations: myKpi.product_allocations,
+          }
+        : null,
     };
   }
 
@@ -719,7 +1161,12 @@ export class TaskAutoTasksService {
     return { success: true };
   }
 
-  private allowedTransition(from: string, to: string, isPrivileged: boolean, isAssignee: boolean): boolean {
+  private allowedTransition(
+    from: string,
+    to: string,
+    isPrivileged: boolean,
+    isAssignee: boolean,
+  ): boolean {
     const TRANSITIONS: Record<string, string[]> = {
       PENDING: ["ASSIGNED", "CANCELLED"],
       ASSIGNED: ["IN_PROGRESS", "SUBMITTED", "CANCELLED"],
@@ -731,14 +1178,22 @@ export class TaskAutoTasksService {
     };
     const allowed = TRANSITIONS[from] ?? [];
     if (!allowed.includes(to)) return false;
-    if (["APPROVED", "REJECTED"].includes(to) && !isPrivileged) return false;
-    if (to === "CANCELLED" && !isPrivileged) return false;
-    return true;
+    if (["APPROVED", "REJECTED", "CANCELLED"].includes(to)) return isPrivileged;
+    return isPrivileged || isAssignee;
   }
 
-  private async notify(userId: string, type: string, title: string, taskId: string) {
+  private async notify(
+    userId: string,
+    type: string,
+    title: string,
+    taskId: string,
+  ) {
     await this.prisma.notification
       .create({ data: { user_id: userId, type, title, task_id: taskId } })
-      .catch(() => null);
+      .catch((err) =>
+        this.logger.warn(
+          `[notify] failed to create ${type} for user ${userId}: ${err.message}`,
+        ),
+      );
   }
 }
