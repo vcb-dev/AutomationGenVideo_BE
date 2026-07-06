@@ -10,7 +10,7 @@ import { GoogleDriveStorageService } from './upload/google-drive-storage.service
 import { MediaLibraryController } from './upload/media-library.controller';
 import { MediaLibraryService } from './upload/media-library.service';
 import { ChunkedUploadController } from './upload/chunked-upload.controller';
-import { InternalUploadController } from './upload/internal-upload.controller';
+import { ThumbnailMigrationService } from './upload/thumbnail-migration.service';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -69,7 +69,6 @@ import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
     MediaController,
     MediaLibraryController,
     ChunkedUploadController,
-    InternalUploadController,
     AccountsController,
     OAuthController,
     PublishController,
@@ -86,6 +85,7 @@ import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
     GoogleDriveStorageService,
     UploadService,
     MediaLibraryService,
+    ThumbnailMigrationService,
     // Accounts
     AccountsService,
     // OAuth
