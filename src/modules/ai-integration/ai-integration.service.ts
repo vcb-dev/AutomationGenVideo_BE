@@ -1501,6 +1501,49 @@ export class AiIntegrationService {
   }
 
   /**
+   * Generate task-auto video script (adapt content đã "win" cho sản phẩm mới).
+   * AI Service chịu trách nhiệm đọc file nguồn + build prompt + gọi DeepSeek;
+   * BE chỉ nhận kết quả về để cache/lưu (xem VideoScriptService).
+   */
+  async generateVideoScript(params: {
+    fileUrl?: string | null;
+    scriptText?: string | null;
+    contentTitle?: string | null;
+    contentLine?: string | null;
+    contentMarket?: string | null;
+    productName?: string | null;
+    productSku?: string | null;
+    productPrice?: string | null;
+    productMaterial?: string | null;
+    productPriceSegment?: string | null;
+    productLine?: string | null;
+    productMarket?: string | null;
+  }): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/task-auto/video-script/generate/`;
+    this.logger.log(`Calling AI Service: ${url} for productName=${params.productName}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, params, {
+          timeout: 120000, // DeepSeek generation can take a while
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service video-script error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to generate video script',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to generate video script', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string): Promise<any> {
