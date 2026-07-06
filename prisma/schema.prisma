@@ -61,6 +61,12 @@ model User {
   clone_videos_edited       CloneVideo[]          @relation("EditorCloneVideos")
   action_items_assigned     ActionItem[]          @relation("AssigneeActionItems")
   video_scores              VideoScore[]          @relation("UserVideoScores")
+  // Attendance relations
+  meeting_sessions_created  MeetingSession[]      @relation("MeetingSessionCreator")
+  meeting_sessions_finalized MeetingSession[]     @relation("MeetingSessionFinalizer")
+  attendance_records        AttendanceRecord[]    @relation("AttendanceOf")
+  attendance_marked         AttendanceRecord[]    @relation("AttendanceMarkedBy")
+  meeting_session_logs      MeetingSessionLog[]   @relation("MeetingLogActor")
   // toan24 relations
   teams_leading             Team[]           @relation("TeamLeaderOf")
   team_memberships          TeamMember[]     @relation("TeamMembershipOf")
@@ -1452,6 +1458,7 @@ model Team {
   clone_videos         CloneVideo[]
   action_items         ActionItem[]
   kpi_snapshots        TeamKpiSnapshot[]
+  meeting_sessions     MeetingSession[]
 
   @@index([leader_id])
   @@map("teams")
@@ -1689,6 +1696,13 @@ model EditorSource {
 enum TeamPushRequestType {
   PRODUCT
   CONTENT
+}
+
+enum AttendanceStatus {
+  PRESENT  // Có mặt
+  ABSENT   // Vắng mặt (không phép — note optional)
+  ON_LEAVE // Nghỉ phép (có phép — note bắt buộc)
+  LATE     // Đi muộn (do người điểm danh tự chọn thủ công)
 }
 
 /// Yêu cầu đẩy product/content từ kho cá nhân → kho team, chờ leader duyệt.
@@ -2187,6 +2201,7 @@ model ReportPeriod {
   clone_videos         CloneVideo[]
   action_items         ActionItem[]
   kpi_snapshots        TeamKpiSnapshot[]
+  meeting_sessions     MeetingSession[]
 
   @@unique([type, start_date])
   @@index([type])
@@ -2482,4 +2497,71 @@ model EditorSourceWarehouse {
   @@id([editor_source_id, month])
   @@index([month])
   @@map("editor_source_warehouses")
+}
+
+// ─────────────────────────────────────────────
+//  ATTENDANCE (Điểm danh buổi họp tuần)
+// ─────────────────────────────────────────────
+
+/// Buổi họp team định kỳ hàng tuần
+model MeetingSession {
+  id              String   @id @default(uuid())
+  team_id         String
+  period_id       String                          // FK → ReportPeriod (type = WEEK)
+  title           String?                         // "Họp tuần 1 - T7/2026" — optional label
+  scheduled_at    DateTime                        // Mốc giờ họp — chỉ hiển thị/tham khảo, không tự tính LATE
+  notes           String?  @db.Text
+  created_by      String                          // FK → users (người tạo)
+  is_finalized    Boolean  @default(false)
+  finalized_at    DateTime?
+  finalized_by_id String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  team         Team                @relation(fields: [team_id],   references: [id])
+  period       ReportPeriod        @relation(fields: [period_id], references: [id])
+  creator      User                @relation("MeetingSessionCreator", fields: [created_by], references: [id])
+  finalized_by User?               @relation("MeetingSessionFinalizer", fields: [finalized_by_id], references: [id])
+  attendances  AttendanceRecord[]
+  logs         MeetingSessionLog[]
+
+  @@unique([team_id, period_id])              // 1 session / team / kỳ tuần → key upsert
+  @@index([team_id])
+  @@index([period_id])
+  @@map("meeting_sessions")
+}
+
+/// Điểm danh từng thành viên cho 1 buổi họp
+model AttendanceRecord {
+  id           String           @id @default(uuid())
+  session_id   String
+  user_id      String           // Thành viên được điểm danh
+  status       AttendanceStatus @default(PRESENT)
+  note         String?          @db.Text     // Bắt buộc khi ON_LEAVE (enforce ở DTO/service)
+  marked_by_id String           // Người thực hiện điểm danh (self hoặc manager)
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @updatedAt
+
+  session   MeetingSession @relation(fields: [session_id],   references: [id], onDelete: Cascade)
+  user      User           @relation("AttendanceOf",       fields: [user_id],       references: [id])
+  marked_by User           @relation("AttendanceMarkedBy", fields: [marked_by_id], references: [id])
+
+  @@unique([session_id, user_id])            // 1 bản ghi / người / buổi → basis upsert
+  @@index([user_id])
+  @@index([session_id])
+  @@map("attendance_records")
+}
+
+model MeetingSessionLog {
+  id         String   @id @default(uuid())
+  session_id String
+  actor_id   String
+  action     String   // "FINALIZE" | "REOPEN"
+  created_at DateTime @default(now())
+
+  session MeetingSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  actor   User           @relation("MeetingLogActor", fields: [actor_id], references: [id])
+
+  @@index([session_id])
+  @@map("meeting_session_logs")
 }

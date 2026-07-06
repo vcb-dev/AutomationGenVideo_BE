@@ -31,6 +31,9 @@ import {
   CreateActionItemDto,
   UpdateActionItemDto,
   CreateVideoScoreDto,
+  CreateMeetingSessionDto,
+  UpsertAttendanceDto,
+  BulkAttendanceDto,
 } from './dto';
 
 @ApiTags('Content Report')
@@ -285,5 +288,111 @@ export class ContentReportController {
   @ApiOperation({ summary: 'Tạo dữ liệu team và kỳ báo cáo mặc định (Chỉ Admin)' })
   async seedInitialData() {
     return this.contentReportService.seedInitialData();
+  }
+
+  // ───────────────────── ATTENDANCE ─────────────────────
+
+  /**
+   * Tạo hoặc cập nhật buổi họp.
+   * Chỉ Manager/Leader/Admin. Manager chỉ được tạo cho team của mình.
+   */
+  @Post('meetings')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Tạo / cập nhật buổi họp (Manager/Leader/Admin)' })
+  async upsertMeetingSession(
+    @Body() dto: CreateMeetingSessionDto,
+    @Request() req: any,
+  ) {
+    return this.contentReportService.upsertMeetingSession(dto, req.user.id);
+  }
+
+  /**
+   * Lấy session + DS điểm danh của team theo kỳ.
+   */
+  @Get('meetings')
+  @ApiOperation({ summary: 'Lấy session họp + DS điểm danh theo team và kỳ' })
+  @ApiQuery({ name: 'team', type: String, required: true, example: 'K1' })
+  @ApiQuery({ name: 'periodId', type: String, required: true })
+  async getMeetingSession(
+    @Query('team') team: string,
+    @Query('periodId') periodId: string,
+  ) {
+    return this.contentReportService.getMeetingSession(team, periodId);
+  }
+
+  /**
+   * Tự điểm danh (self check-in).
+   * user_id BUỘC từ req.user.id (JWT) — không nhận từ body.
+   * Kiểm tra user thuộc team của session trước khi upsert.
+   */
+  @Post('meetings/:id/attendance')
+  @ApiOperation({ summary: 'Tự điểm danh (self check-in) — user_id lấy từ JWT' })
+  async selfCheckIn(
+    @Param('id') sessionId: string,
+    @Request() req: any,
+    @Body() dto: UpsertAttendanceDto,
+  ) {
+    return this.contentReportService.selfCheckIn(sessionId, req.user.id, dto);
+  }
+
+  /**
+   * Manager/Admin sửa điểm danh 1 người.
+   * Kiểm tra session.team_id khớp team mà actor quản lý.
+   */
+  @Patch('meetings/:id/attendance/:userId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Manager sửa điểm danh 1 người (Manager/Leader/Admin)' })
+  async managerUpsertAttendance(
+    @Param('id') sessionId: string,
+    @Param('userId') targetUserId: string,
+    @Request() req: any,
+    @Body() dto: UpsertAttendanceDto,
+  ) {
+    return this.contentReportService.managerUpsertAttendance(
+      sessionId,
+      targetUserId,
+      dto,
+      req.user.id,
+    );
+  }
+
+  /**
+   * Manager/Admin bulk upsert điểm danh nhiều người trong 1 request.
+   * Toàn bộ chạy trong transaction — 1 fail → rollback hết.
+   */
+  @Patch('meetings/:id/attendance/bulk')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Bulk điểm danh cả team trong 1 transaction (Manager/Leader/Admin)' })
+  async bulkUpsertAttendance(
+    @Param('id') sessionId: string,
+    @Request() req: any,
+    @Body() dto: BulkAttendanceDto,
+  ) {
+    return this.contentReportService.bulkUpsertAttendance(sessionId, dto, req.user.id);
+  }
+
+  @Post('meetings/:id/finalize')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Chốt buổi họp (Manager/Leader/Admin)' })
+  async finalizeMeetingSession(
+    @Param('id') sessionId: string,
+    @Request() req: any,
+  ) {
+    return this.contentReportService.finalizeMeetingSession(sessionId, req.user.id);
+  }
+
+  @Post('meetings/:id/reopen')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Mở lại buổi họp (Manager/Leader/Admin)' })
+  async reopenMeetingSession(
+    @Param('id') sessionId: string,
+    @Request() req: any,
+  ) {
+    return this.contentReportService.reopenMeetingSession(sessionId, req.user.id);
   }
 }

@@ -7,4 +7,5 @@ export * from './editor-performance.dto';
 export * from './clone-video.dto';
 export * from './action-item.dto';
 export * from './video-score.dto';
+export * from './attendance.dto';
 

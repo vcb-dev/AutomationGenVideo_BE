@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { PeriodType, VideoStatus } from '@prisma/client';
+import { PeriodType, VideoStatus, AttendanceStatus, UserRole } from '@prisma/client';
+import { DateTime } from 'luxon';
 import {
   CreateTeamDto,
   CreatePeriodDto,
@@ -15,6 +16,9 @@ import {
   CreateActionItemDto,
   UpdateActionItemDto,
   CreateVideoScoreDto,
+  CreateMeetingSessionDto,
+  UpsertAttendanceDto,
+  BulkAttendanceDto,
 } from './dto';
 
 @Injectable()
@@ -758,5 +762,496 @@ export class ContentReportService {
 
   private formatViews(views: number): string {
     return views.toString();
+  }
+
+  // ───────────────────── ATTENDANCE ─────────────────────
+
+  /**
+   * Kiểm tra actor có quyền quản lý team không.
+   * Admin: được mọi team.
+   * Manager/Leader: chỉ được team của mình (team_id khớp với user.team hoặc user là leader).
+   */
+  private async assertManagerCanEditTeam(actorId: string, teamId: string): Promise<void> {
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: {
+        roles: true,
+        team: true,
+        teams_leading: { select: { id: true, name: true } },
+        team_memberships: { select: { team_id: true } }
+      },
+    });
+    if (!actor) throw new NotFoundException('Không tìm thấy user');
+
+    this.logger.log(
+      `assertManagerCanEditTeam debug: actorId=${actorId}, teamId=${teamId}, roles=${JSON.stringify(actor.roles)}, teamName=${actor.team}`
+    );
+
+    // Admin bypasses all checks
+    if (actor.roles.includes(UserRole.ADMIN)) return;
+
+    // Resolve team_ids from actor.team (parsed as comma-separated list, e.g. "Team K1, MEDIA, Scale Data" -> ["K1", "MEDIA", "Scale Data"])
+    const resolvedTeamIds: string[] = [];
+    if (actor.team) {
+      const parsedNames = actor.team
+        .split(',')
+        .map((t) => {
+          let trimmed = t.trim();
+          if (trimmed.toLowerCase().startsWith('team ')) {
+            trimmed = trimmed.substring(5).trim();
+          }
+          return trimmed;
+        })
+        .filter((t) => t.length > 0);
+
+      this.logger.log(`assertManagerCanEditTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
+
+      if (parsedNames.length > 0) {
+        const matchedTeams = await this.prisma.team.findMany({
+          where: {
+            name: {
+              in: parsedNames,
+              mode: 'insensitive',
+            },
+          },
+          select: { id: true },
+        });
+        matchedTeams.forEach((t) => resolvedTeamIds.push(t.id));
+      }
+    }
+
+    // Collect all team IDs this user is associated with
+    const associatedTeamIds = new Set<string>();
+    resolvedTeamIds.forEach((id) => associatedTeamIds.add(id));
+    (actor.teams_leading || []).forEach((t) => associatedTeamIds.add(t.id));
+    (actor.team_memberships || []).forEach((m) => associatedTeamIds.add(m.team_id));
+
+    this.logger.log(
+      `assertManagerCanEditTeam debug: resolvedTeamIds=${JSON.stringify(resolvedTeamIds)}, leadingTeamIds=${JSON.stringify(
+        (actor.teams_leading || []).map((t) => t.id)
+      )}, associatedTeamIds=${JSON.stringify(Array.from(associatedTeamIds))}`
+    );
+
+    const hasAccess = associatedTeamIds.has(teamId);
+    const hasRequiredRole =
+      actor.roles.includes(UserRole.MANAGER) || actor.roles.includes(UserRole.LEADER);
+
+    if (!hasRequiredRole || !hasAccess) {
+      throw new ForbiddenException('Bạn không có quyền quản lý session của team này');
+    }
+  }
+
+  /**
+   * Kiểm tra member có thuộc team của session không
+   * (tránh member team này điểm danh vào session team khác).
+   */
+  private async assertMemberBelongsToTeam(userId: string, teamId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        roles: true,
+        team: true,
+        team_memberships: { select: { team_id: true } }
+      },
+    });
+    if (!user) throw new NotFoundException('Không tìm thấy user');
+
+    this.logger.log(
+      `assertMemberBelongsToTeam debug: userId=${userId}, teamId=${teamId}, teamName=${user.team}`
+    );
+
+    // Resolve team_ids from user.team (comma-separated list)
+    const resolvedTeamIds: string[] = [];
+    if (user.team) {
+      const parsedNames = user.team
+        .split(',')
+        .map((t) => {
+          let trimmed = t.trim();
+          if (trimmed.toLowerCase().startsWith('team ')) {
+            trimmed = trimmed.substring(5).trim();
+          }
+          return trimmed;
+        })
+        .filter((t) => t.length > 0);
+
+      this.logger.log(`assertMemberBelongsToTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
+
+      if (parsedNames.length > 0) {
+        const matchedTeams = await this.prisma.team.findMany({
+          where: {
+            name: {
+              in: parsedNames,
+              mode: 'insensitive',
+            },
+          },
+          select: { id: true },
+        });
+        matchedTeams.forEach((t) => resolvedTeamIds.push(t.id));
+      }
+    }
+
+    const associatedTeamIds = new Set<string>();
+    resolvedTeamIds.forEach((id) => associatedTeamIds.add(id));
+    (user.team_memberships || []).forEach((m) => associatedTeamIds.add(m.team_id));
+
+    this.logger.log(
+      `assertMemberBelongsToTeam debug: resolvedTeamIds=${JSON.stringify(resolvedTeamIds)}, associatedTeamIds=${JSON.stringify(
+        Array.from(associatedTeamIds)
+      )}`
+    );
+
+    if (!associatedTeamIds.has(teamId)) {
+      throw new ForbiddenException('Bạn chỉ có thể điểm danh trong team của mình');
+    }
+  }
+
+  /**
+   * Tạo hoặc cập nhật buổi họp cho 1 team + kỳ.
+   * Unique key: [team_id, period_id] → upsert an toàn.
+   */
+  async upsertMeetingSession(dto: CreateMeetingSessionDto, actorId: string) {
+    const team = await this.prisma.team.findUnique({ where: { name: dto.team } });
+    if (!team) throw new NotFoundException(`Team "${dto.team}" không tồn tại`);
+
+    const period = await this.prisma.reportPeriod.findUnique({ where: { id: dto.period_id } });
+    if (!period) throw new NotFoundException('Kỳ báo cáo không tồn tại');
+
+    // Kiểm tra quyền: Manager/Leader chỉ tạo được cho team mình
+    await this.assertManagerCanEditTeam(actorId, team.id);
+
+    return this.prisma.meetingSession.upsert({
+      where: { team_id_period_id: { team_id: team.id, period_id: dto.period_id } },
+      create: {
+        team_id: team.id,
+        period_id: dto.period_id,
+        title: dto.title,
+        scheduled_at: new Date(dto.scheduled_at),
+        notes: dto.notes,
+        created_by: actorId,
+      },
+      update: {
+        title: dto.title,
+        scheduled_at: new Date(dto.scheduled_at),
+        notes: dto.notes,
+      },
+      include: {
+        team: { select: { id: true, name: true } },
+        period: { select: { id: true, label: true, start_date: true, end_date: true } },
+        creator: { select: { id: true, full_name: true } },
+        attendances: {
+          include: {
+            user: { select: { id: true, full_name: true, image_url: true } },
+            marked_by: { select: { id: true, full_name: true } },
+          },
+          orderBy: { created_at: 'asc' },
+        },
+      },
+    });
+  }
+
+  /**
+   * Lấy session + DS điểm danh của 1 team + kỳ.
+   */
+  async getMeetingSession(team: string, periodId: string) {
+    const teamRecord = await this.prisma.team.findUnique({ where: { name: team } });
+    if (!teamRecord) throw new NotFoundException(`Team "${team}" không tồn tại`);
+
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { team_id_period_id: { team_id: teamRecord.id, period_id: periodId } },
+      include: {
+        team: { select: { id: true, name: true } },
+        period: { select: { id: true, label: true, start_date: true, end_date: true } },
+        creator: { select: { id: true, full_name: true } },
+        finalized_by: { select: { id: true, full_name: true } },
+        attendances: {
+          include: {
+            user: { select: { id: true, full_name: true, image_url: true } },
+            marked_by: { select: { id: true, full_name: true } },
+          },
+          orderBy: { created_at: 'asc' },
+        },
+      },
+    });
+
+    // Query all active users that belong to this team by parsing their user.team field
+    const allUsers = await this.prisma.user.findMany({
+      where: { is_active: true },
+      select: { id: true, full_name: true, team: true, image_url: true },
+      orderBy: { full_name: 'asc' }
+    });
+
+    const teamMembers = allUsers
+      .filter((user) => {
+        if (!user.team) return false;
+        const parsedNames = user.team
+          .split(',')
+          .map((t) => {
+            let trimmed = t.trim();
+            if (trimmed.toLowerCase().startsWith('team ')) {
+              trimmed = trimmed.substring(5).trim();
+            }
+            return trimmed;
+          })
+          .filter((t) => t.length > 0);
+        return parsedNames.some((name) => name.toLowerCase() === team.toLowerCase());
+      })
+      .map((user) => ({
+        id: user.id,
+        full_name: user.full_name,
+        image_url: user.image_url,
+      }));
+
+    return {
+      session,
+      teamMembers,
+    };
+  }
+
+  /**
+   * Tự điểm danh (self check-in).
+   * userId BUỘC lấy từ JWT (req.user.id), không nhận từ body.
+   * Kiểm tra user phải thuộc team của session.
+   */
+  async selfCheckIn(sessionId: string, userId: string, dto: UpsertAttendanceDto) {
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, team_id: true, is_finalized: true },
+    });
+    if (!session) throw new NotFoundException('Không tìm thấy buổi họp');
+
+    if (session.is_finalized) {
+      throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    // Member chỉ được điểm danh trong team của mình
+    await this.assertMemberBelongsToTeam(userId, session.team_id);
+
+    return this.prisma.attendanceRecord.upsert({
+      where: { session_id_user_id: { session_id: sessionId, user_id: userId } },
+      create: {
+        session_id: sessionId,
+        user_id: userId,
+        status: dto.status,
+        note: dto.note,
+        marked_by_id: userId,
+      },
+      update: {
+        status: dto.status,
+        note: dto.note,
+        marked_by_id: userId,
+      },
+      include: {
+        user: { select: { id: true, full_name: true } },
+        marked_by: { select: { id: true, full_name: true } },
+      },
+    });
+  }
+
+  /**
+   * Manager/Admin sửa điểm danh từng người.
+   * Kiểm tra session.team_id khớp với team mà actor đang quản lý.
+   */
+  async managerUpsertAttendance(
+    sessionId: string,
+    targetUserId: string,
+    dto: UpsertAttendanceDto,
+    actorId: string,
+  ) {
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, team_id: true, is_finalized: true },
+    });
+    if (!session) throw new NotFoundException('Không tìm thấy buổi họp');
+
+    if (session.is_finalized) {
+      throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    // Kiểm tra actor có quyền quản lý team này
+    await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+    // Kiểm tra targetUser tồn tại
+    const targetUser = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!targetUser) throw new NotFoundException('Không tìm thấy user cần điểm danh');
+
+    return this.prisma.attendanceRecord.upsert({
+      where: { session_id_user_id: { session_id: sessionId, user_id: targetUserId } },
+      create: {
+        session_id: sessionId,
+        user_id: targetUserId,
+        status: dto.status,
+        note: dto.note,
+        marked_by_id: actorId,
+      },
+      update: {
+        status: dto.status,
+        note: dto.note,
+        marked_by_id: actorId,
+      },
+      include: {
+        user: { select: { id: true, full_name: true } },
+        marked_by: { select: { id: true, full_name: true } },
+      },
+    });
+  }
+
+  /**
+   * Manager/Admin bulk upsert điểm danh nhiều người trong 1 transaction.
+   * Nếu bất kỳ item nào lỗi → toàn bộ rollback.
+   */
+  async bulkUpsertAttendance(sessionId: string, dto: BulkAttendanceDto, actorId: string) {
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, team_id: true, is_finalized: true },
+    });
+    if (!session) throw new NotFoundException('Không tìm thấy buổi họp');
+
+    if (session.is_finalized) {
+      throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    // Kiểm tra actor có quyền quản lý team này
+    await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+    // Chạy toàn bộ trong 1 transaction — nếu 1 item fail → rollback hết
+    const results = await this.prisma.$transaction(
+      dto.records.map((r) =>
+        this.prisma.attendanceRecord.upsert({
+          where: { session_id_user_id: { session_id: sessionId, user_id: r.user_id } },
+          create: {
+            session_id: sessionId,
+            user_id: r.user_id,
+            status: r.status,
+            note: r.note,
+            marked_by_id: actorId,
+          },
+          update: {
+            status: r.status,
+            note: r.note,
+            marked_by_id: actorId,
+          },
+          include: {
+            user: { select: { id: true, full_name: true } },
+            marked_by: { select: { id: true, full_name: true } },
+          },
+        }),
+      ),
+    );
+
+    return { updated: results.length, records: results };
+  }
+
+  /**
+   * Chốt buổi họp.
+   */
+  async finalizeMeetingSession(sessionId: string, actorId: string) {
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, team_id: true, is_finalized: true },
+    });
+    if (!session) throw new NotFoundException('Không tìm thấy buổi họp');
+
+    // Ném lỗi rõ ràng nếu đã chốt rồi
+    if (session.is_finalized) {
+      throw new BadRequestException('Buổi họp đã được chốt trước đó, không cần chốt lại');
+    }
+
+    // Kiểm tra actor có quyền quản lý team của session không
+    await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.meetingSession.update({
+        where: { id: sessionId },
+        data: {
+          is_finalized: true,
+          finalized_at: new Date(),
+          finalized_by_id: actorId,
+        },
+        include: {
+          team: { select: { id: true, name: true } },
+          period: { select: { id: true, label: true } },
+          creator: { select: { id: true, full_name: true } },
+          finalized_by: { select: { id: true, full_name: true } },
+        },
+      });
+
+      // Tạo nhật ký log chốt session
+      await tx.meetingSessionLog.create({
+        data: {
+          session_id: sessionId,
+          actor_id: actorId,
+          action: 'FINALIZE',
+        },
+      });
+
+      return updated;
+    });
+  }
+
+  /**
+   * Mở lại buổi họp.
+   */
+  async reopenMeetingSession(sessionId: string, actorId: string) {
+    const session = await this.prisma.meetingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, team_id: true, is_finalized: true, finalized_at: true },
+    });
+    if (!session) throw new NotFoundException('Không tìm thấy buổi họp');
+
+    if (!session.is_finalized) {
+      throw new BadRequestException('Buổi họp chưa được chốt, không cần mở lại');
+    }
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { roles: true },
+    });
+    if (!actor) throw new NotFoundException('Không tìm thấy user');
+
+    const isAdmin = actor.roles.includes(UserRole.ADMIN);
+
+    if (!isAdmin) {
+      // Leader/Manager chỉ được phép mở lại nếu là người quản lý team và trong cùng ngày chốt
+      await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+      if (!session.finalized_at) {
+        throw new ForbiddenException('Thời điểm chốt buổi họp không hợp lệ');
+      }
+
+      const nowVn = DateTime.now().setZone('Asia/Ho_Chi_Minh');
+      const finalizedVn = DateTime.fromJSDate(session.finalized_at).setZone('Asia/Ho_Chi_Minh');
+
+      if (!nowVn.hasSame(finalizedVn, 'day')) {
+        throw new ForbiddenException('Đã quá thời hạn cho phép mở lại buổi họp (chỉ được phép trong ngày chốt)');
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.meetingSession.update({
+        where: { id: sessionId },
+        data: {
+          is_finalized: false,
+          finalized_at: null,
+          finalized_by_id: null,
+        },
+        include: {
+          team: { select: { id: true, name: true } },
+          period: { select: { id: true, label: true } },
+          creator: { select: { id: true, full_name: true } },
+          finalized_by: { select: { id: true, full_name: true } },
+        },
+      });
+
+      // Tạo nhật ký log mở lại session
+      await tx.meetingSessionLog.create({
+        data: {
+          session_id: sessionId,
+          actor_id: actorId,
+          action: 'REOPEN',
+        },
+      });
+
+      return updated;
+    });
   }
 }
