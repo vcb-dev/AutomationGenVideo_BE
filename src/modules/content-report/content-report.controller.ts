@@ -34,6 +34,8 @@ import {
   CreateMeetingSessionDto,
   UpsertAttendanceDto,
   BulkAttendanceDto,
+  AttendanceHistoryQueryDto,
+  UserHistoryQueryDto,
 } from './dto';
 
 @ApiTags('Content Report')
@@ -291,6 +293,40 @@ export class ContentReportController {
   }
 
   // ───────────────────── ATTENDANCE ─────────────────────
+
+  /**
+   * Lịch sử điểm danh cả team theo tháng (bảng ma trận).
+   * Chỉ Manager/Leader của team đó hoặc Admin.
+   */
+  @Get('attendance/history')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Lịch sử điểm danh cả team (Manager/Leader/Admin)' })
+  @ApiQuery({ name: 'team', type: String, required: true, example: 'K1' })
+  @ApiQuery({ name: 'month', type: Number, required: true, example: 7 })
+  @ApiQuery({ name: 'year', type: Number, required: true, example: 2026 })
+  async getAttendanceHistory(
+    @Query() query: AttendanceHistoryQueryDto,
+    @Request() req: any,
+  ) {
+    return this.contentReportService.getAttendanceHistory(query, req.user.id);
+  }
+
+  /**
+   * Lịch sử điểm danh của 1 cá nhân theo tháng.
+   * Member xem chính mình; Manager/Leader xem member thuộc team mình; Admin xem tất cả.
+   */
+  @Get('attendance/history/:userId')
+  @ApiOperation({ summary: 'Lịch sử điểm danh cá nhân' })
+  @ApiQuery({ name: 'month', type: Number, required: true, example: 7 })
+  @ApiQuery({ name: 'year', type: Number, required: true, example: 2026 })
+  async getUserAttendanceHistory(
+    @Param('userId') userId: string,
+    @Query() query: UserHistoryQueryDto,
+    @Request() req: any,
+  ) {
+    return this.contentReportService.getUserAttendanceHistory(userId, query, req.user.id);
+  }
 
   /**
    * Tạo hoặc cập nhật buổi họp.

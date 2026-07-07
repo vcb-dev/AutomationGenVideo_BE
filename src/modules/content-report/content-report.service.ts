@@ -19,6 +19,8 @@ import {
   CreateMeetingSessionDto,
   UpsertAttendanceDto,
   BulkAttendanceDto,
+  AttendanceHistoryQueryDto,
+  UserHistoryQueryDto,
 } from './dto';
 
 @Injectable()
@@ -1253,5 +1255,339 @@ export class ContentReportService {
 
       return updated;
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // ATTENDANCE HISTORY (read-only, lịch sử điểm danh)
+  // ─────────────────────────────────────────────
+
+  /**
+   * Bảng ma trận chuyên cần cả team trong 1 tháng.
+   * Chỉ Manager/Leader của team đó hoặc Admin mới xem được.
+   */
+  async getAttendanceHistory(dto: AttendanceHistoryQueryDto, actorId: string) {
+    const { team: teamName, month, year } = dto;
+
+    // Tìm team theo tên
+    const team = await this.prisma.team.findUnique({ where: { name: teamName } });
+    if (!team) throw new NotFoundException(`Team "${teamName}" không tồn tại`);
+
+    // Kiểm tra quyền: Admin bypass, Manager/Leader phải thuộc team
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { roles: true },
+    });
+    if (!actor) throw new NotFoundException('Không tìm thấy user');
+
+    const isAdmin = actor.roles.includes(UserRole.ADMIN);
+    if (!isAdmin) {
+      await this.assertManagerCanEditTeam(actorId, team.id);
+    }
+
+    // Tính range tháng/năm theo UTC
+    const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+    const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+
+    // Lấy tất cả sessions của team trong tháng
+    const sessions = await this.prisma.meetingSession.findMany({
+      where: {
+        team_id: team.id,
+        scheduled_at: { gte: startOfMonth, lte: endOfMonth },
+      },
+      include: {
+        period: { select: { id: true, label: true, type: true } },
+        attendances: {
+          include: {
+            user: { select: { id: true, full_name: true } },
+            marked_by: { select: { id: true, full_name: true } },
+          },
+        },
+      },
+      orderBy: { scheduled_at: 'asc' },
+    });
+
+    // Lấy toàn bộ member thuộc team (dùng lại helper parse)
+    const allUsers = await this.prisma.user.findMany({
+      where: { is_active: true },
+      select: { id: true, full_name: true, team: true, image_url: true },
+      orderBy: { full_name: 'asc' },
+    });
+
+    const teamMembers = allUsers.filter((user) => {
+      if (!user.team) return false;
+      const parsedNames = user.team
+        .split(',')
+        .map((t) => {
+          let trimmed = t.trim();
+          if (trimmed.toLowerCase().startsWith('team ')) {
+            trimmed = trimmed.substring(5).trim();
+          }
+          return trimmed;
+        })
+        .filter((t) => t.length > 0);
+      return parsedNames.some((n) => n.toLowerCase() === teamName.toLowerCase());
+    });
+
+    const totalMembers = teamMembers.length;
+
+    // Build session_summaries: tỉ lệ team có mặt mỗi buổi
+    const sessionSummaries: Record<string, { present_count: number; total_members: number; rate: number }> = {};
+    for (const session of sessions) {
+      const presentCount = session.attendances.filter(
+        (a) => a.status === 'PRESENT' || a.status === 'LATE',
+      ).length;
+      sessionSummaries[session.id] = {
+        present_count: presentCount,
+        total_members: totalMembers,
+        rate: totalMembers > 0 ? Math.round((presentCount / totalMembers) * 100) : 0,
+      };
+    }
+
+    // Build per-member attendance_map và summary
+    const membersWithHistory = teamMembers.map((member) => {
+      const attendanceMap: Record<string, {
+        status: string;
+        note: string | null;
+        marked_by: { id: string; full_name: string };
+        created_at: Date;
+      } | null> = {};
+
+      let present = 0, late = 0, absent = 0, on_leave = 0, no_record = 0;
+
+      for (const session of sessions) {
+        const record = session.attendances.find((a) => a.user_id === member.id);
+        if (!record) {
+          attendanceMap[session.id] = null;
+          no_record++;
+        } else {
+          attendanceMap[session.id] = {
+            status: record.status,
+            note: record.note,
+            marked_by: record.marked_by,
+            created_at: record.created_at,
+          };
+          if (record.status === 'PRESENT') present++;
+          else if (record.status === 'LATE') late++;
+          else if (record.status === 'ABSENT') absent++;
+          else if (record.status === 'ON_LEAVE') on_leave++;
+        }
+      }
+
+      const total_sessions = sessions.length;
+      const attendance_rate =
+        total_sessions > 0 ? Math.round(((present + late) / total_sessions) * 100) : 0;
+
+      return {
+        id: member.id,
+        full_name: member.full_name,
+        image_url: member.image_url,
+        attendance_map: attendanceMap,
+        summary: { present, late, absent, on_leave, no_record, total_sessions, attendance_rate },
+      };
+    });
+
+    return {
+      team: { id: team.id, name: team.name },
+      period: { month, year, label: `Tháng ${month}/${year}` },
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        scheduled_at: s.scheduled_at,
+        week_label: s.period?.label ?? '',
+        is_finalized: s.is_finalized,
+      })),
+      members: membersWithHistory,
+      session_summaries: sessionSummaries,
+    };
+  }
+
+  /**
+   * Lịch sử điểm danh chi tiết của 1 người trong 1 tháng.
+   * - actorId === targetUserId → xem chính mình
+   * - Admin → bypass mọi kiểm tra
+   * - Manager/Leader → phải chung team với targetUser
+   * - Còn lại → 403
+   */
+  async getUserAttendanceHistory(targetUserId: string, dto: UserHistoryQueryDto, actorId: string) {
+    const { month, year } = dto;
+
+    const targetUser = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, full_name: true, image_url: true, team: true },
+    });
+    if (!targetUser) throw new NotFoundException('Không tìm thấy user');
+
+    // Phân quyền
+    if (actorId !== targetUserId) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: actorId },
+        select: { roles: true },
+      });
+      if (!actor) throw new NotFoundException('Không tìm thấy actor');
+
+      const isAdmin = actor.roles.includes(UserRole.ADMIN);
+      const isManagerOrLeader =
+        actor.roles.includes(UserRole.MANAGER) || actor.roles.includes(UserRole.LEADER);
+
+      if (!isAdmin && !isManagerOrLeader) {
+        throw new ForbiddenException('Bạn không có quyền xem lịch sử điểm danh của người khác');
+      }
+
+      if (!isAdmin) {
+        // Manager/Leader: kiểm tra targetUser phải ở trong team họ quản lý
+        const actorFull = await this.prisma.user.findUnique({
+          where: { id: actorId },
+          select: {
+            team: true,
+            teams_leading: { select: { id: true } },
+          },
+        });
+        if (!actorFull) throw new NotFoundException('Không tìm thấy actor');
+
+        const managedTeamIds = new Set<string>();
+        (actorFull.teams_leading || []).forEach((t) => managedTeamIds.add(t.id));
+
+        if (actorFull.team) {
+          const parsedNames = actorFull.team
+            .split(',')
+            .map((t) => {
+              let trimmed = t.trim();
+              if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
+              return trimmed;
+            })
+            .filter((t) => t.length > 0);
+          if (parsedNames.length > 0) {
+            const matchedTeams = await this.prisma.team.findMany({
+              where: { name: { in: parsedNames, mode: 'insensitive' } },
+              select: { id: true },
+            });
+            matchedTeams.forEach((t) => managedTeamIds.add(t.id));
+          }
+        }
+
+        if (managedTeamIds.size === 0) {
+          throw new ForbiddenException('Bạn không quản lý team nào');
+        }
+
+        let hasAccess = false;
+        if (targetUser.team) {
+          const targetTeamNames = targetUser.team
+            .split(',')
+            .map((t) => {
+              let trimmed = t.trim();
+              if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
+              return trimmed;
+            })
+            .filter((t) => t.length > 0);
+
+          if (targetTeamNames.length > 0) {
+            const targetTeams = await this.prisma.team.findMany({
+              where: { name: { in: targetTeamNames, mode: 'insensitive' } },
+              select: { id: true },
+            });
+            hasAccess = targetTeams.some((t) => managedTeamIds.has(t.id));
+          }
+        }
+
+        if (!hasAccess) {
+          throw new ForbiddenException('Bạn không có quyền xem lịch sử điểm danh của người này');
+        }
+      }
+    }
+
+    // Tính range tháng/năm
+    const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+    const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+
+    // Tìm team IDs của targetUser
+    const userTeamIds: string[] = [];
+    if (targetUser.team) {
+      const parsedNames = targetUser.team
+        .split(',')
+        .map((t) => {
+          let trimmed = t.trim();
+          if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
+          return trimmed;
+        })
+        .filter((t) => t.length > 0);
+      if (parsedNames.length > 0) {
+        const matchedTeams = await this.prisma.team.findMany({
+          where: { name: { in: parsedNames, mode: 'insensitive' } },
+          select: { id: true },
+        });
+        matchedTeams.forEach((t) => userTeamIds.push(t.id));
+      }
+    }
+
+    // Lấy tất cả sessions trong tháng thuộc team của user
+    const allSessions = userTeamIds.length > 0
+      ? await this.prisma.meetingSession.findMany({
+          where: {
+            team_id: { in: userTeamIds },
+            scheduled_at: { gte: startOfMonth, lte: endOfMonth },
+          },
+          include: {
+            team: { select: { id: true, name: true } },
+            period: { select: { id: true, label: true } },
+          },
+          orderBy: { scheduled_at: 'asc' },
+        })
+      : [];
+
+    // Lấy attendance records của user trong tháng
+    const records = await this.prisma.attendanceRecord.findMany({
+      where: {
+        user_id: targetUserId,
+        session: { scheduled_at: { gte: startOfMonth, lte: endOfMonth } },
+      },
+      include: {
+        marked_by: { select: { id: true, full_name: true } },
+      },
+    });
+
+    // Build timeline: merge session + attendance record (null = Chưa điểm danh)
+    const recordMap = new Map(records.map((r) => [r.session_id, r]));
+    const sessionTimeline = allSessions.map((session) => {
+      const rec = recordMap.get(session.id);
+      return {
+        session_id: session.id,
+        title: session.title,
+        week_label: session.period?.label ?? '',
+        scheduled_at: session.scheduled_at,
+        team: session.team,
+        attendance: rec
+          ? {
+              status: rec.status,
+              note: rec.note,
+              marked_by: rec.marked_by,
+              created_at: rec.created_at,
+            }
+          : null,
+      };
+    });
+
+    // Tính summary
+    let present = 0, late = 0, absent = 0, on_leave = 0, no_record = 0;
+    for (const item of sessionTimeline) {
+      if (!item.attendance) no_record++;
+      else if (item.attendance.status === 'PRESENT') present++;
+      else if (item.attendance.status === 'LATE') late++;
+      else if (item.attendance.status === 'ABSENT') absent++;
+      else if (item.attendance.status === 'ON_LEAVE') on_leave++;
+    }
+    const total_sessions = sessionTimeline.length;
+    const attendance_rate =
+      total_sessions > 0 ? Math.round(((present + late) / total_sessions) * 100) : 0;
+
+    return {
+      user: {
+        id: targetUser.id,
+        full_name: targetUser.full_name,
+        image_url: targetUser.image_url,
+      },
+      period: { month, year },
+      sessions: sessionTimeline,
+      summary: { present, late, absent, on_leave, no_record, total_sessions, attendance_rate },
+    };
   }
 }

@@ -8,6 +8,9 @@ import {
   ValidateNested,
   IsNotEmpty,
   ValidateIf,
+  IsInt,
+  Min,
+  Max,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { AttendanceStatus } from '@prisma/client';
@@ -104,4 +107,42 @@ export class BulkAttendanceDto {
   @ValidateNested({ each: true })
   @Type(() => BulkAttendanceItemDto)
   records: BulkAttendanceItemDto[];
+}
+
+// ─────────────────────────────────────────────
+// Attendance History (read-only queries)
+// ─────────────────────────────────────────────
+
+export class AttendanceHistoryQueryDto {
+  @ApiProperty({ example: 'K1', description: 'Tên team' })
+  @IsString()
+  team: string;
+
+  @ApiProperty({ example: 7, description: 'Tháng (1–12)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  month: number;
+
+  @ApiProperty({ example: 2026, description: 'Năm (4 chữ số)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(2020)
+  year: number;
+}
+
+export class UserHistoryQueryDto {
+  @ApiProperty({ example: 7, description: 'Tháng (1–12)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  month: number;
+
+  @ApiProperty({ example: 2026, description: 'Năm (4 chữ số)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(2020)
+  year: number;
 }
