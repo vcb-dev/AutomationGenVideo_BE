@@ -7,6 +7,10 @@ import {
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { TaskAutoTeamsService } from "../teams/teams.service";
 import {
+  resolveProductSnapshot,
+  resolveContentSnapshot,
+} from "../../../common/utils/catalog-resolve.util";
+import {
   CreateProductDto,
   UpdateProductDto,
   QueryProductDto,
@@ -45,11 +49,19 @@ export class TaskAutoCatalogService {
   async findAllProducts(q: QueryProductDto) {
     const where: any = {};
     if (q.brand_type) where.brand_type = q.brand_type;
-    if (q.search)
+    if (q.search) {
+      // Sản phẩm được đẩy lên từ kho team/editor có sku/name rỗng ở bản ghi gốc —
+      // dữ liệu thật nằm ở source_team_product (và xuyên tiếp source_editor_product).
+      const contains = { contains: q.search, mode: "insensitive" as const };
       where.OR = [
-        { name: { contains: q.search, mode: "insensitive" } },
-        { sku: { contains: q.search, mode: "insensitive" } },
+        { name: contains },
+        { sku: contains },
+        { source_team_product: { name: contains } },
+        { source_team_product: { sku: contains } },
+        { source_team_product: { source_editor_product: { name: contains } } },
+        { source_team_product: { source_editor_product: { sku: contains } } },
       ];
+    }
     if (q.market) where.market = q.market;
     if (q.product_line_id) where.product_line_id = q.product_line_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
@@ -205,11 +217,19 @@ export class TaskAutoCatalogService {
     if (q.content_line_id) where.content_line_id = q.content_line_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
-    if (q.search)
+    if (q.search) {
+      // Content được đẩy lên từ kho team/editor có title/body rỗng ở bản ghi gốc —
+      // dữ liệu thật nằm ở source_team_content (và xuyên tiếp source_editor_content).
+      const contains = { contains: q.search, mode: "insensitive" as const };
       where.OR = [
-        { title: { contains: q.search, mode: "insensitive" } },
-        { body: { contains: q.search, mode: "insensitive" } },
+        { title: contains },
+        { body: contains },
+        { source_team_content: { title: contains } },
+        { source_team_content: { body: contains } },
+        { source_team_content: { source_editor_content: { title: contains } } },
+        { source_team_content: { source_editor_content: { body: contains } } },
       ];
+    }
     if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
     Object.assign(where, this.monthRange(q.month));
 
@@ -633,9 +653,7 @@ export class TaskAutoCatalogService {
 
   async createEditorProduct(userId: string, dto: CreateEditorProductDto) {
     if (dto.source_product_id) {
-      const src = await this.prisma.product.findUnique({
-        where: { id: dto.source_product_id },
-      });
+      const src = await resolveProductSnapshot(this.prisma, dto.source_product_id);
       if (!src) throw new NotFoundException("Source product not found");
       return this.prisma.editorProduct.create({
         data: {
@@ -758,9 +776,7 @@ export class TaskAutoCatalogService {
 
   async createEditorContent(userId: string, dto: CreateEditorContentDto) {
     if (dto.source_content_id) {
-      const src = await this.prisma.content.findUnique({
-        where: { id: dto.source_content_id },
-      });
+      const src = await resolveContentSnapshot(this.prisma, dto.source_content_id);
       if (!src) throw new NotFoundException("Source content not found");
       return this.prisma.editorContent.create({
         data: {

@@ -93,3 +93,19 @@ export class ReviewTaskDto {
 
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
 }
+
+export class GenerateVideoScriptDto {
+  @ApiPropertyOptional() @IsString() @IsOptional() fileUrl?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() scriptText?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() contentTitle?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() contentLine?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() contentMarket?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productName?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productSku?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productPrice?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productMaterial?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productPriceSegment?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productLine?: string | null
+  @ApiPropertyOptional() @IsString() @IsOptional() productMarket?: string | null
+  @ApiPropertyOptional() @IsBoolean() @IsOptional() force?: boolean
+}

@@ -23,12 +23,14 @@ import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoTasksService } from "./tasks.service";
 import { TaskAutoVideoService } from "../video/video.service";
+import { VideoScriptService } from "./video-script.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
+  GenerateVideoScriptDto,
 } from "./task.dto";
 
 @ApiTags("task-auto")
@@ -39,6 +41,7 @@ export class TaskAutoTasksController {
   constructor(
     private tasks: TaskAutoTasksService,
     private video: TaskAutoVideoService,
+    private videoScript: VideoScriptService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -168,5 +171,27 @@ export class TaskAutoTasksController {
     @Res() res: Response,
   ) {
     return this.video.streamVideo(id, res);
+  }
+
+  // ── AI Video Script ──────────────────────────────────────────────────────
+
+  @Get("tasks/:id/video-script")
+  @ApiOperation({ summary: "Lấy content AI đã sinh & cache cho task (nếu có)" })
+  async getVideoScript(@Param("id") id: string) {
+    const script = await this.videoScript.getCached(id);
+    return { script };
+  }
+
+  @Post("tasks/:id/video-script")
+  @ApiOperation({
+    summary:
+      "Sinh content AI (DeepSeek) cho task. Dùng lại cache nếu input không đổi và force=false, tránh tốn token.",
+  })
+  async generateVideoScript(
+    @Param("id") id: string,
+    @Body() dto: GenerateVideoScriptDto,
+  ) {
+    const { force, ...params } = dto;
+    return this.videoScript.generate(id, params, force ?? false);
   }
 }

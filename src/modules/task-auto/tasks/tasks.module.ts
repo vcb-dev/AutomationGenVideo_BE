@@ -5,6 +5,7 @@ import { PrismaModule } from '../../../common/prisma/prisma.module'
 import { VideoModule } from '../video/video.module'
 import { TaskAutoTasksService } from './tasks.service'
 import { TaskAutoTasksController } from './tasks.controller'
+import { VideoScriptService } from './video-script.service'
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { TaskAutoTasksController } from './tasks.controller'
     MulterModule.register({ storage: memoryStorage() }),
   ],
   controllers: [TaskAutoTasksController],
-  providers: [TaskAutoTasksService],
+  providers: [TaskAutoTasksService, VideoScriptService],
   exports: [TaskAutoTasksService],
 })
 export class TasksModule {}
