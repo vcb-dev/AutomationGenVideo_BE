@@ -337,6 +337,22 @@ export class ContentReportController {
   }
 
   /**
+   * Manager/Admin bulk upsert điểm danh nhiều người trong 1 request.
+   * Toàn bộ chạy trong transaction — 1 fail → rollback hết.
+   */
+  @Patch('meetings/:id/attendance/bulk')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Bulk điểm danh cả team trong 1 transaction (Manager/Leader/Admin)' })
+  async bulkUpsertAttendance(
+    @Param('id') sessionId: string,
+    @Request() req: any,
+    @Body() dto: BulkAttendanceDto,
+  ) {
+    return this.contentReportService.bulkUpsertAttendance(sessionId, dto, req.user.id);
+  }
+
+  /**
    * Manager/Admin sửa điểm danh 1 người.
    * Kiểm tra session.team_id khớp team mà actor quản lý.
    */
@@ -356,22 +372,6 @@ export class ContentReportController {
       dto,
       req.user.id,
     );
-  }
-
-  /**
-   * Manager/Admin bulk upsert điểm danh nhiều người trong 1 request.
-   * Toàn bộ chạy trong transaction — 1 fail → rollback hết.
-   */
-  @Patch('meetings/:id/attendance/bulk')
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
-  @ApiOperation({ summary: 'Bulk điểm danh cả team trong 1 transaction (Manager/Leader/Admin)' })
-  async bulkUpsertAttendance(
-    @Param('id') sessionId: string,
-    @Request() req: any,
-    @Body() dto: BulkAttendanceDto,
-  ) {
-    return this.contentReportService.bulkUpsertAttendance(sessionId, dto, req.user.id);
   }
 
   @Post('meetings/:id/finalize')
