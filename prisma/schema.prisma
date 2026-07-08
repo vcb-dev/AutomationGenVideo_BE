@@ -2511,6 +2511,7 @@ model Task {
   assignments            TaskAssignment[]
   notifications          Notification[]
   pending_video          TaskPendingVideo?
+  video_script           TaskVideoScript?
 
   @@index([run_id])
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
@@ -2527,6 +2528,21 @@ model Task {
   @@index([content_line_id])
   @@index([product_line_id])
   @@map("tasks")
+}
+
+model TaskVideoScript {
+  id          String   @id @default(uuid())
+  task_id     String   @unique
+  input_hash  String
+  content     String   @db.Text
+  hashtags    String[]
+  translation Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
+
+  @@map("task_video_scripts")
 }
 
 model TaskPendingVideo {

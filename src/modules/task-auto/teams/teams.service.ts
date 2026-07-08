@@ -6,7 +6,8 @@ import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
 import { UserRole } from '@prisma/client'
-import { recomputeUserTeamFields, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
+import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
+import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -32,9 +33,7 @@ export class TaskAutoTeamsService {
 
   /** Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi Team/TeamMember. */
   private async syncAffectedUsers(userIds: Iterable<string>) {
-    for (const userId of new Set(userIds)) {
-      await recomputeUserTeamFields(this.prisma, userId)
-    }
+    await recomputeUserTeamFieldsBatch(this.prisma, [...new Set(userIds)])
   }
 
   async findAll() {
@@ -111,11 +110,12 @@ export class TaskAutoTeamsService {
     }
 
     if (member_ids !== undefined) {
+      // createMany thay vì N lệnh create() riêng lẻ trong transaction — team càng đông thành
+      // viên, càng nhiều round-trip tuần tự tới DB. $transaction dạng mảng (batch) không nhận
+      // maxWait/timeout (chỉ dạng callback interactive mới có, xem TEAM_TX_OPTIONS).
       await this.prisma.$transaction([
         this.prisma.teamMember.deleteMany({ where: { team_id: id } }),
-        ...member_ids.map(uid =>
-          this.prisma.teamMember.create({ data: { team_id: id, user_id: uid } })
-        ),
+        this.prisma.teamMember.createMany({ data: member_ids.map(uid => ({ team_id: id, user_id: uid })) }),
       ])
       // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
       // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
@@ -253,7 +253,7 @@ export class TaskAutoTeamsService {
     this.assertCanManageProduct(team, userId, userRoles, 'add')
 
     if (dto.source_product_id) {
-      const source = await this.prisma.product.findUnique({ where: { id: dto.source_product_id } })
+      const source = await resolveProductSnapshot(this.prisma, dto.source_product_id)
       if (!source) throw new NotFoundException('Không tìm thấy sản phẩm gốc')
 
       return this.prisma.teamProduct.create({
@@ -363,7 +363,7 @@ export class TaskAutoTeamsService {
     this.assertCanManageContent(team, userId, userRoles, 'add')
 
     if (dto.source_content_id) {
-      const source = await this.prisma.content.findUnique({ where: { id: dto.source_content_id } })
+      const source = await resolveContentSnapshot(this.prisma, dto.source_content_id)
       if (!source) throw new NotFoundException('Không tìm thấy content gốc')
 
       return this.prisma.teamContent.create({

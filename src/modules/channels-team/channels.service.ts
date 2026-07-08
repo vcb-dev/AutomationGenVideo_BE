@@ -63,10 +63,14 @@ export class ChannelsService {
 
   /**
    * Tạo kênh mới — mọi role đều được, tự động gán owner_id và team_id từ user.
+   *
+   * Đồng thời ghi thêm `owner`/`team_traffic` (field string cũ, tiền thân từ thời đồng bộ Lark) —
+   * đây là field mà logic tính "cần báo cáo traffic" (`needsTraffic` trong lark.service.ts) đang đọc.
+   * Chỉ ghi owner_id/team_id (FK) mà bỏ 2 field này khiến kênh tạo qua đây bị "vô hình" với báo cáo traffic.
    */
   async create(
     dto: CreateChannelDto,
-    user: { id: string; roles: UserRole[]; team: string | null },
+    user: { id: string; roles: UserRole[]; team: string | null; full_name?: string | null },
   ) {
     const team_id = await this.resolveTeamId(user.team);
 
@@ -76,6 +80,8 @@ export class ChannelsService {
         ...dto,
         owner_id: user.id,
         team_id: team_id ?? undefined,
+        owner: user.full_name || undefined,
+        team_traffic: user.team || undefined,
       },
       include: CHANNEL_INCLUDE,
     });
@@ -156,13 +162,23 @@ export class ChannelsService {
     const channel = await this.findChannelOrThrow(id);
     this.assertLeaderOwnsChannel(channel, user.team);
 
-    if (dto.owner_id) {
-      await this.assertOwnerInTeam(dto.owner_id, channel.team_id, user.id);
-    }
-
     // Strip team_id nếu client cố tình truyền vào
     const { ...safeData } = dto;
     delete (safeData as any).team_id;
+
+    if (dto.owner_id) {
+      await this.assertOwnerInTeam(dto.owner_id, channel.team_id, user.id);
+      // Đồng bộ field `owner` (string cũ) theo owner_id mới — logic tính "cần báo cáo traffic"
+      // (needsTraffic trong lark.service.ts) đọc field này, không đọc owner_id.
+      const newOwner = await this.prisma.user.findUnique({
+        where: { id: dto.owner_id },
+        select: { full_name: true },
+      });
+      (safeData as any).owner = newOwner?.full_name || undefined;
+      // Channel không đổi team qua update() — team_traffic luôn khớp team của leader gọi API
+      // (đã assertLeaderOwnsChannel ở trên đảm bảo channel.channel_team.name === user.team).
+      (safeData as any).team_traffic = user.team || undefined;
+    }
 
     return this.prisma.channel.update({
       where: { id },

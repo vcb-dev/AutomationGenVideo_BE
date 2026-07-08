@@ -10,10 +10,18 @@ import { PrismaService } from '../prisma/prisma.service';
  */
 type Db = PrismaService | Prisma.TransactionClient;
 
+/**
+ * Timeout mặc định của Prisma interactive transaction là 5s — quá ngắn cho DB ở xa (Supabase
+ * Tokyo, RTT ~300-900ms/query từ máy dev) khi transaction gồm nhiều bước tuần tự (upsert team,
+ * sync membership, seed KPI, resync field phái sinh). maxWait là thời gian chờ để GIÀNH được 1
+ * transaction slot từ pool (PgBouncer pool nhỏ), timeout là thời gian transaction được phép chạy.
+ */
+export const TEAM_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+
 /** Mở transaction nếu nhận client gốc; nếu đã ở trong transaction thì chạy thẳng. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
   if ('$transaction' in db) {
-    return (db as PrismaService).$transaction((tx) => fn(tx));
+    return (db as PrismaService).$transaction((tx) => fn(tx), TEAM_TX_OPTIONS);
   }
   return fn(db);
 }
@@ -28,25 +36,42 @@ function parseTeamNames(teamNamesRaw: string | null | undefined): string[] {
 }
 
 /**
- * Tính lại User.team (join tên các Team, phân cách dấu phẩy) từ TeamMember hiện tại của user
- * — giữ cột phẳng này luôn khớp với Team/TeamMember (nguồn sự thật) để API cũ không cần đổi hình dạng.
+ * Tính lại User.team (join tên các Team, phân cách dấu phẩy) từ TeamMember hiện tại — cho MỘT
+ * LOẠT user trong 1 câu UPDATE duy nhất, thay vì 1 SELECT + 1 UPDATE cho từng user. Team càng
+ * đông thành viên (resyncTeamMembers) hoặc thao tác càng ảnh hưởng nhiều user thì vòng lặp cũ
+ * càng cộng dồn round-trip tới DB — với DB ở xa (Supabase Tokyo) một team 10 người từng đủ để
+ * vượt timeout transaction 5s mặc định của Prisma và làm cả request 500. LEFT JOIN đảm bảo user
+ * không còn TeamMember nào vẫn có mặt trong kết quả (team_names = NULL từ string_agg toàn NULL).
  */
-export async function recomputeUserTeamFields(db: Db, userId: string): Promise<void> {
-  const memberships = await db.teamMember.findMany({
-    where: { user_id: userId },
-    include: { team: { select: { name: true } } },
-    orderBy: { team: { name: 'asc' } },
-  });
-  const teamNames = memberships.map((m) => m.team.name);
-  const teamString = teamNames.length ? teamNames.join(',') : null;
-  await db.user.update({ where: { id: userId }, data: { team: teamString } });
+export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): Promise<void> {
+  const ids = [...new Set(userIds)];
+  if (!ids.length) return;
+  await db.$executeRaw`
+    UPDATE users u
+    SET team = sub.team_names
+    FROM (
+      SELECT uid, string_agg(name, ',' ORDER BY name) AS team_names
+      FROM (
+        SELECT u2.id AS uid, t.name
+        FROM users u2
+        LEFT JOIN team_members tm ON tm.user_id = u2.id
+        LEFT JOIN teams t ON t.id = tm.team_id
+        WHERE u2.id = ANY(${ids}::text[])
+      ) x
+      GROUP BY uid
+    ) sub
+    WHERE u.id = sub.uid
+  `;
 }
 
-/** Recompute field phái sinh cho nhiều user (bỏ trùng). */
+/** Tính lại User.team (phái sinh) cho một user — xem recomputeUserTeamFieldsBatch. */
+export async function recomputeUserTeamFields(db: Db, userId: string): Promise<void> {
+  await recomputeUserTeamFieldsBatch(db, [userId]);
+}
+
+/** Recompute field phái sinh cho nhiều user (bỏ trùng) trong 1 UPDATE duy nhất. */
 async function recomputeUsers(db: Db, userIds: Iterable<string>): Promise<void> {
-  for (const id of new Set(userIds)) {
-    await recomputeUserTeamFields(db, id);
-  }
+  await recomputeUserTeamFieldsBatch(db, [...new Set(userIds)]);
 }
 
 /**
@@ -59,7 +84,7 @@ async function resyncTeamMembers(db: Db, teamIds: string[]): Promise<void> {
     where: { team_id: { in: teamIds } },
     select: { user_id: true },
   });
-  await recomputeUsers(db, memberships.map((m) => m.user_id));
+  await recomputeUserTeamFieldsBatch(db, memberships.map((m) => m.user_id));
 }
 
 /** Id các Team mà user đang là TeamMember HOẶC là leader_id (dùng để nhân bản "team của tôi" khi leader tạo/claim member). */
