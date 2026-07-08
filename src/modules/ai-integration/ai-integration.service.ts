@@ -8,6 +8,8 @@ import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 
 import { AxiosError } from 'axios';
 
+import { PrismaService } from '../../common/prisma/prisma.service';
+
 
 
 @Injectable()
@@ -25,6 +27,8 @@ export class AiIntegrationService {
     private readonly httpService: HttpService,
 
     private readonly configService: ConfigService,
+
+    private readonly prisma: PrismaService,
 
   ) {
 
@@ -1482,7 +1486,9 @@ export class AiIntegrationService {
           headers: formData.getHeaders(),
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
-          timeout: 300000, // voice cloning can take a while; module default (30s) is too short
+          // AI service retries upload+clone up to 3x60s each on network blips to
+          // api.minimax.io (worst case ~360s) — keep this above that ceiling.
+          timeout: 480000,
         }).pipe(
           catchError((error: AxiosError) => {
             this.logger.error(`AI Service error cloning voice: ${error.message}`, error.response?.data);
@@ -1497,6 +1503,91 @@ export class AiIntegrationService {
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Start voice cloning as a background job on the AI service (returns job_id
+   * immediately). Mạng tới api.minimax.io có thể chập chờn vài phút — clone
+   * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
+   * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
+   */
+  async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
+    const FormData = require('form-data');
+    const url = `${this.aiServiceUrl}/api/voice/clone/start/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file.buffer, {
+        filename: file.originalname,
+        contentType: file.mimetype
+      });
+      formData.append('voice_name', voiceName);
+      formData.append('gender', gender || 'female');
+
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, formData, {
+          headers: formData.getHeaders(),
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          // Chỉ upload file + spawn job nền trên AI service, không chờ clone
+          // xong — nên không cần timeout dài như bản đồng bộ.
+          timeout: 60000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error starting voice clone: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to start voice clone',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to start voice clone', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /** Poll status of a background voice-clone job started via cloneVoiceStart(). */
+  async cloneVoiceStatus(jobId: string, userId?: string): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/voice/clone/status/${jobId}/`;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url, { timeout: 15000 }).pipe(
+          catchError((error: AxiosError) => {
+            throw new HttpException(
+              error.response?.data || 'Failed to get voice clone status',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      // Ghi log 1 lần khi job hoàn tất — job_id unique nên các lần poll sau bị
+      // bỏ qua (P2002). Lỗi ghi log không được làm hỏng response poll.
+      if (userId && data?.status === 'completed') {
+        try {
+          await this.prisma.aiVoiceUsage.create({
+            data: {
+              user_id: userId,
+              kind: 'clone',
+              voice_id: data.voice?.voice_id ?? null,
+              job_id: jobId,
+            },
+          });
+        } catch (logErr: any) {
+          if (logErr?.code !== 'P2002') {
+            this.logger.warn(`Failed to log clone usage for user ${userId}: ${logErr.message}`);
+          }
+        }
+      }
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to get voice clone status', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -1546,7 +1637,7 @@ export class AiIntegrationService {
   /**
    * Generate Text-to-Speech using Minimax
    */
-  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string): Promise<any> {
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
     const url = `${this.aiServiceUrl}/api/voice/tts/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
 
@@ -1571,10 +1662,88 @@ export class AiIntegrationService {
           })
         )
       );
+      // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
+      // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
+      // được làm hỏng response TTS đã thành công.
+      if (userId && data?.success) {
+        try {
+          await this.prisma.aiVoiceUsage.create({
+            data: {
+              user_id: userId,
+              kind: 'tts',
+              voice_id: voiceId,
+              characters: Number(data.usage_characters) || 0,
+              duration_ms: Number(data.duration) || 0,
+            },
+          });
+        } catch (logErr: any) {
+          this.logger.warn(`Failed to log TTS usage for user ${userId}: ${logErr.message}`);
+        }
+      }
       return data;
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to generate voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
+  }
+
+  /**
+   * Tổng hợp tiêu dùng MiniMax voice (điểm ký tự TTS + số giọng đã clone),
+   * kèm phân rã theo từng user — nguồn dữ liệu cho trang Tổng quan Tiện ích AI.
+   */
+  async getVoiceUsageStats(dateFrom?: string, dateTo?: string): Promise<any> {
+    const where: any = {};
+    if (dateFrom || dateTo) {
+      where.created_at = {};
+      if (dateFrom) where.created_at.gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo) where.created_at.lte = new Date(`${dateTo}T23:59:59.999`);
+    }
+
+    const rows = await this.prisma.aiVoiceUsage.findMany({
+      where,
+      include: { user: { select: { id: true, full_name: true, email: true } } },
+      orderBy: { created_at: 'desc' },
+    });
+
+    const byUser = new Map<string, any>();
+    let totalCharacters = 0;
+    let totalTts = 0;
+    let totalClones = 0;
+
+    for (const row of rows) {
+      let entry = byUser.get(row.user_id);
+      if (!entry) {
+        entry = {
+          user_id: row.user_id,
+          full_name: row.user?.full_name ?? row.user_id,
+          email: row.user?.email ?? '',
+          characters: 0,
+          tts_count: 0,
+          clone_count: 0,
+          last_used_at: row.created_at,
+        };
+        byUser.set(row.user_id, entry);
+      }
+      if (row.kind === 'tts') {
+        entry.characters += row.characters;
+        entry.tts_count += 1;
+        totalCharacters += row.characters;
+        totalTts += 1;
+      } else if (row.kind === 'clone') {
+        entry.clone_count += 1;
+        totalClones += 1;
+      }
+      if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
+    }
+
+    return {
+      success: true,
+      total: {
+        characters: totalCharacters,
+        tts_count: totalTts,
+        clone_count: totalClones,
+      },
+      by_user: [...byUser.values()].sort((a, b) => b.characters - a.characters),
+    };
   }
 }

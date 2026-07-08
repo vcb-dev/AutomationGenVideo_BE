@@ -612,6 +612,54 @@ export class AiIntegrationController {
     return this.aiService.cloneVoice(file, voiceName, gender);
   }
 
+  @Post('voice/clone/start')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB, matches what the FE UI advertises
+    fileFilter: (_req, file, cb) => {
+      const allowedMimeTypes = /^audio\//;
+      if (allowedMimeTypes.test(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new HttpException(`File type not supported: ${file.mimetype}. Only audio files allowed.`, HttpStatus.BAD_REQUEST), false);
+      }
+    },
+  }))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Start voice cloning as a background job (poll via voice/clone/status/:jobId)' })
+  async cloneVoiceStart(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('voice_name') voiceName: string,
+    @Body('gender') gender?: string,
+  ) {
+    if (!file) {
+      throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceName) {
+      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.cloneVoiceStart(file, voiceName, gender);
+  }
+
+  @Get('voice/clone/status/:jobId')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Poll status of a background voice-clone job' })
+  async cloneVoiceStatus(@Param('jobId') jobId: string, @Req() req: any) {
+    return this.aiService.cloneVoiceStatus(jobId, req.user?.id);
+  }
+
+  @Get('voice/usage/stats')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Voice usage stats (điểm TTS + số clone), tổng và theo từng user' })
+  @ApiQuery({ name: 'date_from', required: false, description: 'YYYY-MM-DD' })
+  @ApiQuery({ name: 'date_to', required: false, description: 'YYYY-MM-DD' })
+  async voiceUsageStats(
+    @Query('date_from') dateFrom?: string,
+    @Query('date_to') dateTo?: string,
+  ) {
+    return this.aiService.getVoiceUsageStats(dateFrom, dateTo);
+  }
+
   @Post('voice/tts')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -619,6 +667,7 @@ export class AiIntegrationController {
   async generateTTS(
     @Body('text') text: string,
     @Body('voice_id') voiceId: string,
+    @Req() req: any,
     @Body('speed') speed?: number,
     @Body('pitch') pitch?: number,
     @Body('volume') volume?: number,
@@ -630,6 +679,6 @@ export class AiIntegrationController {
     if (!voiceId) {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language);
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
   }
 }
