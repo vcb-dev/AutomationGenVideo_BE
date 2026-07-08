@@ -771,7 +771,7 @@ model Channel {
   updated_at   DateTime @updatedAt
   email        String?
   /// FK tới User — dùng cho module channelsTeam (quản lý kênh của team)
-  owner_id     String?
+  owner_id     String?  @db.Uuid
   /// FK tới Team — dùng cho module channelsTeam
   team_id      String?  @db.Uuid
 
