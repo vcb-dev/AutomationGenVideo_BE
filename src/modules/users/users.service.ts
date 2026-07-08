@@ -22,6 +22,7 @@ import {
   isTeamLeaderOfUser,
   assignUserToTeamsByName,
   replaceUserTeamsByName,
+  TEAM_TX_OPTIONS,
 } from "../../common/utils/team-membership.util";
 
 // Helper: check if roles array contains a staff role (MEMBER)
@@ -214,7 +215,10 @@ export class UsersService {
     const newTeam = updateUserDto.team !== undefined ? updateUserDto.team : user.team;
     const newEmail = updateUserDto.email ?? user.email;
 
-    // Run main update + sync in transaction
+    // Run main update + sync in transaction.
+    // Timeout mặc định của Prisma interactive transaction (5s) không đủ khi đổi team/tên kéo
+    // theo updateMany trên nhiều bảng Lark (checklist_reports, report_kpi, reported_tasks, kpi)
+    // với DB ở xa (Supabase Tokyo) — xem cùng lý do ở team-membership.util.ts.
     const [updatedUser] = await this.prisma.$transaction(async (tx) => {
       const result = await tx.user.update({
         where: { id },
@@ -297,7 +301,7 @@ export class UsersService {
       }
 
       return [result];
-    });
+    }, TEAM_TX_OPTIONS);
 
     // Invalidate caches so JWT validation gets fresh data
     this.cacheService.invalidate(this.userCacheKey(id));
