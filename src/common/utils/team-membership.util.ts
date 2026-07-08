@@ -179,7 +179,22 @@ async function resolveTeamsByName(
         `Đội nhóm không tồn tại: ${missing.join(', ')}. Chỉ Leader mới được tạo team mới.`,
       );
     }
-    return { teamIds: existing.map((t) => t.id), displacedLeaderIds: [], leaderChangedTeamIds: [] };
+    // User vừa bị đổi khỏi role LEADER (vd demote về MEMBER) nhưng team chọn không đổi —
+    // nếu họ vẫn đang là leader_id của (các) team này thì phải thu hồi ở đây, vì vòng thu
+    // hồi ở replaceUserTeamsByName chỉ xét team bị BỎ CHỌN (id notIn teamIds), không xét
+    // trường hợp mất quyền LEADER mà team vẫn còn trong danh sách chọn. Không thu hồi thì
+    // teams.leader_id trỏ vào một user không còn role LEADER — mọi kiểm tra quyền dựa trên
+    // Team.leader_id (isTeamLeaderOfUser, getTeamMembers) sẽ dựa trên dữ liệu sai.
+    const ownLedTeams = existing.filter((t) => t.leader_id === userId);
+    const leaderChangedTeamIds: string[] = [];
+    if (ownLedTeams.length) {
+      await tx.team.updateMany({
+        where: { id: { in: ownLedTeams.map((t) => t.id) } },
+        data: { leader_id: null },
+      });
+      leaderChangedTeamIds.push(...ownLedTeams.map((t) => t.id));
+    }
+    return { teamIds: existing.map((t) => t.id), displacedLeaderIds: [], leaderChangedTeamIds };
   }
 
   const byName = new Map(existing.map((t) => [t.name, t]));

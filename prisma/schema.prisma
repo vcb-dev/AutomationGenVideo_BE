@@ -78,6 +78,7 @@ model User {
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
   notifications             Notification[]   @relation("NotificationOf")
   owned_channels            Channel[]        @relation("ChannelOwnerUser")
+  ai_voice_usages           AiVoiceUsage[]   @relation("AiVoiceUsageOf")
 
   @@index([email])
   @@index([roles])
@@ -151,6 +152,30 @@ model Voice {
   @@index([voice_id])
   @@index([provider, is_system])
   @@map("video_management_voice")
+}
+
+/// Log tiêu dùng MiniMax voice theo user — nguồn dữ liệu cho trang Tổng quan
+/// Tiện ích AI (điểm âm thanh đã tiêu = tổng characters, khớp đơn vị "điểm"
+/// trong gói MiniMax). Ghi tại BE vì mọi call TTS/clone đều đi qua BE có JWT.
+model AiVoiceUsage {
+  id          String   @id @default(uuid())
+  user_id     String
+  /// 'tts' | 'clone'
+  kind        String   @db.VarChar(10)
+  voice_id    String?  @db.VarChar(255)
+  /// usage_characters MiniMax trả về (chỉ có với kind='tts')
+  characters  Int      @default(0)
+  duration_ms Int      @default(0)
+  /// job_id của clone nền — unique để poll status nhiều lần chỉ ghi 1 dòng
+  job_id      String?  @unique @db.VarChar(64)
+  created_at  DateTime @default(now())
+
+  user User @relation("AiVoiceUsageOf", fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([created_at])
+  @@index([kind])
+  @@map("ai_voice_usage")
 }
 
 model Video {

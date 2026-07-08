@@ -203,8 +203,11 @@ export class UsersController {
     type: UserResponseDto,
   })
   @ApiResponse({ status: 404, description: "User not found" })
-  async update(@Param("id") id: string, @Body() updateUserDto: UpdateUserDto) {
-    const user = await this.usersService.update(id, updateUserDto);
+  async update(@Request() req, @Param("id") id: string, @Body() updateUserDto: UpdateUserDto) {
+    // Đi qua updateHR (không gọi usersService.update() thẳng) để roles/team đổi ở đây cũng
+    // được đồng bộ vào Team/TeamMember/leader_id — route này chỉ ADMIN gọi được nên luôn
+    // đi nhánh isManagerOrAdmin của updateHR, hành vi với các field khác giữ nguyên như cũ.
+    const user = await this.usersService.updateHR(req.user.id, req.user.roles, id, updateUserDto);
     return new UserResponseDto(user);
   }
 
