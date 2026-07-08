@@ -12,7 +12,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
     const clientSecret = process.env.OAUTH_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || "placeholder";
     const callbackURL =
       process.env.GOOGLE_CALLBACK_URL ||
-      "http://localhost:3000/auth/google/callback";
+      "http://localhost:3000/api/auth/google/callback";
 
     console.log("[GoogleStrategy] ENV CHECK:", {
       OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID ? "SET" : "MISSING",

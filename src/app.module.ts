@@ -1,7 +1,7 @@
 import { Module } from "@nestjs/common";
-import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { APP_GUARD } from "@nestjs/core";
 import { ScheduleModule } from "@nestjs/schedule";
 import { join } from "path";
 import { AppController } from "./app.controller";
@@ -21,6 +21,7 @@ import { SearchRecommendationModule } from './modules/search-recommendations/sea
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
+import { ContentReportModule } from './modules/content-report/content-report.module';
 import { ChannelsModule } from "./modules/channels-team/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
 
@@ -61,6 +62,7 @@ import { TaskAutoModule } from './modules/task-auto/task-auto.module';
     LarkModule,
     RolePermissionsModule,
     SocialPublishingModule,
+    ContentReportModule,
     ChannelsModule,
     TaskAutoModule,
   ],

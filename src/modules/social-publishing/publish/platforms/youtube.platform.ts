@@ -151,12 +151,20 @@ export class YoutubePublisher {
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
   }
 
+  private get clientId(): string {
+    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+  }
+
+  private get clientSecret(): string {
+    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+  }
+
   async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; tokenExpiresAt: Date }> {
     const res = await axios.post(
       'https://oauth2.googleapis.com/token',
       new URLSearchParams({
-        client_id: process.env.YT_CLIENT_ID!,
-        client_secret: process.env.YT_CLIENT_SECRET!,
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }).toString(),

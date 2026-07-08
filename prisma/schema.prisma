@@ -41,7 +41,6 @@ model User {
   employee_position         String?
   /// Tình trạng Lark: Đang hoạt động / Đã nghỉ
   employee_status           String?
-  /// Tháng/ngày từ Lark (cột NGÀY)
   employee_date             DateTime?
   search_histories          SearchHistory[]
   tracked_channels          TrackedChannel[]
@@ -52,6 +51,20 @@ model User {
   videos                    Video[]
   social_accounts           SocialAccount[]
   social_posts              SocialPost[]
+  // Content Report relations
+  content_videos_edited     ContentVideo[]        @relation("EditorContentVideos")
+  case_studies_created      CaseStudy[]           @relation("CreatorCaseStudies")
+  editor_performances       EditorPerformance[]
+  clone_videos_edited       CloneVideo[]          @relation("EditorCloneVideos")
+  action_items_assigned     ActionItem[]          @relation("AssigneeActionItems")
+  video_scores              VideoScore[]          @relation("UserVideoScores")
+  // Attendance relations
+  meeting_sessions_created  MeetingSession[]      @relation("MeetingSessionCreator")
+  meeting_sessions_finalized MeetingSession[]     @relation("MeetingSessionFinalizer")
+  attendance_records        AttendanceRecord[]    @relation("AttendanceOf")
+  attendance_marked         AttendanceRecord[]    @relation("AttendanceMarkedBy")
+  meeting_session_logs      MeetingSessionLog[]   @relation("MeetingLogActor")
+  // toan24 relations
   teams_leading             Team[]           @relation("TeamLeaderOf")
   team_memberships          TeamMember[]     @relation("TeamMembershipOf")
   editor_approvals          EditorApproval[] @relation("EditorApprovalOf")
@@ -1242,6 +1255,16 @@ enum CollectionType {
   SHARED
 }
 
+enum PeriodType {
+  WEEK
+  MONTH
+}
+
+enum VideoStatus {
+  WIN
+  FAIL
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -1947,6 +1970,15 @@ model Team {
   ordered_sources Source[]      @relation("SourceOrderedTeam")
   push_requests   TeamPushRequest[]
 
+  // Content Report relations
+  content_videos       ContentVideo[]
+  case_studies         CaseStudy[]
+  editor_performances  EditorPerformance[]
+  clone_videos         CloneVideo[]
+  action_items         ActionItem[]
+  kpi_snapshots        TeamKpiSnapshot[]
+  meeting_sessions     MeetingSession[]
+
   @@index([leader_id])
   @@map("teams")
 }
@@ -2183,6 +2215,13 @@ model EditorSource {
 enum TeamPushRequestType {
   PRODUCT
   CONTENT
+}
+
+enum AttendanceStatus {
+  PRESENT  // Có mặt
+  ABSENT   // Vắng mặt (không phép — note optional)
+  ON_LEAVE // Nghỉ phép (có phép — note bắt buộc)
+  LATE     // Đi muộn (do người điểm danh tự chọn thủ công)
 }
 
 /// Yêu cầu đẩy product/content từ kho cá nhân → kho team, chờ leader duyệt.
@@ -2681,7 +2720,221 @@ model SocialDriveUploadSession {
   @@map("social_drive_upload_sessions")
 }
 
+//  CONTENT REPORT — Module "Báo cáo content"
 // ─────────────────────────────────────────────
+
+/// Kỳ báo cáo — tuần hoặc tháng
+model ReportPeriod {
+  id         String     @id @default(uuid())
+  type       PeriodType // WEEK | MONTH
+  label      String     // "Tuần 1 - T6/2026", "Tháng 6/2026"
+  start_date DateTime
+  end_date   DateTime
+  created_at DateTime   @default(now())
+
+  // Relations
+  content_videos       ContentVideo[]
+  case_studies         CaseStudy[]
+  editor_performances  EditorPerformance[]
+  clone_videos         CloneVideo[]
+  action_items         ActionItem[]
+  kpi_snapshots        TeamKpiSnapshot[]
+  meeting_sessions     MeetingSession[]
+
+  @@unique([type, start_date])
+  @@index([type])
+  @@index([start_date])
+  @@map("report_periods")
+}
+
+/// Video content WIN hoặc FAIL của team
+model ContentVideo {
+  id             String      @id @default(uuid())
+  team_id        String
+  period_id      String
+  editor_id      String
+  status         VideoStatus // WIN | FAIL
+  content        String      @db.Text
+  analysis       String?     @db.Text // Phân tích win/fail reason
+  link           String?
+  platform       String?     // TikTok, YouTube Shorts, IG Reels
+  post_date      DateTime?
+  views          BigInt      @default(0)
+  likes          BigInt      @default(0)
+  comments       Int         @default(0)
+  shares         Int         @default(0)
+  thumbnail_url  String?
+  video_url      String?
+  highlights     String?     @db.Text
+  improvements   String?     @db.Text
+  leader_comment String?     @db.Text
+  notes          String?     @db.Text
+  order_index    Int         @default(0)
+  created_at     DateTime    @default(now())
+  updated_at     DateTime    @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  editor User         @relation("EditorContentVideos", fields: [editor_id], references: [id])
+  scores VideoScore[]
+
+  @@index([team_id, period_id, status])
+  @@index([editor_id])
+  @@index([period_id])
+  @@map("content_videos")
+}
+
+/// Case study hay bên ngoài
+model CaseStudy {
+  id          String   @id @default(uuid())
+  team_id     String
+  period_id   String
+  created_by  String   // FK → users (người tạo)
+  title       String
+  channel     String?  // Tên kênh bên ngoài
+  content     String?  @db.Text
+  takeaway    String?  @db.Text // Bài học rút ra
+  link        String?
+  platform    String?
+  post_date   DateTime?
+  views       BigInt   @default(0)
+  order_index Int      @default(0)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  team    Team         @relation(fields: [team_id], references: [id])
+  period  ReportPeriod @relation(fields: [period_id], references: [id])
+  creator User         @relation("CreatorCaseStudies", fields: [created_by], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([created_by])
+  @@map("case_studies")
+}
+
+/// Hiệu suất cá nhân editor trong kỳ
+model EditorPerformance {
+  id           String   @id @default(uuid())
+  team_id      String
+  period_id    String
+  user_id      String   // FK → users (editor)
+  total_videos Int      @default(0)
+  win_videos   Int      @default(0)
+  notes        String?  @db.Text
+  analysis     String?  @db.Text
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  user   User         @relation(fields: [user_id], references: [id])
+
+  @@unique([team_id, period_id, user_id]) // 1 editor chỉ có 1 record / kỳ / team
+  @@map("editor_performance")
+}
+
+/// Video nhân bản (clone)
+model CloneVideo {
+  id             String   @id @default(uuid())
+  team_id        String
+  period_id      String
+  editor_id      String
+  content        String   @db.Text
+  target_channel String?
+  link           String?
+  platform       String?
+  post_date      DateTime?
+  views          BigInt   @default(0)
+  likes          BigInt   @default(0)
+  comments       Int      @default(0)
+  shares         Int      @default(0)
+  analysis       String?  @db.Text
+  highlights     String?  @db.Text
+  improvements   String?  @db.Text
+  leader_comment String?  @db.Text
+  notes          String?  @db.Text
+  video_url      String?
+  order_index    Int      @default(0)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+  editor User         @relation("EditorCloneVideos", fields: [editor_id], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([editor_id])
+  @@map("clone_videos")
+}
+
+/// Kế hoạch hành động sau khi phân tích
+model ActionItem {
+  id             String   @id @default(uuid())
+  team_id        String
+  period_id      String
+  assignee_id    String   // FK → users (người được giao)
+  title          String
+  description    String?  @db.Text
+  deadline       DateTime?
+  status         String   @default("PENDING") // PENDING, IN_PROGRESS, DONE
+  priority       String   @default("MEDIUM")  // LOW, MEDIUM, HIGH
+  notes          String?  @db.Text
+  leader_comment String?  @db.Text
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  team     Team         @relation(fields: [team_id], references: [id])
+  period   ReportPeriod @relation(fields: [period_id], references: [id])
+  assignee User         @relation("AssigneeActionItems", fields: [assignee_id], references: [id])
+
+  @@index([team_id, period_id])
+  @@index([assignee_id])
+  @@map("action_items")
+}
+
+/// Ảnh chụp nhanh KPI tổng hợp — cache để FE load nhanh
+model TeamKpiSnapshot {
+  id               String   @id @default(uuid())
+  team_id          String
+  period_id        String
+  total_videos     Int      @default(0)
+  win_videos       Int      @default(0)
+  fail_videos      Int      @default(0)
+  win_rate         Float    @default(0)
+  total_new_videos Int      @default(0)
+  new_win_videos   Int      @default(0)
+  new_win_rate     Float    @default(0)
+  computed_at      DateTime @default(now())
+
+  team   Team         @relation(fields: [team_id], references: [id])
+  period ReportPeriod @relation(fields: [period_id], references: [id])
+
+  @@unique([team_id, period_id]) // 1 snapshot / team / kỳ
+  @@map("team_kpi_snapshots")
+}
+
+model VideoScore {
+  id               String       @id @default(uuid())
+  content_video_id String
+  scored_by_id     String
+  
+  score_hook       Float
+  score_content    Float
+  score_editing    Float
+  score_cta        Float
+  score_thumbnail  Float
+  score_total      Float
+  
+  comment          String?      @db.Text
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+
+  content_video    ContentVideo @relation(fields: [content_video_id], references: [id], onDelete: Cascade)
+  scored_by        User         @relation("UserVideoScores", fields: [scored_by_id], references: [id], onDelete: Cascade)
+
+  @@unique([content_video_id, scored_by_id])
+  @@map("video_scores")
+}
+
 //  WAREHOUSE JUNCTION TABLES (kho tháng)
 // ─────────────────────────────────────────────
 
@@ -2782,4 +3035,71 @@ model EditorSourceWarehouse {
   @@id([editor_source_id, month])
   @@index([month])
   @@map("editor_source_warehouses")
+}
+
+// ─────────────────────────────────────────────
+//  ATTENDANCE (Điểm danh buổi họp tuần)
+// ─────────────────────────────────────────────
+
+/// Buổi họp team định kỳ hàng tuần
+model MeetingSession {
+  id              String   @id @default(uuid())
+  team_id         String
+  period_id       String                          // FK → ReportPeriod (type = WEEK)
+  title           String?                         // "Họp tuần 1 - T7/2026" — optional label
+  scheduled_at    DateTime                        // Mốc giờ họp — chỉ hiển thị/tham khảo, không tự tính LATE
+  notes           String?  @db.Text
+  created_by      String                          // FK → users (người tạo)
+  is_finalized    Boolean  @default(false)
+  finalized_at    DateTime?
+  finalized_by_id String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  team         Team                @relation(fields: [team_id],   references: [id])
+  period       ReportPeriod        @relation(fields: [period_id], references: [id])
+  creator      User                @relation("MeetingSessionCreator", fields: [created_by], references: [id])
+  finalized_by User?               @relation("MeetingSessionFinalizer", fields: [finalized_by_id], references: [id])
+  attendances  AttendanceRecord[]
+  logs         MeetingSessionLog[]
+
+  @@unique([team_id, period_id])              // 1 session / team / kỳ tuần → key upsert
+  @@index([team_id])
+  @@index([period_id])
+  @@map("meeting_sessions")
+}
+
+/// Điểm danh từng thành viên cho 1 buổi họp
+model AttendanceRecord {
+  id           String           @id @default(uuid())
+  session_id   String
+  user_id      String           // Thành viên được điểm danh
+  status       AttendanceStatus @default(PRESENT)
+  note         String?          @db.Text     // Bắt buộc khi ON_LEAVE (enforce ở DTO/service)
+  marked_by_id String           // Người thực hiện điểm danh (self hoặc manager)
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @updatedAt
+
+  session   MeetingSession @relation(fields: [session_id],   references: [id], onDelete: Cascade)
+  user      User           @relation("AttendanceOf",       fields: [user_id],       references: [id])
+  marked_by User           @relation("AttendanceMarkedBy", fields: [marked_by_id], references: [id])
+
+  @@unique([session_id, user_id])            // 1 bản ghi / người / buổi → basis upsert
+  @@index([user_id])
+  @@index([session_id])
+  @@map("attendance_records")
+}
+
+model MeetingSessionLog {
+  id         String   @id @default(uuid())
+  session_id String
+  actor_id   String
+  action     String   // "FINALIZE" | "REOPEN"
+  created_at DateTime @default(now())
+
+  session MeetingSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  actor   User           @relation("MeetingLogActor", fields: [actor_id], references: [id])
+
+  @@index([session_id])
+  @@map("meeting_session_logs")
 }
