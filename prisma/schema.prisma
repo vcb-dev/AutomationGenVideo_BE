@@ -20,12 +20,12 @@ datasource db {
 
 /// Tránh EPERM trên Windows (OneDrive/antivirus khóa file .dll.node) — dùng query-engine .exe
 model User {
-  id                      String     @id @default(uuid())
+  id                      String     @id @default(uuid()) @db.Uuid
   email                   String     @unique
   password_hash           String?
   full_name               String
   google_id               String?    @unique
-  manager_id              String?
+  manager_id              String?    @db.Uuid
   is_active               Boolean    @default(true)
   created_at              DateTime   @default(now())
   updated_at              DateTime   @updatedAt
@@ -773,7 +773,7 @@ model Channel {
   /// FK tới User — dùng cho module channelsTeam (quản lý kênh của team)
   owner_id     String?
   /// FK tới Team — dùng cho module channelsTeam
-  team_id      String?
+  team_id      String?  @db.Uuid
 
   channel_owner User? @relation("ChannelOwnerUser", fields: [owner_id], references: [id], onDelete: SetNull)
   channel_team  Team? @relation("ChannelTeam", fields: [team_id], references: [id], onDelete: SetNull)
@@ -1901,9 +1901,9 @@ enum BrandType {
 }
 
 model Team {
-  id         String    @id @default(uuid())
+  id         String    @id @default(uuid()) @db.Uuid
   name       String    @unique
-  leader_id  String?
+  leader_id  String?   @db.Uuid
   brand_type BrandType @default(TRANG_SUC)
   market     String    @default("VIETNAM")
   is_active  Boolean   @default(true)
@@ -1927,9 +1927,9 @@ model Team {
 }
 
 model TeamMember {
-  id        String   @id @default(uuid())
-  team_id   String
-  user_id   String
+  id        String   @id @default(uuid()) @db.Uuid
+  team_id   String   @db.Uuid
+  user_id   String   @db.Uuid
   joined_at DateTime @default(now())
 
   team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
@@ -1942,7 +1942,7 @@ model TeamMember {
 
 model TeamProduct {
   id                       String    @id @default(uuid())
-  team_id                  String
+  team_id                  String   @db.Uuid
   /// NULL khi được push từ editor (dùng source_editor_product_id để lấy data); có giá trị khi tạo trực tiếp trong team
   sku                      String?
   name                     String?
@@ -1982,7 +1982,7 @@ model TeamProduct {
 
 model TeamContent {
   id                       String             @id @default(uuid())
-  team_id                  String
+  team_id                  String   @db.Uuid
   brand_type               BrandType          @default(DO_DA)
   market                   String             @default("VIETNAM")
   title                    String?
@@ -2015,7 +2015,7 @@ model TeamContent {
 
 model TeamSource {
   id                      String      @id @default(uuid())
-  team_id                 String
+  team_id                 String    @db.Uuid
   brand_type              BrandType   @default(DO_DA)
   /// NULL khi được push từ editor (dùng source_editor_source_id để lấy data); có giá trị khi tạo trực tiếp
   type                    SourceType?
@@ -2164,7 +2164,7 @@ enum TeamPushRequestType {
 /// Leader/Admin/Manager đẩy thì bỏ qua hàng đợi (đẩy thẳng, không tạo request).
 model TeamPushRequest {
   id                String              @id @default(uuid())
-  team_id           String
+  team_id           String   @db.Uuid
   type              TeamPushRequestType
   editor_product_id String?
   editor_content_id String?
@@ -2187,10 +2187,10 @@ model TeamPushRequest {
 }
 
 model EditorApproval {
-  id             String         @id @default(uuid())
-  user_id        String
+  id             String         @id @default(uuid()) @db.Uuid
+  user_id        String         @db.Uuid
   status         ApprovalStatus @default(PENDING)
-  approved_by_id String?
+  approved_by_id String?        @db.Uuid
   approved_at    DateTime?
   note           String?
   created_at     DateTime       @default(now())
@@ -2203,7 +2203,7 @@ model EditorApproval {
 
 model TeamKpi {
   id            String   @id @default(uuid())
-  team_id       String
+  team_id       String   @db.Uuid
   month         String
   note          String?
   created_by_id String
@@ -2238,9 +2238,9 @@ model TeamKpiAllocation {
 }
 
 model EditorKpi {
-  id                  String  @id @default(uuid())
-  user_id             String
-  team_id             String? // null = legacy row trước khi thêm multi-team
+  id                  String  @id @default(uuid()) @db.Uuid
+  user_id             String  @db.Uuid
+  team_id             String? @db.Uuid // null = legacy row trước khi thêm multi-team
   month               String
   // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
   total_target        Int     @default(0) // = Tổng video sản xuất (drives auto-assign)
@@ -2255,7 +2255,7 @@ model EditorKpi {
   product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
   product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
 
-  set_by_id  String
+  set_by_id  String  @db.Uuid
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -2421,7 +2421,7 @@ model Source {
   /// FK trỏ về TeamSource khi được push từ kho team (thay thế copy data)
   source_team_source_id String?     @unique
   /// Team đã đặt hàng (order) source này khi tạo — hiển thị cột "Team order" ở kho tổng
-  ordered_team_id       String?
+  ordered_team_id       String?  @db.Uuid
   created_at            DateTime    @default(now())
   updated_at            DateTime    @updatedAt
 
@@ -2443,7 +2443,7 @@ model Source {
 
 model Task {
   id                        String     @id @default(uuid())
-  team_id                   String
+  team_id                   String   @db.Uuid
   content_id                String?
   product_id                String?
   editor_product_id         String?
