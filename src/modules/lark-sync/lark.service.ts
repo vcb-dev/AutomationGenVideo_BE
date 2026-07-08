@@ -60,6 +60,50 @@ export class LarkService implements OnModuleInit {
     }
 
     /**
+     * Alias danh tính đã xác nhận thủ công (KHÔNG tự động đoán theo tên/email giống nhau) — dùng khi
+     * 1 nhân viên có ≥2 tài khoản `users` (tài khoản cũ chưa dọn) và nộp báo cáo bằng tên/email của
+     * tài khoản CŨ, khiến `getUserActivityReports` không khớp được về đúng danh tính "chuẩn" (đang
+     * active) qua `emailKeyMatchMap`/`nameKeyMatchMap` — người đó bị tách thành 1 thẻ riêng, số liệu
+     * bị chia đôi thay vì cộng dồn đúng người.
+     *
+     * CHỦ Ý KHÔNG tự động hoá việc phát hiện case này bằng cách so khớp tên gần giống: 2 nhân viên
+     * KHÁC NHAU trùng tên là có thật trong DB (xem TR-8 trong BUGS.md — bug ghi đè dữ liệu chéo do
+     * khớp nhầm theo tên) — tự động merge theo độ giống tên sẽ tái tạo đúng lớp bug đó nhưng ở tầng
+     * hiển thị thay vì tầng ghi dữ liệu. Mỗi case ở đây phải được xác nhận thủ công là CÙNG 1 người
+     * thật trước khi thêm vào danh sách.
+     */
+    private readonly KNOWN_IDENTITY_ALIASES: Array<{
+        matchNameKey?: string;
+        matchEmailKey?: string;
+        canonicalNameKey?: string;
+        canonicalEmailKey?: string;
+    }> = [
+        // "Chung Đỗ" (tài khoản cũ, dochung2741@gmail.com) === "Đỗ Đăng Chung" (tài khoản đang active).
+        { matchNameKey: 'chung do', matchEmailKey: 'dochung2741@gmail.com', canonicalNameKey: 'do dang chung', canonicalEmailKey: 'dochung2741@gmail.com' },
+    ];
+
+    /** Tra `KNOWN_IDENTITY_ALIASES` — trả về record "chuẩn" (authoritative) nếu tên/email khớp 1 alias đã xác nhận. */
+    private resolveKnownIdentityAlias(
+        nameKeyMatchMap: Map<string, any>,
+        emailKeyMatchMap: Map<string, any>,
+        nameKey: string | null,
+        emailKey: string | null | undefined,
+    ): any {
+        for (const alias of this.KNOWN_IDENTITY_ALIASES) {
+            const matches =
+                (alias.matchNameKey && nameKey === alias.matchNameKey) ||
+                (alias.matchEmailKey && emailKey === alias.matchEmailKey);
+            if (matches) {
+                return (
+                    (alias.canonicalNameKey && nameKeyMatchMap.get(alias.canonicalNameKey)) ||
+                    (alias.canonicalEmailKey && emailKeyMatchMap.get(alias.canonicalEmailKey))
+                );
+            }
+        }
+        return null;
+    }
+
+    /**
      * Bảng `kpi_do_da` (model KpiDoDa). Cùng hình delegate với `kpi` trong schema.
      * Dùng unknown + KpiDelegate để tránh lệch kiểu giữa IDE (client cũ/cache) và `npx prisma generate`.
      */
@@ -221,18 +265,20 @@ export class LarkService implements OnModuleInit {
         const bounds = getVietnamBounds(reportDate || now);
 
         // Guard: once a user already submitted traffic for this day, prevent duplicate re-submit.
-        const duplicateOr: any[] = [];
-        if (normalizedSubmitterEmail) {
-            duplicateOr.push({ email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } });
-        }
-        if (name && String(name).trim()) {
-            duplicateOr.push({ name: { equals: String(name).trim(), mode: 'insensitive' as any } });
-        }
-        if (duplicateOr.length > 0) {
+        // Ưu tiên khớp theo email (định danh ổn định) — CHỈ fallback về khớp theo tên khi thực sự
+        // không có email. Trước đây dùng OR (email HOẶC tên) ngay cả khi có email, nên 2 người khác
+        // nhau trùng tên (đã xác nhận có thật trong DB, vd 2 người cùng tên "Bảo Việt" khác email,
+        // cả 2 đang hoạt động) sẽ đè lẫn "trạng thái đã báo cáo" của nhau.
+        const duplicateWhereIdentity: any = normalizedSubmitterEmail
+            ? { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } }
+            : (name && String(name).trim())
+                ? { name: { equals: String(name).trim(), mode: 'insensitive' as any } }
+                : null;
+        if (duplicateWhereIdentity) {
             const existingTraffic = await this.prisma.trafficReport.findFirst({
                 where: {
                     date: { gte: bounds.start, lte: bounds.end },
-                    OR: duplicateOr,
+                    ...duplicateWhereIdentity,
                 },
                 orderBy: { created_at: 'desc' },
             });
@@ -418,15 +464,19 @@ export class LarkService implements OnModuleInit {
             }
         }
 
-        // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update.
+        // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update (upsert theo existing.id).
         // Không lọc theo team — cùng 1 người chỉ có 1 checklist/ngày dù team thay đổi.
+        // QUAN TRỌNG: ưu tiên khớp theo email (định danh ổn định), CHỈ fallback tên khi thực sự không
+        // có email. Trước đây OR (email HOẶC tên) ngay cả khi có email — 2 người khác nhau trùng tên
+        // (đã xác nhận có thật trong DB, vd 2 người cùng tên khác email, cả 2 đang hoạt động) sẽ khớp
+        // nhầm vào record của người kia, và vì hàm này UPDATE theo existing.id nên báo cáo của người
+        // đến sau sẽ GHI ĐÈ luôn answers + email của người đã nộp trước đó — mất dữ liệu thật.
         const existing = await this.prisma.checklistReport.findFirst({
             where: {
                 date: { gte: bounds.start, lte: bounds.end },
-                OR: [
-                    ...(normalizedEmail ? [{ email: { equals: normalizedEmail, mode: 'insensitive' as any } }] : []),
-                    { name: { equals: finalName, mode: 'insensitive' as any } }
-                ]
+                ...(normalizedEmail
+                    ? { email: { equals: normalizedEmail, mode: 'insensitive' as any } }
+                    : { name: { equals: finalName, mode: 'insensitive' as any } }),
             },
             orderBy: { created_at: 'desc' }
         });
@@ -751,7 +801,12 @@ export class LarkService implements OnModuleInit {
                     return toVietnamDateString(prev);
                 };
 
-                /** Checklist/traffic/lark_report_kpi: ngày lưu DB thường = UI hiệu suất D + 1. Bitable `lark_kpi.report_date` = D. */
+                /**
+                 * CHỈ còn dùng cho `report_kpi` (bảng lịch sử đóng băng, không còn writer trong repo —
+                 * dữ liệu cũ do Lark sync ghi thật sự lệch D+1 so với ngày hiệu suất trên UI).
+                 * Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D — KHÔNG dùng hàm này cho 2 bảng đó
+                 * (xem `larkKpiStartOfDay`/`larkKpiEndOfDay`, cùng cửa sổ với `lark_kpi.report_date` = D).
+                 */
                 const getNextVietnamDateString = (dateInput: string) => {
                     const p = getVietnamParts(dateInput);
                     const anchor = new Date(Date.UTC(p.y, p.m - 1, p.d, 5, 0, 0, 0));
@@ -805,13 +860,15 @@ export class LarkService implements OnModuleInit {
                 const isBitableKpiRowForSelection = (d: any) => tsInRange(d, larkKpiStartOfDay, larkKpiEndOfDay);
 
                 this.logger.debug(
-                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist/traffic/report_kpi VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
+                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; report_kpi (legacy, D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
 
-
+                // Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D user chọn — không +1.
+                // Dùng chung cửa sổ larkKpiStartOfDay/EndOfDay (ngày D) với lark_kpi, KHÔNG dùng memberReportStart/End
+                // (D+1) — đó là quy ước cũ chỉ còn đúng cho báo cáo lịch sử `report_kpi` (xem isReportKpiOnAuxDay).
                 whereClause.date = {
-                    gte: memberReportStart,
-                    lte: memberReportEnd,
+                    gte: larkKpiStartOfDay,
+                    lte: larkKpiEndOfDay,
                 };
 
                 let kpiMonthFallback = false;
@@ -1113,7 +1170,7 @@ export class LarkService implements OnModuleInit {
                         },
                     }),
                     this.prisma.channel.findMany({
-                        where: { status: 'Đang hoạt động' },
+                        where: { status: { equals: 'Đang hoạt động', mode: 'insensitive' } },
                         select: { owner: true, team_traffic: true }
                     }),
                     (this.prisma as any).reportKpi.findMany({
@@ -1138,7 +1195,8 @@ export class LarkService implements OnModuleInit {
                     reportsUnfilteredCount,
                     globalIndoKpisRaw,
                 ] = await Promise.all([
-                    this.prisma.trafficReport.findMany({ where: { date: { gte: memberReportStart, lte: memberReportEnd } } }),
+                    // trafficReport lưu đúng ngày D user chọn — dùng cửa sổ D (larkKpiStartOfDay/EndOfDay), không +1.
+                    this.prisma.trafficReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
                         WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%'
@@ -1479,7 +1537,8 @@ export class LarkService implements OnModuleInit {
                 const monthlyKpiMapByName = new Map();
 
                 // Daily map (for report status on specific day) - Modified to AGGREGATE completed_day values
-                // lark_report_kpi: cùng ngày lưu checklist (thường D+1 so với ngày hiệu suất trên UI).
+                // report_kpi: bảng lịch sử đóng băng (Lark sync cũ), lệch D+1 so với ngày hiệu suất trên UI.
+                // Checklist/traffic hiện KHÔNG còn dùng quy ước D+1 này (xem comment ở getNextVietnamDateString).
                 const isReportKpiOnAuxDay = (d: any) => tsInRange(d, memberReportStart, memberReportEnd);
 
                 dailyReportKpis.forEach(rk => {
@@ -1845,10 +1904,8 @@ export class LarkService implements OnModuleInit {
                     const nameKey = r.name ? normName(r.name) : null;
                     const emailKey = r.email?.toLowerCase().trim();
                     let authoritativeUser = (emailKey ? emailKeyMatchMap.get(emailKey) : null) || (nameKey ? nameKeyMatchMap.get(nameKey) : null);
-
-                    // --- EXPLICIT OVERRIDE: Merge "Chung Đỗ" into "Đỗ Đăng Chung" ---
-                    if (!authoritativeUser && (nameKey === 'chung do' || emailKey === 'dochung2741@gmail.com')) {
-                        authoritativeUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
+                    if (!authoritativeUser) {
+                        authoritativeUser = this.resolveKnownIdentityAlias(nameKeyMatchMap, emailKeyMatchMap, nameKey, emailKey);
                     }
 
                     if (authoritativeUser && !isActiveEmployeeStatus(authoritativeUser.employee_status || authoritativeUser.status)) {
@@ -1919,11 +1976,10 @@ export class LarkService implements OnModuleInit {
                     const rEmail = r.email?.toLowerCase().trim();
                     const rName = r.name ? normName(r.name) : null;
                     let authUser = (rEmail ? emailKeyMatchMap.get(rEmail) : null) || (rName ? nameKeyMatchMap.get(rName) : null);
-                    
-                    if (!authUser && (rName === 'chung do' || rEmail === 'dochung2741@gmail.com')) {
-                        authUser = nameKeyMatchMap.get('do dang chung') || emailKeyMatchMap.get('dochung2741@gmail.com');
+                    if (!authUser) {
+                        authUser = this.resolveKnownIdentityAlias(nameKeyMatchMap, emailKeyMatchMap, rName, rEmail);
                     }
-                    
+
                     // Checklist: index reports by users.team (supports multi-team members)
                     const checklistTeamStr =
                         authUser?.team ||
@@ -3378,9 +3434,13 @@ export class LarkService implements OnModuleInit {
 
                 const history = Array.from(monthlyData.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-                const today = new Date();
-                const startOfToday = new Date(today.setHours(0, 0, 0, 0));
-                const endOfToday = new Date(today.setHours(23, 59, 59, 999));
+                // Dùng ranh giới ngày theo giờ VN (mốc 17:00 UTC), không dùng giờ hệ thống server —
+                // nếu server chạy UTC, new Date().setHours(...) lệch ngày so với VN trong khoảng
+                // 00:00-07:00 giờ VN mỗi ngày, khiến "đã báo cáo hôm nay" bị tính nhầm ngày.
+                const todayVNKey = this.toVietnamDateKey(new Date());
+                const [todayY, todayM, todayD] = todayVNKey.split('-').map(Number);
+                const startOfToday = new Date(Date.UTC(todayY, todayM - 1, todayD - 1, 17, 0, 0, 0));
+                const endOfToday = new Date(Date.UTC(todayY, todayM - 1, todayD, 16, 59, 59, 999));
 
                 let targetMonthNum = new Date().getMonth() + 1;
 
@@ -3775,14 +3835,44 @@ export class LarkService implements OnModuleInit {
     }
 
     private async _buildDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
-        const start = filters?.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-        const end = filters?.endDate ? new Date(filters.endDate) : new Date();
+        // `kpi.report_date` (và các cột `date`/`report_date` VN-normalized khác trong file này) lưu ở
+        // 05:00 UTC (= 12:00 VN), KHÔNG phải UTC midnight. Trước đây `start`/`end` dùng `new Date('YYYY-MM-DD')`
+        // (UTC midnight) — khi startDate===endDate (chọn 1 ngày), start===end nên khoảng lọc co về đúng 1
+        // instant UTC midnight, loại bỏ mọi bản ghi report_date=05:00 UTC của chính ngày đó (đã verify thực tế:
+        // 124 dòng kpi có month=null dựa hoàn toàn vào fallback report_date này). Dùng ranh giới ngày VN chuẩn
+        // (mốc 17:00 UTC) như phần còn lại của file thay vì UTC midnight.
+        const vnDayBounds = (dateStr: string) => {
+            const key = dateStr.length === 10 ? dateStr : this.toVietnamDateKey(new Date(dateStr));
+            const [y, m, d] = key.split('-').map(Number);
+            return {
+                start: new Date(Date.UTC(y, m - 1, d - 1, 17, 0, 0, 0)),
+                end: new Date(Date.UTC(y, m - 1, d, 16, 59, 59, 999)),
+            };
+        };
+        const start = filters?.startDate
+            ? vnDayBounds(filters.startDate).start
+            : vnDayBounds(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`).start;
+        const end = filters?.endDate ? vnDayBounds(filters.endDate).end : new Date();
+        // Trước đây "chọn đúng 1 ngày" được suy ra từ `start.getTime() === end.getTime()` — điều này chỉ
+        // đúng một cách tình cờ khi start/end bị tính bằng UTC midnight thô (bug đã sửa ở trên). Với
+        // start/end chuẩn theo ranh giới ngày VN (cách nhau ~1 ngày kể cả khi chọn 1 ngày), phải tính cờ
+        // này tường minh từ chuỗi ngày UI gửi lên, không suy ra từ start/end nữa.
+        const isSingleDaySelected = !!(filters?.startDate && filters?.endDate && filters.startDate === filters.endDate);
+        const singleDayKey = isSingleDaySelected ? filters!.startDate! : null;
         const teamFilter = filters?.team === 'All' || !filters?.team ? null : filters?.team.toLowerCase().trim();
 
         const monthsInRange: { monthNum: number; year: number; formats: string[] }[] = [];
         {
-            let curr = new Date(start.getFullYear(), start.getMonth(), 1);
-            const endLimit = new Date(end.getFullYear(), end.getMonth(), 1);
+            // KHÔNG dùng start.getFullYear()/getMonth() (local-time getters): `start` là mốc UTC
+            // 17:00 của ngày hôm trước ngày VN đầu tiên trong khoảng chọn (vd startDate="2026-08-01"
+            // → start = 2026-07-31T17:00:00Z). Nếu server chạy UTC (mặc định của container, không set
+            // TZ), .getMonth() đọc ra tháng 7 thay vì tháng 8 → monthsInRange lùi nhầm 1 tháng, kéo
+            // theo dữ liệu KPI tháng trước vào tổng "tháng này" mỗi khi mở dashboard mặc định (không
+            // filter) hoặc chọn startDate=mùng 1. Dùng this.toVietnamDateKey() để lấy đúng năm/tháng VN.
+            const [startY, startM] = this.toVietnamDateKey(start).split('-').map(Number);
+            const [endY, endM] = this.toVietnamDateKey(end).split('-').map(Number);
+            let curr = new Date(startY, startM - 1, 1);
+            const endLimit = new Date(endY, endM - 1, 1);
             while (curr <= endLimit) {
                 const m = curr.getMonth() + 1;
                 const y = curr.getFullYear();
@@ -3846,7 +3936,7 @@ export class LarkService implements OnModuleInit {
             }),
             this.prisma.channel.findMany({
                 where: {
-                    status: 'Đang hoạt động',
+                    status: { equals: 'Đang hoạt động', mode: 'insensitive' },
                     ...(teamFilter ? { team_traffic: { contains: teamFilter, mode: 'insensitive' } } : {})
                 }
             })
@@ -3994,20 +4084,20 @@ export class LarkService implements OnModuleInit {
                 existing.traffic = Math.max(existing.traffic, trafficVal);
                 existing.revenue = Math.max(existing.revenue, revenueVal);
 
-                // If the selected range is just one day, we prefer that day's completed_day
-                const targetDStr = start.toDateString();
-                const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
-                if (start.getTime() === end.getTime() && kpiDStr === targetDStr) {
+                // If the selected range is just one day, we prefer that day's completed_day.
+                // So sánh theo ngày lịch VN (không dùng .toDateString() — chạy giờ local server,
+                // và start/end giờ là ranh giới ngày VN chứ không còn là UTC midnight của ngày chọn).
+                const kpiDStr = kpi.report_date ? this.toVietnamDateKey(new Date(kpi.report_date)) : null;
+                if (isSingleDaySelected && kpiDStr === singleDayKey) {
                     // Update videoCount to daily count if specifically looking at one day
                     existing.videoCount = Number(kpi.completed_day) || existing.videoCount;
                 }
             } else {
                 const user = email ? employeeMapByEmail.get(email) : null;
-                const targetDStr = start.toDateString();
-                const kpiDStr = kpi.report_date ? new Date(kpi.report_date).toDateString() : null;
+                const kpiDStr = kpi.report_date ? this.toVietnamDateKey(new Date(kpi.report_date)) : null;
 
                 // Use completed_day if single day selected, else completed_month
-                const effectiveVideoCount = (start.getTime() === end.getTime() && kpiDStr === targetDStr)
+                const effectiveVideoCount = (isSingleDaySelected && kpiDStr === singleDayKey)
                     ? (Number(kpi.completed_day) || 0)
                     : videosVal;
 
@@ -4141,10 +4231,13 @@ export class LarkService implements OnModuleInit {
             return { summary: region.summary, teams };
         };
 
-        // Comparison for Summary Card
+        // Comparison for Summary Card — cửa sổ trước đó có CÙNG độ dài (`duration`), kết thúc ngay
+        // trước khi cửa sổ hiện tại bắt đầu. Không dùng "start - đúng 1 ngày" cố định nữa: từ khi
+        // start/end chuẩn theo ranh giới ngày VN, chọn 1 ngày cũng cho duration ~1 ngày (trước đây do
+        // bug start===end nên duration=0, công thức cũ tình cờ đúng cho riêng trường hợp 1 ngày).
         const duration = end.getTime() - start.getTime();
-        const prevStart = new Date(start.getTime() - duration - (24 * 60 * 60 * 1000));
-        const prevEnd = new Date(start.getTime() - (24 * 60 * 60 * 1000));
+        const prevEnd = new Date(start.getTime() - 1);
+        const prevStart = new Date(prevEnd.getTime() - duration);
         const prevTasksCount = await this.prisma.reportedTask.count({
             where: {
                 date: { gte: prevStart, lte: prevEnd },
