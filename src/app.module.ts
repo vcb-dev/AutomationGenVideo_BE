@@ -30,6 +30,15 @@ import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
 // import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
 import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
 import { OAuthModule } from './modules/oauth/oauth.module';
+import { FacebookOwnedPagesModule } from './modules/facebook-owned-pages/facebook-owned-pages.module';
+import { DouyinScraperModule } from './modules/douyin-scraper/douyin-scraper.module';
+import { TiktokScraperModule } from './modules/tiktok-scraper/tiktok-scraper.module';
+import { InstagramScraperModule } from './modules/instagram-scraper/instagram-scraper.module';
+import { XiaohongshuScraperModule } from './modules/xiaohongshu-scraper/xiaohongshu-scraper.module';
+import { FacebookExternalScraperModule } from './modules/facebook-external-scraper/facebook-external-scraper.module';
+import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
+import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
+import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 
 @Module({
   imports: [
@@ -75,6 +84,15 @@ import { OAuthModule } from './modules/oauth/oauth.module';
     TaskAutoModule,
     BusinessConnectionsModule,
     OAuthModule,
+    FacebookOwnedPagesModule,
+    DouyinScraperModule,
+    TiktokScraperModule,
+    InstagramScraperModule,
+    XiaohongshuScraperModule,
+    FacebookExternalScraperModule,
+    ScraperAggregateModule,
+    SearchKeywordsModule,
+    ScraperProxyModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

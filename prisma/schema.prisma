@@ -1591,10 +1591,12 @@ model ScraperTikTokVideo {
   search_keyword       String    @default("") @db.VarChar(500)
   date_posted          DateTime  @db.Timestamptz(6)
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([play_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
   @@index([search_keyword])
   @@map("scraper_tiktok_videos")
 }
@@ -1627,9 +1629,11 @@ model ScraperDouyinVideo {
   search_keyword       String    @default("") @db.VarChar(500)
   date_posted          DateTime  @db.Timestamptz(6)
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
   @@index([search_keyword])
   @@map("scraper_douyin_videos")
 }
@@ -1849,6 +1853,7 @@ model ScraperXiaohongshuVideo {
 
   @@index([liked_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
   @@index([profile_id])
   @@map("scraper_xiaohongshu_videos")
 }
@@ -1879,6 +1884,68 @@ model ScraperXiaohongshuProfile {
   @@index([is_owned])
   @@index([scraping_status])
   @@map("scraper_xiaohongshu_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  YOUTUBE — Channel (Profile) Tracking
+// ═══════════════════════════════════════════════════════════
+
+model ScraperYoutubeProfile {
+  id                  BigInt    @id @default(autoincrement())
+  channel_id          String    @unique @db.VarChar(50)
+  title               String    @default("") @db.VarChar(500)
+  description         String?   @db.Text
+  url                 String    @db.VarChar(1000)
+  avatar_url          String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
+  banner_url          String?   @db.Text
+  banner_drive_url    String    @default("") @db.Text
+  is_verified         Boolean   @default(false)
+  has_business_email  Boolean   @default(false)
+  subscriber_count    BigInt    @default(0)
+  video_count         Int       @default(0)
+  view_count          BigInt    @default(0)
+  country             String    @default("") @db.VarChar(100)
+  channel_created_at  DateTime? @db.Timestamptz(6)
+  is_tracked          Boolean   @default(false)
+  is_bookmarked       Boolean   @default(false)
+  is_owned            Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  shorts              ScraperYoutubeShort[]
+
+  @@index([title])
+  @@index([is_bookmarked])
+  @@index([subscriber_count(sort: Desc)])
+  @@map("scraper_youtube_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  YOUTUBE — Shorts (thuộc 1 channel)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperYoutubeShort {
+  id                  BigInt                @id @default(autoincrement())
+  profile_id          BigInt
+  video_id            String                @unique @db.VarChar(20)
+  title               String                @default("") @db.Text
+  hashtags            String[]              @default([])
+  url                 String                @db.VarChar(500)
+  thumbnail_url       String?               @db.Text
+  thumbnail_drive_url String?               @db.Text
+  view_count          BigInt                @default(0)
+  view_count_text     String                @default("") @db.VarChar(50)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @updatedAt @db.Timestamptz(6)
+  profile             ScraperYoutubeProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, view_count(sort: Desc)])
+  @@index([view_count(sort: Desc)])
+  @@map("scraper_youtube_shorts")
 }
 
 // ────────────────────────────────
