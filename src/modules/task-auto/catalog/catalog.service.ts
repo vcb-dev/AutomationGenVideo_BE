@@ -64,6 +64,7 @@ export class TaskAutoCatalogService {
     }
     if (q.market) where.market = q.market;
     if (q.product_line_id) where.product_line_id = q.product_line_id;
+    if (q.classification_id) where.classification_id = q.classification_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
     Object.assign(where, this.monthRange(q.month));
 
@@ -75,6 +76,7 @@ export class TaskAutoCatalogService {
         include: {
           product_line: { select: { id: true, name: true } },
           material: { select: { id: true, name: true } },
+          classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
           _count: { select: { tasks: true } },
           source_team_product: {
@@ -123,6 +125,7 @@ export class TaskAutoCatalogService {
       include: {
         product_line: true,
         material: true,
+        classification: true,
         added_by: { select: { id: true, full_name: true } },
         sources: { take: 10, orderBy: { created_at: "desc" } },
         _count: { select: { tasks: true } },
@@ -172,6 +175,7 @@ export class TaskAutoCatalogService {
       include: {
         product_line: true,
         material: true,
+        classification: true,
       },
     });
   }
@@ -181,7 +185,7 @@ export class TaskAutoCatalogService {
     return this.prisma.product.update({
       where: { id },
       data: dto,
-      include: { product_line: true, material: true },
+      include: { product_line: true, material: true, classification: true },
     });
   }
 
@@ -215,6 +219,7 @@ export class TaskAutoCatalogService {
     const where: any = {};
     if (q.brand_type) where.brand_type = q.brand_type;
     if (q.content_line_id) where.content_line_id = q.content_line_id;
+    if (q.classification_id) where.classification_id = q.classification_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
     if (q.search) {
@@ -240,6 +245,7 @@ export class TaskAutoCatalogService {
         where,
         include: {
           content_line: { select: { id: true, name: true } },
+          classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
           source_team_content: {
             select: {
@@ -280,6 +286,7 @@ export class TaskAutoCatalogService {
       where: { id },
       include: {
         content_line: true,
+        classification: true,
         added_by: { select: { id: true, full_name: true } },
         source_team_content: {
           select: {
@@ -320,6 +327,7 @@ export class TaskAutoCatalogService {
       },
       include: {
         content_line: true,
+        classification: true,
       },
     });
   }
@@ -329,7 +337,7 @@ export class TaskAutoCatalogService {
     return this.prisma.content.update({
       where: { id },
       data: dto as any,
-      include: { content_line: true },
+      include: { content_line: true, classification: true },
     });
   }
 
@@ -369,6 +377,36 @@ export class TaskAutoCatalogService {
     const cl = await this.prisma.contentLine.findUnique({ where: { id } });
     if (!cl) throw new NotFoundException("ContentLine not found");
     await this.prisma.contentLine.delete({ where: { id } });
+    return { success: true };
+  }
+
+  // ─── Content Classifications (VD: Content Win, Content Test) ────────────
+
+  async findContentClassifications() {
+    return this.prisma.contentClassification.findMany({
+      orderBy: { name: "asc" },
+    });
+  }
+
+  async createContentClassification(name: string) {
+    const exists = await this.prisma.contentClassification.findUnique({
+      where: { name },
+    });
+    if (exists)
+      throw new ConflictException(`ContentClassification "${name}" already exists`);
+    return this.prisma.contentClassification.create({ data: { name } });
+  }
+
+  async updateContentClassification(id: string, name: string) {
+    const cc = await this.prisma.contentClassification.findUnique({ where: { id } });
+    if (!cc) throw new NotFoundException("ContentClassification not found");
+    return this.prisma.contentClassification.update({ where: { id }, data: { name } });
+  }
+
+  async removeContentClassification(id: string) {
+    const cc = await this.prisma.contentClassification.findUnique({ where: { id } });
+    if (!cc) throw new NotFoundException("ContentClassification not found");
+    await this.prisma.contentClassification.delete({ where: { id } });
     return { success: true };
   }
 
@@ -415,6 +453,36 @@ export class TaskAutoCatalogService {
     const m = await this.prisma.material.findUnique({ where: { id } });
     if (!m) throw new NotFoundException("Material not found");
     await this.prisma.material.delete({ where: { id } });
+  }
+
+  // ─── Product Classifications (VD: Main, Test, Đẩy) ───────────────────────
+
+  async findProductClassifications() {
+    return this.prisma.productClassification.findMany({
+      orderBy: { name: "asc" },
+    });
+  }
+
+  async createProductClassification(name: string) {
+    const exists = await this.prisma.productClassification.findUnique({
+      where: { name },
+    });
+    if (exists)
+      throw new ConflictException(`ProductClassification "${name}" already exists`);
+    return this.prisma.productClassification.create({ data: { name } });
+  }
+
+  async updateProductClassification(id: string, name: string) {
+    const pc = await this.prisma.productClassification.findUnique({ where: { id } });
+    if (!pc) throw new NotFoundException("ProductClassification not found");
+    return this.prisma.productClassification.update({ where: { id }, data: { name } });
+  }
+
+  async removeProductClassification(id: string) {
+    const pc = await this.prisma.productClassification.findUnique({ where: { id } });
+    if (!pc) throw new NotFoundException("ProductClassification not found");
+    await this.prisma.productClassification.delete({ where: { id } });
+    return { success: true };
   }
 
   // ─── Sources (kho tổng) ───────────────────────────────────────────────────
@@ -610,6 +678,7 @@ export class TaskAutoCatalogService {
     if (q.brand_type) where.brand_type = q.brand_type;
     if (q.market) where.market = q.market;
     if (q.product_line_id) where.product_line_id = q.product_line_id;
+    if (q.classification_id) where.classification_id = q.classification_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
     if (q.search)
       where.OR = [
@@ -626,6 +695,7 @@ export class TaskAutoCatalogService {
         include: {
           product_line: { select: { id: true, name: true } },
           material: { select: { id: true, name: true } },
+          classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
         },
         orderBy: [{ priority_score: "desc" }, { name: "asc" }, { id: "asc" }],
@@ -643,6 +713,7 @@ export class TaskAutoCatalogService {
       include: {
         product_line: true,
         material: true,
+        classification: true,
         added_by: { select: { id: true, full_name: true } },
         user: { select: { id: true, full_name: true } },
         editor_sources: { take: 10, orderBy: { added_at: "desc" } },
@@ -672,9 +743,10 @@ export class TaskAutoCatalogService {
           priority_score: dto.priority_score ?? src.priority_score,
           material_id: dto.material_id ?? src.material_id,
           product_line_id: dto.product_line_id ?? src.product_line_id,
+          classification_id: dto.classification_id ?? src.classification_id,
           is_active: dto.is_active ?? true,
         },
-        include: { product_line: true, material: true },
+        include: { product_line: true, material: true, classification: true },
       });
     }
 
@@ -693,9 +765,10 @@ export class TaskAutoCatalogService {
         priority_score: dto.priority_score ?? 0,
         material_id: dto.material_id,
         product_line_id: dto.product_line_id,
+        classification_id: dto.classification_id,
         is_active: dto.is_active ?? true,
       },
-      include: { product_line: true, material: true },
+      include: { product_line: true, material: true, classification: true },
     });
   }
 
@@ -714,7 +787,7 @@ export class TaskAutoCatalogService {
     return this.prisma.editorProduct.update({
       where: { id },
       data: dto as any,
-      include: { product_line: true, material: true },
+      include: { product_line: true, material: true, classification: true },
     });
   }
 
@@ -735,6 +808,7 @@ export class TaskAutoCatalogService {
     const where: any = { user_id: userId };
     if (q.brand_type) where.brand_type = q.brand_type;
     if (q.content_line_id) where.content_line_id = q.content_line_id;
+    if (q.classification_id) where.classification_id = q.classification_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
     if (q.search)
@@ -751,6 +825,7 @@ export class TaskAutoCatalogService {
         where,
         include: {
           content_line: { select: { id: true, name: true } },
+          classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
         },
         orderBy: [{ added_at: "desc" }, { id: "asc" }],
@@ -767,6 +842,7 @@ export class TaskAutoCatalogService {
       where: { id },
       include: {
         content_line: true,
+        classification: true,
         added_by: { select: { id: true, full_name: true } },
         user: { select: { id: true, full_name: true } },
       },
@@ -792,8 +868,9 @@ export class TaskAutoCatalogService {
           file_content_url: dto.file_content_url ?? src.file_content_url,
           voice_url: dto.voice_url ?? src.voice_url,
           content_line_id: dto.content_line_id ?? src.content_line_id,
+          classification_id: dto.classification_id ?? src.classification_id,
         },
-        include: { content_line: true },
+        include: { content_line: true, classification: true },
       });
     }
 
@@ -809,8 +886,9 @@ export class TaskAutoCatalogService {
         file_content_url: dto.file_content_url,
         voice_url: dto.voice_url,
         content_line_id: dto.content_line_id,
+        classification_id: dto.classification_id,
       },
-      include: { content_line: true },
+      include: { content_line: true, classification: true },
     });
   }
 
@@ -829,7 +907,7 @@ export class TaskAutoCatalogService {
     return this.prisma.editorContent.update({
       where: { id },
       data: dto as any,
-      include: { content_line: true },
+      include: { content_line: true, classification: true },
     });
   }
 
@@ -1024,6 +1102,7 @@ export class TaskAutoCatalogService {
       priority_score: number;
       is_active: boolean;
       product_line_id: string | null;
+      classification_id: string | null;
     },
     teamId: string,
     addedById: string,
@@ -1037,6 +1116,7 @@ export class TaskAutoCatalogService {
         priority_score: ep.priority_score,
         is_active: ep.is_active,
         product_line_id: ep.product_line_id,
+        classification_id: ep.classification_id,
       },
     });
 
@@ -1060,7 +1140,7 @@ export class TaskAutoCatalogService {
   }
 
   private async copyEditorContentToTeam(
-    ec: { id: string; brand_type: any },
+    ec: { id: string; brand_type: any; classification_id: string | null },
     teamId: string,
     addedById: string,
   ) {
@@ -1070,6 +1150,7 @@ export class TaskAutoCatalogService {
         added_by_id: addedById,
         source_editor_content_id: ec.id,
         brand_type: ec.brand_type,
+        classification_id: ec.classification_id,
       },
     });
   }

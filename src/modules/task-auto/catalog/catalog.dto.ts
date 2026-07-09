@@ -45,6 +45,7 @@ export class CreateProductDto {
   priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -72,6 +73,7 @@ export class UpdateProductDto {
   priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -80,6 +82,7 @@ export class QueryProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
   @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional()
@@ -111,6 +114,7 @@ export class CreateContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional({ enum: ["GLOBAL", "VIETNAM"] })
   @IsEnum(["GLOBAL", "VIETNAM"])
   @IsOptional()
@@ -125,6 +129,7 @@ export class UpdateContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional({ enum: ["GLOBAL", "VIETNAM"] })
   @IsEnum(["GLOBAL", "VIETNAM"])
   @IsOptional()
@@ -138,6 +143,7 @@ export class UpdateContentDto {
 export class QueryContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
@@ -206,6 +212,7 @@ export class CreateTeamProductDto {
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -220,6 +227,7 @@ export class UpdateTeamProductDto {
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -237,6 +245,7 @@ export class CreateTeamContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
 }
 
 export class UpdateTeamContentDto {
@@ -248,6 +257,7 @@ export class UpdateTeamContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsEnum(['AVAILABLE', 'IN_TASK', 'USED', 'ARCHIVED']) @IsOptional() status?: string;
 }
 
@@ -325,6 +335,7 @@ export class CreateEditorProductDto {
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -339,6 +350,7 @@ export class UpdateEditorProductDto {
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
 }
 
@@ -347,6 +359,7 @@ export class QueryEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() @Type(() => Boolean) is_active?: boolean;
   @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
@@ -367,6 +380,7 @@ export class CreateEditorContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
 }
 
 export class UpdateEditorContentDto {
@@ -378,12 +392,14 @@ export class UpdateEditorContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsEnum(['AVAILABLE', 'IN_TASK', 'USED', 'ARCHIVED']) @IsOptional() status?: string;
 }
 
 export class QueryEditorContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() status?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;

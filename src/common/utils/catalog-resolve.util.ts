@@ -30,6 +30,7 @@ export async function resolveProductSnapshot(prisma: PrismaService, productId: s
     priority_score: src.priority_score,
     material_id: src.material_id ?? tp?.material_id ?? ep?.material_id ?? null,
     product_line_id: src.product_line_id ?? tp?.product_line_id ?? ep?.product_line_id ?? null,
+    classification_id: src.classification_id ?? tp?.classification_id ?? ep?.classification_id ?? null,
     is_active: src.is_active,
   }
 }
@@ -53,5 +54,6 @@ export async function resolveContentSnapshot(prisma: PrismaService, contentId: s
     file_content_url: src.file_content_url ?? tc?.file_content_url ?? ec?.file_content_url ?? null,
     voice_url: src.voice_url ?? tc?.voice_url ?? ec?.voice_url ?? null,
     content_line_id: src.content_line_id ?? tc?.content_line_id ?? ec?.content_line_id ?? null,
+    classification_id: src.classification_id ?? tc?.classification_id ?? ec?.classification_id ?? null,
   }
 }

@@ -184,25 +184,27 @@ export class TaskAutoTeamsService {
   }
 
   private teamProductInclude = {
-    added_by:     { select: { id: true, full_name: true } },
-    material:     { select: { id: true, name: true } },
-    product_line: { select: { id: true, name: true } },
+    added_by:       { select: { id: true, full_name: true } },
+    material:       { select: { id: true, name: true } },
+    product_line:   { select: { id: true, name: true } },
+    classification: { select: { id: true, name: true } },
     source_editor_product: {
       select: {
         id: true, sku: true, name: true, image_url: true, image_urls: true,
         price: true, market: true, price_segment: true, priority_score: true,
-        material_id: true, product_line_id: true, brand_type: true, is_active: true,
+        material_id: true, product_line_id: true, classification_id: true, brand_type: true, is_active: true,
       },
     },
   }
 
   private teamContentInclude = {
-    added_by:     { select: { id: true, full_name: true } },
-    content_line: { select: { id: true, name: true } },
+    added_by:       { select: { id: true, full_name: true } },
+    content_line:   { select: { id: true, name: true } },
+    classification: { select: { id: true, name: true } },
     source_editor_content: {
       select: {
         id: true, title: true, body: true, script: true,
-        file_content_url: true, voice_url: true, content_line_id: true,
+        file_content_url: true, voice_url: true, content_line_id: true, classification_id: true,
         brand_type: true, market: true, status: true,
         content_line: { select: { id: true, name: true } },
       },
@@ -264,7 +266,8 @@ export class TaskAutoTeamsService {
           brand_type: source.brand_type, image_url: source.image_url, image_urls: source.image_urls,
           price: source.price, market: source.market, price_segment: source.price_segment,
           priority_score: source.priority_score, material_id: source.material_id,
-          product_line_id: source.product_line_id, is_active: source.is_active, added_by_id: userId,
+          product_line_id: source.product_line_id, classification_id: source.classification_id,
+          is_active: source.is_active, added_by_id: userId,
         },
         include: this.teamProductInclude,
       })
@@ -279,7 +282,8 @@ export class TaskAutoTeamsService {
         team_id: teamId, sku, name: dto.name, brand_type: dto.brand_type,
         image_url: dto.image_url, image_urls: dto.image_urls ?? [], price: dto.price,
         market: dto.market, price_segment: dto.price_segment, priority_score: dto.priority_score ?? 0,
-        material_id: dto.material_id, product_line_id: dto.product_line_id, is_active: dto.is_active ?? true,
+        material_id: dto.material_id, product_line_id: dto.product_line_id,
+        classification_id: dto.classification_id, is_active: dto.is_active ?? true,
         added_by_id: userId,
       },
       include: this.teamProductInclude,
@@ -306,6 +310,7 @@ export class TaskAutoTeamsService {
         ...(dto.priority_score !== undefined  && { priority_score: dto.priority_score }),
         ...(dto.material_id !== undefined     && { material_id: dto.material_id }),
         ...(dto.product_line_id !== undefined && { product_line_id: dto.product_line_id }),
+        ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
         ...(dto.is_active !== undefined       && { is_active: dto.is_active }),
       },
       include: this.teamProductInclude,
@@ -341,6 +346,7 @@ export class TaskAutoTeamsService {
         priority_score:         entry.priority_score,
         is_active:              entry.is_active,
         product_line_id:        entry.product_line_id,
+        classification_id:      entry.classification_id,
         added_by_id:            userId,
       },
     })
@@ -374,7 +380,8 @@ export class TaskAutoTeamsService {
           team_id: teamId, source_content_id: source.id, brand_type: source.brand_type,
           market: source.market ?? 'VIETNAM', title: source.title, body: source.body,
           script: source.script, file_content_url: source.file_content_url, voice_url: source.voice_url,
-          content_line_id: source.content_line_id, status: 'AVAILABLE', added_by_id: userId,
+          content_line_id: source.content_line_id, classification_id: source.classification_id,
+          status: 'AVAILABLE', added_by_id: userId,
         },
         include: this.teamContentInclude,
       })
@@ -384,7 +391,8 @@ export class TaskAutoTeamsService {
       data: {
         team_id: teamId, brand_type: dto.brand_type, market: dto.market ?? 'VIETNAM',
         title: dto.title, body: dto.body, script: dto.script, file_content_url: dto.file_content_url,
-        voice_url: dto.voice_url, content_line_id: dto.content_line_id, status: 'AVAILABLE',
+        voice_url: dto.voice_url, content_line_id: dto.content_line_id, classification_id: dto.classification_id,
+        status: 'AVAILABLE',
         added_by_id: userId,
       },
       include: this.teamContentInclude,
@@ -409,6 +417,7 @@ export class TaskAutoTeamsService {
         ...(dto.file_content_url !== undefined && { file_content_url: dto.file_content_url }),
         ...(dto.voice_url !== undefined        && { voice_url: dto.voice_url }),
         ...(dto.content_line_id !== undefined  && { content_line_id: dto.content_line_id }),
+        ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
         ...(dto.status !== undefined           && { status: dto.status as any }),
       },
       include: this.teamContentInclude,
@@ -441,6 +450,7 @@ export class TaskAutoTeamsService {
       data: {
         source_team_content_id: teamContentId,
         brand_type:             entry.brand_type,
+        classification_id:      entry.classification_id,
         added_by_id:            userId,
       },
     })

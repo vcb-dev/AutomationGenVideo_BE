@@ -105,6 +105,39 @@ export class TaskAutoCatalogController {
     return this.catalog.removeProductLine(id);
   }
 
+  // ── Product Classifications (VD: Main, Test, Đẩy) ───────────────────────────
+
+  @Get("product-classifications")
+  @ApiOperation({ summary: "List product classifications" })
+  getProductClassifications() {
+    return this.catalog.findProductClassifications();
+  }
+
+  @Post("product-classifications")
+  @ApiOperation({ summary: "Create a product classification (all roles)" })
+  createProductClassification(@Body("name") name: string) {
+    return this.catalog.createProductClassification(name);
+  }
+
+  @Patch("product-classifications/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Rename a product classification" })
+  updateProductClassification(
+    @Param("id") id: string,
+    @Body("name") name: string,
+  ) {
+    return this.catalog.updateProductClassification(id, name);
+  }
+
+  @Delete("product-classifications/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Delete a product classification" })
+  deleteProductClassification(@Param("id") id: string) {
+    return this.catalog.removeProductClassification(id);
+  }
+
   // ── Materials ─────────────────────────────────────────────────────────────
 
   @Get("materials")
@@ -197,6 +230,39 @@ export class TaskAutoCatalogController {
   @ApiOperation({ summary: "Delete a content line" })
   deleteContentLine(@Param("id") id: string) {
     return this.catalog.removeContentLine(id);
+  }
+
+  // ── Content Classifications (VD: Content Win, Content Test) ─────────────────
+
+  @Get("content-classifications")
+  @ApiOperation({ summary: "List content classifications" })
+  getContentClassifications() {
+    return this.catalog.findContentClassifications();
+  }
+
+  @Post("content-classifications")
+  @ApiOperation({ summary: "Create a content classification (all roles)" })
+  createContentClassification(@Body("name") name: string) {
+    return this.catalog.createContentClassification(name);
+  }
+
+  @Patch("content-classifications/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Rename a content classification" })
+  updateContentClassification(
+    @Param("id") id: string,
+    @Body("name") name: string,
+  ) {
+    return this.catalog.updateContentClassification(id, name);
+  }
+
+  @Delete("content-classifications/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Delete a content classification" })
+  deleteContentClassification(@Param("id") id: string) {
+    return this.catalog.removeContentClassification(id);
   }
 
   // ── Sources ───────────────────────────────────────────────────────────────
