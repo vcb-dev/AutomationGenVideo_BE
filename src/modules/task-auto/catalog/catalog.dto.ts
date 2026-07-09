@@ -14,6 +14,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 export type BrandType = "DO_DA" | "TRANG_SUC";
 const BRAND_TYPES: BrandType[] = ["DO_DA", "TRANG_SUC"];
 
+/// Markets hỗ trợ ở kho team/editor (market ở đây là String tự do trong DB, không phải enum
+/// ContentMarket của kho tổng). Phải khớp với FE (MARKETS trong ContentFormModal.tsx).
+const TEAM_MARKETS = ["GLOBAL", "VIETNAM", "INDONESIA", "JAPAN", "THAILAND"];
+
 // ─── Product ─────────────────────────────────────────────────────────────────
 
 export class CreateProductDto {
@@ -226,7 +230,7 @@ export class CreateTeamContentDto {
   @IsString() @IsOptional() source_content_id?: string;
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
-  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -237,7 +241,7 @@ export class CreateTeamContentDto {
 
 export class UpdateTeamContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
-  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -282,6 +286,7 @@ export class QuerySourceDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
+  @ApiPropertyOptional({ description: 'Lọc theo người đã thêm source (User.id)' }) @IsString() @IsOptional() added_by_id?: string;
   @ApiPropertyOptional()
   @IsBoolean()
   @IsOptional()
@@ -355,7 +360,7 @@ export class CreateEditorContentDto {
   @IsString() @IsOptional() source_content_id?: string;
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
-  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -366,7 +371,7 @@ export class CreateEditorContentDto {
 
 export class UpdateEditorContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
-  @ApiPropertyOptional({ enum: ['GLOBAL', 'VIETNAM'] }) @IsEnum(['GLOBAL', 'VIETNAM']) @IsOptional() market?: string;
+  @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;

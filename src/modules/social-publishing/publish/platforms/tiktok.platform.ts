@@ -94,7 +94,7 @@ export class TiktokPublisher {
       let size = 0;
       try {
         const r = await axios.head(urlOrPath, { timeout: 15000 });
-        size = parseInt(r.headers['content-length'] || '0', 10);
+        size = parseInt(String(r.headers['content-length'] || '0'), 10);
       } catch (e: any) {
         this.logger.warn(`[TikTok] HEAD request failed: ${e.message}, trying GET Range fallback...`);
       }
@@ -110,7 +110,7 @@ export class TiktokPublisher {
             size = parseInt(contentRange.split('/').pop() || '0', 10);
           }
           if (size === 0) {
-            size = parseInt(r.headers['content-length'] || '0', 10);
+            size = parseInt(String(r.headers['content-length'] || '0'), 10);
           }
         } catch (e: any) {
           this.logger.error(`[TikTok] Fallback GET Range request failed: ${e.message}`);

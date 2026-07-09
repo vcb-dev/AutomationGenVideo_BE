@@ -70,32 +70,41 @@ export class AuthController {
   async googleAuthRedirect(@Req() req: any, @Res() res: Response) {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
 
-    // Tài khoản bị vô hiệu hóa — về login kèm thông báo (check nằm ở strategy dưới dạng
-    // sentinel vì throw trong validate() sẽ bị guard chặn thành 401 JSON thô).
-    if (req.user.isInactiveUser) {
-      res.redirect(
-        `${frontendUrl}/login?error=${encodeURIComponent(
-          "Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ Admin để được kích hoạt lại.",
-        )}`,
-      );
-      return;
-    }
+    try {
+      console.log("[GoogleCallback] Authenticated google user:", req.user);
 
-    // Không còn tự tạo tài khoản qua Google — chỉ tài khoản đã được Admin/Leader
-    // tạo sẵn (qua trang HR-management) mới đăng nhập được. Email lạ bị từ chối
-    // ngay tại đây, không có bước chọn role/tự tạo nào nữa.
-    if (req.user.isNewUser) {
-      res.redirect(
-        `${frontendUrl}/login?error=${encodeURIComponent(
-          "Tài khoản chưa được tạo. Vui lòng liên hệ Leader/Admin để được cấp quyền truy cập.",
-        )}`,
-      );
-      return;
-    }
+      // Tài khoản bị vô hiệu hóa — về login kèm thông báo
+      if (req.user.isInactiveUser) {
+        res.redirect(
+          `${frontendUrl}/login?error=${encodeURIComponent(
+            "Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ Admin để được kích hoạt lại.",
+          )}`,
+        );
+        return;
+      }
 
-    const tokenResponse = await this.authService.generateToken(req.user);
-    res.redirect(
-      `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
-    );
+      // Không còn tự tạo tài khoản qua Google
+      if (req.user.isNewUser) {
+        res.redirect(
+          `${frontendUrl}/login?error=${encodeURIComponent(
+            "Tài khoản chưa được tạo. Vui lòng liên hệ Leader/Admin để được cấp quyền truy cập.",
+          )}`,
+        );
+        return;
+      }
+
+      const tokenResponse = await this.authService.generateToken(req.user);
+      res.redirect(
+        `${frontendUrl}/auth/google/callback?token=${tokenResponse.access_token}`,
+      );
+    } catch (err: any) {
+      console.error("[GoogleCallback] CRITICAL ERROR:", err);
+      res.status(500).json({
+        statusCode: 500,
+        message: err?.message || "Internal server error",
+        error: err?.name || "Error",
+        stack: err?.stack?.split("\n")
+      });
+    }
   }
 }

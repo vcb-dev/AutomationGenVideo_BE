@@ -19,7 +19,7 @@ function extractDriveFileId(url: string): string | null {
   try {
     const id = new URL(url).searchParams.get('id');
     if (id) return id;
-  } catch {}
+  } catch { }
   const m = url.match(/\/file\/d\/([^/?#]+)/);
   return m?.[1] || null;
 }
@@ -38,7 +38,7 @@ export class ScheduleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly publishService: PublishService,
-  ) {}
+  ) { }
 
   // ─── CRUD API ────────────────────────────────────────────────────────────────
 
@@ -73,18 +73,18 @@ export class ScheduleService {
 
     return this.prisma.socialPost.create({
       data: {
-        user_id:      userId,
-        account_id:   dto.accountId,
-        platform:     account.platform,
-        message:      dto.message,
-        media_urls:   dto.mediaUrls ?? [],
-        page_id:      dto.pageId,
-        privacy:      dto.privacy,
-        thumb_url:    thumbUrl,
+        user_id: userId,
+        account_id: dto.accountId,
+        platform: account.platform,
+        message: dto.message,
+        media_urls: dto.mediaUrls ?? [],
+        page_id: dto.pageId,
+        privacy: dto.privacy,
+        thumb_url: thumbUrl,
         scheduled_at: scheduledAt,
-        source:       SocialPostSource.SCHEDULED,
-        status:       SocialPostStatus.PENDING,
-        updated_at:   new Date(),
+        source: SocialPostSource.SCHEDULED,
+        status: SocialPostStatus.PENDING,
+        updated_at: new Date(),
       },
     });
   }
@@ -110,7 +110,7 @@ export class ScheduleService {
 
     const data: any = { updated_at: new Date() };
     if (dto.message !== undefined && dto.message !== '') data.message = dto.message;
-    if (dto.mediaUrls)  data.media_urls = dto.mediaUrls;
+    if (dto.mediaUrls) data.media_urls = dto.mediaUrls;
     if (dto.scheduledAt) {
       const d = new Date(dto.scheduledAt);
       if (isNaN(d.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601');
@@ -144,12 +144,12 @@ export class ScheduleService {
     return this.prisma.socialPost.update({
       where: { id },
       data: {
-        status:        SocialPostStatus.PENDING,
-        retry_count:   0,
-        error_msg:     null,
+        status: SocialPostStatus.PENDING,
+        retry_count: 0,
+        error_msg: null,
         next_retry_at: null,
-        scheduled_at:  new Date(Date.now() + retryDelayMs(1)),
-        updated_at:    new Date(),
+        scheduled_at: new Date(Date.now() + retryDelayMs(1)),
+        updated_at: new Date(),
       },
     });
   }
@@ -167,6 +167,9 @@ export class ScheduleService {
 
   @Cron('*/5 * * * * *')
   async checkAndExecute() {
+    // Skip if DB connection is known to be down — prevents circuit breaker activation on Supabase
+    if (!this.prisma.isHealthy) return;
+
     // Chỉ khóa PHA CLAIM (vài query DB nhanh). Việc thực thi (download/transcode/upload —
     // có thể vài phút) chạy NỀN, KHÔNG giữ khóa → bài mới enqueue được claim & bắt đầu ngay
     // thay vì phải chờ bài đang xử lý xong. Concurrency đếm qua next_retry_at (claim) như cũ.
@@ -179,6 +182,18 @@ export class ScheduleService {
       claimedPosts = await this._claimDuePosts(MAX_HEAVY_JOBS - this.activeExecutions);
     } catch (err: any) {
       this.logger.warn(`[Worker] claim error: ${err?.message}`);
+      // If this is a DB connection error, mark Prisma unhealthy so we stop hammering
+      const msg = err?.message || '';
+      if (
+        msg.includes('Closed') ||
+        msg.includes('P1001') ||
+        msg.includes('P1017') ||
+        msg.includes('ECHECKOUTTIMEOUT') ||
+        msg.includes('ECIRCUITBREAKER') ||
+        msg.includes('connection')
+      ) {
+        this.prisma.markUnhealthy();
+      }
     } finally {
       this.isClaiming = false;
     }
@@ -218,7 +233,7 @@ export class ScheduleService {
     const inFlightRows = await this.prisma.socialPost.groupBy({
       by: ['platform'],
       where: {
-        status:        SocialPostStatus.PENDING,
+        status: SocialPostStatus.PENDING,
         next_retry_at: { gt: now, lte: claimUntil },
       },
       _count: { platform: true },
@@ -252,8 +267,8 @@ export class ScheduleService {
     // 2. Lấy các job đến hạn (SCHEDULED + IMMEDIATE), sắp theo thời gian tạo
     const duePosts = await this.prisma.socialPost.findMany({
       where: {
-        status:       SocialPostStatus.PENDING,
-        source:       { in: [SocialPostSource.SCHEDULED, SocialPostSource.IMMEDIATE] },
+        status: SocialPostStatus.PENDING,
+        source: { in: [SocialPostSource.SCHEDULED, SocialPostSource.IMMEDIATE] },
         scheduled_at: { lte: now },
         OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
       },
@@ -272,8 +287,8 @@ export class ScheduleService {
       if (claimedIds.length >= maxLocalSlots) break;
       if (totalInFlight + claimedIds.length >= GLOBAL_CONCURRENCY) break;
 
-      const platformLimit    = PLATFORM_CONCURRENCY[post.platform] ?? 3;
-      const currentInFlight  = (inFlight[post.platform] ?? 0) + (claimedPerPlatform[post.platform] ?? 0);
+      const platformLimit = PLATFORM_CONCURRENCY[post.platform] ?? 3;
+      const currentInFlight = (inFlight[post.platform] ?? 0) + (claimedPerPlatform[post.platform] ?? 0);
       if (currentInFlight >= platformLimit) continue; // platform đầy slot
 
       // Serialize theo account: account đang có bài in-flight → để bài này chờ lượt sau.
@@ -284,8 +299,8 @@ export class ScheduleService {
       // Atomic claim: chỉ thành công nếu next_retry_at chưa thay đổi
       const claimed = await this.prisma.socialPost.updateMany({
         where: {
-          id:            post.id,
-          status:        SocialPostStatus.PENDING,
+          id: post.id,
+          status: SocialPostStatus.PENDING,
           next_retry_at: post.next_retry_at ?? null,
         },
         data: { next_retry_at: claimUntil },
@@ -334,12 +349,12 @@ export class ScheduleService {
       const updated = await this.prisma.socialPost.updateMany({
         where: { id: post.id, status: SocialPostStatus.PENDING },
         data: {
-          status:        SocialPostStatus.COMPLETED,
-          executed_at:   new Date(),
-          updated_at:    new Date(),
+          status: SocialPostStatus.COMPLETED,
+          executed_at: new Date(),
+          updated_at: new Date(),
           next_retry_at: null,
-          error_msg:     null,
-          retry_count:   0,
+          error_msg: null,
+          retry_count: 0,
         },
       });
       if (updated.count === 0) {
@@ -359,10 +374,10 @@ export class ScheduleService {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
             data: {
-              status:        SocialPostStatus.FAILED,
-              retry_count:   retryCount,
-              error_msg:     errorWithStack,
-              updated_at:    new Date(),
+              status: SocialPostStatus.FAILED,
+              retry_count: retryCount,
+              error_msg: errorWithStack,
+              updated_at: new Date(),
               next_retry_at: null,
             },
           });
@@ -371,10 +386,10 @@ export class ScheduleService {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
             data: {
-              retry_count:   retryCount,
+              retry_count: retryCount,
               next_retry_at: new Date(Date.now() + retryDelayMs(retryCount)),
-              error_msg:     err.message,
-              updated_at:    new Date(),
+              error_msg: err.message,
+              updated_at: new Date(),
             },
           });
           this.logger.warn(`[Worker] ⚠️ Post ${post.id} retry ${retryCount}/${MAX_RETRIES} in ${retryDelayMs(retryCount) / 60000}min: ${err.message}`);
@@ -391,31 +406,31 @@ export class ScheduleService {
   async cleanupOldPosts() {
     const now = Date.now();
     // SCHEDULED: giữ 7 ngày
-    const scheduledCutoff  = new Date(now - 7  * 24 * 60 * 60 * 1000);
+    const scheduledCutoff = new Date(now - 7 * 24 * 60 * 60 * 1000);
     // IMMEDIATE: giữ 30 ngày (editor cần xem lại lịch sử đăng bài)
-    const immediateCutoff  = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const immediateCutoff = new Date(now - 30 * 24 * 60 * 60 * 1000);
     // FAILED: giữ 30 ngày rồi xóa (cả SCHEDULED lẫn IMMEDIATE)
-    const failedCutoff     = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const failedCutoff = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
     const [s, i, f] = await Promise.all([
       this.prisma.socialPost.deleteMany({
         where: {
-          source:     SocialPostSource.SCHEDULED,
-          status:     { in: [SocialPostStatus.COMPLETED, SocialPostStatus.CANCELLED] },
+          source: SocialPostSource.SCHEDULED,
+          status: { in: [SocialPostStatus.COMPLETED, SocialPostStatus.CANCELLED] },
           updated_at: { lt: scheduledCutoff },
         },
       }),
       this.prisma.socialPost.deleteMany({
         where: {
-          source:     SocialPostSource.IMMEDIATE,
-          status:     { in: [SocialPostStatus.COMPLETED, SocialPostStatus.CANCELLED] },
+          source: SocialPostSource.IMMEDIATE,
+          status: { in: [SocialPostStatus.COMPLETED, SocialPostStatus.CANCELLED] },
           updated_at: { lt: immediateCutoff },
         },
       }),
       // FAILED posts chưa từng được cleanup — xóa sau 30 ngày để tránh DB phình
       this.prisma.socialPost.deleteMany({
         where: {
-          status:     SocialPostStatus.FAILED,
+          status: SocialPostStatus.FAILED,
           updated_at: { lt: failedCutoff },
         },
       }),

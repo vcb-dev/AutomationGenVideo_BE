@@ -1,42 +1,23 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
-
 import { HttpService } from '@nestjs/axios';
-
 import { ConfigService } from '@nestjs/config';
-
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
-
 import { AxiosError } from 'axios';
-
 import { PrismaService } from '../../common/prisma/prisma.service';
 
-
-
 @Injectable()
-
 export class AiIntegrationService {
-
   private readonly logger = new Logger(AiIntegrationService.name);
-
   private readonly aiServiceUrl: string;
-
-
-
   constructor(
-
     private readonly httpService: HttpService,
-
     private readonly configService: ConfigService,
-
     private readonly prisma: PrismaService,
-
   ) {
-
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
-
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
-
   }
+
 
 
 
@@ -668,6 +649,217 @@ export class AiIntegrationService {
    * Health check for AI service
 
    */
+
+  async getChannelCoverage(year: number, month: number) {
+    // Chuẩn hóa platform name để group
+    const normalizePlatform = (p: string) => {
+      const l = (p || '').toLowerCase();
+      if (l.includes('facebook'))  return 'Facebook';
+      if (l.includes('tiktok'))    return 'TikTok';
+      if (l.includes('youtube'))   return 'YouTube';
+      if (l.includes('instagram') || l === 'ig') return 'Instagram';
+      if (l.includes('thread'))    return 'Threads';
+      if (l.includes('zalo'))      return 'Zalo';
+      if (p) return p;
+      return 'Khác';
+    };
+
+    // Chỉ lấy kênh đang hoạt động và có đủ name, platform, team, owner
+    const allChannels = await this.prisma.$queryRawUnsafe(`
+      SELECT id, name, platform, team_traffic as team, owner, status
+      FROM huyk_channels
+      WHERE status IN ('Đang hoạt động', 'ON')
+        AND name IS NOT NULL AND TRIM(name) <> ''
+        AND platform IS NOT NULL AND TRIM(platform) <> ''
+        AND team_traffic IS NOT NULL AND TRIM(team_traffic) <> ''
+        AND owner IS NOT NULL AND TRIM(owner) <> ''
+      ORDER BY platform, name
+    `) as any[];
+
+    // Kênh có data trong social_video_report tháng này — group by platform + name
+    const withData = await this.prisma.$queryRawUnsafe(`
+      SELECT LOWER(TRIM(platform)) as platform_key,
+        LOWER(TRIM(channel_name)) as channel_key,
+        SUM(views) views, COUNT(*) videos, MAX(followers) followers
+      FROM social_video_report
+      WHERE year=${year} AND month=${month}
+      GROUP BY LOWER(TRIM(platform)), LOWER(TRIM(channel_name))
+    `) as any[];
+
+    // Key: normalized_platform::channel_name
+    const dataMap = new Map(withData.map((r: any) => [
+      `${normalizePlatform(r.platform_key)}::${r.channel_key}`,
+      r,
+    ]));
+
+    // Gán coverage status cho từng kênh
+    const enriched = allChannels.map((ch: any) => {
+      const platformNorm = normalizePlatform(ch.platform);
+      const nameKey = (ch.name || '').toLowerCase().trim();
+      const data = dataMap.get(`${platformNorm}::${nameKey}`);
+      return {
+        ...ch,
+        platform_norm: platformNorm,
+        has_data: !!data,
+        views: data ? Number(data.views) : 0,
+        videos: data ? Number(data.videos) : 0,
+        followers: data ? Number(data.followers) : 0,
+      };
+    });
+
+    // Tổng hợp theo platform
+    const byPlatform: Record<string, { platform: string; total: number; has_data: number; no_data: number; coverage_pct: number; total_views: number }> = {};
+    for (const ch of enriched) {
+      const p = ch.platform_norm;
+      if (!byPlatform[p]) byPlatform[p] = { platform: p, total: 0, has_data: 0, no_data: 0, coverage_pct: 0, total_views: 0 };
+      byPlatform[p].total++;
+      if (ch.has_data) { byPlatform[p].has_data++; byPlatform[p].total_views += ch.views; }
+      else byPlatform[p].no_data++;
+    }
+    for (const stat of Object.values(byPlatform)) {
+      stat.coverage_pct = stat.total > 0 ? Math.round((stat.has_data / stat.total) * 100) : 0;
+    }
+
+    const totalChannels = enriched.length;
+    const hasDataCount  = enriched.filter((c: any) => c.has_data).length;
+
+    return {
+      year, month,
+      summary: {
+        total_channels: totalChannels,
+        has_data: hasDataCount,
+        no_data: totalChannels - hasDataCount,
+        coverage_pct: totalChannels > 0 ? Math.round((hasDataCount / totalChannels) * 100) : 0,
+        total_views: enriched.reduce((a: number, c: any) => a + c.views, 0),
+      },
+      by_platform: Object.values(byPlatform).sort((a, b) => b.total - a.total),
+      channels_with_data: enriched.filter((c: any) => c.has_data).sort((a: any, b: any) => b.views - a.views),
+      channels_no_data:   enriched.filter((c: any) => !c.has_data).sort((a: any, b: any) => (a.platform_norm).localeCompare(b.platform_norm)),
+    };
+  }
+
+  async getSocialStats(year: number, month: number, platform?: string, team?: string): Promise<any> {
+    const safeP = (platform || '').replace(/'/g, '');
+    const safeT = (team || '').replace(/'/g, '');
+    const platformFilter = safeP ? `AND LOWER(platform) LIKE LOWER('%${safeP}%')` : '';
+    const teamFilter     = safeT ? `AND LOWER(team) LIKE LOWER('%${safeT}%')` : '';
+
+    const [summary, byPlatform, byTeam, topViews, topLikes, topComments] = await Promise.all([
+      // Tổng hợp
+      this.prisma.$queryRawUnsafe(`
+        SELECT
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text    AS total_views,
+          COALESCE(SUM(likes),0)::text    AS total_likes,
+          COALESCE(SUM(comments),0)::text AS total_comments,
+          COALESCE(SUM(shares),0)::text   AS total_shares,
+          COUNT(*)::text                  AS total_videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+      `),
+      // Theo platform
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform,
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text   AS views,
+          COALESCE(SUM(likes),0)::text   AS likes,
+          COUNT(*)::text                 AS videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${teamFilter}
+        GROUP BY platform ORDER BY SUM(views) DESC
+      `),
+      // Theo team
+      this.prisma.$queryRawUnsafe(`
+        SELECT COALESCE(NULLIF(team,''),'Chưa phân team') AS team,
+          COUNT(DISTINCT username)::text AS channels,
+          COALESCE(SUM(views),0)::text   AS views,
+          COALESCE(SUM(likes),0)::text   AS likes,
+          COUNT(*)::text                 AS videos
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter}
+        GROUP BY team ORDER BY SUM(views) DESC LIMIT 10
+      `),
+      // Top 10 views
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team, owner,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY views DESC LIMIT 10
+      `),
+      // Top 10 likes
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY likes DESC LIMIT 10
+      `),
+      // Top 10 comments
+      this.prisma.$queryRawUnsafe(`
+        SELECT platform, channel_name, username, team,
+               title, video_url, views::text, likes::text, comments::text, published_at::text
+        FROM social_video_report
+        WHERE year=${year} AND month=${month} ${platformFilter} ${teamFilter}
+        ORDER BY comments DESC LIMIT 10
+      `),
+    ]);
+
+    return {
+      year, month, platform: platform || 'all', team: team || 'all',
+      summary:      (summary as any[])[0] || {},
+      by_platform:  byPlatform,
+      by_team:      byTeam,
+      top_views:    topViews,
+      top_likes:    topLikes,
+      top_comments: topComments,
+    };
+  }
+
+  async getHuykChannels(platform?: string, team?: string, limit = 200): Promise<any> {
+    const safeP = (platform || '').replace(/'/g, '');
+    const safeT = (team || '').replace(/'/g, '');
+    return this.prisma.$queryRawUnsafe(`
+      SELECT
+        TRIM(name) AS display_name,
+        COALESCE(NULLIF(TRIM(platform), ''), 'Khác') AS platform,
+        TRIM(COALESCE(channel_id, '')) AS username,
+        link_channel,
+        COALESCE(NULLIF(TRIM(team_traffic), ''), '—') AS team,
+        TRIM(COALESCE(owner, '')) AS owner_name,
+        email AS owner_email
+      FROM huyk_channels
+      WHERE status IN ('Đang hoạt động', 'ON')
+        AND name IS NOT NULL
+        AND TRIM(name) != ''
+      ${safeP ? `AND LOWER(platform) LIKE LOWER('%${safeP}%')` : ''}
+      ${safeT ? `AND LOWER(team_traffic) LIKE LOWER('%${safeT}%')` : ''}
+      ORDER BY platform, name
+      LIMIT ${limit}
+    `);
+  }
+
+  async chat(message: string, history: { role: string; content: string }[]): Promise<any> {
+    this.logger.log(`[AI Analytics] Question: ${message}`);
+    try {
+      // Proxy sang Python AI service — toàn bộ logic xử lý ở đó
+      const { data } = await firstValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/api/chat/analytics/`,
+          { message, history },
+          { timeout: 60000 },   // 60s timeout — đủ cho 2 lần gọi DeepSeek
+        ).pipe(catchError((err: AxiosError) => {
+          this.logger.error(`[AI Analytics] Python service error: ${err.message}`);
+          throw err;
+        }))
+      );
+      return data;
+    } catch (err) {
+      this.logger.error(`[AI Analytics ERROR] ${err.message}`);
+      return { reply: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', type: 'chat' };
+    }
+  }
+
 
   async healthCheck(): Promise<any> {
 

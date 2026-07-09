@@ -47,7 +47,7 @@ export class YoutubePublisher {
     try {
       const headRes = await axios.head(videoUrl, { timeout: 15000 });
       const rawContentLength = headRes?.headers?.['content-length'];
-      fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+      fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
     } catch (e: any) {
       this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
     }
@@ -64,7 +64,7 @@ export class YoutubePublisher {
         }
         if (fileSize === 0) {
           const rawContentLength = getRangeRes.headers['content-length'];
-          fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+          fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
         }
       } catch (e: any) {
         this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
@@ -151,12 +151,20 @@ export class YoutubePublisher {
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
   }
 
+  private get clientId(): string {
+    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+  }
+
+  private get clientSecret(): string {
+    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+  }
+
   async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; tokenExpiresAt: Date }> {
     const res = await axios.post(
       'https://oauth2.googleapis.com/token',
       new URLSearchParams({
-        client_id: process.env.YT_CLIENT_ID!,
-        client_secret: process.env.YT_CLIENT_SECRET!,
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }).toString(),

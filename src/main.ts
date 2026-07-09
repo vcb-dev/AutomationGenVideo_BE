@@ -1,9 +1,12 @@
-import { NestFactory } from "@nestjs/core";
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // force compile trigger
+import { NestFactory, HttpAdapterHost } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
 import { AppModule } from "./app.module";
+import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+import { initSocialSyncCron } from './social-sync.scheduler';
 
 // Fix BigInt serialization for JSON
 (BigInt.prototype as any).toJSON = function () {
@@ -48,9 +51,18 @@ async function bootstrap() {
   // Set global prefix
   app.setGlobalPrefix('api');
 
+  // Global exception filter
+  const httpAdapterHost = app.get(HttpAdapterHost);
+  app.useGlobalFilters(new AllExceptionsFilter(httpAdapterHost));
+
   // Rewrite /auth/google/callback and /social/oauth/ callbacks to prepend /api
   // This avoids redirect_uri_mismatch errors and 404s in Google/Social Cloud Console
   app.use((req, res, next) => {
+    console.log(`[HTTP Request] ${req.method} ${req.url}`);
+    res.on('finish', () => {
+      console.log(`[HTTP Response] ${req.method} ${req.url} -> Status ${res.statusCode}`);
+    });
+
     if (req.url.startsWith('/auth/google/callback')) {
       req.url = req.url.replace('/auth/google/callback', '/api/auth/google/callback');
     } else if (req.url.startsWith('/social/oauth/')) {
@@ -119,6 +131,9 @@ async function bootstrap() {
   expressInstance.headersTimeout    = 66_000;
   expressInstance.maxHeadersCount   = 100;
   expressInstance.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+
+  // Kích hoạt cron sync social_video_report + ads_campaign_stats (01:00 AM hàng ngày)
+  initSocialSyncCron();
 
   console.log(`Application is running on: http://localhost:${port}`);
   console.log(`Swagger documentation: http://localhost:${port}/api`);
