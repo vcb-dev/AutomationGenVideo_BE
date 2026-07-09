@@ -56,7 +56,7 @@ export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): P
         FROM users u2
         LEFT JOIN team_members tm ON tm.user_id = u2.id
         LEFT JOIN teams t ON t.id = tm.team_id
-        WHERE u2.id = ANY(${ids}::text[])
+        WHERE u2.id = ANY(${ids}::uuid[])
       ) x
       GROUP BY uid
     ) sub

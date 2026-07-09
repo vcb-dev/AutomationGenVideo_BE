@@ -76,9 +76,9 @@ export class ChannelsController {
   }
 
   @Patch(":id")
-  @ApiOperation({ summary: "Update a channel (LEADER of same team only)" })
+  @ApiOperation({ summary: "Update a channel (LEADER of same team, or ADMIN/MANAGER for any team)" })
   @ApiResponse({ status: 200, type: ChannelResponseDto })
-  @ApiResponse({ status: 403, description: "Only LEADER of this team can update" })
+  @ApiResponse({ status: 403, description: "Only LEADER of this team, MANAGER or ADMIN can update" })
   @ApiResponse({ status: 404, description: "Channel not found" })
   async update(
     @Param("id") id: string,
@@ -90,9 +90,9 @@ export class ChannelsController {
   }
 
   @Delete(":id")
-  @ApiOperation({ summary: "Delete a channel (LEADER of same team only, not tracked)" })
+  @ApiOperation({ summary: "Delete a channel (LEADER of same team, or ADMIN/MANAGER for any team; not tracked)" })
   @ApiResponse({ status: 200, description: "Channel deleted successfully" })
-  @ApiResponse({ status: 403, description: "Only LEADER of this team can delete" })
+  @ApiResponse({ status: 403, description: "Only LEADER of this team, MANAGER or ADMIN can delete" })
   @ApiResponse({ status: 404, description: "Channel not found" })
   @ApiResponse({ status: 409, description: "Channel is currently being tracked" })
   async remove(@Param("id") id: string, @Request() req) {
