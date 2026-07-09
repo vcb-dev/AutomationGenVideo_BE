@@ -25,7 +25,9 @@ import { ContentReportModule } from './modules/content-report/content-report.mod
 import { ChannelsModule } from "./modules/channels-team/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
 import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
-import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
+// TelegramReportModule: tạm tắt (nhánh khai) — bảng `telegram_report_config` chưa có migration/chưa
+// tồn tại trên DB, TelegramReportService.onModuleInit() query bảng này lúc khởi động làm BE crash.
+// import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
 import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
 import { OAuthModule } from './modules/oauth/oauth.module';
 
@@ -65,7 +67,7 @@ import { OAuthModule } from './modules/oauth/oauth.module';
     SearchRecommendationModule,
     LarkModule,
     ChatHistoryModule,
-    TelegramReportModule,
+    // TelegramReportModule, // tạm tắt — xem comment ở import phía trên
     RolePermissionsModule,
     SocialPublishingModule,
     ContentReportModule,

@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { PeriodType, VideoStatus, AttendanceStatus, UserRole } from '@prisma/client';
 import { DateTime } from 'luxon';
 import {
@@ -32,7 +33,32 @@ export const CONTENT_REPORT_TEAM_NAMES = ['Team K1', 'Team K2', 'Team K3', 'Team
 export class ContentReportService {
   private readonly logger = new Logger(ContentReportService.name);
 
-  constructor(private readonly prisma: PrismaService) { }
+  /**
+   * Cache TTL cho dữ liệu báo cáo content. DB ở xa (Supabase Tokyo, RTT ~300ms/query)
+   * nên mỗi lần load 1 team tốn ~1.4s thuần round-trip; user chuyển tab K1→K2→K1 liên tục
+   * khiến trang cảm giác rất chậm. Mọi mutation trong module này đều invalidate prefix
+   * (xem invalidateReportCache) nên TTL dài một chút cũng không hiển thị dữ liệu cũ.
+   */
+  private static readonly REPORT_CACHE_TTL_MS = 5 * 60 * 1000;
+  private static readonly CACHE_PREFIX = 'content-report:';
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheService: CacheService,
+  ) { }
+
+  /** Xoá toàn bộ cache báo cáo content — gọi sau MỌI mutation để dữ liệu mới hiện ngay. */
+  private invalidateReportCache(): void {
+    // fire-and-forget: invalidate in-memory là đồng bộ, Redis (nếu bật) chạy nền
+    void this.cacheService.invalidate(ContentReportService.CACHE_PREFIX);
+  }
+
+  /** Await mutation xong mới xoá cache (tránh race refill cache bằng dữ liệu cũ), rồi trả kết quả. */
+  private async mutate<T>(op: Promise<T>): Promise<T> {
+    const result = await op;
+    this.invalidateReportCache();
+    return result;
+  }
 
   private async resolveUser(id?: string, name?: string): Promise<string> {
     if (id && id.length > 10) {
@@ -55,17 +81,21 @@ export class ContentReportService {
   // ───────────────────── TEAMS ─────────────────────
 
   async getTeams() {
-    return this.prisma.team.findMany({
-      where: { name: { in: CONTENT_REPORT_TEAM_NAMES } },
-      orderBy: { name: 'asc' },
-    });
+    return this.cacheService.get(
+      `${ContentReportService.CACHE_PREFIX}teams`,
+      ContentReportService.REPORT_CACHE_TTL_MS,
+      () => this.prisma.team.findMany({
+        where: { name: { in: CONTENT_REPORT_TEAM_NAMES } },
+        orderBy: { name: 'asc' },
+      }),
+    );
   }
 
   async createTeam(dto: CreateTeamDto) {
     try {
-      return await this.prisma.team.create({
+      return await this.mutate(this.prisma.team.create({
         data: { name: dto.name },
-      });
+      }));
     } catch (e: any) {
       if (e.code === 'P2002') {
         throw new ConflictException(`Team "${dto.name}" đã tồn tại`);
@@ -77,22 +107,26 @@ export class ContentReportService {
   // ───────────────────── PERIODS ─────────────────────
 
   async getPeriods(type?: PeriodType) {
-    return this.prisma.reportPeriod.findMany({
-      where: type ? { type } : undefined,
-      orderBy: { start_date: 'desc' },
-    });
+    return this.cacheService.get(
+      `${ContentReportService.CACHE_PREFIX}periods:${type || 'all'}`,
+      ContentReportService.REPORT_CACHE_TTL_MS,
+      () => this.prisma.reportPeriod.findMany({
+        where: type ? { type } : undefined,
+        orderBy: { start_date: 'desc' },
+      }),
+    );
   }
 
   async createPeriod(dto: CreatePeriodDto) {
     try {
-      return await this.prisma.reportPeriod.create({
+      return await this.mutate(this.prisma.reportPeriod.create({
         data: {
           type: dto.type,
           label: dto.label,
           start_date: new Date(dto.start_date),
           end_date: new Date(dto.end_date),
         },
-      });
+      }));
     } catch (e: any) {
       if (e.code === 'P2002') {
         throw new ConflictException(`Kỳ báo cáo ${dto.type} bắt đầu ${dto.start_date} đã tồn tại`);
@@ -108,10 +142,20 @@ export class ContentReportService {
    * Trả về cấu trúc tương tự TeamData trên FE.
    */
   async getReportData(teamName: string, periodId: string) {
-    const team = await this.prisma.team.findUnique({ where: { name: teamName } });
-    if (!team) throw new NotFoundException(`Team "${teamName}" không tồn tại`);
+    return this.cacheService.get(
+      `${ContentReportService.CACHE_PREFIX}data:${teamName}:${periodId}`,
+      ContentReportService.REPORT_CACHE_TTL_MS,
+      () => this.buildReportData(teamName, periodId),
+    );
+  }
 
-    const period = await this.prisma.reportPeriod.findUnique({ where: { id: periodId } });
+  private async buildReportData(teamName: string, periodId: string) {
+    // Chạy song song — DB ở xa nên mỗi round-trip tuần tự cộng thẳng vào thời gian phản hồi
+    const [team, period] = await Promise.all([
+      this.prisma.team.findUnique({ where: { name: teamName } }),
+      this.prisma.reportPeriod.findUnique({ where: { id: periodId } }),
+    ]);
+    if (!team) throw new NotFoundException(`Team "${teamName}" không tồn tại`);
     if (!period) throw new NotFoundException(`Kỳ báo cáo không tồn tại`);
 
     // Resolve period IDs to query (if MONTH, include child WEEKs)
@@ -369,7 +413,7 @@ export class ContentReportService {
 
   async createContentVideo(dto: CreateContentVideoDto) {
     const editor_id = await this.resolveUser(dto.editor_id, dto.editor);
-    return this.prisma.contentVideo.create({
+    return this.mutate(this.prisma.contentVideo.create({
       data: {
         team_id: dto.team_id,
         period_id: dto.period_id,
@@ -393,7 +437,7 @@ export class ContentReportService {
         order_index: dto.order_index ?? 0,
       },
       include: { editor: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async updateContentVideo(id: string, dto: UpdateContentVideoDto) {
@@ -423,22 +467,22 @@ export class ContentReportService {
     if (dto.notes !== undefined) data.notes = dto.notes;
     if (dto.order_index !== undefined) data.order_index = dto.order_index;
 
-    return this.prisma.contentVideo.update({
+    return this.mutate(this.prisma.contentVideo.update({
       where: { id },
       data,
       include: { editor: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async deleteContentVideo(id: string) {
-    return this.prisma.contentVideo.delete({ where: { id } });
+    return this.mutate(this.prisma.contentVideo.delete({ where: { id } }));
   }
 
   // ───────────────────── CASE STUDIES CRUD ─────────────────────
 
   async createCaseStudy(dto: CreateCaseStudyDto) {
     const created_by = await this.resolveUser(dto.created_by, dto.creator_name);
-    return this.prisma.caseStudy.create({
+    return this.mutate(this.prisma.caseStudy.create({
       data: {
         team_id: dto.team_id,
         period_id: dto.period_id,
@@ -454,21 +498,21 @@ export class ContentReportService {
         order_index: dto.order_index ?? 0,
       },
       include: { creator: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async updateCaseStudy(id: string, dto: UpdateCaseStudyDto) {
     const data: any = { ...dto };
     if (dto.post_date) data.post_date = new Date(dto.post_date);
-    return this.prisma.caseStudy.update({
+    return this.mutate(this.prisma.caseStudy.update({
       where: { id },
       data,
       include: { creator: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async deleteCaseStudy(id: string) {
-    return this.prisma.caseStudy.delete({ where: { id } });
+    return this.mutate(this.prisma.caseStudy.delete({ where: { id } }));
   }
 
   // ───────────────────── EDITOR PERFORMANCE CRUD ─────────────────────
@@ -476,7 +520,7 @@ export class ContentReportService {
   async createEditorPerformance(dto: CreateEditorPerformanceDto) {
     try {
       const user_id = await this.resolveUser(dto.user_id, dto.editor);
-      return await this.prisma.editorPerformance.create({
+      return await this.mutate(this.prisma.editorPerformance.create({
         data: {
           team_id: dto.team_id,
           period_id: dto.period_id,
@@ -487,7 +531,7 @@ export class ContentReportService {
           analysis: dto.analysis,
         },
         include: { user: { select: { id: true, full_name: true } } },
-      });
+      }));
     } catch (e: any) {
       if (e.code === 'P2002') {
         throw new ConflictException('Editor này đã có record trong kỳ báo cáo này');
@@ -502,22 +546,22 @@ export class ContentReportService {
       data.user_id = await this.resolveUser(dto.user_id, dto.editor);
       delete data.editor;
     }
-    return this.prisma.editorPerformance.update({
+    return this.mutate(this.prisma.editorPerformance.update({
       where: { id },
       data,
       include: { user: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async deleteEditorPerformance(id: string) {
-    return this.prisma.editorPerformance.delete({ where: { id } });
+    return this.mutate(this.prisma.editorPerformance.delete({ where: { id } }));
   }
 
   // ───────────────────── CLONE VIDEOS CRUD ─────────────────────
 
   async createCloneVideo(dto: CreateCloneVideoDto) {
     const editor_id = await this.resolveUser(dto.editor_id, dto.editor);
-    return this.prisma.cloneVideo.create({
+    return this.mutate(this.prisma.cloneVideo.create({
       data: {
         team_id: dto.team_id,
         period_id: dto.period_id,
@@ -540,7 +584,7 @@ export class ContentReportService {
         order_index: dto.order_index ?? 0,
       },
       include: { editor: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async updateCloneVideo(id: string, dto: UpdateCloneVideoDto) {
@@ -550,22 +594,22 @@ export class ContentReportService {
       data.editor_id = await this.resolveUser(dto.editor_id, dto.editor);
       delete data.editor;
     }
-    return this.prisma.cloneVideo.update({
+    return this.mutate(this.prisma.cloneVideo.update({
       where: { id },
       data,
       include: { editor: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async deleteCloneVideo(id: string) {
-    return this.prisma.cloneVideo.delete({ where: { id } });
+    return this.mutate(this.prisma.cloneVideo.delete({ where: { id } }));
   }
 
   // ───────────────────── ACTION ITEMS CRUD ─────────────────────
 
   async createActionItem(dto: CreateActionItemDto) {
     const assignee_id = await this.resolveUser(dto.assignee_id, dto.assignee);
-    return this.prisma.actionItem.create({
+    return this.mutate(this.prisma.actionItem.create({
       data: {
         team_id: dto.team_id,
         period_id: dto.period_id,
@@ -579,7 +623,7 @@ export class ContentReportService {
         leader_comment: dto.leader_comment,
       },
       include: { assignee: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async updateActionItem(id: string, dto: UpdateActionItemDto) {
@@ -589,15 +633,15 @@ export class ContentReportService {
       data.assignee_id = await this.resolveUser(dto.assignee_id, dto.assignee);
       delete data.assignee;
     }
-    return this.prisma.actionItem.update({
+    return this.mutate(this.prisma.actionItem.update({
       where: { id },
       data,
       include: { assignee: { select: { id: true, full_name: true } } },
-    });
+    }));
   }
 
   async deleteActionItem(id: string) {
-    return this.prisma.actionItem.delete({ where: { id } });
+    return this.mutate(this.prisma.actionItem.delete({ where: { id } }));
   }
 
   // ───────────────────── KPI SNAPSHOT ─────────────────────
@@ -616,7 +660,7 @@ export class ContentReportService {
     const totalVideos = totalWin + totalFail;
     const winRate = totalVideos > 0 ? (totalWin / totalVideos) * 100 : 0;
 
-    return this.prisma.teamKpiSnapshot.upsert({
+    return this.mutate(this.prisma.teamKpiSnapshot.upsert({
       where: { team_id_period_id: { team_id: team.id, period_id: periodId } },
       create: {
         team_id: team.id,
@@ -634,7 +678,7 @@ export class ContentReportService {
         win_rate: parseFloat(winRate.toFixed(1)),
         computed_at: new Date(),
       },
-    });
+    }));
   }
 
   // ───────────────────── SEED ─────────────────────
@@ -701,6 +745,7 @@ export class ContentReportService {
     });
     periods.push(monthPeriod);
 
+    this.invalidateReportCache();
     return { teams, periods };
   }
 
@@ -716,7 +761,7 @@ export class ContentReportService {
     const total = (dto.score_hook + dto.score_content + dto.score_editing + dto.score_cta + dto.score_thumbnail) / 5;
     const score_total = Math.round(total * 100) / 100;
 
-    return this.prisma.videoScore.upsert({
+    return this.mutate(this.prisma.videoScore.upsert({
       where: {
         content_video_id_scored_by_id: {
           content_video_id: contentVideoId,
@@ -751,7 +796,7 @@ export class ContentReportService {
           },
         },
       },
-    });
+    }));
   }
 
   async getVideoScores(contentVideoId: string) {
