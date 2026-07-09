@@ -23,6 +23,11 @@ import {
   UserHistoryQueryDto,
 } from './dto';
 
+// Báo cáo content chỉ áp dụng cho 4 team này — không phải toàn bộ team trong hệ thống
+// (bảng `teams` còn chứa nhiều team/phòng ban khác như AFF, Đá Quý, Global, MEDIA...
+// không thuộc phạm vi báo cáo content hàng tuần).
+export const CONTENT_REPORT_TEAM_NAMES = ['Team K1', 'Team K2', 'Team K3', 'Team K4'];
+
 @Injectable()
 export class ContentReportService {
   private readonly logger = new Logger(ContentReportService.name);
@@ -51,6 +56,7 @@ export class ContentReportService {
 
   async getTeams() {
     return this.prisma.team.findMany({
+      where: { name: { in: CONTENT_REPORT_TEAM_NAMES } },
       orderBy: { name: 'asc' },
     });
   }
@@ -346,7 +352,10 @@ export class ContentReportService {
    * (dùng khi FE cần load tất cả team 1 lần — giống constants.ts hiện tại)
    */
   async getAllTeamsReportData(periodId: string) {
-    const teams = await this.prisma.team.findMany({ orderBy: { name: 'asc' } });
+    const teams = await this.prisma.team.findMany({
+      where: { name: { in: CONTENT_REPORT_TEAM_NAMES } },
+      orderBy: { name: 'asc' },
+    });
     const result: Record<string, any> = {};
 
     for (const team of teams) {
@@ -631,10 +640,10 @@ export class ContentReportService {
   // ───────────────────── SEED ─────────────────────
 
   /**
-   * Seed dữ liệu ban đầu: 5 teams + kỳ báo cáo tháng 6/2026
+   * Seed dữ liệu ban đầu: teams K1-K4 + kỳ báo cáo tháng 6/2026
    */
   async seedInitialData() {
-    const teamNames = ['K1', 'K2', 'K3', 'K4', 'K5'];
+    const teamNames = CONTENT_REPORT_TEAM_NAMES;
 
     const teams = [];
     for (const name of teamNames) {
