@@ -169,7 +169,7 @@ export class ScheduleService {
   async checkAndExecute() {
     // Skip if DB connection is known to be down — prevents circuit breaker activation on Supabase
     if (!this.prisma.isHealthy) return;
-    
+
     // Chỉ khóa PHA CLAIM (vài query DB nhanh). Việc thực thi (download/transcode/upload —
     // có thể vài phút) chạy NỀN, KHÔNG giữ khóa → bài mới enqueue được claim & bắt đầu ngay
     // thay vì phải chờ bài đang xử lý xong. Concurrency đếm qua next_retry_at (claim) như cũ.

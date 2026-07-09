@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Put, Delete, Body, Param, Query, HttpCode, HttpStatus, HttpException, Res, UseInterceptors, UploadedFile, Req, UseGuards } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
@@ -11,6 +11,69 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 @Controller('ai')
 export class AiIntegrationController {
   constructor(private readonly aiService: AiIntegrationService) { }
+
+  @Post('chat')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'VCB Assistant chat — trả về message + dashboard JSON' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['message'],
+      properties: {
+        message: { type: 'string', example: 'Báo cáo doanh thu tháng 5?' },
+        history: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string', enum: ['user', 'assistant'] },
+              content: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Chat response with optional dashboard' })
+  async chat(@Body() body: { message: string; history?: { role: string; content: string }[] }) {
+    const { message, history } = body;
+    if (!message?.trim()) {
+      throw new HttpException('message is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.chat(message.trim(), history ?? []);
+  }
+
+  @Get('social-stats')
+  @ApiOperation({ summary: 'Thống kê traffic từ social_video_report' })
+  @ApiQuery({ name: 'year',     required: false, type: Number })
+  @ApiQuery({ name: 'month',    required: false, type: Number })
+  @ApiQuery({ name: 'platform', required: false })
+  @ApiQuery({ name: 'team',     required: false })
+  async getSocialStats(
+    @Query('year')     year?: number,
+    @Query('month')    month?: number,
+    @Query('platform') platform?: string,
+    @Query('team')     team?: string,
+  ) {
+    const y = year  ? Number(year)  : new Date().getFullYear();
+    const m = month ? Number(month) : new Date().getMonth() + 1;
+    return this.aiService.getSocialStats(y, m, platform, team);
+  }
+
+  @Get('channels')
+  @ApiOperation({ summary: 'Lấy danh sách kênh từ huyk_channels' })
+  @ApiQuery({ name: 'platform', required: false })
+  @ApiQuery({ name: 'team', required: false })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async getHuykChannels(
+    @Query('platform') platform?: string,
+    @Query('team') team?: string,
+    @Query('limit') limit?: number,
+  ) {
+    return this.aiService.getHuykChannels(platform, team, limit ? Number(limit) : 200);
+  }
 
   @Post('search')
   @HttpCode(HttpStatus.OK)
@@ -192,6 +255,15 @@ export class AiIntegrationController {
   @ApiResponse({ status: 200, description: 'Return statistics.' })
   async getStats() {
     return this.aiService.getStats();
+  }
+
+  @Get('channel-coverage')
+  @ApiOperation({ summary: 'Channel data coverage: which channels have social_video_report data' })
+  async getChannelCoverage(@Query('year') year?: string, @Query('month') month?: string) {
+    const now = new Date();
+    const y = parseInt(year || String(now.getFullYear()));
+    const m = parseInt(month || String(now.getMonth() + 1));
+    return this.aiService.getChannelCoverage(y, m);
   }
 
   @Get('health')

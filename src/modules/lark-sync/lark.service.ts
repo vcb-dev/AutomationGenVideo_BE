@@ -3141,7 +3141,7 @@ export class LarkService implements OnModuleInit {
 
                 return {
                     data: response.data,
-                    contentType: response.headers['content-type'] || 'image/png',
+                    contentType: String(response.headers['content-type'] || 'image/png'),
                 };
             } catch (error) {
                 lastError = error;

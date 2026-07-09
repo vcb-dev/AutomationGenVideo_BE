@@ -43,6 +43,7 @@ model User {
   employee_status           String?
   employee_date             DateTime?
   search_histories          SearchHistory[]
+  chat_conversations        ChatConversation[]
   tracked_channels          TrackedChannel[]
   manager                   User?            @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors                   User[]           @relation("ManagerEditors")
@@ -3102,4 +3103,145 @@ model MeetingSessionLog {
 
   @@index([session_id])
   @@map("meeting_session_logs")
+}
+
+/// Phiên chat với VCB Assistant
+model ChatConversation {
+  id               String        @id @default(uuid())
+  user_id          String
+  telegram_chat_id String?       // Telegram chat_id nếu đến từ bot
+  title            String
+  created_at       DateTime      @default(now())
+  updated_at       DateTime      @updatedAt
+  user             User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages         ChatMessage[]
+
+  @@index([user_id])
+  @@index([user_id, updated_at])
+  @@index([telegram_chat_id])
+  @@map("chat_conversations")
+}
+
+/// Tin nhắn trong phiên chat VCB Assistant
+model ChatMessage {
+  id              String           @id @default(uuid())
+  conversation_id String
+  role            String           // "user" | "assistant"
+  content         String           @db.Text
+  dashboard       Json?            // structured dashboard JSON từ AI
+  created_at      DateTime         @default(now())
+  conversation    ChatConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+
+  @@index([conversation_id])
+  @@index([conversation_id, created_at])
+  @@map("chat_messages")
+}
+
+
+/// Stats từng campaign quảng cáo Facebook — sync 1 lần/ngày
+model AdsCampaignStats {
+  id                  String   @id @default(uuid())
+  platform            String   @default("meta") // meta | tiktok
+  account_id          String
+  account_name        String?
+  campaign_id         String
+  campaign_name       String
+  team                String?  // Team K1, K2, Đồ da...
+  owner               String?  // Việt, Nhạn...
+  camp_type           String?  // mess | like_page | tuong_tac
+  content_type        String?  // A1 | A2 | A3 | A4 | A5
+  spend               Float    @default(0)
+  impressions         BigInt   @default(0)
+  reach               BigInt   @default(0)
+  mess_count          Int      @default(0)
+  cost_per_mess       Float    @default(0)
+  like_count          Int      @default(0)
+  cost_per_like       Float    @default(0)
+  comment_count       Int      @default(0)
+  share_count         Int      @default(0)
+  engagement_count    Int      @default(0)
+  cost_per_engagement Float    @default(0)
+  clicks              Int      @default(0)
+  date_start          String
+  date_stop           String
+  year                Int
+  month               Int
+  synced_at           DateTime @default(now()) @updatedAt
+
+  @@unique([campaign_id, date_start, date_stop])
+  @@index([year, month])
+  @@index([camp_type, year, month])
+  @@index([content_type, year, month])
+  @@map("ads_campaign_stats")
+}
+
+/// Dữ liệu từng video/post theo kênh — YouTube, Facebook, Instagram
+model SocialVideoReport {
+  id           String   @id @default(uuid())
+  platform     String   // youtube | facebook | instagram
+  post_id      String
+  channel_name String
+  username     String
+  owner        String?
+  team         String?
+  title        String?  @db.Text
+  hashtags     String[] @default([])
+  views        BigInt   @default(0)
+  likes        BigInt   @default(0)
+  comments     BigInt   @default(0)
+  shares       BigInt   @default(0)
+  followers    BigInt   @default(0)
+  video_url    String?
+  published_at DateTime?
+  year         Int
+  month        Int
+  source       String   @default("api") // api | apify
+  synced_at    DateTime @default(now()) @updatedAt
+  is_active    Boolean  @default(true)  // false = video bị xóa khỏi platform
+  deleted_at   DateTime?                // thời điểm phát hiện bị xóa
+
+  @@unique([platform, post_id])
+  @@index([platform, year, month])
+  @@index([username, year, month])
+  @@index([team, year, month])
+  @@index([year, month])
+  @@map("social_video_report")
+}
+
+model BusinessChannelConnection {
+  id               String    @id @default(uuid())
+  channel_name     String
+  platform_id      String
+  platform         String
+  connection_type  String    @default("Kênh nội dung")
+  sync_status      String    @default("Chưa đồng bộ")
+  last_sync_at     DateTime?
+  creator_email    String?
+  is_active        Boolean   @default(true)
+  avatar_url       String?
+  
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  @@unique([platform_id, platform])
+  @@index([platform])
+  @@index([sync_status])
+  @@map("business_channel_connections")
+}
+
+model TelegramReportConfig {
+  id           String   @id @default(uuid())
+  user_id      String   @unique
+  user_email   String?
+  bot_token    String
+  chat_id      String
+  schedule     String   @default("0 8 * * *")
+  formats      String[] @default(["text"])
+  report_types String[] @default(["ads","traffic"])
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@index([user_email])
+  @@map("telegram_report_config")
 }

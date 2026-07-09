@@ -24,6 +24,10 @@ import { SocialPublishingModule } from './modules/social-publishing/social-publi
 import { ContentReportModule } from './modules/content-report/content-report.module';
 import { ChannelsModule } from "./modules/channels-team/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
+import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
+import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
+import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
+import { OAuthModule } from './modules/oauth/oauth.module';
 
 @Module({
   imports: [
@@ -60,11 +64,15 @@ import { TaskAutoModule } from './modules/task-auto/task-auto.module';
     XiaohongshuModule,
     SearchRecommendationModule,
     LarkModule,
+    ChatHistoryModule,
+    TelegramReportModule,
     RolePermissionsModule,
     SocialPublishingModule,
     ContentReportModule,
     ChannelsModule,
     TaskAutoModule,
+    BusinessConnectionsModule,
+    OAuthModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

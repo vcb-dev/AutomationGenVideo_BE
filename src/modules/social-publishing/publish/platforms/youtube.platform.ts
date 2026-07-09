@@ -47,7 +47,7 @@ export class YoutubePublisher {
     try {
       const headRes = await axios.head(videoUrl, { timeout: 15000 });
       const rawContentLength = headRes?.headers?.['content-length'];
-      fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+      fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
     } catch (e: any) {
       this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
     }
@@ -64,7 +64,7 @@ export class YoutubePublisher {
         }
         if (fileSize === 0) {
           const rawContentLength = getRangeRes.headers['content-length'];
-          fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+          fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
         }
       } catch (e: any) {
         this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
