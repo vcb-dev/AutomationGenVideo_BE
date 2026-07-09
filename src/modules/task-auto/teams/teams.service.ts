@@ -244,7 +244,9 @@ export class TaskAutoTeamsService {
     return this.prisma.teamProduct.findMany({
       where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
       include: this.teamProductInclude,
-      orderBy: { added_at: 'desc' },
+      // `added_at` không unique — nhiều dòng import/tạo cùng lúc có thể trùng millisecond,
+      // nên phải có tiebreaker ổn định để thứ tự không đổi giữa các lần fetch/sau khi update.
+      orderBy: [{ added_at: 'desc' }, { id: 'asc' }],
     })
   }
 
@@ -354,7 +356,8 @@ export class TaskAutoTeamsService {
     return this.prisma.teamContent.findMany({
       where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
       include: this.teamContentInclude,
-      orderBy: { added_at: 'desc' },
+      // Tiebreaker ổn định — xem giải thích ở listTeamProducts.
+      orderBy: [{ added_at: 'desc' }, { id: 'asc' }],
     })
   }
 
@@ -492,7 +495,8 @@ export class TaskAutoTeamsService {
         ...this.teamMonthRange(month),
       },
       include: this.teamSourceInclude,
-      orderBy: { added_at: 'desc' },
+      // Tiebreaker ổn định — xem giải thích ở listTeamProducts.
+      orderBy: [{ added_at: 'desc' }, { id: 'asc' }],
     })
   }
 
