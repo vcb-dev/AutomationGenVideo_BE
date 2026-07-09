@@ -802,9 +802,9 @@ export class LarkService implements OnModuleInit {
                 };
 
                 /**
-                 * CHỈ còn dùng cho `report_kpi` (bảng lịch sử đóng băng, không còn writer trong repo —
-                 * dữ liệu cũ do Lark sync ghi thật sự lệch D+1 so với ngày hiệu suất trên UI).
-                 * Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D — KHÔNG dùng hàm này cho 2 bảng đó
+                 * Dùng cho `report_kpi` (lịch sử, lệch D+1) và cho CHECKLIST ở dashboard:
+                 * checklist lưu theo ngày NỘP, nhưng nghiệp vụ là sáng D+1 nộp báo cáo VỀ ngày D
+                 * → xem ngày D phải đọc cửa sổ D+1. Traffic vẫn đọc đúng ngày D
                  * (xem `larkKpiStartOfDay`/`larkKpiEndOfDay`, cùng cửa sổ với `lark_kpi.report_date` = D).
                  */
                 const getNextVietnamDateString = (dateInput: string) => {
@@ -860,15 +860,15 @@ export class LarkService implements OnModuleInit {
                 const isBitableKpiRowForSelection = (d: any) => tsInRange(d, larkKpiStartOfDay, larkKpiEndOfDay);
 
                 this.logger.debug(
-                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; report_kpi (legacy, D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
+                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist + report_kpi (D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
 
-                // Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D user chọn — không +1.
-                // Dùng chung cửa sổ larkKpiStartOfDay/EndOfDay (ngày D) với lark_kpi, KHÔNG dùng memberReportStart/End
-                // (D+1) — đó là quy ước cũ chỉ còn đúng cho báo cáo lịch sử `report_kpi` (xem isReportKpiOnAuxDay).
+                // Checklist: nghiệp vụ là "sáng ngày D+1 nộp báo cáo VỀ ngày D" (các câu hỏi đều là "hôm qua...").
+                // Record lưu theo ngày NỘP (D+1), nên khi UI chọn xem ngày D phải đọc cửa sổ D+1
+                // (memberReportStart/End). Traffic vẫn đọc đúng ngày D (số liệu của chính ngày đó).
                 whereClause.date = {
-                    gte: larkKpiStartOfDay,
-                    lte: larkKpiEndOfDay,
+                    gte: memberReportStart,
+                    lte: memberReportEnd,
                 };
 
                 let kpiMonthFallback = false;
@@ -1538,7 +1538,7 @@ export class LarkService implements OnModuleInit {
 
                 // Daily map (for report status on specific day) - Modified to AGGREGATE completed_day values
                 // report_kpi: bảng lịch sử đóng băng (Lark sync cũ), lệch D+1 so với ngày hiệu suất trên UI.
-                // Checklist/traffic hiện KHÔNG còn dùng quy ước D+1 này (xem comment ở getNextVietnamDateString).
+                // Checklist ở dashboard cũng dùng cửa sổ D+1 (nộp sáng hôm sau về ngày hôm trước); traffic đọc đúng ngày D.
                 const isReportKpiOnAuxDay = (d: any) => tsInRange(d, memberReportStart, memberReportEnd);
 
                 dailyReportKpis.forEach(rk => {
@@ -1928,7 +1928,11 @@ export class LarkService implements OnModuleInit {
                         ? checklistTeams
                         : [(r.team || '').trim() || 'Khác'];
 
-                    const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
+                    // r.date là ngày NỘP (D+1); ngày báo cáo VỀ là D = date - 1 ngày → key tháng phải theo D
+                    // để khớp với roster/kpi của ngày đang xem (quan trọng khi nộp vào mùng 1 đầu tháng).
+                    const vn = getVietnamParts(
+                        r.date ? new Date(new Date(r.date).getTime() - 24 * 60 * 60 * 1000) : new Date(),
+                    );
 
                     teams.forEach(team => {
                         const teamNorm = normalizeTeamKey(team);
