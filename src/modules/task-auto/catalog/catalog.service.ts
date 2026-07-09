@@ -108,7 +108,7 @@ export class TaskAutoCatalogService {
             },
           },
         },
-        orderBy: [{ priority_score: "desc" }, { name: "asc" }],
+        orderBy: [{ priority_score: "desc" }, { name: "asc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -266,7 +266,7 @@ export class TaskAutoCatalogService {
             },
           },
         },
-        orderBy: { created_at: "desc" },
+        orderBy: [{ created_at: "desc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -424,6 +424,7 @@ export class TaskAutoCatalogService {
     if (q.brand_type) where.brand_type = q.brand_type;
     if (q.type) where.type = q.type;
     if (q.product_id) where.product_id = q.product_id;
+    if (q.added_by_id) where.added_by_id = q.added_by_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
     if (q.search)
       where.OR = [
@@ -464,7 +465,7 @@ export class TaskAutoCatalogService {
             },
           },
         },
-        orderBy: { created_at: "desc" },
+        orderBy: [{ created_at: "desc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -627,7 +628,7 @@ export class TaskAutoCatalogService {
           material: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
         },
-        orderBy: [{ priority_score: "desc" }, { name: "asc" }],
+        orderBy: [{ priority_score: "desc" }, { name: "asc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -752,7 +753,7 @@ export class TaskAutoCatalogService {
           content_line: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
         },
-        orderBy: { added_at: "desc" },
+        orderBy: [{ added_at: "desc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -871,7 +872,7 @@ export class TaskAutoCatalogService {
           editor_product: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
         },
-        orderBy: { added_at: "desc" },
+        orderBy: [{ added_at: "desc" }, { id: "asc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
