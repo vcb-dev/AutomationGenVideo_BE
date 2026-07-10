@@ -745,7 +745,13 @@ export class LarkService implements OnModuleInit {
                 const teamResolveStats = { byEmail: 0, byName: 0, byEmpId: 0, unresolved: 0 };
                 const teamMismatchSamples: any[] = [];
                 const resignedDropSamples: any[] = [];
-                const teamFilterNormalized = filters?.team ? filters.team.toLowerCase().trim() : null;
+                // "All" (không phân biệt hoa/thường) nghĩa là KHÔNG lọc — phải giữ null, nếu không
+                // teamFilterNormalized sẽ thành chuỗi "all" và bị so khớp như một tên team thật,
+                // khiến matchesTeamFilter loại bỏ toàn bộ record (không ai có team tên "all").
+                const teamFilterNormalized =
+                    filters?.team && filters.team.toLowerCase().trim() !== 'all'
+                        ? filters.team.toLowerCase().trim()
+                        : null;
 
                 // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
                 // Không cần fetch lại trong shared dataset cache.

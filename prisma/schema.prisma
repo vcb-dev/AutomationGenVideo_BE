@@ -27,6 +27,8 @@ model User {
   google_id               String?    @unique
   manager_id              String?    @db.Uuid
   is_active               Boolean    @default(true)
+  /// Xóa mềm vĩnh viễn (khác "Vô hiệu hóa": không có đường quay lại qua UI) — null = chưa xóa.
+  deleted_at              DateTime?
   created_at              DateTime   @default(now())
   updated_at              DateTime   @updatedAt
   roles                   UserRole[] @default([])

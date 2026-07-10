@@ -554,7 +554,7 @@ export class UsersService {
 
     if (callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER)) {
       return this.prisma.user.findMany({
-        where: { id: { not: callerId } },
+        where: { id: { not: callerId }, deleted_at: null },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },
       });
@@ -574,7 +574,7 @@ export class UsersService {
       // của chính team mình (vd sau backfill), nhưng "member tôi quản lý" không nên gồm chính tôi.
       const userIds = [...new Set(memberships.map((m) => m.user_id))].filter((id) => id !== callerId);
       return this.prisma.user.findMany({
-        where: { id: { in: userIds } },
+        where: { id: { in: userIds }, deleted_at: null },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },
       });
@@ -594,7 +594,7 @@ export class UsersService {
       await this.prisma.teamMember.findMany({ select: { user_id: true }, distinct: ['user_id'] })
     ).map((m) => m.user_id);
     return this.prisma.user.findMany({
-      where: { id: { notIn: assignedUserIds } },
+      where: { id: { notIn: assignedUserIds }, deleted_at: null },
       select: {
         id: true,
         email: true,
@@ -812,6 +812,48 @@ export class UsersService {
     this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
 
     return { message: 'Tài khoản đã được kích hoạt', user: updated };
+  }
+
+  /**
+   * Xóa mềm vĩnh viễn: khác `deactivate` ở chỗ không có đường quay lại qua UI (không set is_active
+   * lại về true được nữa) và tài khoản bị ẩn hoàn toàn khỏi mọi danh sách (getTeamMembers,
+   * getUnassignedMembers...). Không hard-delete vì `users.id` bị hàng chục bảng tham chiếu KHÔNG
+   * có onDelete Cascade/SetNull (Task.assignee, TaskAssignment, Notification...) — prisma.user.delete()
+   * sẽ ném lỗi FK constraint với bất kỳ tài khoản nào đã từng có hoạt động thật.
+   */
+  async softDelete(callerId: string, callerRoles: UserRole[], targetId: string) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    if (callerId === targetId) {
+      throw new ForbiddenException('Không thể xóa tài khoản của chính mình');
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target || target.deleted_at) throw new NotFoundException(`User ${targetId} not found`);
+
+    if (!isManagerOrAdmin && isLeader) {
+      if (!(await isTeamLeaderOfUser(this.prisma, callerId, targetId))) {
+        throw new ForbiddenException('Leader chỉ được xóa member trong team mình');
+      }
+    }
+
+    // Thả khỏi mọi Team trước — resync team phái sinh cho các đồng đội còn lại, và tránh
+    // tài khoản đã xóa trôi ngược vào "chưa phân team" (getUnassignedMembers dựa trên
+    // "không còn TeamMember nào").
+    await clearUserTeams(this.prisma, targetId);
+
+    const updated = await this.prisma.user.update({
+      where: { id: targetId },
+      data: { is_active: false, deleted_at: new Date() },
+      select: { id: true, email: true, full_name: true },
+    });
+
+    this.cacheService.invalidate(this.userCacheKey(targetId));
+    this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+    this.cacheService.invalidate(`jwt:user:${targetId}`);
+
+    return { message: 'Đã xóa tài khoản', user: updated };
   }
 
   /**
