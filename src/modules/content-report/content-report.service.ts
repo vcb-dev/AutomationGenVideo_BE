@@ -792,27 +792,30 @@ export class ContentReportService {
     // Admin bypasses all checks
     if (actor.roles.includes(UserRole.ADMIN)) return;
 
-    // Resolve team_ids from actor.team (parsed as comma-separated list, e.g. "Team K1, MEDIA, Scale Data" -> ["K1", "MEDIA", "Scale Data"])
+    // Resolve team_ids from actor.team (parsed as comma-separated list, supporting both "Team K1" and "K1" variations)
     const resolvedTeamIds: string[] = [];
     if (actor.team) {
       const parsedNames = actor.team
         .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) {
-            trimmed = trimmed.substring(5).trim();
-          }
-          return trimmed;
-        })
+        .map((t) => t.trim())
         .filter((t) => t.length > 0);
 
-      this.logger.log(`assertManagerCanEditTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
+      const searchNames = [...parsedNames];
+      parsedNames.forEach((name) => {
+        if (name.toLowerCase().startsWith('team ')) {
+          searchNames.push(name.substring(5).trim());
+        } else {
+          searchNames.push(`Team ${name}`);
+        }
+      });
 
-      if (parsedNames.length > 0) {
+      this.logger.log(`assertManagerCanEditTeam debug: searchNames=${JSON.stringify(searchNames)}`);
+
+      if (searchNames.length > 0) {
         const matchedTeams = await this.prisma.team.findMany({
           where: {
             name: {
-              in: parsedNames,
+              in: searchNames,
               mode: 'insensitive',
             },
           },
@@ -862,27 +865,30 @@ export class ContentReportService {
       `assertMemberBelongsToTeam debug: userId=${userId}, teamId=${teamId}, teamName=${user.team}`
     );
 
-    // Resolve team_ids from user.team (comma-separated list)
+    // Resolve team_ids from user.team (comma-separated list, supporting both "Team K1" and "K1" variations)
     const resolvedTeamIds: string[] = [];
     if (user.team) {
       const parsedNames = user.team
         .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) {
-            trimmed = trimmed.substring(5).trim();
-          }
-          return trimmed;
-        })
+        .map((t) => t.trim())
         .filter((t) => t.length > 0);
 
-      this.logger.log(`assertMemberBelongsToTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
+      const searchNames = [...parsedNames];
+      parsedNames.forEach((name) => {
+        if (name.toLowerCase().startsWith('team ')) {
+          searchNames.push(name.substring(5).trim());
+        } else {
+          searchNames.push(`Team ${name}`);
+        }
+      });
 
-      if (parsedNames.length > 0) {
+      this.logger.log(`assertMemberBelongsToTeam debug: searchNames=${JSON.stringify(searchNames)}`);
+
+      if (searchNames.length > 0) {
         const matchedTeams = await this.prisma.team.findMany({
           where: {
             name: {
-              in: parsedNames,
+              in: searchNames,
               mode: 'insensitive',
             },
           },
