@@ -369,18 +369,25 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Chạy mỗi ngày lúc 9h: cảnh báo token sắp hết hạn, vô hiệu hoá token đã hết hạn */
+  /** Chạy mỗi ngày lúc 9h: cảnh báo token sắp/đã hết hạn (chỉ cảnh báo — KHÔNG tắt account) */
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
   async checkExpiringTokens() {
     const now = new Date();
     const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    const expired = await this.prisma.socialAccount.updateMany({
+    // KHÔNG flip is_active=false khi token hết hạn. Trước đây làm vậy khiến account "tự biến mất"
+    // khỏi trang Kênh (findAll chỉ trả is_active=true) mà user không được báo gì:
+    // - Page con Facebook (page token KHÔNG hết hạn, vẫn đăng bài được) render lồng dưới card
+    //   account cha ở FE — cha bị ẩn là toàn bộ page con biến mất theo dù trong DB vẫn active.
+    // - TikTok/Zalo token chỉ sống ~24h, YouTube ~1h — bị tắt ngay lần cron kế tiếp dù
+    //   refresh_token còn hạn dài (YouTube tự refresh lúc publish).
+    // Token hết hạn giờ hiện "Đã hết hạn" trên banner (getExpiringAccounts) để user bấm kết nối
+    // lại — saveAccount khi reconnect tự bật lại is_active.
+    const expired = await this.prisma.socialAccount.count({
       where: { is_active: true, token_expires_at: { not: null, lt: now } },
-      data: { is_active: false, updated_at: now },
     });
-    if (expired.count > 0)
-      this.logger.warn(`[TokenExpiry] Đã vô hiệu hoá ${expired.count} account hết hạn token`);
+    if (expired > 0)
+      this.logger.warn(`[TokenExpiry] ${expired} account có token đã hết hạn — chờ user kết nối lại (không tự ẩn)`);
 
     const expiring = await this.prisma.socialAccount.findMany({
       where: { is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
@@ -397,8 +404,11 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
   async getExpiringAccounts(userId: string) {
     const now = new Date();
     const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    // Bao gồm cả token ĐÃ hết hạn (không chặn dưới bằng `gte: now`) — account hết hạn không còn
+    // bị cron ẩn đi nữa nên banner phải hiện "Đã hết hạn" (FE render days_until_expiry <= 0)
+    // để user biết đường kết nối lại, thay vì âm thầm rớt khỏi banner như trước.
     const accounts = await this.prisma.socialAccount.findMany({
-      where: { user_id: userId, is_active: true, token_expires_at: { not: null, gte: now, lte: warnBefore } },
+      where: { user_id: userId, is_active: true, token_expires_at: { not: null, lte: warnBefore } },
       select: { id: true, name: true, platform: true, avatar_url: true, token_expires_at: true },
       orderBy: { token_expires_at: 'asc' },
     });
