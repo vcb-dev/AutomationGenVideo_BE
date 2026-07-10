@@ -106,8 +106,9 @@ export class TaskAutoTeamsController {
     @Param("id") teamId: string,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
-    return this.teams.listTeamProducts(teamId, brandType as any, month);
+    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId);
   }
 
   @Post("teams/:id/products")
@@ -167,8 +168,9 @@ export class TaskAutoTeamsController {
     @Param("id") teamId: string,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
-    return this.teams.listTeamContents(teamId, brandType as any, month);
+    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId);
   }
 
   @Post("teams/:id/contents")

@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -31,6 +32,8 @@ import {
   SubmitTaskDto,
   ReviewTaskDto,
   GenerateVideoScriptDto,
+  UpdateVideoScriptDto,
+  TranslateVideoScriptDto,
 } from "./task.dto";
 
 @ApiTags("task-auto")
@@ -193,5 +196,32 @@ export class TaskAutoTasksController {
   ) {
     const { force, ...params } = dto;
     return this.videoScript.generate(id, params, force ?? false);
+  }
+
+  @Patch("tasks/:id/video-script")
+  @ApiOperation({
+    summary:
+      "Sửa trực tiếp content/hashtags đã sinh (không gọi AI). Bản dịch cũ (nếu có) được giữ nguyên.",
+  })
+  async updateVideoScript(
+    @Param("id") id: string,
+    @Body() dto: UpdateVideoScriptDto,
+  ) {
+    const script = await this.videoScript.update(id, dto);
+    return { script };
+  }
+
+  @Post("tasks/:id/video-script/translate")
+  @ApiOperation({
+    summary:
+      "Dịch content/hashtags hiện tại. Tái dùng ngôn ngữ của bản dịch cũ nếu có; nếu chưa từng có " +
+      "bản dịch nào thì dùng `market` để AI tự xác định ngôn ngữ.",
+  })
+  async translateVideoScript(
+    @Param("id") id: string,
+    @Body() dto: TranslateVideoScriptDto,
+  ) {
+    const script = await this.videoScript.translate(id, dto.market);
+    return { script };
   }
 }

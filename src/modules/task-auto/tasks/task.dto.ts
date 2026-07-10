@@ -1,5 +1,5 @@
 import {
-  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean, ValidateIf,
+  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean, ValidateIf, IsArray, ValidateNested,
 } from 'class-validator'
 import { Transform, Type } from 'class-transformer'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
@@ -108,4 +108,24 @@ export class GenerateVideoScriptDto {
   @ApiPropertyOptional() @IsString() @IsOptional() productLine?: string | null
   @ApiPropertyOptional() @IsString() @IsOptional() productMarket?: string | null
   @ApiPropertyOptional() @IsBoolean() @IsOptional() force?: boolean
+}
+
+export class UpdateVideoScriptTranslationDto {
+  @ApiProperty() @IsString() content: string
+  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
+}
+
+export class UpdateVideoScriptDto {
+  @ApiProperty() @IsString() content: string
+  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
+  @ApiPropertyOptional({ type: UpdateVideoScriptTranslationDto })
+  @ValidateNested() @Type(() => UpdateVideoScriptTranslationDto) @IsOptional()
+  translation?: UpdateVideoScriptTranslationDto
+}
+
+export class TranslateVideoScriptDto {
+  @ApiPropertyOptional({
+    description: "Thị trường mục tiêu (vd 'Indonesia') — dùng để AI tự xác định ngôn ngữ khi task chưa từng có bản dịch nào",
+  })
+  @IsString() @IsOptional() market?: string | null
 }

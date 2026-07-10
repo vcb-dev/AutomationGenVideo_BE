@@ -258,10 +258,15 @@ export class TaskAutoTeamsService {
     return { added_at: { gte: new Date(y, m - 1, 1), lt: new Date(y, m, 1) } }
   }
 
-  async listTeamProducts(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string) {
+  async listTeamProducts(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string, classificationId?: string) {
     await this.findOne(teamId)
     return this.prisma.teamProduct.findMany({
-      where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { brand_type: brandType } : {}),
+        ...(classificationId ? { classification_id: classificationId } : {}),
+        ...this.teamMonthRange(month),
+      },
       include: this.teamProductInclude,
       // `added_at` không unique — nhiều dòng import/tạo cùng lúc có thể trùng millisecond,
       // nên phải có tiebreaker ổn định để thứ tự không đổi giữa các lần fetch/sau khi update.
@@ -374,10 +379,15 @@ export class TaskAutoTeamsService {
     return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
-  async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string) {
+  async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string, classificationId?: string) {
     await this.findOne(teamId)
     return this.prisma.teamContent.findMany({
-      where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { brand_type: brandType } : {}),
+        ...(classificationId ? { classification_id: classificationId } : {}),
+        ...this.teamMonthRange(month),
+      },
       include: this.teamContentInclude,
       // Tiebreaker ổn định — xem giải thích ở listTeamProducts.
       orderBy: [{ added_at: 'desc' }, { id: 'asc' }],
