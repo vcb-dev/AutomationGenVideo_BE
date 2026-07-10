@@ -27,6 +27,8 @@ model User {
   google_id               String?    @unique
   manager_id              String?    @db.Uuid
   is_active               Boolean    @default(true)
+  /// Xóa mềm vĩnh viễn (khác "Vô hiệu hóa": không có đường quay lại qua UI) — null = chưa xóa.
+  deleted_at              DateTime?
   created_at              DateTime   @default(now())
   updated_at              DateTime   @updatedAt
   roles                   UserRole[] @default([])
@@ -173,7 +175,7 @@ model Voice {
 /// trong gói MiniMax). Ghi tại BE vì mọi call TTS/clone đều đi qua BE có JWT.
 model AiVoiceUsage {
   id          String   @id @default(uuid())
-  user_id     String
+  user_id     String   @db.Uuid
   /// 'tts' | 'clone'
   kind        String   @db.VarChar(10)
   voice_id    String?  @db.VarChar(255)
@@ -2862,9 +2864,9 @@ model ReportPeriod {
 /// Video content WIN hoặc FAIL của team
 model ContentVideo {
   id             String      @id @default(uuid())
-  team_id        String
+  team_id        String      @db.Uuid
   period_id      String
-  editor_id      String
+  editor_id      String      @db.Uuid
   status         VideoStatus // WIN | FAIL
   content        String      @db.Text
   analysis       String?     @db.Text // Phân tích win/fail reason
@@ -2899,9 +2901,9 @@ model ContentVideo {
 /// Case study hay bên ngoài
 model CaseStudy {
   id          String    @id @default(uuid())
-  team_id     String
+  team_id     String    @db.Uuid
   period_id   String
-  created_by  String // FK → users (người tạo)
+  created_by  String    @db.Uuid // FK → users (người tạo)
   title       String
   channel     String? // Tên kênh bên ngoài
   content     String?   @db.Text
@@ -2926,9 +2928,9 @@ model CaseStudy {
 /// Hiệu suất cá nhân editor trong kỳ
 model EditorPerformance {
   id           String   @id @default(uuid())
-  team_id      String
+  team_id      String   @db.Uuid
   period_id    String
-  user_id      String // FK → users (editor)
+  user_id      String   @db.Uuid // FK → users (editor)
   total_videos Int      @default(0)
   win_videos   Int      @default(0)
   notes        String?  @db.Text
@@ -2947,9 +2949,9 @@ model EditorPerformance {
 /// Video nhân bản (clone)
 model CloneVideo {
   id             String    @id @default(uuid())
-  team_id        String
+  team_id        String    @db.Uuid
   period_id      String
-  editor_id      String
+  editor_id      String    @db.Uuid
   content        String    @db.Text
   target_channel String?
   link           String?
@@ -2981,9 +2983,9 @@ model CloneVideo {
 /// Kế hoạch hành động sau khi phân tích
 model ActionItem {
   id             String    @id @default(uuid())
-  team_id        String
+  team_id        String    @db.Uuid
   period_id      String
-  assignee_id    String // FK → users (người được giao)
+  assignee_id    String    @db.Uuid // FK → users (người được giao)
   title          String
   description    String?   @db.Text
   deadline       DateTime?
@@ -3006,7 +3008,7 @@ model ActionItem {
 /// Ảnh chụp nhanh KPI tổng hợp — cache để FE load nhanh
 model TeamKpiSnapshot {
   id               String   @id @default(uuid())
-  team_id          String
+  team_id          String   @db.Uuid
   period_id        String
   total_videos     Int      @default(0)
   win_videos       Int      @default(0)
@@ -3027,7 +3029,7 @@ model TeamKpiSnapshot {
 model VideoScore {
   id               String @id @default(uuid())
   content_video_id String
-  scored_by_id     String
+  scored_by_id     String @db.Uuid
 
   score_hook      Float
   score_content   Float
@@ -3156,15 +3158,15 @@ model EditorSourceWarehouse {
 /// Buổi họp team định kỳ hàng tuần
 model MeetingSession {
   id              String    @id @default(uuid())
-  team_id         String
+  team_id         String    @db.Uuid
   period_id       String // FK → ReportPeriod (type = WEEK)
   title           String? // "Họp tuần 1 - T7/2026" — optional label
   scheduled_at    DateTime // Mốc giờ họp — chỉ hiển thị/tham khảo, không tự tính LATE
   notes           String?   @db.Text
-  created_by      String // FK → users (người tạo)
+  created_by      String    @db.Uuid // FK → users (người tạo)
   is_finalized    Boolean   @default(false)
   finalized_at    DateTime?
-  finalized_by_id String?
+  finalized_by_id String?   @db.Uuid
   created_at      DateTime  @default(now())
   updated_at      DateTime  @updatedAt
 
@@ -3185,10 +3187,10 @@ model MeetingSession {
 model AttendanceRecord {
   id           String           @id @default(uuid())
   session_id   String
-  user_id      String // Thành viên được điểm danh
+  user_id      String           @db.Uuid // Thành viên được điểm danh
   status       AttendanceStatus @default(PRESENT)
   note         String?          @db.Text // Bắt buộc khi ON_LEAVE (enforce ở DTO/service)
-  marked_by_id String // Người thực hiện điểm danh (self hoặc manager)
+  marked_by_id String           @db.Uuid // Người thực hiện điểm danh (self hoặc manager)
   created_at   DateTime         @default(now())
   updated_at   DateTime         @updatedAt
 
@@ -3205,7 +3207,7 @@ model AttendanceRecord {
 model MeetingSessionLog {
   id         String   @id @default(uuid())
   session_id String
-  actor_id   String
+  actor_id   String   @db.Uuid
   action     String // "FINALIZE" | "REOPEN"
   created_at DateTime @default(now())
 
@@ -3219,7 +3221,7 @@ model MeetingSessionLog {
 /// Phiên chat với VCB Assistant
 model ChatConversation {
   id               String        @id @default(uuid())
-  user_id          String
+  user_id          String        @db.Uuid
   telegram_chat_id String? // Telegram chat_id nếu đến từ bot
   title            String
   created_at       DateTime      @default(now())

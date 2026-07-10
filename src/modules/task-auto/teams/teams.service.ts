@@ -5,8 +5,8 @@ import { DateTime } from 'luxon'
 import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
-import { UserRole } from '@prisma/client'
-import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
+import { Prisma, UserRole } from '@prisma/client'
+import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -31,9 +31,15 @@ export class TaskAutoTeamsService {
     _count: { select: { members: true, tasks: true } },
   }
 
-  /** Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi Team/TeamMember. */
-  private async syncAffectedUsers(userIds: Iterable<string>) {
-    await recomputeUserTeamFieldsBatch(this.prisma, [...new Set(userIds)])
+  /**
+   * Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi
+   * Team/TeamMember. PHẢI gọi với transaction client của chính thao tác ghi membership đó — nếu
+   * chạy tách rời (this.prisma), hai luồng cùng sửa team của một user (tab Teams ở đây vs
+   * HR-management ở users.service) có thể recompute đè nhau bằng snapshot cũ, làm cột team
+   * lúc hiện lúc mất cho tới lần thay đổi team kế tiếp.
+   */
+  private async syncAffectedUsers(db: PrismaService | Prisma.TransactionClient, userIds: Iterable<string>) {
+    await recomputeUserTeamFieldsBatch(db, [...new Set(userIds)])
   }
 
   async findAll() {
@@ -69,23 +75,26 @@ export class TaskAutoTeamsService {
     // leader sẽ không nhìn thấy team này.
     const memberIds = [...new Set([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])]
 
-    const team = await this.prisma.team.create({
-      data: {
-        name: dto.name,
-        leader_id: dto.leader_id,
-        is_active: dto.is_active ?? true,
-        members: memberIds.length
-          ? { create: memberIds.map(uid => ({ user_id: uid })) }
-          : undefined,
-      },
-      include: this.teamInclude,
-    })
+    // Ghi membership + seed KPI + recompute field phái sinh trong CÙNG transaction — xem syncAffectedUsers.
+    return this.prisma.$transaction(async (tx) => {
+      const team = await tx.team.create({
+        data: {
+          name: dto.name,
+          leader_id: dto.leader_id,
+          is_active: dto.is_active ?? true,
+          members: memberIds.length
+            ? { create: memberIds.map(uid => ({ user_id: uid })) }
+            : undefined,
+        },
+        include: this.teamInclude,
+      })
 
-    // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
-    // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
-    await seedEditorKpiForMembers(this.prisma, memberIds, [team.id], creatorId)
-    await this.syncAffectedUsers(memberIds)
-    return team
+      // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
+      // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
+      await seedEditorKpiForMembers(tx, memberIds, [team.id], creatorId)
+      await this.syncAffectedUsers(tx, memberIds)
+      return team
+    }, TEAM_TX_OPTIONS)
   }
 
   async update(id: string, dto: UpdateTeamDto, userId: string, userRoles: string[]) {
@@ -109,49 +118,53 @@ export class TaskAutoTeamsService {
       if (rest.leader_id !== undefined) throw new ForbiddenException('LEADER không được thay đổi leader')
     }
 
-    if (member_ids !== undefined) {
-      // createMany thay vì N lệnh create() riêng lẻ trong transaction — team càng đông thành
-      // viên, càng nhiều round-trip tuần tự tới DB. $transaction dạng mảng (batch) không nhận
-      // maxWait/timeout (chỉ dạng callback interactive mới có, xem TEAM_TX_OPTIONS).
-      await this.prisma.$transaction([
-        this.prisma.teamMember.deleteMany({ where: { team_id: id } }),
-        this.prisma.teamMember.createMany({ data: member_ids.map(uid => ({ team_id: id, user_id: uid })) }),
-      ])
-      // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
-      // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
-      await seedEditorKpiForMembers(this.prisma, member_ids, [id], userId)
-    }
+    // Toàn bộ ghi membership + update team + recompute field phái sinh trong CÙNG một
+    // interactive transaction (batch $transaction dạng mảng không nhận maxWait/timeout,
+    // và không gói được recompute chung) — xem syncAffectedUsers.
+    return this.prisma.$transaction(async (tx) => {
+      if (member_ids !== undefined) {
+        // createMany thay vì N lệnh create() riêng lẻ — team càng đông thành viên,
+        // càng nhiều round-trip tuần tự tới DB.
+        await tx.teamMember.deleteMany({ where: { team_id: id } })
+        await tx.teamMember.createMany({ data: member_ids.map(uid => ({ team_id: id, user_id: uid })) })
+        // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
+        // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
+        await seedEditorKpiForMembers(tx, member_ids, [id], userId)
+      }
 
-    const updated = await this.prisma.team.update({
-      where: { id },
-      data: rest,
-      include: this.teamInclude,
-    })
-
-    // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
-    // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
-    if (rest.leader_id) {
-      await this.prisma.teamMember.createMany({
-        data: [{ team_id: id, user_id: rest.leader_id }],
-        skipDuplicates: true,
+      const updated = await tx.team.update({
+        where: { id },
+        data: rest,
+        include: this.teamInclude,
       })
-    }
 
-    await this.syncAffectedUsers([
-      ...previousMemberIds,
-      ...(member_ids ?? []),
-      ...(previousLeaderId ? [previousLeaderId] : []),
-      ...(updated.leader_id ? [updated.leader_id] : []),
-    ])
+      // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
+      // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
+      if (rest.leader_id) {
+        await tx.teamMember.createMany({
+          data: [{ team_id: id, user_id: rest.leader_id }],
+          skipDuplicates: true,
+        })
+      }
 
-    return updated
+      await this.syncAffectedUsers(tx, [
+        ...previousMemberIds,
+        ...(member_ids ?? []),
+        ...(previousLeaderId ? [previousLeaderId] : []),
+        ...(updated.leader_id ? [updated.leader_id] : []),
+      ])
+
+      return updated
+    }, TEAM_TX_OPTIONS)
   }
 
   async remove(id: string) {
     const team = await this.findOne(id)
     const memberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
-    await this.prisma.team.delete({ where: { id } })
-    await this.syncAffectedUsers(memberIds)
+    await this.prisma.$transaction(async (tx) => {
+      await tx.team.delete({ where: { id } })
+      await this.syncAffectedUsers(tx, memberIds)
+    }, TEAM_TX_OPTIONS)
     return { success: true }
   }
 
@@ -159,16 +172,20 @@ export class TaskAutoTeamsService {
     await this.findOne(teamId)
     const existing = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (existing) throw new ConflictException('User is already a member')
-    const member = await this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
-    await this.syncAffectedUsers([userId])
-    return member
+    return this.prisma.$transaction(async (tx) => {
+      const member = await tx.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+      await this.syncAffectedUsers(tx, [userId])
+      return member
+    }, TEAM_TX_OPTIONS)
   }
 
   async removeMember(teamId: string, userId: string) {
     const member = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (!member) throw new NotFoundException('Member not found in team')
-    await this.prisma.teamMember.delete({ where: { id: member.id } })
-    await this.syncAffectedUsers([userId])
+    await this.prisma.$transaction(async (tx) => {
+      await tx.teamMember.delete({ where: { id: member.id } })
+      await this.syncAffectedUsers(tx, [userId])
+    }, TEAM_TX_OPTIONS)
     return { success: true }
   }
 

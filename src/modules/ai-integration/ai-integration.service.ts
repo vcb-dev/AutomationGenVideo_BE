@@ -9,13 +9,26 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
+  private readonly minimaxApiKey?: string;
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
+    if (!this.minimaxApiKey) {
+      this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
+    }
+  }
+
+  /**
+   * Key MiniMax giữ ở .env của BE và gửi kèm từng request voice sang AI service qua
+   * header X-Minimax-Key — AI không còn giữ key trong .env của nó.
+   */
+  private minimaxHeaders(): Record<string, string> {
+    return this.minimaxApiKey ? { 'X-Minimax-Key': this.minimaxApiKey } : {};
   }
 
 
@@ -1675,7 +1688,7 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           // AI service retries upload+clone up to 3x60s each on network blips to
@@ -1720,7 +1733,7 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           // Chỉ upload file + spawn job nền trên AI service, không chờ clone
@@ -1843,6 +1856,7 @@ export class AiIntegrationService {
           volume,
           language
         }, {
+          headers: this.minimaxHeaders(),
           timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
         }).pipe(
           catchError((error: AxiosError) => {
