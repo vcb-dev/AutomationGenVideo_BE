@@ -202,17 +202,21 @@ export class UsersService {
     }
     delete updateData.role;
 
+    // team là field PHÁI SINH từ Team/TeamMember (xem team-membership.util.ts) — cùng invariant
+    // với create(): không bao giờ ghi trực tiếp từ dto. Đổi team phải đi qua updateHR →
+    // replaceUserTeamsByName; ghi thẳng ở đây từng làm users.team lệch khỏi team_members
+    // (thành viên biến mất khỏi trang hiệu suất dù trang đội nhóm vẫn đủ).
+    delete updateData.team;
+
     // --- Cross-table sync ---
     // !== undefined (not a truthy check): an explicit full_name: "" must still be treated as a
     // change and synced to Lark, otherwise the users table and Lark tables end up out of sync.
     const nameChanged = updateUserDto.full_name !== undefined && updateUserDto.full_name !== user.full_name;
-    const teamChanged = updateUserDto.team !== undefined && updateUserDto.team !== user.team;
     const emailChanged = updateUserDto.email && updateUserDto.email !== user.email;
 
     const oldEmail = user.email;
     const oldName = user.full_name;
     const newName = updateUserDto.full_name ?? user.full_name;
-    const newTeam = updateUserDto.team !== undefined ? updateUserDto.team : user.team;
     const newEmail = updateUserDto.email ?? user.email;
 
     // Run main update + sync in transaction.
@@ -238,17 +242,16 @@ export class UsersService {
         },
       });
 
-      // Sync ChecklistReport (match by email hoặc name)
-      if (nameChanged || teamChanged || emailChanged) {
-        const checklistReportWhere: any = {};
-        if (oldEmail) checklistReportWhere.email = oldEmail;
-
+      // Sync ChecklistReport (match by email hoặc name).
+      // Team KHÔNG sync ở đây nữa — update() không còn nhận đổi team (field phái sinh);
+      // đổi team đi qua updateHR → replaceUserTeamsByName → syncTeamAcrossLarkTables
+      // với giá trị phái sinh ĐÃ tính lại, thay vì giá trị thô từ client.
+      if (nameChanged || emailChanged) {
         if (oldEmail || oldName) {
           await tx.checklistReport.updateMany({
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
-              ...(teamChanged ? { team: newTeam } : {}),
               ...(emailChanged ? { email: newEmail } : {}),
             },
           });
@@ -258,7 +261,6 @@ export class UsersService {
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
-              ...(teamChanged ? { team: newTeam } : {}),
               ...(emailChanged ? { email: newEmail } : {}),
             },
           });
@@ -268,33 +270,26 @@ export class UsersService {
             where: oldEmail ? { employee_email: oldEmail } : { employee_name: oldName },
             data: {
               ...(nameChanged ? { employee_name: newName } : {}),
-              ...(teamChanged ? { team: newTeam } : {}),
               ...(emailChanged ? { employee_email: newEmail } : {}),
             },
           });
 
           // Sync Kpi (match by name)
-          if (nameChanged || teamChanged) {
+          if (nameChanged) {
             await tx.kpi.updateMany({
               where: { name: oldName },
-              data: {
-                ...(nameChanged ? { name: newName } : {}),
-                ...(teamChanged ? { team: newTeam } : {}),
-              },
+              data: { name: newName },
             });
           }
 
           // Sync Lark fields on users (rows linked to Lark employee)
-          if (nameChanged || teamChanged) {
+          if (nameChanged) {
             await (tx.user as any).updateMany({
               where: {
                 full_name: oldName,
                 lark_employee_record_id: { not: null },
               },
-              data: {
-                ...(nameChanged ? { full_name: newName } : {}),
-                ...(teamChanged ? { team: newTeam } : {}),
-              },
+              data: { full_name: newName },
             });
           }
         }
@@ -736,15 +731,23 @@ export class UsersService {
     // rỗng) — undefined nghĩa là field không được gửi lên, không đụng tới team hiện có.
     const shouldReplaceTeams = isManagerOrAdmin && dto.team !== undefined;
     const teamNamesForUpdate = dto.team;
+    // team là field phái sinh — update() đã strip, xoá thêm ở đây cho rõ ý: giá trị thô từ
+    // client không bao giờ được ghi thẳng, chỉ dùng làm input cho replaceUserTeamsByName.
+    delete dto.team;
     if (shouldReplaceTeams && teamNamesForUpdate) {
-      // Validate TRƯỚC this.update() — update() ghi dto.team vào User.team và sync sang các bảng
-      // checklist; nếu để replaceUserTeamsByName ném lỗi sau đó thì chuỗi team ma đã nằm lại.
+      // Validate TRƯỚC this.update() — nếu để replaceUserTeamsByName ném lỗi sau đó thì các
+      // field khác (tên/email/roles) đã ghi xong nhưng team thì không, user khó hiểu vì sao.
       const targetRoles = dto.roles?.length
         ? dto.roles
         : ((await this.prisma.user.findUnique({ where: { id: targetId }, select: { roles: true } }))?.roles ?? []);
       await this.assertAssignableTeamNames(teamNamesForUpdate, targetRoles);
     }
+    // Chụp team phái sinh TRƯỚC khi đổi membership — để biết có cần sync các bảng lark không.
+    const teamBefore =
+      (await this.prisma.user.findUnique({ where: { id: targetId }, select: { team: true } }))?.team ?? null;
+
     const updated = await this.update(targetId, dto);
+    const membershipChanged = !!claimToCallerId || releaseTarget || shouldReplaceTeams;
     if (claimToCallerId) {
       await assignUserToTeams(this.prisma, targetId, await getUserTeamIds(this.prisma, claimToCallerId), claimToCallerId);
     } else if (releaseTarget) {
@@ -755,7 +758,46 @@ export class UsersService {
       // bỏ chọn thì user rời khỏi team đó).
       await replaceUserTeamsByName(this.prisma, targetId, teamNamesForUpdate, updated.roles, callerId);
     }
-    return updated;
+
+    if (!membershipChanged) return updated;
+
+    // Sau khi membership đổi, users.team đã được recompute từ team_members (nguồn sự thật).
+    // Sync giá trị PHÁI SINH đó (không phải chuỗi thô từ client) sang các bảng lark — giữ hành vi
+    // cũ của update() (checklist/report_kpi/reported_tasks/kpi đổi theo team mới của người đó).
+    const fresh = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: { team: true, email: true, full_name: true },
+    });
+    if (fresh && (fresh.team ?? null) !== teamBefore) {
+      await this.syncTeamAcrossLarkTables(fresh.email, fresh.full_name, fresh.team ?? null);
+    }
+    // Trả về bản mới nhất — updated ở trên chụp TRƯỚC khi recompute team nên field team đã cũ.
+    return { ...updated, team: fresh?.team ?? null } as typeof updated;
+  }
+
+  /**
+   * Đồng bộ team (giá trị phái sinh, ĐÃ recompute từ team_members) sang các bảng lark lịch sử —
+   * thay cho nhánh teamChanged cũ trong update() vốn ghi chuỗi thô từ client.
+   */
+  private async syncTeamAcrossLarkTables(email: string | null, fullName: string | null, newTeam: string | null) {
+    if (!email && !fullName) return;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.checklistReport.updateMany({
+        where: email ? { email } : { name: fullName },
+        data: { team: newTeam },
+      });
+      await tx.reportKpi.updateMany({
+        where: email ? { email } : { name: fullName },
+        data: { team: newTeam },
+      });
+      await tx.reportedTask.updateMany({
+        where: email ? { employee_email: email } : { employee_name: fullName },
+        data: { team: newTeam },
+      });
+      if (fullName) {
+        await tx.kpi.updateMany({ where: { name: fullName }, data: { team: newTeam } });
+      }
+    }, TEAM_TX_OPTIONS);
   }
 
   /** Vô hiệu hóa tài khoản (soft delete) */

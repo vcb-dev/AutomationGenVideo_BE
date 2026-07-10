@@ -2094,7 +2094,14 @@ export class LarkService implements OnModuleInit {
                     const checklistTeams = splitTeamList(checklistTeamStr);
 
                     // Hiệu suất: lark_kpi.team | Checklist: users.team
-                    const effectiveTeam = performanceTeam || checklistTeams[0] || 'Khác';
+                    // Member nhiều team (vd "AFF 02,Global - Indo"): khi đang lọc 1 team cụ thể và
+                    // người này thuộc team đó, card phải mang team đang lọc — nếu lấy mù quáng
+                    // checklistTeams[0] thì FE (matchTeam trên r.team) sẽ ẩn họ khỏi tab hiệu suất
+                    // của team thứ hai dù BE đã trả về.
+                    const filterMatchedChecklistTeam = teamFilterNormalized
+                        ? checklistTeams.find((t) => matchesTeamFilter([t], teamFilterNormalized)) || null
+                        : null;
+                    const effectiveTeam = performanceTeam || filterMatchedChecklistTeam || checklistTeams[0] || 'Khác';
                     const checklistSourceTeam = checklistTeamStr || checklistTeams.join(', ') || effectiveTeam;
 
                     // Performance filter — lark_kpi team only
@@ -2352,9 +2359,16 @@ export class LarkService implements OnModuleInit {
                             (rNameKey ? personPerformanceTeamMap.get(rNameKey) : null) ||
                             '';
                         const userTeamsRep = checklistTeams.length ? checklistTeams : (reportOwnTeam ? [reportOwnTeam] : []);
+                        // Cùng lý do với effectiveTeam ở nhánh KPI: member nhiều team phải mang team
+                        // đang lọc (nếu thuộc), không phải team đầu tiên trong chuỗi.
+                        const filterMatchedTeamRep = teamFilterNormalized
+                            ? userTeamsRep.find((t) => matchesTeamFilter([t], teamFilterNormalized)) || null
+                            : null;
                         let displayTeamRep: string;
                         if (performanceTeam) {
                             displayTeamRep = performanceTeam;
+                        } else if (filterMatchedTeamRep) {
+                            displayTeamRep = filterMatchedTeamRep;
                         } else if (userTeamsRep.length > 0) {
                             displayTeamRep = userTeamsRep[0];
                         } else if (employee) {
