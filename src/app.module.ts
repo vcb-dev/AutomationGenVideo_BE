@@ -36,6 +36,9 @@ import { TiktokScraperModule } from './modules/tiktok-scraper/tiktok-scraper.mod
 import { InstagramScraperModule } from './modules/instagram-scraper/instagram-scraper.module';
 import { XiaohongshuScraperModule } from './modules/xiaohongshu-scraper/xiaohongshu-scraper.module';
 import { FacebookExternalScraperModule } from './modules/facebook-external-scraper/facebook-external-scraper.module';
+import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.module';
+import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
+import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
@@ -90,6 +93,9 @@ import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module
     InstagramScraperModule,
     XiaohongshuScraperModule,
     FacebookExternalScraperModule,
+    YoutubeScraperModule,
+    KuaishouScraperModule,
+    BilibiliScraperModule,
     ScraperAggregateModule,
     SearchKeywordsModule,
     ScraperProxyModule,
