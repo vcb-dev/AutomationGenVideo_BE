@@ -4,7 +4,11 @@ import {
   IsArray,
   Matches,
   IsEnum,
+  IsInt,
+  Min,
+  ValidateNested,
 } from "class-validator";
+import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { BrandType } from "../catalog/catalog.dto";
 
@@ -36,6 +40,70 @@ export class AddToWarehouseDto {
   @IsArray()
   @IsString({ each: true })
   ids: string[];
+}
+
+export class ProductWarehouseItemDto {
+  @ApiProperty({ description: "ID team_product/editor_product" })
+  @IsString()
+  id: string;
+
+  @ApiPropertyOptional({
+    description: "Số video cụ thể cần cho sản phẩm này trong tháng (mặc định 1)",
+    default: 1,
+  })
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  target_quantity?: number;
+}
+
+export class AddProductsToWarehouseDto {
+  @ApiProperty({ example: "2026-06" })
+  @IsString()
+  @Matches(MONTH_REGEX, { message: "month phải có định dạng yyyy-MM" })
+  month: string;
+
+  @ApiPropertyOptional({
+    description: "Danh sách ID cần thêm vào kho tháng (dạng cũ, target_quantity mặc định = 1)",
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  ids?: string[];
+
+  @ApiPropertyOptional({
+    type: [ProductWarehouseItemDto],
+    description: "Danh sách sản phẩm kèm target_quantity cụ thể",
+  })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductWarehouseItemDto)
+  @IsOptional()
+  items?: ProductWarehouseItemDto[];
+}
+
+export class UpdateWarehouseQuantityItemDto {
+  @ApiProperty({ description: "ID team_product/editor_product" })
+  @IsString()
+  id: string;
+
+  @ApiProperty({ description: "Số video cụ thể cần cho sản phẩm này trong tháng" })
+  @IsInt()
+  @Min(1)
+  target_quantity: number;
+}
+
+export class UpdateWarehouseQuantityDto {
+  @ApiProperty({ example: "2026-06" })
+  @IsString()
+  @Matches(MONTH_REGEX, { message: "month phải có định dạng yyyy-MM" })
+  month: string;
+
+  @ApiProperty({ type: [UpdateWarehouseQuantityItemDto] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UpdateWarehouseQuantityItemDto)
+  items: UpdateWarehouseQuantityItemDto[];
 }
 
 export class RemoveFromWarehouseDto {

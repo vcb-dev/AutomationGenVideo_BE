@@ -237,7 +237,7 @@ export class TaskAutoTeamsController {
   }
 
   @Post("teams/:id/sources")
-  @ApiOperation({ summary: "Add source to team inventory (ADMIN/MANAGER/LEADER/MEMBER/Scale Data)" })
+  @ApiOperation({ summary: "Add source to team inventory (ADMIN/MANAGER/LEADER/MEMBER/Scale Data/MEDIA)" })
   addTeamSource(
     @Param("id") teamId: string,
     @Body() dto: CreateTeamSourceDto,
@@ -247,7 +247,7 @@ export class TaskAutoTeamsController {
   }
 
   @Patch("teams/:id/sources/:teamSourceId")
-  @ApiOperation({ summary: "Update team source (ADMIN/MANAGER/LEADER/Scale Data)" })
+  @ApiOperation({ summary: "Update team source (ADMIN/MANAGER/LEADER/Scale Data/MEDIA)" })
   updateTeamSource(
     @Param("id") teamId: string,
     @Param("teamSourceId") teamSourceId: string,
@@ -268,7 +268,7 @@ export class TaskAutoTeamsController {
   }
 
   @Delete("teams/:id/sources/:teamSourceId")
-  @ApiOperation({ summary: "Remove source from team inventory (ADMIN/MANAGER/LEADER/Scale Data)" })
+  @ApiOperation({ summary: "Remove source from team inventory (ADMIN/MANAGER/LEADER/Scale Data/MEDIA)" })
   removeTeamSource(
     @Param("id") teamId: string,
     @Param("teamSourceId") teamSourceId: string,

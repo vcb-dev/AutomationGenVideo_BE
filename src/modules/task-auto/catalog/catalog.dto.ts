@@ -43,6 +43,12 @@ export class CreateProductDto {
   @IsOptional()
   @Type(() => Number)
   priority_score?: number;
+  @ApiPropertyOptional()
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  @Type(() => Number)
+  cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -71,6 +77,12 @@ export class UpdateProductDto {
   @IsOptional()
   @Type(() => Number)
   priority_score?: number;
+  @ApiPropertyOptional()
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  @Type(() => Number)
+  cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -210,6 +222,7 @@ export class CreateTeamProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -225,6 +238,7 @@ export class UpdateTeamProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -333,6 +347,7 @@ export class CreateEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -348,6 +363,7 @@ export class UpdateEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
+  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;

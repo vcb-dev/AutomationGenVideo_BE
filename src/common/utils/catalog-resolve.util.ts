@@ -28,6 +28,7 @@ export async function resolveProductSnapshot(prisma: PrismaService, productId: s
     market: src.market ?? tp?.market ?? ep?.market ?? null,
     price_segment: src.price_segment ?? tp?.price_segment ?? ep?.price_segment ?? null,
     priority_score: src.priority_score,
+    cooldown_days: src.cooldown_days,
     material_id: src.material_id ?? tp?.material_id ?? ep?.material_id ?? null,
     product_line_id: src.product_line_id ?? tp?.product_line_id ?? ep?.product_line_id ?? null,
     classification_id: src.classification_id ?? tp?.classification_id ?? ep?.classification_id ?? null,

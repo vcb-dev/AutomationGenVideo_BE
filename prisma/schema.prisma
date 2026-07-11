@@ -2080,6 +2080,8 @@ model TeamProduct {
   market                   String?
   price_segment            String?
   priority_score           Int       @default(0)
+  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
+  cooldown_days            Int?
   material_id              String?
   product_line_id          String?
   classification_id        String?
@@ -2197,6 +2199,8 @@ model EditorProduct {
   market            String?
   price_segment     String?
   priority_score    Int       @default(0)
+  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
+  cooldown_days     Int?
   material_id       String?
   product_line_id   String?
   classification_id String?
@@ -2518,6 +2522,8 @@ model Product {
   market                 String?
   price_segment          String?
   priority_score         Int       @default(0)
+  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
+  cooldown_days          Int?
   material_id            String?
   product_line_id        String?
   classification_id      String?
@@ -2780,13 +2786,15 @@ model AssignmentRun {
 }
 
 model AutoAssignSetting {
-  id              Int      @id @default(1)
-  schedule_time   String   @default("17:00")
-  timezone        String   @default("Asia/Ho_Chi_Minh")
-  weekend_enabled Boolean  @default(true)
-  is_active       Boolean  @default(true)
-  updated_by      String?
-  updated_at      DateTime @updatedAt
+  id                    Int      @id @default(1)
+  schedule_time         String   @default("17:00")
+  timezone              String   @default("Asia/Ho_Chi_Minh")
+  weekend_enabled       Boolean  @default(true)
+  is_active             Boolean  @default(true)
+  /// Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng
+  default_cooldown_days Int      @default(5)
+  updated_by            String?
+  updated_at            DateTime @updatedAt
 
   @@map("auto_assign_settings")
 }
@@ -3088,6 +3096,8 @@ model SourceWarehouse {
 model TeamProductWarehouse {
   team_product_id String
   month           String
+  /// Số video cụ thể cần cho sản phẩm này trong tháng (dùng chung cho cả team)
+  target_quantity Int    @default(1)
 
   team_product TeamProduct @relation(fields: [team_product_id], references: [id], onDelete: Cascade)
 
@@ -3121,6 +3131,8 @@ model TeamSourceWarehouse {
 model EditorProductWarehouse {
   editor_product_id String
   month             String
+  /// Số video cụ thể cần cho sản phẩm cá nhân này trong tháng
+  target_quantity   Int    @default(1)
 
   editor_product EditorProduct @relation(fields: [editor_product_id], references: [id], onDelete: Cascade)
 

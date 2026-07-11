@@ -303,7 +303,7 @@ export class TaskAutoCatalogController {
   @Delete("sources/:id")
   @UseGuards(ScaleDataSourceGuard)
   @ApiOperation({
-    summary: "Delete a source from global catalog (ADMIN/MANAGER/Scale Data)",
+    summary: "Delete a source from global catalog (ADMIN/MANAGER/Scale Data/MEDIA)",
   })
   deleteSource(@Param("id") id: string, @Request() req: any) {
     return this.catalog.removeSource(id, req.user.roles ?? []);

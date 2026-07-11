@@ -6,7 +6,7 @@ import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
 import { Prisma, UserRole } from '@prisma/client'
-import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS } from '../../../common/utils/team-membership.util'
+import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -287,7 +287,8 @@ export class TaskAutoTeamsService {
           team_id: teamId, source_product_id: source.id, sku: source.sku, name: source.name,
           brand_type: source.brand_type, image_url: source.image_url, image_urls: source.image_urls,
           price: source.price, market: source.market, price_segment: source.price_segment,
-          priority_score: source.priority_score, material_id: source.material_id,
+          priority_score: source.priority_score, cooldown_days: source.cooldown_days,
+          material_id: source.material_id,
           product_line_id: source.product_line_id, classification_id: source.classification_id,
           is_active: source.is_active, added_by_id: userId,
         },
@@ -304,6 +305,7 @@ export class TaskAutoTeamsService {
         team_id: teamId, sku, name: dto.name, brand_type: dto.brand_type,
         image_url: dto.image_url, image_urls: dto.image_urls ?? [], price: dto.price,
         market: dto.market, price_segment: dto.price_segment, priority_score: dto.priority_score ?? 0,
+        cooldown_days: dto.cooldown_days ?? null,
         material_id: dto.material_id, product_line_id: dto.product_line_id,
         classification_id: dto.classification_id, is_active: dto.is_active ?? true,
         added_by_id: userId,
@@ -330,6 +332,7 @@ export class TaskAutoTeamsService {
         ...(dto.market !== undefined          && { market: dto.market }),
         ...(dto.price_segment !== undefined   && { price_segment: dto.price_segment }),
         ...(dto.priority_score !== undefined  && { priority_score: dto.priority_score }),
+        ...(dto.cooldown_days !== undefined   && { cooldown_days: dto.cooldown_days }),
         ...(dto.material_id !== undefined     && { material_id: dto.material_id }),
         ...(dto.product_line_id !== undefined && { product_line_id: dto.product_line_id }),
         ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
@@ -506,11 +509,7 @@ export class TaskAutoTeamsService {
     const isAdminOrManager = userRoles.includes('ADMIN') || userRoles.includes('MANAGER')
     if (isAdminOrManager) return
 
-    const scaleDataTeam = await this.prisma.team.findUnique({ where: { name: 'Scale Data' }, select: { id: true } })
-    if (scaleDataTeam) {
-      const isScaleData = await this.prisma.teamMember.findFirst({ where: { team_id: scaleDataTeam.id, user_id: userId }, select: { id: true } })
-      if (isScaleData) return
-    }
+    if (await isPrivilegedSourceTeamMember(this.prisma, userId)) return
 
     const isLeader = team.leader_id === userId
     if (action === 'add') {
