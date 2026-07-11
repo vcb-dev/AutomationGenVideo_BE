@@ -21,12 +21,7 @@
     "prisma:generate": "prisma generate",
     "prisma:generate:fresh": "node -e \"try{require('fs').rmSync('node_modules/.prisma/client',{recursive:true,force:true})}catch(e){}\" && prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio",
-    "sync:larkkpi:force": "ts-node scripts/force-sync-kpi-to-remote.ts",
-    "sync:all:fast": "ts-node scripts/wipe-remote-data.ts && ts-node scripts/sync-lark-to-server-direct.ts && ts-node scripts/sync-channels-to-server-direct.ts && cross-env SYNC_FULL_REPLACE=1 ts-node scripts/force-sync-kpi-to-remote.ts && cross-env SYNC_FULL_REPLACE=1 ts-node scripts/force-sync-kpi-doda-to-remote.ts",
-    "sync:channels:force": "ts-node scripts/sync-channels-to-server-direct.ts",
-    "sync:all-kpis:force": "ts-node scripts/sync-all-kpis-from-lark-to-server-direct.ts",
-    "sync:kpi:global-indo": "ts-node scripts/sync-kpi-global-indo.ts"
+    "prisma:studio": "prisma studio"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

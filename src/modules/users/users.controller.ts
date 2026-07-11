@@ -153,6 +153,16 @@ export class UsersController {
     return this.usersService.reactivate(req.user.id, req.user.roles, id);
   }
 
+  @Delete(":id/soft")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Soft-delete user permanently — hidden from all lists, no undo via UI (scope by role)" })
+  @ApiResponse({ status: 200, description: "User soft-deleted" })
+  async softDelete(@Request() req, @Param("id") id: string) {
+    return this.usersService.softDelete(req.user.id, req.user.roles, id);
+  }
+
   @Get("available-managers")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
