@@ -1,20 +1,3 @@
--- =============================================================================
--- Gộp 3 migration thủ công của module task-auto để chạy 1 lần khi mang sang môi
--- trường khác. Nguồn gốc từng phần vẫn giữ nguyên ở các file riêng lẻ:
---   - manual_product_content_classification.sql
---   - manual_task_auto_cooldown_target_quantity.sql
---   - manual_add_missing_task_auto_indexes.sql
--- Applied via `prisma db execute` (không dùng `prisma migrate dev` — DB đã lệch quá
--- nhiều so với schema.prisma nên shadow-db replay fail).
---
--- ⚠️ QUAN TRỌNG: Phần 3 (CREATE INDEX CONCURRENTLY) KHÔNG thể chạy trong 1
--- transaction. Nếu công cụ bạn dùng tự động bọc cả file trong BEGIN...COMMIT
--- (kể cả `prisma db execute --file`), phần 3 sẽ lỗi "CREATE INDEX CONCURRENTLY
--- cannot run inside a transaction block". Khi đó hãy tách phần 3 ra chạy riêng
--- (VD: `psql -f`, hoặc từng câu một qua `$executeRawUnsafe`) sau khi Phần 1+2
--- đã áp dụng xong. Phần 1+2 chạy trong transaction bình thường không sao.
--- =============================================================================
-
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- PHẦN 1: Phân loại nghiệp vụ cho sản phẩm (Main/Test/Đẩy...) và content
@@ -102,18 +85,3 @@ ALTER TABLE "team_product_warehouses" ADD COLUMN IF NOT EXISTS "target_quantity"
 -- AlterTable: editor_product_warehouses
 ALTER TABLE "editor_product_warehouses" ADD COLUMN IF NOT EXISTS "target_quantity" INTEGER NOT NULL DEFAULT 1;
 
-
--- ─────────────────────────────────────────────────────────────────────────────
--- PHẦN 3: Index còn thiếu cho các bảng task-auto bị full table scan khi filter
--- theo cột phổ biến nhất (phát hiện khi audit hiệu năng CRUD task-auto).
--- ⚠️ Chạy CONCURRENTLY — xem cảnh báo transaction ở đầu file.
--- ─────────────────────────────────────────────────────────────────────────────
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "editor_contents_user_id_idx"
-  ON "editor_contents" ("user_id");
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "editor_sources_user_id_idx"
-  ON "editor_sources" ("user_id");
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "tasks_team_id_status_idx"
-  ON "tasks" ("team_id", "status");
