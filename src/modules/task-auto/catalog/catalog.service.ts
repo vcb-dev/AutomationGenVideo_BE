@@ -10,6 +10,7 @@ import {
   resolveProductSnapshot,
   resolveContentSnapshot,
 } from "../../../common/utils/catalog-resolve.util";
+import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import {
   CreateProductDto,
   UpdateProductDto,
@@ -181,22 +182,27 @@ export class TaskAutoCatalogService {
   }
 
   async updateProduct(id: string, dto: UpdateProductDto) {
-    await this.findOneProduct(id);
-    return this.prisma.product.update({
-      where: { id },
-      data: dto,
-      include: { product_line: true, material: true, classification: true },
-    });
+    return runOrNotFound(
+      () =>
+        this.prisma.product.update({
+          where: { id },
+          data: dto,
+          include: { product_line: true, material: true, classification: true },
+        }),
+      "Product not found",
+    );
   }
 
   async removeProduct(id: string, roles?: string[]) {
-    await this.findOneProduct(id);
     const isPrivileged = roles?.some((r) => ["ADMIN", "MANAGER"].includes(r));
     if (!isPrivileged)
       throw new ForbiddenException(
         "Chỉ ADMIN/MANAGER mới có thể xóa sản phẩm trong kho tổng",
       );
-    await this.prisma.product.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.product.delete({ where: { id } }),
+      "Product not found",
+    );
     return { success: true };
   }
 
@@ -333,21 +339,28 @@ export class TaskAutoCatalogService {
   }
 
   async updateContent(id: string, dto: UpdateContentDto) {
-    await this.findOneContent(id);
-    return this.prisma.content.update({
-      where: { id },
-      data: dto as any,
-      include: { content_line: true, classification: true },
-    });
+    return runOrNotFound(
+      () =>
+        this.prisma.content.update({
+          where: { id },
+          data: dto as any,
+          include: { content_line: true, classification: true },
+        }),
+      "Content not found",
+    );
   }
 
   async removeContent(id: string, roles?: string[]) {
-    const c = await this.findOneContent(id);
     const isPrivileged = roles?.some((r) => ["ADMIN", "MANAGER"].includes(r));
     if (!isPrivileged)
       throw new ForbiddenException(
         "Chỉ ADMIN/MANAGER mới có thể xóa content trong kho tổng",
       );
+    const c = await this.prisma.content.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!c) throw new NotFoundException("Content not found");
     if (c.status === "IN_TASK")
       throw new ConflictException("Content is currently in use by a task");
     await this.prisma.content.delete({ where: { id } });
@@ -368,15 +381,17 @@ export class TaskAutoCatalogService {
   }
 
   async updateContentLine(id: string, data: { a_type?: string | null }) {
-    const cl = await this.prisma.contentLine.findUnique({ where: { id } });
-    if (!cl) throw new NotFoundException("ContentLine not found");
-    return this.prisma.contentLine.update({ where: { id }, data });
+    return runOrNotFound(
+      () => this.prisma.contentLine.update({ where: { id }, data }),
+      "ContentLine not found",
+    );
   }
 
   async removeContentLine(id: string) {
-    const cl = await this.prisma.contentLine.findUnique({ where: { id } });
-    if (!cl) throw new NotFoundException("ContentLine not found");
-    await this.prisma.contentLine.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.contentLine.delete({ where: { id } }),
+      "ContentLine not found",
+    );
     return { success: true };
   }
 
@@ -398,15 +413,17 @@ export class TaskAutoCatalogService {
   }
 
   async updateContentClassification(id: string, name: string) {
-    const cc = await this.prisma.contentClassification.findUnique({ where: { id } });
-    if (!cc) throw new NotFoundException("ContentClassification not found");
-    return this.prisma.contentClassification.update({ where: { id }, data: { name } });
+    return runOrNotFound(
+      () => this.prisma.contentClassification.update({ where: { id }, data: { name } }),
+      "ContentClassification not found",
+    );
   }
 
   async removeContentClassification(id: string) {
-    const cc = await this.prisma.contentClassification.findUnique({ where: { id } });
-    if (!cc) throw new NotFoundException("ContentClassification not found");
-    await this.prisma.contentClassification.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.contentClassification.delete({ where: { id } }),
+      "ContentClassification not found",
+    );
     return { success: true };
   }
 
@@ -425,15 +442,17 @@ export class TaskAutoCatalogService {
     id: string,
     data: { video_category?: string | null },
   ) {
-    const pl = await this.prisma.productLine.findUnique({ where: { id } });
-    if (!pl) throw new NotFoundException("ProductLine not found");
-    return this.prisma.productLine.update({ where: { id }, data });
+    return runOrNotFound(
+      () => this.prisma.productLine.update({ where: { id }, data }),
+      "ProductLine not found",
+    );
   }
 
   async removeProductLine(id: string) {
-    const pl = await this.prisma.productLine.findUnique({ where: { id } });
-    if (!pl) throw new NotFoundException("ProductLine not found");
-    await this.prisma.productLine.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.productLine.delete({ where: { id } }),
+      "ProductLine not found",
+    );
   }
 
   async createMaterial(name: string, brandType: string) {
@@ -450,9 +469,10 @@ export class TaskAutoCatalogService {
   }
 
   async removeMaterial(id: string) {
-    const m = await this.prisma.material.findUnique({ where: { id } });
-    if (!m) throw new NotFoundException("Material not found");
-    await this.prisma.material.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.material.delete({ where: { id } }),
+      "Material not found",
+    );
   }
 
   // ─── Product Classifications (VD: Main, Test, Đẩy) ───────────────────────
@@ -473,15 +493,17 @@ export class TaskAutoCatalogService {
   }
 
   async updateProductClassification(id: string, name: string) {
-    const pc = await this.prisma.productClassification.findUnique({ where: { id } });
-    if (!pc) throw new NotFoundException("ProductClassification not found");
-    return this.prisma.productClassification.update({ where: { id }, data: { name } });
+    return runOrNotFound(
+      () => this.prisma.productClassification.update({ where: { id }, data: { name } }),
+      "ProductClassification not found",
+    );
   }
 
   async removeProductClassification(id: string) {
-    const pc = await this.prisma.productClassification.findUnique({ where: { id } });
-    if (!pc) throw new NotFoundException("ProductClassification not found");
-    await this.prisma.productClassification.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.productClassification.delete({ where: { id } }),
+      "ProductClassification not found",
+    );
     return { success: true };
   }
 
@@ -545,11 +567,26 @@ export class TaskAutoCatalogService {
   async findOneSource(id: string) {
     const s = await this.prisma.source.findUnique({
       where: { id },
-      include: {
-        product: { select: { id: true, name: true } },
-        added_by: { select: { id: true, full_name: true } },
-        ordered_team: { select: { id: true, name: true } },
-        source_team_source: {
+      include: this.sourceInclude,
+    });
+    if (!s) throw new NotFoundException("Source not found");
+    return s;
+  }
+
+  private sourceInclude = {
+    product: { select: { id: true, name: true } },
+    added_by: { select: { id: true, full_name: true } },
+    ordered_team: { select: { id: true, name: true } },
+    source_team_source: {
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        link: true,
+        nas_link: true,
+        code: true,
+        is_active: true,
+        source_editor_source: {
           select: {
             id: true,
             type: true,
@@ -558,24 +595,11 @@ export class TaskAutoCatalogService {
             nas_link: true,
             code: true,
             is_active: true,
-            source_editor_source: {
-              select: {
-                id: true,
-                type: true,
-                name: true,
-                link: true,
-                nas_link: true,
-                code: true,
-                is_active: true,
-              },
-            },
           },
         },
       },
-    });
-    if (!s) throw new NotFoundException("Source not found");
-    return s;
-  }
+    },
+  };
 
   async createSource(
     dto: CreateSourceDto,
@@ -591,6 +615,7 @@ export class TaskAutoCatalogService {
         type: dto.type as any,
         ordered_team_id: team_id ?? null,
       },
+      include: this.sourceInclude,
     });
 
     if (team_id) {
@@ -607,7 +632,7 @@ export class TaskAutoCatalogService {
       }
     }
 
-    return this.findOneSource(source.id);
+    return source;
   }
 
   async updateSource(
@@ -616,7 +641,11 @@ export class TaskAutoCatalogService {
     userId: string,
     userRoles: string[] = [],
   ) {
-    const existing = await this.findOneSource(id);
+    const existing = await this.prisma.source.findUnique({
+      where: { id },
+      select: { ordered_team_id: true },
+    });
+    if (!existing) throw new NotFoundException("Source not found");
     const { team_id, ...rest } = dto;
     const teamIdProvided = Object.prototype.hasOwnProperty.call(dto, "team_id");
     const oldTeamId = existing.ordered_team_id;
@@ -661,13 +690,15 @@ export class TaskAutoCatalogService {
   }
 
   async removeSource(id: string, roles?: string[]) {
-    await this.findOneSource(id);
     const isPrivileged = roles?.some((r) => ["ADMIN", "MANAGER"].includes(r));
     if (!isPrivileged)
       throw new ForbiddenException(
         "Chỉ ADMIN/MANAGER mới có thể xóa source trong kho tổng",
       );
-    await this.prisma.source.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.source.delete({ where: { id } }),
+      "Source not found",
+    );
     return { success: true };
   }
 
@@ -774,33 +805,49 @@ export class TaskAutoCatalogService {
     });
   }
 
+  /** Lean ownership check — chỉ SELECT user_id thay vì tải cả EditorProduct với đầy đủ quan hệ. */
+  private async assertEditorProductOwner(
+    id: string,
+    requesterId: string,
+    roles: string[],
+  ) {
+    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
+    if (isPrivileged) return;
+    const owner = await this.prisma.editorProduct.findUnique({
+      where: { id },
+      select: { user_id: true },
+    });
+    if (!owner) throw new NotFoundException("EditorProduct not found");
+    if (owner.user_id !== requesterId)
+      throw new ForbiddenException(
+        "Bạn chỉ có thể truy cập sản phẩm trong kho cá nhân của mình",
+      );
+  }
+
   async updateEditorProduct(
     id: string,
     dto: UpdateEditorProductDto,
     requesterId: string,
     roles: string[],
   ) {
-    const ep = await this.findOneEditorProduct(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && ep.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể sửa sản phẩm trong kho cá nhân của mình",
-      );
-    return this.prisma.editorProduct.update({
-      where: { id },
-      data: dto as any,
-      include: { product_line: true, material: true, classification: true },
-    });
+    await this.assertEditorProductOwner(id, requesterId, roles);
+    return runOrNotFound(
+      () =>
+        this.prisma.editorProduct.update({
+          where: { id },
+          data: dto as any,
+          include: { product_line: true, material: true, classification: true },
+        }),
+      "EditorProduct not found",
+    );
   }
 
   async removeEditorProduct(id: string, requesterId: string, roles: string[]) {
-    const ep = await this.findOneEditorProduct(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && ep.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể xóa sản phẩm trong kho cá nhân của mình",
-      );
-    await this.prisma.editorProduct.delete({ where: { id } });
+    await this.assertEditorProductOwner(id, requesterId, roles);
+    await runOrNotFound(
+      () => this.prisma.editorProduct.delete({ where: { id } }),
+      "EditorProduct not found",
+    );
     return { success: true };
   }
 
@@ -894,18 +941,32 @@ export class TaskAutoCatalogService {
     });
   }
 
+  /** Lean ownership check — chỉ SELECT user_id (+ status khi cần) thay vì tải cả EditorContent. */
+  private async getEditorContentOwnership(
+    id: string,
+    requesterId: string,
+    roles: string[],
+  ) {
+    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
+    const ec = await this.prisma.editorContent.findUnique({
+      where: { id },
+      select: { user_id: true, status: true },
+    });
+    if (!ec) throw new NotFoundException("EditorContent not found");
+    if (!isPrivileged && ec.user_id !== requesterId)
+      throw new ForbiddenException(
+        "Bạn chỉ có thể truy cập content trong kho cá nhân của mình",
+      );
+    return ec;
+  }
+
   async updateEditorContent(
     id: string,
     dto: UpdateEditorContentDto,
     requesterId: string,
     roles: string[],
   ) {
-    const ec = await this.findOneEditorContent(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && ec.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể sửa content trong kho cá nhân của mình",
-      );
+    await this.getEditorContentOwnership(id, requesterId, roles);
     return this.prisma.editorContent.update({
       where: { id },
       data: dto as any,
@@ -914,12 +975,7 @@ export class TaskAutoCatalogService {
   }
 
   async removeEditorContent(id: string, requesterId: string, roles: string[]) {
-    const ec = await this.findOneEditorContent(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && ec.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể xóa content trong kho cá nhân của mình",
-      );
+    const ec = await this.getEditorContentOwnership(id, requesterId, roles);
     if (ec.status === "IN_TASK")
       throw new ConflictException("Content đang được dùng trong task");
     await this.prisma.editorContent.delete({ where: { id } });
@@ -1025,37 +1081,53 @@ export class TaskAutoCatalogService {
     });
   }
 
+  /** Lean ownership check — chỉ SELECT user_id thay vì tải cả EditorSource với đầy đủ quan hệ. */
+  private async assertEditorSourceOwner(
+    id: string,
+    requesterId: string,
+    roles: string[],
+  ) {
+    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
+    if (isPrivileged) return;
+    const owner = await this.prisma.editorSource.findUnique({
+      where: { id },
+      select: { user_id: true },
+    });
+    if (!owner) throw new NotFoundException("EditorSource not found");
+    if (owner.user_id !== requesterId)
+      throw new ForbiddenException(
+        "Bạn chỉ có thể truy cập source trong kho cá nhân của mình",
+      );
+  }
+
   async updateEditorSource(
     id: string,
     dto: UpdateEditorSourceDto,
     requesterId: string,
     roles: string[],
   ) {
-    const es = await this.findOneEditorSource(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && es.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể sửa source trong kho cá nhân của mình",
-      );
-    return this.prisma.editorSource.update({
-      where: { id },
-      data: dto as any,
-      include: {
-        product: { select: { id: true, name: true } },
-        editor_product: { select: { id: true, name: true } },
-        added_by: { select: { id: true, full_name: true } },
-      },
-    });
+    await this.assertEditorSourceOwner(id, requesterId, roles);
+    return runOrNotFound(
+      () =>
+        this.prisma.editorSource.update({
+          where: { id },
+          data: dto as any,
+          include: {
+            product: { select: { id: true, name: true } },
+            editor_product: { select: { id: true, name: true } },
+            added_by: { select: { id: true, full_name: true } },
+          },
+        }),
+      "EditorSource not found",
+    );
   }
 
   async removeEditorSource(id: string, requesterId: string, roles: string[]) {
-    const es = await this.findOneEditorSource(id);
-    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
-    if (!isPrivileged && es.user_id !== requesterId)
-      throw new ForbiddenException(
-        "Bạn chỉ có thể xóa source trong kho cá nhân của mình",
-      );
-    await this.prisma.editorSource.delete({ where: { id } });
+    await this.assertEditorSourceOwner(id, requesterId, roles);
+    await runOrNotFound(
+      () => this.prisma.editorSource.delete({ where: { id } }),
+      "EditorSource not found",
+    );
     return { success: true };
   }
 
@@ -1165,7 +1237,21 @@ export class TaskAutoCatalogService {
     userId: string,
     userRoles: string[] = [],
   ) {
-    const ep = await this.findOneEditorProduct(editorProductId);
+    const ep = await this.prisma.editorProduct.findUnique({
+      where: { id: editorProductId },
+      select: {
+        id: true,
+        user_id: true,
+        name: true,
+        brand_type: true,
+        priority_score: true,
+        cooldown_days: true,
+        is_active: true,
+        product_line_id: true,
+        classification_id: true,
+      },
+    });
+    if (!ep) throw new NotFoundException("EditorProduct not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
     if (ep.user_id !== userId)
@@ -1231,7 +1317,17 @@ export class TaskAutoCatalogService {
     userId: string,
     userRoles: string[] = [],
   ) {
-    const ec = await this.findOneEditorContent(editorContentId);
+    const ec = await this.prisma.editorContent.findUnique({
+      where: { id: editorContentId },
+      select: {
+        id: true,
+        user_id: true,
+        title: true,
+        brand_type: true,
+        classification_id: true,
+      },
+    });
+    if (!ec) throw new NotFoundException("EditorContent not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
     if (ec.user_id !== userId)
@@ -1423,7 +1519,11 @@ export class TaskAutoCatalogService {
     teamId: string,
     userId: string,
   ) {
-    const es = await this.findOneEditorSource(editorSourceId);
+    const es = await this.prisma.editorSource.findUnique({
+      where: { id: editorSourceId },
+      select: { id: true, user_id: true, brand_type: true, is_active: true },
+    });
+    if (!es) throw new NotFoundException("EditorSource not found");
     const team = await this.prisma.team.findUnique({ where: { id: teamId } });
     if (!team) throw new NotFoundException("Team not found");
     if (es.user_id !== userId)

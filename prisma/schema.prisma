@@ -2256,6 +2256,7 @@ model EditorContent {
   warehouses     EditorContentWarehouse[]
   push_requests  TeamPushRequest[]
 
+  @@index([user_id])
   @@map("editor_contents")
 }
 
@@ -2291,6 +2292,7 @@ model EditorSource {
   tasks_as_huyk     Task[]                  @relation("TaskEditorSourceHuyk")
 
   @@index([editor_product_id])
+  @@index([user_id])
   @@map("editor_sources")
 }
 
@@ -2701,6 +2703,8 @@ model Task {
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
   // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
   @@index([assignee_id, team_id, assigned_at])
+  // Dùng bởi tasks.service.ts findAll — filter chính của GET /task-auto/tasks (kanban/list)
+  @@index([team_id, status])
   // ── FK reverse lookups (global warehouse) ──
   @@index([content_id])
   @@index([product_id])
