@@ -58,11 +58,12 @@ function parseTeamNames(teamNamesRaw: string | null | undefined): string[] {
 export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): Promise<void> {
   const ids = [...new Set(userIds)];
   if (!ids.length) return;
-  // users.id / teams.id / team_members.team_id-user_id đều là cột `text` thật sự trong DB (giá trị
-  // trông như UUID nhưng KHÔNG phải kiểu native `uuid` của Postgres — lệch với @db.Uuid trong
-  // schema.prisma). Cast `::uuid[]` khiến Postgres báo lỗi "operator does not exist: text = uuid"
-  // và làm ROLLBACK toàn bộ transaction gọi hàm này (assignUserToTeams/replaceUserTeamsByName/
-  // addMember...) — mọi thao tác gán/đổi team qua các hàm đó đều thất bại ở bước cuối này.
+  // users.id là cột native `uuid` trong DB thật (khớp @db.Uuid trong schema.prisma). Cast
+  // `${ids}::text[]` khiến Postgres báo lỗi "operator does not exist: uuid = text" và làm
+  // ROLLBACK toàn bộ transaction gọi hàm này (assignUserToTeams/replaceUserTeamsByName/
+  // addMember/clearUserTeams...) — mọi thao tác gán/đổi team, kể cả xóa tài khoản (soft delete
+  // gọi clearUserTeams trước) đều thất bại ở bước cuối này. Ép cả hai vế về text để không phụ
+  // thuộc kiểu cột thật của users.id (uuid hay text) — tránh lặp lại lệch giả định như lần trước.
   await db.$executeRaw`
     UPDATE users u
     SET team = sub.team_names
@@ -73,7 +74,7 @@ export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): P
         FROM users u2
         LEFT JOIN team_members tm ON tm.user_id = u2.id
         LEFT JOIN teams t ON t.id = tm.team_id
-        WHERE u2.id = ANY(${ids}::text[])
+        WHERE u2.id::text = ANY(${ids}::text[])
       ) x
       GROUP BY uid
     ) sub
