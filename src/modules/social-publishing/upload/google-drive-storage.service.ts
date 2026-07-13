@@ -228,6 +228,46 @@ export class GoogleDriveStorageService {
     };
   }
 
+  /**
+   * Tải file từ một URL rồi upload lên Drive, trả về link công khai.
+   * Trả '' nếu thất bại (không throw) — caller tự fallback về URL gốc.
+   */
+  async uploadFromUrl(
+    sourceUrl: string,
+    filename: string,
+    mimetype: string,
+    opts?: { subfolder?: string; timeoutMs?: number },
+  ): Promise<string> {
+    if (!sourceUrl || !this.isAvailable()) return '';
+
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        timeout: opts?.timeoutMs ?? 60_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+    } catch (err: any) {
+      this.logger.warn(`[GoogleDrive] uploadFromUrl download failed (${sourceUrl.slice(0, 80)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `dl_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const uploaded = await this.uploadFromPath(tmpPath, filename, mimetype, undefined, {
+        subfolder: opts?.subfolder,
+      });
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[GoogleDrive] uploadFromUrl upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+
   /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền. */
   async uploadThumbnailFromUrl(sourceUrl: string, filename: string): Promise<string> {
     if (!sourceUrl) return '';

@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 @Injectable()
 export class AiIntegrationService {
@@ -14,6 +15,7 @@ export class AiIntegrationService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly driveStorage: GoogleDriveStorageService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
@@ -1876,6 +1878,37 @@ export class AiIntegrationService {
   }
 
   /**
+   * Đưa file audio TTS từ AI service về nơi công khai:
+   * 1. Rewrite host của audio_url về aiServiceUrl (AI có thể trả localhost nếu máy
+   *    chạy AI chưa set AI_SERVICE_URL trong .env của nó).
+   * 2. Upload lên Google Drive công ty → link vĩnh viễn, không phụ thuộc máy AI.
+   * Không bao giờ throw — TTS đã thành công thì tệ nhất người dùng vẫn nhận link qua tunnel.
+   */
+  private async publishTtsAudio(aiAudioUrl: string): Promise<string> {
+    let tunnelUrl = aiAudioUrl;
+    try {
+      const parsed = new URL(aiAudioUrl);
+      tunnelUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
+    } catch {
+      return aiAudioUrl;
+    }
+
+    try {
+      const filename = tunnelUrl.split('/').pop() || `tts_${Date.now()}.mp3`;
+      const driveUrl = await this.driveStorage.uploadFromUrl(tunnelUrl, filename, 'audio/mpeg', {
+        subfolder: 'TTS Audio',
+      });
+      if (driveUrl) {
+        this.logger.log(`TTS audio uploaded to Drive: ${driveUrl}`);
+        return driveUrl;
+      }
+    } catch (err: any) {
+      this.logger.warn(`TTS audio Drive upload failed, falling back to tunnel URL: ${err.message}`);
+    }
+    return tunnelUrl;
+  }
+
+  /**
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
@@ -1904,6 +1937,13 @@ export class AiIntegrationService {
           })
         )
       );
+      // AI build audio_url từ AI_SERVICE_URL của chính nó — máy AI thường để mặc định
+      // localhost:8001 nên link trả về chỉ mở được trên máy đó. BE tải file qua tunnel
+      // (aiServiceUrl BE đang giữ) rồi đẩy lên Google Drive công ty → link công khai,
+      // sống độc lập với máy AI. Drive lỗi thì fallback về link qua tunnel.
+      if (data?.success && data.audio_url) {
+        data.audio_url = await this.publishTtsAudio(String(data.audio_url));
+      }
       // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
       // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
       // được làm hỏng response TTS đã thành công.
