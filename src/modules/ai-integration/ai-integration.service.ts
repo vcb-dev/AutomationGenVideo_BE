@@ -1896,17 +1896,23 @@ export class AiIntegrationService {
    * Không bao giờ throw — TTS đã thành công thì tệ nhất người dùng vẫn nhận link qua tunnel.
    */
   private async publishTtsAudio(aiAudioUrl: string): Promise<string> {
-    let tunnelUrl = aiAudioUrl;
+    let sourceUrl = aiAudioUrl;
     try {
       const parsed = new URL(aiAudioUrl);
-      tunnelUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
+      // Chỉ rewrite link media NỘI BỘ của AI (/media/...) — AI có nhánh fallback trả
+      // thẳng URL CDN của MiniMax (link ngoài, vẫn phát được); rewrite link đó sẽ tạo
+      // ra đường dẫn tunnel không tồn tại.
+      if (parsed.pathname.startsWith('/media/')) {
+        sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
+      }
     } catch {
       return aiAudioUrl;
     }
 
     try {
-      const filename = tunnelUrl.split('/').pop() || `tts_${Date.now()}.mp3`;
-      const driveUrl = await this.driveStorage.uploadFromUrl(tunnelUrl, filename, 'audio/mpeg', {
+      const filename =
+        (sourceUrl.split('/').pop() || '').split('?')[0] || `tts_${Date.now()}.mp3`;
+      const driveUrl = await this.driveStorage.uploadFromUrl(sourceUrl, filename, 'audio/mpeg', {
         subfolder: 'TTS Audio',
       });
       if (driveUrl) {
@@ -1914,9 +1920,9 @@ export class AiIntegrationService {
         return driveUrl;
       }
     } catch (err: any) {
-      this.logger.warn(`TTS audio Drive upload failed, falling back to tunnel URL: ${err.message}`);
+      this.logger.warn(`TTS audio Drive upload failed, falling back to source URL: ${err.message}`);
     }
-    return tunnelUrl;
+    return sourceUrl;
   }
 
   /**
