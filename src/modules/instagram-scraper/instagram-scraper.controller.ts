@@ -21,6 +21,11 @@ export class InstagramScraperController {
     return this.readService.listProfiles(query);
   }
 
+  @Get('reels')
+  async reelsList(@Query() query: Record<string, string>) {
+    return this.readService.listReels(query);
+  }
+
   @Get('profiles/:profileId')
   async profileDetail(@Param('profileId') profileId: string) {
     const result = await this.readService.profileDetail(BigInt(profileId));
