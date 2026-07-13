@@ -64,6 +64,27 @@ export class ChannelsService {
     }
   }
 
+  /**
+   * Kiểm tra user có quyền update/xoá channel này:
+   * ADMIN/MANAGER (mọi team), chính chủ sở hữu channel (owner_id), hoặc LEADER cùng team.
+   */
+  private assertCanManageChannel(
+    channel: { owner_id: string | null; channel_team: { name: string } | null },
+    user: { id: string; roles: UserRole[]; team: string | null },
+  ) {
+    if (this.isAdminOrManager(user.roles)) return;
+    if (channel.owner_id === user.id) return;
+
+    if (this.isLeader(user.roles)) {
+      this.assertLeaderOwnsChannel(channel, user.team);
+      return;
+    }
+
+    throw new ForbiddenException(
+      "Only the channel owner, LEADER of this team, MANAGER or ADMIN can manage this channel",
+    );
+  }
+
   // ─── CRUD ───────────────────────────────────────────────────────────────────
 
   /**
@@ -151,7 +172,7 @@ export class ChannelsService {
   }
 
   /**
-   * Cập nhật kênh — LEADER cùng team, hoặc ADMIN/MANAGER (toàn quyền, mọi team).
+   * Cập nhật kênh — chủ sở hữu channel (owner_id), LEADER cùng team, hoặc ADMIN/MANAGER (toàn quyền, mọi team).
    * Không cho phép thay đổi team_id qua API.
    * owner_id (nếu truyền) phải thuộc cùng team với kênh hoặc là chính người gọi.
    */
@@ -160,20 +181,8 @@ export class ChannelsService {
     dto: UpdateChannelDto,
     user: { id: string; roles: UserRole[]; team: string | null },
   ) {
-    const fullAccess = this.isAdminOrManager(user.roles);
-
-    if (!fullAccess && !this.isLeader(user.roles)) {
-      throw new ForbiddenException(
-        "Only LEADER, MANAGER or ADMIN can update channels",
-      );
-    }
-
     const channel = await this.findChannelOrThrow(id);
-
-    // ADMIN/MANAGER bỏ qua ràng buộc "cùng team"; LEADER vẫn chỉ được sửa channel của team mình
-    if (!fullAccess) {
-      this.assertLeaderOwnsChannel(channel, user.team);
-    }
+    this.assertCanManageChannel(channel, user);
 
     // Strip team_id nếu client cố tình truyền vào
     const { ...safeData } = dto;
@@ -262,23 +271,15 @@ export class ChannelsService {
   }
 
   /**
-   * Xóa kênh — LEADER cùng team, hoặc ADMIN/MANAGER (toàn quyền, mọi team).
+   * Xóa kênh — chủ sở hữu channel (owner_id), LEADER cùng team, hoặc ADMIN/MANAGER (toàn quyền, mọi team).
    * Chặn nếu kênh đang được track bởi TrackedChannel.
    */
-  async remove(id: string, user: { roles: UserRole[]; team: string | null }) {
-    const fullAccess = this.isAdminOrManager(user.roles);
-
-    if (!fullAccess && !this.isLeader(user.roles)) {
-      throw new ForbiddenException(
-        "Only LEADER, MANAGER or ADMIN can delete channels",
-      );
-    }
-
+  async remove(
+    id: string,
+    user: { id: string; roles: UserRole[]; team: string | null },
+  ) {
     const channel = await this.findChannelOrThrow(id);
-
-    if (!fullAccess) {
-      this.assertLeaderOwnsChannel(channel, user.team);
-    }
+    this.assertCanManageChannel(channel, user);
 
     const trackedCount = await this.prisma.trackedChannel.count({
       where: { lark_channel_id: id },
