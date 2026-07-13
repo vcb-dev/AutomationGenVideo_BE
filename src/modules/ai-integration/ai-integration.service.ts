@@ -11,6 +11,12 @@ export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
   private readonly minimaxApiKey?: string;
+  /**
+   * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
+   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   */
+  private readonly minimaxVndPer1kChars: number;
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -19,6 +25,7 @@ export class AiIntegrationService {
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     if (!this.minimaxApiKey) {
       this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
@@ -1664,6 +1671,10 @@ export class AiIntegrationService {
           })
         )
       );
+      // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
+      if (data && typeof data === 'object') {
+        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+      }
       return data;
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
@@ -2018,14 +2029,22 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
+    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
+    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    const byUserList = [...byUser.values()]
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .sort((a, b) => b.characters - a.characters);
+
     return {
       success: true,
+      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
+        cost_vnd: toVnd(totalCharacters),
       },
-      by_user: [...byUser.values()].sort((a, b) => b.characters - a.characters),
+      by_user: byUserList,
     };
   }
 }
