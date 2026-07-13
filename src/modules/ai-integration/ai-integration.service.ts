@@ -9,13 +9,26 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
+  private readonly minimaxApiKey?: string;
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
+    if (!this.minimaxApiKey) {
+      this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
+    }
+  }
+
+  /**
+   * Key MiniMax giữ ở .env của BE và gửi kèm từng request voice sang AI service qua
+   * header X-Minimax-Key — AI không còn giữ key trong .env của nó.
+   */
+  private minimaxHeaders(): Record<string, string> {
+    return this.minimaxApiKey ? { 'X-Minimax-Key': this.minimaxApiKey } : {};
   }
 
 
@@ -1675,7 +1688,7 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           // AI service retries upload+clone up to 3x60s each on network blips to
@@ -1720,7 +1733,7 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           // Chỉ upload file + spawn job nền trên AI service, không chờ clone
@@ -1827,6 +1840,42 @@ export class AiIntegrationService {
   }
 
   /**
+   * Dịch lại content/hashtags hiện có (vd sau khi user sửa tay) sang một ngôn ngữ đã biết trước —
+   * không đọc lại file nguồn, không sinh script mới, chỉ dịch (xem VideoScriptService.translate()).
+   */
+  async translateVideoScript(params: {
+    content: string;
+    hashtags: string[];
+    language?: string;
+    market?: string;
+  }): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/task-auto/video-script/translate/`;
+    this.logger.log(
+      `Calling AI Service: ${url} for language=${params.language ?? "(auto từ market=" + params.market + ")"}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, params, {
+          timeout: 120000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service video-script translate error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to translate video script',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to translate video script', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
@@ -1843,6 +1892,7 @@ export class AiIntegrationService {
           volume,
           language
         }, {
+          headers: this.minimaxHeaders(),
           timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
         }).pipe(
           catchError((error: AxiosError) => {

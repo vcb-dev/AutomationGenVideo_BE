@@ -23,6 +23,8 @@ export type ProductPoolItem = {
   priority_score: number;
   source: PoolSource;
   source_product_id?: string | null;
+  // Override cooldown riêng của sản phẩm; null = dùng default_cooldown_days toàn cục
+  cooldown_days: number | null;
 };
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -49,7 +51,20 @@ export type EditorAssignmentHistory = {
   pushedProductIds: Set<string>;
   // Phần đẩy trước hôm nay — giữ daily target ổn định khi chạy nhiều lần trong ngày
   pushedProductIdsBeforeToday: Set<string>;
+  // productKey (personal:id/team:id/global:id) -> assigned_at gần nhất (non-cancelled),
+  // dùng để tính cooldown per (editor, product) — xem steps/cooldown.ts
+  lastAssignedByProduct: Map<string, Date>;
 };
+
+export function emptyEditorAssignmentHistory(): EditorAssignmentHistory {
+  return {
+    assignedPairKeys: new Set(),
+    assignedContentKeys: new Set(),
+    pushedProductIds: new Set(),
+    pushedProductIdsBeforeToday: new Set(),
+    lastAssignedByProduct: new Map(),
+  };
+}
 
 // ── Assignment ────────────────────────────────────────────────────────────────
 
@@ -66,3 +81,20 @@ export type AssignmentPair = {
 export type ScheduledAssignment = { editorId: string; pair: AssignmentPair };
 
 export type TeamResult = { assigned: number; skipped: number };
+
+// ── Product target_quantity (kho tháng) ─────────────────────────────────────────
+
+/**
+ * State dùng chung, mutable, phạm vi cả team — build 1 lần trước vòng lặp editor,
+ * consume dần khi mỗi editor được chốt assignment (xem steps/product-quota.ts).
+ */
+export type ProductQuotaState = {
+  /** team_product_id -> remaining (target_quantity - tổng task không-huỷ tháng này,
+   *  cộng dồn MỌI assignee). Floor tại 0. */
+  teamRemaining: Map<string, number>;
+  /** team_product_id -> override cho editor gốc — chỉ có khi TeamProduct.source_editor_product_id
+   *  trỏ tới 1 editor đã tự warehouse đúng sản phẩm/tháng này (EditorProductWarehouse). */
+  originOverride: Map<string, { editorId: string; remaining: number }>;
+  /** editorId -> (editor_product_id -> remaining) — thuần cá nhân, cho lane sáng tạo. */
+  personalRemaining: Map<string, Map<string, number>>;
+};

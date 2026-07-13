@@ -745,7 +745,13 @@ export class LarkService implements OnModuleInit {
                 const teamResolveStats = { byEmail: 0, byName: 0, byEmpId: 0, unresolved: 0 };
                 const teamMismatchSamples: any[] = [];
                 const resignedDropSamples: any[] = [];
-                const teamFilterNormalized = filters?.team ? filters.team.toLowerCase().trim() : null;
+                // "All" (không phân biệt hoa/thường) nghĩa là KHÔNG lọc — phải giữ null, nếu không
+                // teamFilterNormalized sẽ thành chuỗi "all" và bị so khớp như một tên team thật,
+                // khiến matchesTeamFilter loại bỏ toàn bộ record (không ai có team tên "all").
+                const teamFilterNormalized =
+                    filters?.team && filters.team.toLowerCase().trim() !== 'all'
+                        ? filters.team.toLowerCase().trim()
+                        : null;
 
                 // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
                 // Không cần fetch lại trong shared dataset cache.
@@ -802,9 +808,9 @@ export class LarkService implements OnModuleInit {
                 };
 
                 /**
-                 * CHỈ còn dùng cho `report_kpi` (bảng lịch sử đóng băng, không còn writer trong repo —
-                 * dữ liệu cũ do Lark sync ghi thật sự lệch D+1 so với ngày hiệu suất trên UI).
-                 * Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D — KHÔNG dùng hàm này cho 2 bảng đó
+                 * Dùng cho `report_kpi` (lịch sử, lệch D+1) và cho CHECKLIST ở dashboard:
+                 * checklist lưu theo ngày NỘP, nhưng nghiệp vụ là sáng D+1 nộp báo cáo VỀ ngày D
+                 * → xem ngày D phải đọc cửa sổ D+1. Traffic vẫn đọc đúng ngày D
                  * (xem `larkKpiStartOfDay`/`larkKpiEndOfDay`, cùng cửa sổ với `lark_kpi.report_date` = D).
                  */
                 const getNextVietnamDateString = (dateInput: string) => {
@@ -860,15 +866,15 @@ export class LarkService implements OnModuleInit {
                 const isBitableKpiRowForSelection = (d: any) => tsInRange(d, larkKpiStartOfDay, larkKpiEndOfDay);
 
                 this.logger.debug(
-                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; report_kpi (legacy, D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
+                    `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist + report_kpi (D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
 
-                // Checklist/traffic (submit trực tiếp trong app) lưu ĐÚNG ngày D user chọn — không +1.
-                // Dùng chung cửa sổ larkKpiStartOfDay/EndOfDay (ngày D) với lark_kpi, KHÔNG dùng memberReportStart/End
-                // (D+1) — đó là quy ước cũ chỉ còn đúng cho báo cáo lịch sử `report_kpi` (xem isReportKpiOnAuxDay).
+                // Checklist: nghiệp vụ là "sáng ngày D+1 nộp báo cáo VỀ ngày D" (các câu hỏi đều là "hôm qua...").
+                // Record lưu theo ngày NỘP (D+1), nên khi UI chọn xem ngày D phải đọc cửa sổ D+1
+                // (memberReportStart/End). Traffic vẫn đọc đúng ngày D (số liệu của chính ngày đó).
                 whereClause.date = {
-                    gte: larkKpiStartOfDay,
-                    lte: larkKpiEndOfDay,
+                    gte: memberReportStart,
+                    lte: memberReportEnd,
                 };
 
                 let kpiMonthFallback = false;
@@ -1538,7 +1544,7 @@ export class LarkService implements OnModuleInit {
 
                 // Daily map (for report status on specific day) - Modified to AGGREGATE completed_day values
                 // report_kpi: bảng lịch sử đóng băng (Lark sync cũ), lệch D+1 so với ngày hiệu suất trên UI.
-                // Checklist/traffic hiện KHÔNG còn dùng quy ước D+1 này (xem comment ở getNextVietnamDateString).
+                // Checklist ở dashboard cũng dùng cửa sổ D+1 (nộp sáng hôm sau về ngày hôm trước); traffic đọc đúng ngày D.
                 const isReportKpiOnAuxDay = (d: any) => tsInRange(d, memberReportStart, memberReportEnd);
 
                 dailyReportKpis.forEach(rk => {
@@ -1928,7 +1934,11 @@ export class LarkService implements OnModuleInit {
                         ? checklistTeams
                         : [(r.team || '').trim() || 'Khác'];
 
-                    const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
+                    // r.date là ngày NỘP (D+1); ngày báo cáo VỀ là D = date - 1 ngày → key tháng phải theo D
+                    // để khớp với roster/kpi của ngày đang xem (quan trọng khi nộp vào mùng 1 đầu tháng).
+                    const vn = getVietnamParts(
+                        r.date ? new Date(new Date(r.date).getTime() - 24 * 60 * 60 * 1000) : new Date(),
+                    );
 
                     teams.forEach(team => {
                         const teamNorm = normalizeTeamKey(team);
@@ -2084,7 +2094,14 @@ export class LarkService implements OnModuleInit {
                     const checklistTeams = splitTeamList(checklistTeamStr);
 
                     // Hiệu suất: lark_kpi.team | Checklist: users.team
-                    const effectiveTeam = performanceTeam || checklistTeams[0] || 'Khác';
+                    // Member nhiều team (vd "AFF 02,Global - Indo"): khi đang lọc 1 team cụ thể và
+                    // người này thuộc team đó, card phải mang team đang lọc — nếu lấy mù quáng
+                    // checklistTeams[0] thì FE (matchTeam trên r.team) sẽ ẩn họ khỏi tab hiệu suất
+                    // của team thứ hai dù BE đã trả về.
+                    const filterMatchedChecklistTeam = teamFilterNormalized
+                        ? checklistTeams.find((t) => matchesTeamFilter([t], teamFilterNormalized)) || null
+                        : null;
+                    const effectiveTeam = performanceTeam || filterMatchedChecklistTeam || checklistTeams[0] || 'Khác';
                     const checklistSourceTeam = checklistTeamStr || checklistTeams.join(', ') || effectiveTeam;
 
                     // Performance filter — lark_kpi team only
@@ -2342,9 +2359,16 @@ export class LarkService implements OnModuleInit {
                             (rNameKey ? personPerformanceTeamMap.get(rNameKey) : null) ||
                             '';
                         const userTeamsRep = checklistTeams.length ? checklistTeams : (reportOwnTeam ? [reportOwnTeam] : []);
+                        // Cùng lý do với effectiveTeam ở nhánh KPI: member nhiều team phải mang team
+                        // đang lọc (nếu thuộc), không phải team đầu tiên trong chuỗi.
+                        const filterMatchedTeamRep = teamFilterNormalized
+                            ? userTeamsRep.find((t) => matchesTeamFilter([t], teamFilterNormalized)) || null
+                            : null;
                         let displayTeamRep: string;
                         if (performanceTeam) {
                             displayTeamRep = performanceTeam;
+                        } else if (filterMatchedTeamRep) {
+                            displayTeamRep = filterMatchedTeamRep;
                         } else if (userTeamsRep.length > 0) {
                             displayTeamRep = userTeamsRep[0];
                         } else if (employee) {

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 // Remote DB URL from env
 const REMOTE_DB_URL = process.env.SERVER_DATABASE_URL;
@@ -33,7 +33,7 @@ async function fetchLarkRecords(token: string) {
             headers: { Authorization: `Bearer ${token}` },
             params: { page_size: 500, page_token: pageToken }
         });
-        
+
         const data = res.data.data;
         if (data.items) records.push(...data.items);
         hasMore = data.has_more;
@@ -54,7 +54,7 @@ function extractText(field: any): string | null {
 
 function mapRecordToChannel(record: any) {
     const fields = record.fields;
-    
+
     const ownerInfo = fields['NV traffic xây kênh']?.[0];
     const linkInfo = fields['Link kênh'];
 
@@ -68,8 +68,6 @@ function mapRecordToChannel(record: any) {
         team_traffic: extractText(fields['Team Traffic']) || null,
         owner: ownerInfo?.name || null,
         email: ownerInfo?.email || null,
-        created_at: new Date(),
-        updated_at: new Date()
     };
 }
 
@@ -77,7 +75,7 @@ async function main() {
     console.log('--- STARTING FORCE SYNC HUYK CHANNEL TO REMOTE ---');
     const token = await getToken();
     const rawRecords = await fetchLarkRecords(token);
-    
+
     const channelData = rawRecords.map(mapRecordToChannel);
 
     console.log(`Mapped ${channelData.length} channels.`);
@@ -95,24 +93,66 @@ async function main() {
         await prismaRemote.$connect();
         console.log('Connected to remote DB');
 
-        // Delete existing records in huyk_channels (except Đồ Da which are synced separately)
-        console.log('Cleaning remote non-Đồ Da channels...');
-        await prismaRemote.channel.deleteMany({
-            where: { 
-                NOT: { team_traffic: 'Đồ Da' }
-            }
-        });
+        // KHÔNG deleteMany toàn bảng rồi createMany lại như trước. huyk_channels không chỉ chứa
+        // dữ liệu Lark: kênh user tự add từ FE cũng nằm ở đây với id 'manual_%' (tracked-channels
+        // dùng manual_<platform>_<username>, channels-team dùng manual_<uuid>), và cột owner_id/
+        // team_id (FK, backfill từ 08/07/2026) chỉ tồn tại phía DB. Xóa-rồi-chèn-lại làm kênh add
+        // tay "tự biến mất" và cột team trên FE (đọc qua relation team_id) trống đi sau mỗi lần
+        // sync — đúng 2 lỗi user đã báo.
 
-        // Insert new records in chunks
+        // 1) Chỉ xóa bản ghi GỐC LARK (id là record_id, không phải manual_%) đã bị xóa khỏi Lark.
+        //    Giữ nguyên ngoại lệ Đồ Da (được sync bằng luồng riêng, không có trong bảng Lark này).
+        const larkIds = channelData.map(c => c.id);
+        const removed = await prismaRemote.channel.deleteMany({
+            where: {
+                id: { notIn: larkIds },
+                NOT: [
+                    { id: { startsWith: 'manual_' } },
+                    { team_traffic: 'Đồ Da' },
+                ],
+            },
+        });
+        console.log(`Removed ${removed.count} Lark-origin channels no longer in Lark.`);
+
+        // 2) Upsert theo id, CHỈ đè các cột lấy từ Lark — không đụng owner_id/team_id đã backfill.
         const CHUNK_SIZE = 300;
         for (let i = 0; i < channelData.length; i += CHUNK_SIZE) {
             const chunk = channelData.slice(i, i + CHUNK_SIZE);
-            await prismaRemote.channel.createMany({
-                data: chunk as any,
-                skipDuplicates: true
-            });
-            console.log(`Inserted chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} rows)`);
+            const values = chunk.map(c => Prisma.sql`(
+                ${c.id}, ${c.name}, ${c.platform}, ${c.channel_id}, ${c.link_channel},
+                ${c.status}, ${c.team_traffic}, ${c.owner}, ${c.email}, NOW(), NOW()
+            )`);
+            await prismaRemote.$executeRaw(Prisma.sql`
+                INSERT INTO huyk_channels
+                    (id, name, platform, channel_id, link_channel, status, team_traffic, owner, email, created_at, updated_at)
+                VALUES ${Prisma.join(values)}
+                ON CONFLICT (id) DO UPDATE SET
+                    name         = EXCLUDED.name,
+                    platform     = EXCLUDED.platform,
+                    channel_id   = EXCLUDED.channel_id,
+                    link_channel = EXCLUDED.link_channel,
+                    status       = EXCLUDED.status,
+                    team_traffic = EXCLUDED.team_traffic,
+                    owner        = EXCLUDED.owner,
+                    email        = EXCLUDED.email,
+                    updated_at   = NOW()
+            `);
+            console.log(`Upserted chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} rows)`);
         }
+
+        // 3) Backfill owner_id/team_id cho dòng mới từ Lark (cùng logic manual_backfill_channel_owner_team.sql,
+        //    chỉ điền dòng đang NULL) — để cột Team/Chủ kênh trên FE hiện ngay, không phải chờ chạy tay.
+        const filledOwners = await prismaRemote.$executeRaw`
+            UPDATE huyk_channels c SET owner_id = u.id
+            FROM users u
+            WHERE lower(trim(c.email)) = lower(trim(u.email)) AND c.owner_id IS NULL
+        `;
+        const filledTeams = await prismaRemote.$executeRaw`
+            UPDATE huyk_channels c SET team_id = t.id
+            FROM teams t
+            WHERE trim(c.team_traffic) = trim(t.name) AND c.team_id IS NULL
+        `;
+        console.log(`Backfilled owner_id for ${filledOwners} rows, team_id for ${filledTeams} rows.`);
 
         console.log('--- SYNC COMPLETED SUCCESSFULLY ---');
     } catch (err) {

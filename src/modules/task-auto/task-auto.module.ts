@@ -7,6 +7,7 @@ import { WarehouseModule } from './warehouse/warehouse.module'
 import { UploadModule } from './upload/upload.module'
 import { SettingsModule } from './settings/settings.module'
 import { TaskAutoAssignModule } from "./task-auto-assign/task-auto-assign.module";
+import { NotificationsModule } from './notifications/notifications.module'
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { TaskAutoAssignModule } from "./task-auto-assign/task-auto-assign.module
     UploadModule,
     SettingsModule,
     TaskAutoAssignModule,
+    NotificationsModule,
   ],
   exports: [TaskAutoAssignModule],
 })

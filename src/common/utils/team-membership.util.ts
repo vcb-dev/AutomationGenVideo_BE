@@ -18,6 +18,18 @@ type Db = PrismaService | Prisma.TransactionClient;
  */
 export const TEAM_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
 
+/** Tên các team được cấp quyền quản lý source ở kho ngang với ADMIN/MANAGER (ví dụ: Scale Data, MEDIA). */
+export const PRIVILEGED_SOURCE_TEAM_NAMES = ['Scale Data', 'MEDIA'];
+
+/** True nếu user là thành viên của một trong các team có quyền quản lý source đặc biệt (PRIVILEGED_SOURCE_TEAM_NAMES). */
+export async function isPrivilegedSourceTeamMember(db: Db, userId: string): Promise<boolean> {
+  const membership = await db.teamMember.findFirst({
+    where: { user_id: userId, team: { name: { in: PRIVILEGED_SOURCE_TEAM_NAMES } } },
+    select: { id: true },
+  });
+  return !!membership;
+}
+
 /** Mở transaction nếu nhận client gốc; nếu đã ở trong transaction thì chạy thẳng. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
   if ('$transaction' in db) {
@@ -46,6 +58,12 @@ function parseTeamNames(teamNamesRaw: string | null | undefined): string[] {
 export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): Promise<void> {
   const ids = [...new Set(userIds)];
   if (!ids.length) return;
+  // users.id là cột native `uuid` trong DB thật (khớp @db.Uuid trong schema.prisma). Cast
+  // `${ids}::text[]` khiến Postgres báo lỗi "operator does not exist: uuid = text" và làm
+  // ROLLBACK toàn bộ transaction gọi hàm này (assignUserToTeams/replaceUserTeamsByName/
+  // addMember/clearUserTeams...) — mọi thao tác gán/đổi team, kể cả xóa tài khoản (soft delete
+  // gọi clearUserTeams trước) đều thất bại ở bước cuối này. Ép cả hai vế về text để không phụ
+  // thuộc kiểu cột thật của users.id (uuid hay text) — tránh lặp lại lệch giả định như lần trước.
   await db.$executeRaw`
     UPDATE users u
     SET team = sub.team_names
@@ -56,7 +74,7 @@ export async function recomputeUserTeamFieldsBatch(db: Db, userIds: string[]): P
         FROM users u2
         LEFT JOIN team_members tm ON tm.user_id = u2.id
         LEFT JOIN teams t ON t.id = tm.team_id
-        WHERE u2.id = ANY(${ids}::uuid[])
+        WHERE u2.id::text = ANY(${ids}::text[])
       ) x
       GROUP BY uid
     ) sub

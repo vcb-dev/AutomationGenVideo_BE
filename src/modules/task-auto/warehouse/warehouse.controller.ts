@@ -2,11 +2,14 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Body,
   Param,
   Query,
   UseGuards,
+  Request,
+  ForbiddenException,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
@@ -17,6 +20,8 @@ import { TaskAutoWarehouseService } from "./warehouse.service";
 import {
   GetWarehouseQuery,
   AddToWarehouseDto,
+  AddProductsToWarehouseDto,
+  UpdateWarehouseQuantityDto,
   RemoveFromWarehouseDto,
   PushToMonthDto,
   AutoCarryDto,
@@ -28,6 +33,18 @@ import {
 @Controller("task-auto")
 export class TaskAutoWarehouseController {
   constructor(private warehouse: TaskAutoWarehouseService) {}
+
+  // Chỉ chính chủ (editorId khớp req.user.id) hoặc ADMIN/MANAGER mới được
+  // truy cập kho tháng cá nhân của một editor.
+  private assertOwnerOrPrivileged(ownerId: string, req: any) {
+    const roles: string[] = req.user?.roles ?? [];
+    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
+    if (!isPrivileged && req.user?.id !== ownerId) {
+      throw new ForbiddenException(
+        "Bạn chỉ có thể truy cập kho cá nhân của mình",
+      );
+    }
+  }
 
   // ── Kho tổng ──────────────────────────────────────────────────────────────
 
@@ -71,14 +88,14 @@ export class TaskAutoWarehouseController {
 
   @Post("warehouse/global/sources")
   @UseGuards(ScaleDataSourceGuard)
-  @ApiOperation({ summary: "Thêm source vào kho tháng tổng (ADMIN/MANAGER/Scale Data)" })
+  @ApiOperation({ summary: "Thêm source vào kho tháng tổng (ADMIN/MANAGER/Scale Data/MEDIA)" })
   addGlobalSources(@Body() dto: AddToWarehouseDto) {
     return this.warehouse.addGlobalSources(dto);
   }
 
   @Delete("warehouse/global/sources")
   @UseGuards(ScaleDataSourceGuard)
-  @ApiOperation({ summary: "Xoá source khỏi kho tháng tổng (ADMIN/MANAGER/Scale Data)" })
+  @ApiOperation({ summary: "Xoá source khỏi kho tháng tổng (ADMIN/MANAGER/Scale Data/MEDIA)" })
   removeGlobalSources(@Body() dto: RemoveFromWarehouseDto) {
     return this.warehouse.removeGlobalSources(dto);
   }
@@ -95,8 +112,19 @@ export class TaskAutoWarehouseController {
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")
   @ApiOperation({ summary: "Thêm sản phẩm vào kho tháng team" })
-  addTeamProducts(@Param("teamId") teamId: string, @Body() dto: AddToWarehouseDto) {
+  addTeamProducts(@Param("teamId") teamId: string, @Body() dto: AddProductsToWarehouseDto) {
     return this.warehouse.addTeamProducts(teamId, dto);
+  }
+
+  @Patch("warehouse/teams/:teamId/products/quantity")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Cập nhật target_quantity của sản phẩm trong kho tháng team" })
+  updateTeamProductQuantity(
+    @Param("teamId") teamId: string,
+    @Body() dto: UpdateWarehouseQuantityDto,
+  ) {
+    return this.warehouse.updateTeamProductQuantity(teamId, dto);
   }
 
   @Delete("warehouse/teams/:teamId/products")
@@ -125,14 +153,14 @@ export class TaskAutoWarehouseController {
 
   @Post("warehouse/teams/:teamId/sources")
   @UseGuards(ScaleDataSourceGuard)
-  @ApiOperation({ summary: "Thêm source vào kho tháng team (ADMIN/MANAGER/LEADER/Scale Data)" })
+  @ApiOperation({ summary: "Thêm source vào kho tháng team (ADMIN/MANAGER/LEADER/Scale Data/MEDIA)" })
   addTeamSources(@Param("teamId") teamId: string, @Body() dto: AddToWarehouseDto) {
     return this.warehouse.addTeamSources(teamId, dto);
   }
 
   @Delete("warehouse/teams/:teamId/sources")
   @UseGuards(ScaleDataSourceGuard)
-  @ApiOperation({ summary: "Xoá source khỏi kho tháng team (ADMIN/MANAGER/LEADER/Scale Data)" })
+  @ApiOperation({ summary: "Xoá source khỏi kho tháng team (ADMIN/MANAGER/LEADER/Scale Data/MEDIA)" })
   removeTeamSources(@Param("teamId") teamId: string, @Body() dto: RemoveFromWarehouseDto) {
     return this.warehouse.removeTeamSources(teamId, dto);
   }
@@ -149,49 +177,100 @@ export class TaskAutoWarehouseController {
 
   @Get("warehouse/editors/:editorId")
   @ApiOperation({ summary: "Lấy kho tháng của editor" })
-  getEditorWarehouse(@Param("editorId") editorId: string, @Query() q: GetWarehouseQuery) {
+  getEditorWarehouse(
+    @Param("editorId") editorId: string,
+    @Query() q: GetWarehouseQuery,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.getEditorWarehouse(editorId, q.month);
   }
 
   @Post("warehouse/editors/:editorId/products")
   @ApiOperation({ summary: "Thêm sản phẩm vào kho tháng editor" })
-  addEditorProducts(@Param("editorId") editorId: string, @Body() dto: AddToWarehouseDto) {
+  addEditorProducts(
+    @Param("editorId") editorId: string,
+    @Body() dto: AddProductsToWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.addEditorProducts(editorId, dto);
+  }
+
+  @Patch("warehouse/editors/:editorId/products/quantity")
+  @ApiOperation({ summary: "Cập nhật target_quantity của sản phẩm trong kho tháng editor" })
+  updateEditorProductQuantity(
+    @Param("editorId") editorId: string,
+    @Body() dto: UpdateWarehouseQuantityDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
+    return this.warehouse.updateEditorProductQuantity(editorId, dto);
   }
 
   @Delete("warehouse/editors/:editorId/products")
   @ApiOperation({ summary: "Xoá sản phẩm khỏi kho tháng editor" })
-  removeEditorProducts(@Param("editorId") editorId: string, @Body() dto: RemoveFromWarehouseDto) {
+  removeEditorProducts(
+    @Param("editorId") editorId: string,
+    @Body() dto: RemoveFromWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.removeEditorProducts(editorId, dto);
   }
 
   @Post("warehouse/editors/:editorId/contents")
   @ApiOperation({ summary: "Thêm content vào kho tháng editor" })
-  addEditorContents(@Param("editorId") editorId: string, @Body() dto: AddToWarehouseDto) {
+  addEditorContents(
+    @Param("editorId") editorId: string,
+    @Body() dto: AddToWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.addEditorContents(editorId, dto);
   }
 
   @Delete("warehouse/editors/:editorId/contents")
   @ApiOperation({ summary: "Xoá content khỏi kho tháng editor" })
-  removeEditorContents(@Param("editorId") editorId: string, @Body() dto: RemoveFromWarehouseDto) {
+  removeEditorContents(
+    @Param("editorId") editorId: string,
+    @Body() dto: RemoveFromWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.removeEditorContents(editorId, dto);
   }
 
   @Post("warehouse/editors/:editorId/sources")
   @ApiOperation({ summary: "Thêm source vào kho tháng editor" })
-  addEditorSources(@Param("editorId") editorId: string, @Body() dto: AddToWarehouseDto) {
+  addEditorSources(
+    @Param("editorId") editorId: string,
+    @Body() dto: AddToWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.addEditorSources(editorId, dto);
   }
 
   @Delete("warehouse/editors/:editorId/sources")
   @ApiOperation({ summary: "Xoá source khỏi kho tháng editor" })
-  removeEditorSources(@Param("editorId") editorId: string, @Body() dto: RemoveFromWarehouseDto) {
+  removeEditorSources(
+    @Param("editorId") editorId: string,
+    @Body() dto: RemoveFromWarehouseDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.removeEditorSources(editorId, dto);
   }
 
   @Post("warehouse/editors/:editorId/push")
   @ApiOperation({ summary: "Push kho editor từ tháng này sang tháng khác" })
-  pushEditorToMonth(@Param("editorId") editorId: string, @Body() dto: PushToMonthDto) {
+  pushEditorToMonth(
+    @Param("editorId") editorId: string,
+    @Body() dto: PushToMonthDto,
+    @Request() req: any,
+  ) {
+    this.assertOwnerOrPrivileged(editorId, req);
     return this.warehouse.pushEditorToMonth(editorId, dto);
   }
 

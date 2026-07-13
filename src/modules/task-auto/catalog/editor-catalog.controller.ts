@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
   Request,
+  ForbiddenException,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
@@ -34,6 +35,19 @@ import {
 export class TaskAutoEditorCatalogController {
   constructor(private catalog: TaskAutoCatalogService) {}
 
+  // Chỉ chính chủ (userId khớp req.user.id) hoặc ADMIN/MANAGER mới được
+  // truy cập kho cá nhân của một editor — mirrors the ownership check
+  // already used by catalog.service.ts's update/remove editor-* methods.
+  private assertOwnerOrPrivileged(ownerId: string, req: any) {
+    const roles: string[] = req.user?.roles ?? [];
+    const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
+    if (!isPrivileged && req.user?.id !== ownerId) {
+      throw new ForbiddenException(
+        "Bạn chỉ có thể truy cập kho cá nhân của mình",
+      );
+    }
+  }
+
   // ── Editor Products ───────────────────────────────────────────────────────
 
   @Get("editors/:userId/products")
@@ -41,7 +55,9 @@ export class TaskAutoEditorCatalogController {
   listEditorProducts(
     @Param("userId") userId: string,
     @Query() q: QueryEditorProductDto,
+    @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.findAllEditorProducts(userId, q);
   }
 
@@ -55,16 +71,20 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: CreateEditorProductDto,
     @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.createEditorProduct(userId, dto);
   }
 
   @Get("editors/:userId/products/:epId")
   @ApiOperation({ summary: "Get editor product detail" })
-  getEditorProduct(
+  async getEditorProduct(
     @Param("userId") userId: string,
     @Param("epId") epId: string,
+    @Request() req: any,
   ) {
-    return this.catalog.findOneEditorProduct(epId);
+    const ep = await this.catalog.findOneEditorProduct(epId);
+    this.assertOwnerOrPrivileged(ep.user_id, req);
+    return ep;
   }
 
   @Patch("editors/:userId/products/:epId")
@@ -123,7 +143,9 @@ export class TaskAutoEditorCatalogController {
   listEditorContents(
     @Param("userId") userId: string,
     @Query() q: QueryEditorContentDto,
+    @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.findAllEditorContents(userId, q);
   }
 
@@ -137,16 +159,20 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: CreateEditorContentDto,
     @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.createEditorContent(userId, dto);
   }
 
   @Get("editors/:userId/contents/:ecId")
   @ApiOperation({ summary: "Get editor content detail" })
-  getEditorContent(
+  async getEditorContent(
     @Param("userId") userId: string,
     @Param("ecId") ecId: string,
+    @Request() req: any,
   ) {
-    return this.catalog.findOneEditorContent(ecId);
+    const ec = await this.catalog.findOneEditorContent(ecId);
+    this.assertOwnerOrPrivileged(ec.user_id, req);
+    return ec;
   }
 
   @Patch("editors/:userId/contents/:ecId")
@@ -205,7 +231,9 @@ export class TaskAutoEditorCatalogController {
   listEditorSources(
     @Param("userId") userId: string,
     @Query() q: QueryEditorSourceDto,
+    @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.findAllEditorSources(userId, q);
   }
 
@@ -219,16 +247,20 @@ export class TaskAutoEditorCatalogController {
     @Body() dto: CreateEditorSourceDto,
     @Request() req: any,
   ) {
+    this.assertOwnerOrPrivileged(userId, req);
     return this.catalog.createEditorSource(userId, dto);
   }
 
   @Get("editors/:userId/sources/:esId")
   @ApiOperation({ summary: "Get editor source detail" })
-  getEditorSource(
+  async getEditorSource(
     @Param("userId") userId: string,
     @Param("esId") esId: string,
+    @Request() req: any,
   ) {
-    return this.catalog.findOneEditorSource(esId);
+    const es = await this.catalog.findOneEditorSource(esId);
+    this.assertOwnerOrPrivileged(es.user_id, req);
+    return es;
   }
 
   @Patch("editors/:userId/sources/:esId")

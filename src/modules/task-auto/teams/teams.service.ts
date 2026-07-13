@@ -5,8 +5,8 @@ import { DateTime } from 'luxon'
 import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/catalog.dto'
-import { UserRole } from '@prisma/client'
-import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers } from '../../../common/utils/team-membership.util'
+import { Prisma, UserRole } from '@prisma/client'
+import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -31,9 +31,15 @@ export class TaskAutoTeamsService {
     _count: { select: { members: true, tasks: true } },
   }
 
-  /** Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi Team/TeamMember. */
-  private async syncAffectedUsers(userIds: Iterable<string>) {
-    await recomputeUserTeamFieldsBatch(this.prisma, [...new Set(userIds)])
+  /**
+   * Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi
+   * Team/TeamMember. PHẢI gọi với transaction client của chính thao tác ghi membership đó — nếu
+   * chạy tách rời (this.prisma), hai luồng cùng sửa team của một user (tab Teams ở đây vs
+   * HR-management ở users.service) có thể recompute đè nhau bằng snapshot cũ, làm cột team
+   * lúc hiện lúc mất cho tới lần thay đổi team kế tiếp.
+   */
+  private async syncAffectedUsers(db: PrismaService | Prisma.TransactionClient, userIds: Iterable<string>) {
+    await recomputeUserTeamFieldsBatch(db, [...new Set(userIds)])
   }
 
   async findAll() {
@@ -69,23 +75,26 @@ export class TaskAutoTeamsService {
     // leader sẽ không nhìn thấy team này.
     const memberIds = [...new Set([...(dto.member_ids ?? []), ...(dto.leader_id ? [dto.leader_id] : [])])]
 
-    const team = await this.prisma.team.create({
-      data: {
-        name: dto.name,
-        leader_id: dto.leader_id,
-        is_active: dto.is_active ?? true,
-        members: memberIds.length
-          ? { create: memberIds.map(uid => ({ user_id: uid })) }
-          : undefined,
-      },
-      include: this.teamInclude,
-    })
+    // Ghi membership + seed KPI + recompute field phái sinh trong CÙNG transaction — xem syncAffectedUsers.
+    return this.prisma.$transaction(async (tx) => {
+      const team = await tx.team.create({
+        data: {
+          name: dto.name,
+          leader_id: dto.leader_id,
+          is_active: dto.is_active ?? true,
+          members: memberIds.length
+            ? { create: memberIds.map(uid => ({ user_id: uid })) }
+            : undefined,
+        },
+        include: this.teamInclude,
+      })
 
-    // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
-    // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
-    await seedEditorKpiForMembers(this.prisma, memberIds, [team.id], creatorId)
-    await this.syncAffectedUsers(memberIds)
-    return team
+      // Seed EditorKpi=0 tháng hiện tại cho member mới (chỉ role MEMBER) — cùng invariant với
+      // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
+      await seedEditorKpiForMembers(tx, memberIds, [team.id], creatorId)
+      await this.syncAffectedUsers(tx, memberIds)
+      return team
+    }, TEAM_TX_OPTIONS)
   }
 
   async update(id: string, dto: UpdateTeamDto, userId: string, userRoles: string[]) {
@@ -109,49 +118,53 @@ export class TaskAutoTeamsService {
       if (rest.leader_id !== undefined) throw new ForbiddenException('LEADER không được thay đổi leader')
     }
 
-    if (member_ids !== undefined) {
-      // createMany thay vì N lệnh create() riêng lẻ trong transaction — team càng đông thành
-      // viên, càng nhiều round-trip tuần tự tới DB. $transaction dạng mảng (batch) không nhận
-      // maxWait/timeout (chỉ dạng callback interactive mới có, xem TEAM_TX_OPTIONS).
-      await this.prisma.$transaction([
-        this.prisma.teamMember.deleteMany({ where: { team_id: id } }),
-        this.prisma.teamMember.createMany({ data: member_ids.map(uid => ({ team_id: id, user_id: uid })) }),
-      ])
-      // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
-      // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
-      await seedEditorKpiForMembers(this.prisma, member_ids, [id], userId)
-    }
+    // Toàn bộ ghi membership + update team + recompute field phái sinh trong CÙNG một
+    // interactive transaction (batch $transaction dạng mảng không nhận maxWait/timeout,
+    // và không gói được recompute chung) — xem syncAffectedUsers.
+    return this.prisma.$transaction(async (tx) => {
+      if (member_ids !== undefined) {
+        // createMany thay vì N lệnh create() riêng lẻ — team càng đông thành viên,
+        // càng nhiều round-trip tuần tự tới DB.
+        await tx.teamMember.deleteMany({ where: { team_id: id } })
+        await tx.teamMember.createMany({ data: member_ids.map(uid => ({ team_id: id, user_id: uid })) })
+        // Cùng invariant với luồng HR-management: member (role MEMBER) vào team thì có sẵn
+        // dòng EditorKpi=0 tháng hiện tại, không phụ thuộc màn hình nào thực hiện thao tác.
+        await seedEditorKpiForMembers(tx, member_ids, [id], userId)
+      }
 
-    const updated = await this.prisma.team.update({
-      where: { id },
-      data: rest,
-      include: this.teamInclude,
-    })
-
-    // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
-    // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
-    if (rest.leader_id) {
-      await this.prisma.teamMember.createMany({
-        data: [{ team_id: id, user_id: rest.leader_id }],
-        skipDuplicates: true,
+      const updated = await tx.team.update({
+        where: { id },
+        data: rest,
+        include: this.teamInclude,
       })
-    }
 
-    await this.syncAffectedUsers([
-      ...previousMemberIds,
-      ...(member_ids ?? []),
-      ...(previousLeaderId ? [previousLeaderId] : []),
-      ...(updated.leader_id ? [updated.leader_id] : []),
-    ])
+      // Leader mới phải có TeamMember (cùng invariant với luồng HR) — nếu không, field phái
+      // sinh User.team của leader sẽ không chứa team này dù leader_id đã trỏ vào họ.
+      if (rest.leader_id) {
+        await tx.teamMember.createMany({
+          data: [{ team_id: id, user_id: rest.leader_id }],
+          skipDuplicates: true,
+        })
+      }
 
-    return updated
+      await this.syncAffectedUsers(tx, [
+        ...previousMemberIds,
+        ...(member_ids ?? []),
+        ...(previousLeaderId ? [previousLeaderId] : []),
+        ...(updated.leader_id ? [updated.leader_id] : []),
+      ])
+
+      return updated
+    }, TEAM_TX_OPTIONS)
   }
 
   async remove(id: string) {
     const team = await this.findOne(id)
     const memberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
-    await this.prisma.team.delete({ where: { id } })
-    await this.syncAffectedUsers(memberIds)
+    await this.prisma.$transaction(async (tx) => {
+      await tx.team.delete({ where: { id } })
+      await this.syncAffectedUsers(tx, memberIds)
+    }, TEAM_TX_OPTIONS)
     return { success: true }
   }
 
@@ -159,16 +172,20 @@ export class TaskAutoTeamsService {
     await this.findOne(teamId)
     const existing = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (existing) throw new ConflictException('User is already a member')
-    const member = await this.prisma.teamMember.create({ data: { team_id: teamId, user_id: userId } })
-    await this.syncAffectedUsers([userId])
-    return member
+    return this.prisma.$transaction(async (tx) => {
+      const member = await tx.teamMember.create({ data: { team_id: teamId, user_id: userId } })
+      await this.syncAffectedUsers(tx, [userId])
+      return member
+    }, TEAM_TX_OPTIONS)
   }
 
   async removeMember(teamId: string, userId: string) {
     const member = await this.prisma.teamMember.findFirst({ where: { team_id: teamId, user_id: userId } })
     if (!member) throw new NotFoundException('Member not found in team')
-    await this.prisma.teamMember.delete({ where: { id: member.id } })
-    await this.syncAffectedUsers([userId])
+    await this.prisma.$transaction(async (tx) => {
+      await tx.teamMember.delete({ where: { id: member.id } })
+      await this.syncAffectedUsers(tx, [userId])
+    }, TEAM_TX_OPTIONS)
     return { success: true }
   }
 
@@ -184,25 +201,27 @@ export class TaskAutoTeamsService {
   }
 
   private teamProductInclude = {
-    added_by:     { select: { id: true, full_name: true } },
-    material:     { select: { id: true, name: true } },
-    product_line: { select: { id: true, name: true } },
+    added_by:       { select: { id: true, full_name: true } },
+    material:       { select: { id: true, name: true } },
+    product_line:   { select: { id: true, name: true } },
+    classification: { select: { id: true, name: true } },
     source_editor_product: {
       select: {
         id: true, sku: true, name: true, image_url: true, image_urls: true,
         price: true, market: true, price_segment: true, priority_score: true,
-        material_id: true, product_line_id: true, brand_type: true, is_active: true,
+        material_id: true, product_line_id: true, classification_id: true, brand_type: true, is_active: true,
       },
     },
   }
 
   private teamContentInclude = {
-    added_by:     { select: { id: true, full_name: true } },
-    content_line: { select: { id: true, name: true } },
+    added_by:       { select: { id: true, full_name: true } },
+    content_line:   { select: { id: true, name: true } },
+    classification: { select: { id: true, name: true } },
     source_editor_content: {
       select: {
         id: true, title: true, body: true, script: true,
-        file_content_url: true, voice_url: true, content_line_id: true,
+        file_content_url: true, voice_url: true, content_line_id: true, classification_id: true,
         brand_type: true, market: true, status: true,
         content_line: { select: { id: true, name: true } },
       },
@@ -239,10 +258,15 @@ export class TaskAutoTeamsService {
     return { added_at: { gte: new Date(y, m - 1, 1), lt: new Date(y, m, 1) } }
   }
 
-  async listTeamProducts(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string) {
+  async listTeamProducts(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string, classificationId?: string) {
     await this.findOne(teamId)
     return this.prisma.teamProduct.findMany({
-      where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { brand_type: brandType } : {}),
+        ...(classificationId ? { classification_id: classificationId } : {}),
+        ...this.teamMonthRange(month),
+      },
       include: this.teamProductInclude,
       // `added_at` không unique — nhiều dòng import/tạo cùng lúc có thể trùng millisecond,
       // nên phải có tiebreaker ổn định để thứ tự không đổi giữa các lần fetch/sau khi update.
@@ -263,8 +287,10 @@ export class TaskAutoTeamsService {
           team_id: teamId, source_product_id: source.id, sku: source.sku, name: source.name,
           brand_type: source.brand_type, image_url: source.image_url, image_urls: source.image_urls,
           price: source.price, market: source.market, price_segment: source.price_segment,
-          priority_score: source.priority_score, material_id: source.material_id,
-          product_line_id: source.product_line_id, is_active: source.is_active, added_by_id: userId,
+          priority_score: source.priority_score, cooldown_days: source.cooldown_days,
+          material_id: source.material_id,
+          product_line_id: source.product_line_id, classification_id: source.classification_id,
+          is_active: source.is_active, added_by_id: userId,
         },
         include: this.teamProductInclude,
       })
@@ -279,7 +305,9 @@ export class TaskAutoTeamsService {
         team_id: teamId, sku, name: dto.name, brand_type: dto.brand_type,
         image_url: dto.image_url, image_urls: dto.image_urls ?? [], price: dto.price,
         market: dto.market, price_segment: dto.price_segment, priority_score: dto.priority_score ?? 0,
-        material_id: dto.material_id, product_line_id: dto.product_line_id, is_active: dto.is_active ?? true,
+        cooldown_days: dto.cooldown_days ?? null,
+        material_id: dto.material_id, product_line_id: dto.product_line_id,
+        classification_id: dto.classification_id, is_active: dto.is_active ?? true,
         added_by_id: userId,
       },
       include: this.teamProductInclude,
@@ -304,8 +332,10 @@ export class TaskAutoTeamsService {
         ...(dto.market !== undefined          && { market: dto.market }),
         ...(dto.price_segment !== undefined   && { price_segment: dto.price_segment }),
         ...(dto.priority_score !== undefined  && { priority_score: dto.priority_score }),
+        ...(dto.cooldown_days !== undefined   && { cooldown_days: dto.cooldown_days }),
         ...(dto.material_id !== undefined     && { material_id: dto.material_id }),
         ...(dto.product_line_id !== undefined && { product_line_id: dto.product_line_id }),
+        ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
         ...(dto.is_active !== undefined       && { is_active: dto.is_active }),
       },
       include: this.teamProductInclude,
@@ -341,6 +371,7 @@ export class TaskAutoTeamsService {
         priority_score:         entry.priority_score,
         is_active:              entry.is_active,
         product_line_id:        entry.product_line_id,
+        classification_id:      entry.classification_id,
         added_by_id:            userId,
       },
     })
@@ -351,10 +382,15 @@ export class TaskAutoTeamsService {
     return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
-  async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string) {
+  async listTeamContents(teamId: string, brandType?: 'DO_DA' | 'TRANG_SUC', month?: string, classificationId?: string) {
     await this.findOne(teamId)
     return this.prisma.teamContent.findMany({
-      where: { team_id: teamId, ...(brandType ? { brand_type: brandType } : {}), ...this.teamMonthRange(month) },
+      where: {
+        team_id: teamId,
+        ...(brandType ? { brand_type: brandType } : {}),
+        ...(classificationId ? { classification_id: classificationId } : {}),
+        ...this.teamMonthRange(month),
+      },
       include: this.teamContentInclude,
       // Tiebreaker ổn định — xem giải thích ở listTeamProducts.
       orderBy: [{ added_at: 'desc' }, { id: 'asc' }],
@@ -374,7 +410,8 @@ export class TaskAutoTeamsService {
           team_id: teamId, source_content_id: source.id, brand_type: source.brand_type,
           market: source.market ?? 'VIETNAM', title: source.title, body: source.body,
           script: source.script, file_content_url: source.file_content_url, voice_url: source.voice_url,
-          content_line_id: source.content_line_id, status: 'AVAILABLE', added_by_id: userId,
+          content_line_id: source.content_line_id, classification_id: source.classification_id,
+          status: 'AVAILABLE', added_by_id: userId,
         },
         include: this.teamContentInclude,
       })
@@ -384,7 +421,8 @@ export class TaskAutoTeamsService {
       data: {
         team_id: teamId, brand_type: dto.brand_type, market: dto.market ?? 'VIETNAM',
         title: dto.title, body: dto.body, script: dto.script, file_content_url: dto.file_content_url,
-        voice_url: dto.voice_url, content_line_id: dto.content_line_id, status: 'AVAILABLE',
+        voice_url: dto.voice_url, content_line_id: dto.content_line_id, classification_id: dto.classification_id,
+        status: 'AVAILABLE',
         added_by_id: userId,
       },
       include: this.teamContentInclude,
@@ -409,6 +447,7 @@ export class TaskAutoTeamsService {
         ...(dto.file_content_url !== undefined && { file_content_url: dto.file_content_url }),
         ...(dto.voice_url !== undefined        && { voice_url: dto.voice_url }),
         ...(dto.content_line_id !== undefined  && { content_line_id: dto.content_line_id }),
+        ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
         ...(dto.status !== undefined           && { status: dto.status as any }),
       },
       include: this.teamContentInclude,
@@ -441,6 +480,7 @@ export class TaskAutoTeamsService {
       data: {
         source_team_content_id: teamContentId,
         brand_type:             entry.brand_type,
+        classification_id:      entry.classification_id,
         added_by_id:            userId,
       },
     })
@@ -469,11 +509,7 @@ export class TaskAutoTeamsService {
     const isAdminOrManager = userRoles.includes('ADMIN') || userRoles.includes('MANAGER')
     if (isAdminOrManager) return
 
-    const scaleDataTeam = await this.prisma.team.findUnique({ where: { name: 'Scale Data' }, select: { id: true } })
-    if (scaleDataTeam) {
-      const isScaleData = await this.prisma.teamMember.findFirst({ where: { team_id: scaleDataTeam.id, user_id: userId }, select: { id: true } })
-      if (isScaleData) return
-    }
+    if (await isPrivilegedSourceTeamMember(this.prisma, userId)) return
 
     const isLeader = team.leader_id === userId
     if (action === 'add') {

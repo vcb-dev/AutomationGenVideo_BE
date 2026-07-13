@@ -47,7 +47,9 @@ export class TaskAutoTasksService {
     private videoService: TaskAutoVideoService,
   ) {}
 
-  private taskInclude = {
+  // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
+  // (create/update/submit/review) trả về task để FE cập nhật cache/detail panel.
+  private taskDetailInclude = {
     team: { select: { id: true, name: true } },
     content: {
       select: {
@@ -430,6 +432,52 @@ export class TaskAutoTasksService {
     pending_video: true,
   };
 
+  // Bản include nhẹ — dùng cho findAll (bảng danh sách task + SubmittedVideosGrid).
+  // FE (TasksTable.tsx: resolveContentTitle/resolveProductName/resolveProductImage,
+  // ExtraTaskGroupPanel.tsx) chỉ đọc title/name/image_url + team/assignee/status/deadline/
+  // task_type ở list view — không cần material/product_line/sources/content_line/reviewed_by/
+  // pending_video như bản detail. Đã verify bằng cách đọc toàn bộ FE consumers của getTasks().
+  private taskListInclude = {
+    team: { select: { id: true, name: true } },
+    assignee: { select: { id: true, full_name: true, email: true } },
+    content: {
+      select: {
+        title: true,
+        source_team_content: {
+          select: { title: true, source_editor_content: { select: { title: true } } },
+        },
+      },
+    },
+    editor_content: { select: { title: true } },
+    team_content: {
+      select: {
+        title: true,
+        source_editor_content: { select: { title: true } },
+      },
+    },
+    product: {
+      select: {
+        name: true,
+        image_url: true,
+        source_team_product: {
+          select: {
+            name: true,
+            image_url: true,
+            source_editor_product: { select: { name: true, image_url: true } },
+          },
+        },
+      },
+    },
+    editor_product: { select: { name: true, image_url: true } },
+    team_product: {
+      select: {
+        name: true,
+        image_url: true,
+        source_editor_product: { select: { name: true, image_url: true } },
+      },
+    },
+  };
+
   async findAll(q: QueryTaskDto) {
     const where: any = {};
 
@@ -459,7 +507,7 @@ export class TaskAutoTasksService {
     const [data, total] = await Promise.all([
       this.prisma.task.findMany({
         where,
-        include: this.taskInclude,
+        include: this.taskListInclude,
         orderBy: [{ created_at: "desc" }],
         skip,
         take: limit,
@@ -474,7 +522,7 @@ export class TaskAutoTasksService {
     const task = await this.prisma.task.findUnique({
       where: { id },
       include: {
-        ...this.taskInclude,
+        ...this.taskDetailInclude,
         assignments: {
           include: {
             user: { select: { id: true, full_name: true, email: true } },
@@ -613,7 +661,7 @@ export class TaskAutoTasksService {
               status: dto.assignee_id ? "ASSIGNED" : "PENDING",
               assigned_at: dto.assignee_id ? new Date() : undefined,
             },
-            include: this.taskInclude,
+            include: this.taskDetailInclude,
           });
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -714,7 +762,7 @@ export class TaskAutoTasksService {
     const updated = await this.prisma.task.update({
       where: { id },
       data,
-      include: this.taskInclude,
+      include: this.taskDetailInclude,
     });
 
     if (dto.assignee_id && !task.assignee_id) {
@@ -775,7 +823,7 @@ export class TaskAutoTasksService {
         submitted_at: new Date(),
         result_url: dto.result_url,
       },
-      include: this.taskInclude,
+      include: this.taskDetailInclude,
     });
 
     const team = await this.prisma.team.findUnique({
@@ -809,7 +857,7 @@ export class TaskAutoTasksService {
         reviewed_at: new Date(),
         reject_reason: dto.reject_reason,
       },
-      include: this.taskInclude,
+      include: this.taskDetailInclude,
     });
 
     if (task.assignee_id) {

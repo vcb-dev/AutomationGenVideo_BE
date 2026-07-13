@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsBoolean } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsInt, Min } from 'class-validator'
+import { Type } from 'class-transformer'
 import { ApiPropertyOptional } from '@nestjs/swagger'
 
 export class UpdateAutoAssignSettingDto {
@@ -13,4 +14,7 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional()
   @IsBoolean() @IsOptional() is_active?: boolean
+
+  @ApiPropertyOptional({ description: 'Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng', example: 5 })
+  @IsInt() @Min(0) @IsOptional() @Type(() => Number) default_cooldown_days?: number
 }

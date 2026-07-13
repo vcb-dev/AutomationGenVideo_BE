@@ -1,7 +1,7 @@
 -- CreateTable
 CREATE TABLE "ai_voice_usage" (
     "id" TEXT NOT NULL,
-    "user_id" TEXT NOT NULL,
+    "user_id" UUID NOT NULL,
     "kind" VARCHAR(10) NOT NULL,
     "voice_id" VARCHAR(255),
     "characters" INTEGER NOT NULL DEFAULT 0,

@@ -29,7 +29,8 @@ export function buildContentProductPairs(
  * Chọn tối đa `need` cặp cho lane đẩy SP theo kế hoạch.
  * Sản phẩm luôn từ kho team (caller đã sắp SP chưa đẩy trong tháng lên đầu);
  * vòng 1 lấy tối đa 1 cặp cho mỗi sản phẩm để tối đa số SP riêng biệt trong ngày,
- * vòng 2 cho phép dùng lại sản phẩm, vòng 3 lấp đầy bỏ qua quota.
+ * vòng 2 cho phép dùng lại sản phẩm, vòng 3 lấp đầy bỏ qua quota (kể cả productStock —
+ * đây là lane overflow hợp lệ khi mọi SP đã đủ target_quantity nhưng editor còn thiếu việc).
  */
 export function selectPushAssignments(
   contents: ContentPoolItem[],
@@ -38,11 +39,13 @@ export function selectPushAssignments(
   assignedPairKeys: Set<string>,
   contentQuota: Map<string, number>,
   productQuota: Map<string, number>,
+  productStock: Map<string, number> = new Map(),
 ): AssignmentPair[] {
   const selected: AssignmentPair[] = [];
   const selectedPairKeys = new Set<string>();
   const remainingContentQuota = new Map(contentQuota);
   const remainingProductQuota = new Map(productQuota);
+  const remainingStock = new Map(productStock);
   const hasContentQuota = contentQuota.size > 0;
   const hasProductQuota = productQuota.size > 0;
 
@@ -73,12 +76,16 @@ export function selectPushAssignments(
         (remainingProductQuota.get(p.product_line_id) ?? 0) - 1,
       );
     }
+    if (remainingStock.has(p.id)) {
+      remainingStock.set(p.id, Math.max(0, remainingStock.get(p.id)! - 1));
+    }
   };
 
   const productAllowed = (p: ProductPoolItem) =>
-    !hasProductQuota ||
-    (p.product_line_id != null &&
-      (remainingProductQuota.get(p.product_line_id) ?? 0) > 0);
+    (!hasProductQuota ||
+      (p.product_line_id != null &&
+        (remainingProductQuota.get(p.product_line_id) ?? 0) > 0)) &&
+    (remainingStock.get(p.id) ?? Infinity) > 0;
   const contentAllowed = (c: ContentPoolItem) =>
     !hasContentQuota ||
     (c.content_line_id != null &&
@@ -117,8 +124,10 @@ export function selectPushAssignments(
 
 /**
  * Chọn tối đa `need` cặp từ danh sách, tôn trọng quota theo content-line
- * và product-line. Nếu fillStrategy = "CAPACITY" thì lấp đầy phần còn lại
- * bằng bất kỳ cặp nào chưa được chọn.
+ * và product-line, cũng như productStock (target_quantity còn lại của sản phẩm
+ * cá nhân — vắng mặt trong map nghĩa là không giới hạn, vd sản phẩm global).
+ * Nếu fillStrategy = "CAPACITY" thì lấp đầy phần còn lại bằng bất kỳ cặp nào
+ * chưa được chọn, kể cả sản phẩm đã hết productStock (overflow hợp lệ).
  */
 export function selectAssignmentsForEditor(
   candidates: AssignmentPair[],
@@ -126,15 +135,19 @@ export function selectAssignmentsForEditor(
   productQuota: Map<string, number>,
   need: number,
   fillStrategy: "CAPACITY" | "RATIO",
+  productStock: Map<string, number> = new Map(),
 ): AssignmentPair[] {
   const selected: AssignmentPair[] = [];
   const selectedPairKeys = new Set<string>();
   const remainingProductQuota = new Map(productQuota);
+  const remainingStock = new Map(productStock);
   const hasContentQuota = contentQuota.size > 0;
   const hasProductQuota = productQuota.size > 0;
 
   const pairKey = (p: AssignmentPair) =>
     `${p.contentSource}:${p.contentId}:${p.productSource}:${p.productId}`;
+  const stockAllowed = (p: AssignmentPair) =>
+    (remainingStock.get(p.productId) ?? Infinity) > 0;
 
   const take = (p: AssignmentPair) => {
     selected.push(p);
@@ -145,6 +158,9 @@ export function selectAssignmentsForEditor(
         p.productLineId,
         (remainingProductQuota.get(p.productLineId) ?? 0) - 1,
       );
+    }
+    if (remainingStock.has(p.productId)) {
+      remainingStock.set(p.productId, Math.max(0, remainingStock.get(p.productId)! - 1));
     }
   };
 
@@ -161,7 +177,8 @@ export function selectAssignmentsForEditor(
           if (selectedPairKeys.has(pairKey(p))) continue;
           if (
             p.productLineId != null &&
-            (remainingProductQuota.get(p.productLineId) ?? 0) > 0
+            (remainingProductQuota.get(p.productLineId) ?? 0) > 0 &&
+            stockAllowed(p)
           ) {
             take(p);
             taken++;
@@ -172,6 +189,7 @@ export function selectAssignmentsForEditor(
       for (const p of lineCandidates) {
         if (taken >= slots || need === 0) break;
         if (selectedPairKeys.has(pairKey(p))) continue;
+        if (!stockAllowed(p)) continue;
         take(p);
         taken++;
       }
@@ -182,9 +200,24 @@ export function selectAssignmentsForEditor(
       if (selectedPairKeys.has(pairKey(p))) continue;
       if (
         p.productLineId != null &&
-        (remainingProductQuota.get(p.productLineId) ?? 0) > 0
+        (remainingProductQuota.get(p.productLineId) ?? 0) > 0 &&
+        stockAllowed(p)
       )
         take(p);
+    }
+  }
+
+  // Phase tôn trọng stock nhưng bỏ qua line-quota — cần thiết vì khi editor
+  // không có content/product-line allocation nào (hasContentQuota/hasProductQuota
+  // đều false), 2 nhánh trên bị bỏ qua hoàn toàn và selection sẽ rơi thẳng
+  // xuống fill CAPACITY cuối — nếu không có phase này, productStock sẽ luôn
+  // bị bỏ qua với các editor dạng đó.
+  if (need > 0) {
+    for (const p of candidates) {
+      if (need === 0) break;
+      if (selectedPairKeys.has(pairKey(p))) continue;
+      if (!stockAllowed(p)) continue;
+      take(p);
     }
   }
 
