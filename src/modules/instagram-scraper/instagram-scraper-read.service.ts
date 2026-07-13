@@ -22,15 +22,21 @@ export class InstagramScraperReadService {
     const where: any = {};
     if (isOwnedParam === 'true') where.is_owned = true;
     else if (isOwnedParam === 'false') where.is_owned = false;
+    if (search) where.OR = [
+      { username: { contains: search, mode: 'insensitive' } },
+      { full_name: { contains: search, mode: 'insensitive' } },
+    ];
 
-    const all = await this.prisma.scraperInstagramProfile.findMany({ where });
-
-    const filtered = search ? all.filter((p) => unaccentMatch(p.username, search)) : all;
-
-    const total = filtered.length;
+    const [total, paginated] = await Promise.all([
+      this.prisma.scraperInstagramProfile.count({ where }),
+      this.prisma.scraperInstagramProfile.findMany({
+        where,
+        orderBy: [{ is_bookmarked: 'desc' }, { followers_count: 'desc' }],
+        skip: (pageNum - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
 
     const reelCounts = paginated.length
       ? await this.prisma.scraperInstagramReel.groupBy({
@@ -65,6 +71,74 @@ export class InstagramScraperReadService {
         last_scraped_at: p.last_scraped_at,
         created_at: p.created_at,
         reels_in_db: countMap.get(p.id.toString()) || 0,
+      })),
+    };
+  }
+
+  async listReels(params: {
+    page?: string; page_size?: string; q?: string;
+    profile_id?: string; min_plays?: string;
+    date_from?: string; date_to?: string; sort?: string;
+  }) {
+    const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
+    const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
+    const q = (params.q || '').trim();
+    const minPlays = parseIntOrDefault(params.min_plays);
+    const dateFrom = (params.date_from || '').trim();
+    const dateTo = (params.date_to || '').trim();
+    const sort = params.sort || 'date';
+    const profileId = parseIntOrDefault(params.profile_id);
+
+    const where: any = {};
+    if (profileId !== undefined) where.profile_id = BigInt(profileId);
+    if (minPlays !== undefined) where.play_count = { gte: BigInt(minPlays) };
+    if (dateFrom || dateTo) {
+      where.date_posted = {};
+      if (dateFrom) where.date_posted.gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
+    }
+    if (q) where.description = { contains: q, mode: 'insensitive' };
+
+    let orderBy: any = { date_posted: 'desc' };
+    if (sort === 'plays') orderBy = { play_count: 'desc' };
+    else if (sort === 'likes') orderBy = { likes_count: 'desc' };
+
+    const [total, reels] = await Promise.all([
+      this.prisma.scraperInstagramReel.count({ where }),
+      this.prisma.scraperInstagramReel.findMany({
+        where,
+        orderBy,
+        include: { profile: { select: { id: true, username: true, avatar_url: true } } },
+        skip: (pageNum - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      status: 'ok',
+      count: total,
+      page: pageNum,
+      page_size: pageSize,
+      total_pages: totalPages,
+      reels: reels.map((r) => ({
+        post_id: r.post_id,
+        shortcode: r.shortcode,
+        url: r.url,
+        description: r.description,
+        hashtags: r.hashtags,
+        thumbnail_url: (r as any).thumbnail_drive_url || r.thumbnail_url || '',
+        duration_seconds: r.duration_seconds,
+        is_paid_partnership: r.is_paid_partnership,
+        play_count: Number(r.play_count),
+        likes_count: Number(r.likes_count),
+        comments_count: Number(r.comments_count),
+        date_posted: r.date_posted,
+        profile: {
+          id: Number(r.profile.id),
+          username: r.profile.username,
+          avatar_url: r.profile.avatar_url || '',
+        },
       })),
     };
   }

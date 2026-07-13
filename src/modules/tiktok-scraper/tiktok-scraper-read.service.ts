@@ -34,27 +34,21 @@ export class TiktokScraperReadService {
       if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
     }
     if (kwFilter) where.search_keyword = { contains: kwFilter, mode: 'insensitive' };
+    if (q) where.OR = [
+      { description: { contains: q, mode: 'insensitive' } },
+      { search_keyword: { contains: q, mode: 'insensitive' } },
+    ];
 
     let orderBy: any = { created_at: 'desc' };
     if (sort === 'plays') orderBy = { play_count: 'desc' };
     else if (sort === 'likes') orderBy = { digg_count: 'desc' };
     else if (sort === 'date') orderBy = { date_posted: 'desc' };
 
-    const all = await this.prisma.scraperTikTokVideo.findMany({ where, orderBy });
-
-    const filtered = q
-      ? all.filter(
-          (v) =>
-            unaccentMatch(v.description, q) ||
-            unaccentMatch(v.search_keyword, q) ||
-            unaccentIncludesHashtag(v.hashtags, q),
-        )
-      : all;
-
-    const total = filtered.length;
+    const [total, paginated] = await Promise.all([
+      this.prisma.scraperTikTokVideo.count({ where }),
+      this.prisma.scraperTikTokVideo.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
+    ]);
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
 
     return {
       status: 'ok',
@@ -120,22 +114,19 @@ export class TiktokScraperReadService {
     const where: any = {};
     if (isOwnedParam === 'true') where.is_owned = true;
     else if (isOwnedParam === 'false') where.is_owned = false;
+    if (search) where.OR = [
+      { username: { contains: search, mode: 'insensitive' } },
+      { nickname: { contains: search, mode: 'insensitive' } },
+    ];
 
     const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { followers_count: 'desc' as const };
+    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy];
 
-    const all = await this.prisma.scraperTikTokProfile.findMany({
-      where,
-      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy],
-    });
-
-    const filtered = search
-      ? all.filter((p) => unaccentMatch(p.username, search) || unaccentMatch(p.nickname, search))
-      : all;
-
-    const total = filtered.length;
+    const [total, paginated] = await Promise.all([
+      this.prisma.scraperTikTokProfile.count({ where }),
+      this.prisma.scraperTikTokProfile.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
+    ]);
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
 
     const videoCounts = paginated.length
       ? await this.prisma.scraperTikTokProfileVideo.groupBy({

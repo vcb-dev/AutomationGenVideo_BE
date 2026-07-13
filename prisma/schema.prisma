@@ -937,6 +937,7 @@ model video_management_ownedvideocontent {
   @@index([post_id])
   @@index([published_at])
   @@index([view_count])
+  @@index([like_count])
   @@index([managed_page_id, view_count(sort: Desc)])
 }
 
@@ -1486,6 +1487,7 @@ model ScraperFanpage {
 
   @@index([profile_id])
   @@index([handle])
+  @@index([is_bookmarked])
   @@index([is_periodic_crawl, last_scraped_at])
   @@index([is_visible_on_ui, followers_count(sort: Desc)])
   @@index([created_at(sort: Desc)])
@@ -1539,7 +1541,9 @@ model ScraperFacebookReel {
   metrics_history     ScraperReelMetrics[]
 
   @@index([fanpage_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([views_count(sort: Desc)])
+  @@index([likes_count(sort: Desc)])
   @@index([fanpage_id, views_count(sort: Desc)])
   @@index([post_id])
   @@index([shortcode])
@@ -1634,6 +1638,7 @@ model ScraperDouyinVideo {
   updated_at          DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
+  @@index([digg_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
   @@index([created_at(sort: Desc)])
   @@index([search_keyword])
@@ -1667,6 +1672,7 @@ model ScraperDouyinProfile {
 
   @@index([uid])
   @@index([username])
+  @@index([nickname])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([is_owned])
@@ -1740,6 +1746,7 @@ model ScraperTikTokProfileVideo {
   profile         ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([play_count(sort: Desc)])
   @@map("scraper_tiktok_profile_videos")
 }
@@ -1808,6 +1815,7 @@ model ScraperInstagramReel {
   profile             ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([play_count(sort: Desc)])
   @@map("scraper_instagram_reels")
 }
@@ -1854,6 +1862,7 @@ model ScraperXiaohongshuVideo {
   profile    ScraperXiaohongshuProfile? @relation(fields: [profile_id], references: [id], onDelete: SetNull)
 
   @@index([liked_count(sort: Desc)])
+  @@index([collected_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
   @@index([created_at(sort: Desc)])
   @@index([profile_id])
@@ -1883,6 +1892,7 @@ model ScraperXiaohongshuProfile {
   videos ScraperXiaohongshuVideo[]
 
   @@index([is_tracked])
+  @@index([is_bookmarked])
   @@index([is_owned])
   @@index([scraping_status])
   @@map("scraper_xiaohongshu_profiles")
@@ -1921,6 +1931,7 @@ model ScraperYoutubeProfile {
   shorts             ScraperYoutubeShort[]
 
   @@index([title])
+  @@index([is_owned])
   @@index([is_bookmarked])
   @@index([subscriber_count(sort: Desc)])
   @@map("scraper_youtube_profiles")

@@ -18,6 +18,11 @@ export class YoutubeScraperController {
     return this.readService.listProfiles(query);
   }
 
+  @Get('shorts')
+  async shortsList(@Query() query: Record<string, string>) {
+    return this.readService.listShorts(query);
+  }
+
   @Get('profiles/:profileId')
   async profileDetail(@Param('profileId') profileId: string) {
     const result = await this.readService.profileDetail(BigInt(profileId));

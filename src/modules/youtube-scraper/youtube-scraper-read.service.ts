@@ -87,6 +87,61 @@ export class YoutubeScraperReadService {
     };
   }
 
+  async listShorts(params: {
+    page?: string; page_size?: string; q?: string;
+    profile_id?: string; min_views?: string; sort?: string;
+  }) {
+    const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
+    const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
+    const q = (params.q || '').trim();
+    const minViews = parseIntOrDefault(params.min_views);
+    const sort = params.sort || 'views';
+    const profileId = parseIntOrDefault(params.profile_id);
+
+    const where: any = {};
+    if (profileId !== undefined) where.profile_id = BigInt(profileId);
+    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
+    if (q) where.title = { contains: q, mode: 'insensitive' };
+
+    const orderBy: any = sort === 'recent' ? { created_at: 'desc' } : { view_count: 'desc' };
+
+    const [total, shorts] = await Promise.all([
+      this.prisma.scraperYoutubeShort.count({ where }),
+      this.prisma.scraperYoutubeShort.findMany({
+        where,
+        orderBy,
+        include: { profile: { select: { id: true, channel_id: true, title: true, avatar_url: true } } },
+        skip: (pageNum - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+
+    return {
+      status: 'ok',
+      count: total,
+      page: pageNum,
+      page_size: pageSize,
+      total_pages: totalPages,
+      shorts: shorts.map((s) => ({
+        video_id: s.video_id,
+        title: s.title,
+        hashtags: s.hashtags,
+        url: s.url,
+        thumbnail_url: (s as any).thumbnail_drive_url || s.thumbnail_url || '',
+        view_count: Number(s.view_count),
+        view_count_text: s.view_count_text,
+        created_at: s.created_at,
+        profile: {
+          id: Number(s.profile.id),
+          channel_id: s.profile.channel_id,
+          title: s.profile.title,
+          avatar_url: s.profile.avatar_url || '',
+        },
+      })),
+    };
+  }
+
   async profileDetail(profileId: bigint): Promise<any | null> {
     const p = await this.prisma.scraperYoutubeProfile.findUnique({ where: { id: profileId } });
     if (!p) return null;

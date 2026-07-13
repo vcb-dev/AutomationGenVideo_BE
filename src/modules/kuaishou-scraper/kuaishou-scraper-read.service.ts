@@ -63,6 +63,10 @@ export class KuaishouScraperReadService {
       if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
     }
     if (kwFilter) where.search_keyword = { contains: kwFilter, mode: 'insensitive' };
+    if (q) where.OR = [
+      { description: { contains: q, mode: 'insensitive' } },
+      { search_keyword: { contains: q, mode: 'insensitive' } },
+    ];
 
     let orderBy: any = { created_at: 'desc' };
     if (sort === 'views') orderBy = { view_count: 'desc' };
@@ -70,21 +74,11 @@ export class KuaishouScraperReadService {
     else if (sort === 'comments') orderBy = { comment_count: 'desc' };
     else if (sort === 'date') orderBy = { date_posted: 'desc' };
 
-    const all = await this.prisma.scraperKuaishouSearchVideo.findMany({ where, orderBy });
-
-    const filtered = q
-      ? all.filter(
-          (v) =>
-            unaccentMatch(v.description, q) ||
-            unaccentMatch(v.search_keyword, q) ||
-            unaccentIncludesHashtag(v.hashtags, q),
-        )
-      : all;
-
-    const total = filtered.length;
+    const [total, paginated] = await Promise.all([
+      this.prisma.scraperKuaishouSearchVideo.count({ where }),
+      this.prisma.scraperKuaishouSearchVideo.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
+    ]);
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
 
     return {
       status: 'ok',
@@ -139,18 +133,20 @@ export class KuaishouScraperReadService {
     const search = (params.search || '').trim();
     const sortBy = params.sort_by || 'followers';
 
+    const where: any = {};
+    if (search) where.OR = [
+      { nickname: { contains: search, mode: 'insensitive' } },
+      { username: { contains: search, mode: 'insensitive' } },
+    ];
+
     const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { followers_count: 'desc' as const };
+    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy];
 
-    const all = await this.prisma.scraperKuaishouProfile.findMany({
-      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy],
-    });
-
-    const filtered = search ? all.filter((p) => unaccentMatch(p.nickname, search) || unaccentMatch(p.username, search)) : all;
-
-    const total = filtered.length;
+    const [total, paginated] = await Promise.all([
+      this.prisma.scraperKuaishouProfile.count({ where }),
+      this.prisma.scraperKuaishouProfile.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
+    ]);
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
 
     const videosCounts = paginated.length
       ? await this.prisma.scraperKuaishouVideo.groupBy({
