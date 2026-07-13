@@ -9,6 +9,8 @@ import { DateTime } from "luxon";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import {
   AddToWarehouseDto,
+  AddProductsToWarehouseDto,
+  UpdateWarehouseQuantityDto,
   RemoveFromWarehouseDto,
   PushToMonthDto,
   AutoCarryDto,
@@ -18,6 +20,15 @@ import { BrandType } from "../catalog/catalog.dto";
 function prevMonth(month: string): string {
   const dt = DateTime.fromFormat(month, "yyyy-MM");
   return dt.minus({ months: 1 }).toFormat("yyyy-MM");
+}
+
+function normalizeProductItems(
+  dto: AddProductsToWarehouseDto,
+): { id: string; target_quantity: number }[] {
+  if (dto.items?.length) {
+    return dto.items.map((i) => ({ id: i.id, target_quantity: i.target_quantity ?? 1 }));
+  }
+  return (dto.ids ?? []).map((id) => ({ id, target_quantity: 1 }));
 }
 
 @Injectable()
@@ -131,6 +142,7 @@ export class TaskAutoWarehouseService {
         where: { team_id: teamId, is_active: true, warehouses: { some: { month } } },
         include: {
           source_editor_product: { select: { sku: true, name: true, image_url: true, image_urls: true, price: true, market: true, price_segment: true, material_id: true } },
+          warehouses: { where: { month }, select: { target_quantity: true } },
         },
         orderBy: { added_at: "desc" },
       }),
@@ -152,17 +164,43 @@ export class TaskAutoWarehouseService {
     return { team_id: teamId, month, products, contents, sources };
   }
 
-  async addTeamProducts(teamId: string, dto: AddToWarehouseDto) {
+  async addTeamProducts(teamId: string, dto: AddProductsToWarehouseDto) {
+    const items = normalizeProductItems(dto);
+    const ids = items.map((i) => i.id);
     const count = await this.prisma.teamProduct.count({
-      where: { id: { in: dto.ids }, team_id: teamId },
+      where: { id: { in: ids }, team_id: teamId },
     });
-    if (count !== dto.ids.length)
+    if (count !== ids.length)
       throw new BadRequestException("Một số product không thuộc team này");
 
     return this.prisma.teamProductWarehouse.createMany({
-      data: dto.ids.map((id) => ({ team_product_id: id, month: dto.month })),
+      data: items.map((i) => ({
+        team_product_id: i.id,
+        month: dto.month,
+        target_quantity: i.target_quantity,
+      })),
       skipDuplicates: true,
     });
+  }
+
+  async updateTeamProductQuantity(teamId: string, dto: UpdateWarehouseQuantityDto) {
+    const ids = dto.items.map((i) => i.id);
+    const count = await this.prisma.teamProduct.count({
+      where: { id: { in: ids }, team_id: teamId },
+    });
+    if (count !== ids.length)
+      throw new BadRequestException("Một số product không thuộc team này");
+
+    await this.prisma.$transaction(
+      dto.items.map((i) =>
+        this.prisma.teamProductWarehouse.upsert({
+          where: { team_product_id_month: { team_product_id: i.id, month: dto.month } },
+          create: { team_product_id: i.id, month: dto.month, target_quantity: i.target_quantity },
+          update: { target_quantity: i.target_quantity },
+        }),
+      ),
+    );
+    return { updated: dto.items.length };
   }
 
   async removeTeamProducts(teamId: string, dto: RemoveFromWarehouseDto) {
@@ -240,7 +278,7 @@ export class TaskAutoWarehouseService {
           month: from_month,
           team_product: { team_id: teamId, ...(ids ? { id: { in: ids } } : {}) },
         },
-        select: { team_product_id: true },
+        select: { team_product_id: true, target_quantity: true },
       }),
       this.prisma.teamContentWarehouse.findMany({
         where: {
@@ -260,7 +298,11 @@ export class TaskAutoWarehouseService {
 
     const [p, c, s] = await Promise.all([
       this.prisma.teamProductWarehouse.createMany({
-        data: products.map((r) => ({ team_product_id: r.team_product_id, month: to_month })),
+        data: products.map((r) => ({
+          team_product_id: r.team_product_id,
+          month: to_month,
+          target_quantity: r.target_quantity,
+        })),
         skipDuplicates: true,
       }),
       this.prisma.teamContentWarehouse.createMany({
@@ -291,6 +333,9 @@ export class TaskAutoWarehouseService {
     const [products, contents, sources] = await Promise.all([
       this.prisma.editorProduct.findMany({
         where: { user_id: editorId, is_active: true, warehouses: { some: { month } } },
+        include: {
+          warehouses: { where: { month }, select: { target_quantity: true } },
+        },
         orderBy: { added_at: "desc" },
       }),
       this.prisma.editorContent.findMany({
@@ -308,11 +353,37 @@ export class TaskAutoWarehouseService {
     return { editor_id: editorId, month, products, contents, sources };
   }
 
-  async addEditorProducts(editorId: string, dto: AddToWarehouseDto) {
+  async addEditorProducts(editorId: string, dto: AddProductsToWarehouseDto) {
+    const items = normalizeProductItems(dto);
     return this.prisma.editorProductWarehouse.createMany({
-      data: dto.ids.map((id) => ({ editor_product_id: id, month: dto.month })),
+      data: items.map((i) => ({
+        editor_product_id: i.id,
+        month: dto.month,
+        target_quantity: i.target_quantity,
+      })),
       skipDuplicates: true,
     });
+  }
+
+  async updateEditorProductQuantity(editorId: string, dto: UpdateWarehouseQuantityDto) {
+    const ids = dto.items.map((i) => i.id);
+    const owned = await this.prisma.editorProduct.findMany({
+      where: { id: { in: ids }, user_id: editorId },
+      select: { id: true },
+    });
+    if (owned.length !== ids.length)
+      throw new BadRequestException("Một số product không thuộc kho cá nhân này");
+
+    await this.prisma.$transaction(
+      dto.items.map((i) =>
+        this.prisma.editorProductWarehouse.upsert({
+          where: { editor_product_id_month: { editor_product_id: i.id, month: dto.month } },
+          create: { editor_product_id: i.id, month: dto.month, target_quantity: i.target_quantity },
+          update: { target_quantity: i.target_quantity },
+        }),
+      ),
+    );
+    return { updated: dto.items.length };
   }
 
   async removeEditorProducts(editorId: string, dto: RemoveFromWarehouseDto) {
@@ -370,7 +441,7 @@ export class TaskAutoWarehouseService {
           month: from_month,
           editor_product: { user_id: editorId, ...(ids ? { id: { in: ids } } : {}) },
         },
-        select: { editor_product_id: true },
+        select: { editor_product_id: true, target_quantity: true },
       }),
       this.prisma.editorContentWarehouse.findMany({
         where: {
@@ -390,7 +461,11 @@ export class TaskAutoWarehouseService {
 
     const [p, c, s] = await Promise.all([
       this.prisma.editorProductWarehouse.createMany({
-        data: products.map((r) => ({ editor_product_id: r.editor_product_id, month: to_month })),
+        data: products.map((r) => ({
+          editor_product_id: r.editor_product_id,
+          month: to_month,
+          target_quantity: r.target_quantity,
+        })),
         skipDuplicates: true,
       }),
       this.prisma.editorContentWarehouse.createMany({
@@ -519,7 +594,7 @@ export class TaskAutoWarehouseService {
       existingP === 0
         ? this.prisma.editorProductWarehouse.findMany({
             where: { month: from, editor_product: { user_id: editorId } },
-            select: { editor_product_id: true },
+            select: { editor_product_id: true, target_quantity: true },
           })
         : [],
       existingC === 0
@@ -539,7 +614,11 @@ export class TaskAutoWarehouseService {
     const [p, c, s] = await Promise.all([
       fromP.length > 0
         ? this.prisma.editorProductWarehouse.createMany({
-            data: fromP.map((r) => ({ editor_product_id: r.editor_product_id, month: to })),
+            data: fromP.map((r) => ({
+              editor_product_id: r.editor_product_id,
+              month: to,
+              target_quantity: r.target_quantity,
+            })),
             skipDuplicates: true,
           })
         : { count: 0 },

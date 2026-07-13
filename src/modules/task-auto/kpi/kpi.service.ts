@@ -1,11 +1,11 @@
 import {
   Injectable,
-  NotFoundException,
   ForbiddenException,
   BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "./kpi.dto";
+import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -80,9 +80,10 @@ export class TaskAutoKpiService {
   }
 
   async deleteTeamKpi(id: string) {
-    const kpi = await this.prisma.teamKpi.findUnique({ where: { id } });
-    if (!kpi) throw new NotFoundException("TeamKpi not found");
-    await this.prisma.teamKpi.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.teamKpi.delete({ where: { id } }),
+      "TeamKpi not found",
+    );
     return { success: true };
   }
 
@@ -189,9 +190,10 @@ export class TaskAutoKpiService {
   }
 
   async deleteEditorKpi(id: string) {
-    const kpi = await this.prisma.editorKpi.findUnique({ where: { id } });
-    if (!kpi) throw new NotFoundException("EditorKpi not found");
-    await this.prisma.editorKpi.delete({ where: { id } });
+    await runOrNotFound(
+      () => this.prisma.editorKpi.delete({ where: { id } }),
+      "EditorKpi not found",
+    );
     return { success: true };
   }
 

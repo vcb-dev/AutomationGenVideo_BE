@@ -13,6 +13,11 @@ import {
 import { allocateByWeight, allocateWithCaps } from "../../../utils/quota.utils";
 import { loadEligibleEditors } from "./steps/editor-eligibility";
 import { loadEditorAssignmentHistory } from "./steps/editor-history";
+import {
+  loadProductQuotaState,
+  snapshotTeamProductRemaining,
+  consumeProductQuota,
+} from "./steps/product-quota";
 import { createTasksFromAssignments } from "./steps/task-creator";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { UpdateAutoAssignSettingDto } from "../settings/settings.dto";
@@ -20,12 +25,12 @@ import {
   DEADLINE_CALENDAR_DAYS,
   DEFAULT_TZ,
   EditorAssignmentHistory,
+  emptyEditorAssignmentHistory,
   FILL_STRATEGY,
   ScheduledAssignment,
   AssignmentPair,
   ContentPoolItem,
   ProductPoolItem,
-  PoolSource,
   WeightedAllocation,
   TeamResult,
 } from "./types";
@@ -34,6 +39,11 @@ import {
   selectAssignmentsForEditor,
   selectPushAssignments,
 } from "./steps/pair-builder";
+import {
+  MAX_COOLDOWN_LOOKBACK_DAYS,
+  effectiveCooldownDays,
+  isOnCooldown,
+} from "./steps/cooldown";
 
 @Injectable()
 export class TaskAutoAssignService {
@@ -174,6 +184,7 @@ export class TaskAutoAssignService {
           monthStart,
           run.id,
           deadline,
+          settings.default_cooldown_days ?? 0,
         );
         totalAssigned += result.assigned;
         details[team.id] = { team_name: team.name, ...result };
@@ -218,6 +229,7 @@ export class TaskAutoAssignService {
     monthStart: Date,
     runId: string,
     deadline: Date,
+    defaultCooldownDays: number,
   ): Promise<TeamResult> {
     const editors = await loadEligibleEditors(
       this.prisma,
@@ -259,14 +271,40 @@ export class TaskAutoAssignService {
       team: teamContentPool.map((c) => c.id),
       personal: [...personalContentsByEditor.values()].flat().map((c) => c.id),
     };
-    const historyMap = await loadEditorAssignmentHistory(
-      this.prisma,
-      editorIds,
-      monthStart,
-      now.startOf("day").toJSDate(),
-      teamId,
-      candidateContentIds,
+
+    // Cửa sổ lookback cho cooldown: tính động theo cooldown lớn nhất đang cấu hình
+    // (override từng sản phẩm hoặc default_cooldown_days), chặn trần để tránh quét quá xa.
+    const allProductsForCooldown = [
+      ...teamProductPool,
+      ...globalProductPool,
+      ...[...personalProductsByEditor.values()].flat(),
+    ];
+    const maxCooldownDays = Math.min(
+      MAX_COOLDOWN_LOOKBACK_DAYS,
+      Math.max(
+        defaultCooldownDays,
+        ...allProductsForCooldown.map((p) =>
+          effectiveCooldownDays(p.cooldown_days, defaultCooldownDays),
+        ),
+      ),
     );
+    const cooldownLookbackStart =
+      maxCooldownDays > 0
+        ? now.minus({ days: maxCooldownDays }).startOf("day").toJSDate()
+        : null;
+
+    const [historyMap, productQuotaState] = await Promise.all([
+      loadEditorAssignmentHistory(
+        this.prisma,
+        editorIds,
+        monthStart,
+        now.startOf("day").toJSDate(),
+        teamId,
+        candidateContentIds,
+        cooldownLookbackStart,
+      ),
+      loadProductQuotaState(this.prisma, teamId, editorIds, month, monthStart),
+    ]);
 
     // ── Per-editor selection ──────────────────────────────────────────────
     const allAssignments: ScheduledAssignment[] = [];
@@ -274,14 +312,8 @@ export class TaskAutoAssignService {
     for (const editor of editors) {
       if (editor.remainingDaily <= 0) continue;
 
-      const history: EditorAssignmentHistory = historyMap.get(
-        editor.userId,
-      ) ?? {
-        assignedPairKeys: new Set(),
-        assignedContentKeys: new Set(),
-        pushedProductIds: new Set(),
-        pushedProductIdsBeforeToday: new Set(),
-      };
+      const history: EditorAssignmentHistory =
+        historyMap.get(editor.userId) ?? emptyEditorAssignmentHistory();
 
       // Push quota: rải đều product_planned (SP riêng biệt) theo các ngày còn lại
       // của tháng, giống cơ chế deriveDailyTarget của total_target.
@@ -354,28 +386,54 @@ export class TaskAutoAssignService {
         (p) => !personalSourceProductIds.has(p.id),
       );
 
-      // Lane đẩy SP: luôn kho team — SP chưa đẩy trong tháng trước, rồi priority_score
-      const pushProducts: ProductPoolItem[] = [...filteredTeamProducts].sort(
-        (a, b) =>
-          Number(history.pushedProductIds.has(a.id)) -
-            Number(history.pushedProductIds.has(b.id)) ||
-          b.priority_score - a.priority_score,
+      // Chỉ tiêu target_quantity còn lại theo góc nhìn editor này (team-wide,
+      // trừ khi editor là "editor gốc" có override cá nhân — xem product-quota.ts).
+      const teamStockForEditor = snapshotTeamProductRemaining(
+        productQuotaState,
+        editor.userId,
+      );
+      const personalStockForEditor =
+        productQuotaState.personalRemaining.get(editor.userId) ?? new Map<string, number>();
+
+      // Cooldown per (editor, product): sản phẩm đã giao cho editor này trong vòng
+      // chưa đủ cooldown_days bị loại khỏi 2 lane chính; SP kho team bị loại vẫn có
+      // thể "lọt" qua lane lấp đầy (extraSelected) bên dưới — SP cá nhân/global bị
+      // loại thì overflow chung của cooldownTeamProducts đã đủ làm lưới an toàn.
+      const onCooldown = (p: ProductPoolItem) =>
+        isOnCooldown(p, history.lastAssignedByProduct, defaultCooldownDays, now);
+      const availableTeamProducts = filteredTeamProducts.filter((p) => !onCooldown(p));
+      const cooldownTeamProducts = filteredTeamProducts.filter(onCooldown);
+
+      // Lane đẩy SP: luôn kho team — SP còn thiếu target_quantity lên đầu, rồi
+      // priority_score, rồi cờ "đã pushed" (lịch sử) làm tie-break cuối.
+      const pushProducts: ProductPoolItem[] = [...availableTeamProducts].sort(
+        (a, b) => {
+          const aHasStock = (teamStockForEditor.get(a.id) ?? 0) > 0;
+          const bHasStock = (teamStockForEditor.get(b.id) ?? 0) > 0;
+          return (
+            Number(bHasStock) - Number(aHasStock) ||
+            b.priority_score - a.priority_score ||
+            Number(history.pushedProductIds.has(a.id)) -
+              Number(history.pushedProductIds.has(b.id))
+          );
+        },
       );
 
-      // Lane sáng tạo: SP cá nhân → global (kho team chỉ dành cho đẩy kế hoạch)
-      const CREATIVE_TIER_RANK: Record<PoolSource, number> = {
-        personal: 0,
-        global: 1,
-        team: 2, // không có trong lane này
+      // Lane sáng tạo: SP cá nhân → global (kho team chỉ dành cho đẩy kế hoạch).
+      // SP cá nhân đã đủ target_quantity rơi xuống tier overflow (dưới cả global).
+      const creativeRank = (p: ProductPoolItem): number => {
+        if (p.source !== "personal") return 1; // global — luôn "còn hàng"
+        return (personalStockForEditor.get(p.id) ?? 0) > 0 ? 0 : 2;
       };
       const creativeProducts: ProductPoolItem[] = [
         ...personalProducts,
         ...filteredGlobalProducts,
-      ].sort(
-        (a, b) =>
-          CREATIVE_TIER_RANK[a.source] - CREATIVE_TIER_RANK[b.source] ||
-          b.priority_score - a.priority_score,
-      );
+      ]
+        .filter((p) => !onCooldown(p))
+        .sort(
+          (a, b) =>
+            creativeRank(a) - creativeRank(b) || b.priority_score - a.priority_score,
+        );
 
       // Quota theo tuyến/dòng: chia cap còn lại giữa 2 lane theo thứ tự
       const contentCaps = new Map(editor.contentLineRemaining);
@@ -418,6 +476,7 @@ export class TaskAutoAssignService {
           history.assignedPairKeys,
           contentQuota,
           productQuota,
+          teamStockForEditor,
         );
         consumeCaps(pushSelected);
       }
@@ -445,6 +504,7 @@ export class TaskAutoAssignService {
             productQuota,
             creativeNeed,
             FILL_STRATEGY,
+            personalStockForEditor,
           );
           consumeCaps(creativeSelected);
         }
@@ -459,17 +519,25 @@ export class TaskAutoAssignService {
           ...history.assignedPairKeys,
           ...pushSelected.map(pairKeyOf),
         ]);
+        // productStock cố ý bỏ trống (Map rỗng = không giới hạn): đây là lane
+        // overflow, dùng để lấp đầy khi mọi SP đã đủ target_quantity. SP đang
+        // cooldown (cooldownTeamProducts) chỉ được phép "lọt" qua đúng lane này.
         extraSelected = selectPushAssignments(
           pushOrderedContents,
-          pushProducts,
+          [...pushProducts, ...cooldownTeamProducts],
           shortfall,
           usedKeys,
+          new Map(),
           new Map(),
           new Map(),
         );
       }
 
       const selected = [...pushSelected, ...extraSelected, ...creativeSelected];
+      // Phải consume cho CẢ 3 mảng (kể cả extraSelected) vì overflow cũng tiêu
+      // tốn "hàng" thật — khác với consumeCaps (line-quota) vốn không cần áp
+      // dụng cho extraSelected vì các cap đó không được đọc lại sau đó.
+      consumeProductQuota(productQuotaState, editor.userId, selected);
       if (!selected.length) {
         this.logger.log(
           `Team ${teamId} editor ${editor.userId}: no candidates available`,
@@ -596,6 +664,7 @@ export class TaskAutoAssignService {
         id: true,
         product_line_id: true,
         priority_score: true,
+        cooldown_days: true,
         source_product_id: true,
         source_editor_product_id: true,
         source_editor_product: {
@@ -609,6 +678,7 @@ export class TaskAutoAssignService {
       product_line_id:
         tp.product_line_id ?? tp.source_editor_product?.product_line_id ?? null,
       priority_score: tp.priority_score,
+      cooldown_days: tp.cooldown_days,
       source: "team" as const,
       source_product_id:
         tp.source_product_id ??
@@ -635,6 +705,7 @@ export class TaskAutoAssignService {
         id: true,
         product_line_id: true,
         priority_score: true,
+        cooldown_days: true,
         source_team_product: {
           select: {
             product_line_id: true,
@@ -652,6 +723,7 @@ export class TaskAutoAssignService {
         p.source_team_product?.source_editor_product?.product_line_id ??
         null,
       priority_score: p.priority_score,
+      cooldown_days: p.cooldown_days,
       source: "global" as const,
       source_product_id: null,
     }));
@@ -696,6 +768,7 @@ export class TaskAutoAssignService {
         id: true,
         product_line_id: true,
         priority_score: true,
+        cooldown_days: true,
         user_id: true,
         source_product_id: true,
       },
@@ -709,6 +782,7 @@ export class TaskAutoAssignService {
         id: p.id,
         product_line_id: p.product_line_id,
         priority_score: p.priority_score,
+        cooldown_days: p.cooldown_days,
         source: "personal",
         source_product_id: p.source_product_id,
       });

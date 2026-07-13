@@ -18,6 +18,18 @@ type Db = PrismaService | Prisma.TransactionClient;
  */
 export const TEAM_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
 
+/** Tên các team được cấp quyền quản lý source ở kho ngang với ADMIN/MANAGER (ví dụ: Scale Data, MEDIA). */
+export const PRIVILEGED_SOURCE_TEAM_NAMES = ['Scale Data', 'MEDIA'];
+
+/** True nếu user là thành viên của một trong các team có quyền quản lý source đặc biệt (PRIVILEGED_SOURCE_TEAM_NAMES). */
+export async function isPrivilegedSourceTeamMember(db: Db, userId: string): Promise<boolean> {
+  const membership = await db.teamMember.findFirst({
+    where: { user_id: userId, team: { name: { in: PRIVILEGED_SOURCE_TEAM_NAMES } } },
+    select: { id: true },
+  });
+  return !!membership;
+}
+
 /** Mở transaction nếu nhận client gốc; nếu đã ở trong transaction thì chạy thẳng. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
   if ('$transaction' in db) {
