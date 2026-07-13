@@ -1010,6 +1010,10 @@ export class ContentReportService {
       throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
     }
 
+    if (dto.status === 'LATE' || dto.status === 'ON_LEAVE') {
+      throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
+    }
+
     // Member chỉ được điểm danh trong team của mình
     await this.assertMemberBelongsToTeam(userId, session.team_id);
 
@@ -1052,6 +1056,10 @@ export class ContentReportService {
 
     if (session.is_finalized) {
       throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    if (dto.status === 'LATE' || dto.status === 'ON_LEAVE') {
+      throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
     }
 
     // Kiểm tra actor có quyền quản lý team này
@@ -1099,6 +1107,13 @@ export class ContentReportService {
 
     // Kiểm tra actor có quyền quản lý team này
     await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+    // Validate no items have LATE or ON_LEAVE
+    for (const r of dto.records) {
+      if (r.status === 'LATE' || r.status === 'ON_LEAVE') {
+        throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
+      }
+    }
 
     // Chạy toàn bộ trong 1 transaction — nếu 1 item fail → rollback hết
     const results = await this.prisma.$transaction(
