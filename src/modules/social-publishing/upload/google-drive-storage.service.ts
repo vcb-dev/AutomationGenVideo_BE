@@ -89,6 +89,17 @@ export class GoogleDriveStorageService {
     return subfolder ? this.getOrCreateFolder(dateFolderId, subfolder) : dateFolderId;
   }
 
+  /** Cây folder gom file theo LOẠI thay vì theo ngày: Root/{name}/{YYYY-MM-DD}/
+   * Dùng cho các file không gắn với user (audio TTS, ảnh cào...) để tất cả file
+   * cùng loại nằm chung 1 nơi, bên trong mới chia theo ngày — thay vì rải mỗi
+   * folder ngày một ít như resolveTargetFolder. */
+  async resolveDatedFolder(name: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const typeFolderId = await this.getOrCreateFolder(rootFolderId, name);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(typeFolderId, dateStr);
+  }
+
   private static readonly SCRAPER_ROOT_FOLDER_NAME = 'Scraper Cào Dữ Liệu';
 
   /** Cây folder RIÊNG cho ảnh cào dữ liệu: Root/Scraper Cào Dữ Liệu/{Platform}/{YYYY-MM-DD}/
@@ -253,7 +264,7 @@ export class GoogleDriveStorageService {
     sourceUrl: string,
     filename: string,
     mimetype: string,
-    opts?: { subfolder?: string; timeoutMs?: number },
+    opts?: { subfolder?: string; folderId?: string; timeoutMs?: number },
   ): Promise<string> {
     if (!sourceUrl || !this.isAvailable()) return '';
 
@@ -275,6 +286,7 @@ export class GoogleDriveStorageService {
       fs.writeFileSync(tmpPath, buffer);
       const uploaded = await this.uploadFromPath(tmpPath, filename, mimetype, undefined, {
         subfolder: opts?.subfolder,
+        folderId: opts?.folderId,
       });
       return uploaded.url;
     } catch (err: any) {

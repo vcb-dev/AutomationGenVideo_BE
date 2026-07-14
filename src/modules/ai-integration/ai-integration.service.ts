@@ -1912,8 +1912,11 @@ export class AiIntegrationService {
     try {
       const filename =
         (sourceUrl.split('/').pop() || '').split('?')[0] || `tts_${Date.now()}.mp3`;
+      // Gom toàn bộ audio TTS về 1 nơi: Root/TTS Audio/{YYYY-MM-DD}/ (cùng kiểu
+      // với Scraper Cào Dữ Liệu) thay vì rải vào từng folder ngày dùng chung.
+      const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
       const driveUrl = await this.driveStorage.uploadFromUrl(sourceUrl, filename, 'audio/mpeg', {
-        subfolder: 'TTS Audio',
+        folderId,
       });
       if (driveUrl) {
         this.logger.log(`TTS audio uploaded to Drive: ${driveUrl}`);
