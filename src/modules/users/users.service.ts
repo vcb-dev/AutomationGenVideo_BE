@@ -304,6 +304,8 @@ export class UsersService {
     if (user.email !== updatedUser.email) {
       this.cacheService.invalidate(this.userEmailCacheKey(user.email ?? ''));
     }
+    // Trang checklist/hiệu suất cache 5' theo prefix 'activity:' — đổi team/status/tên phải thấy ngay
+    this.cacheService.invalidate('activity:');
 
     return updatedUser;
   }
@@ -320,6 +322,8 @@ export class UsersService {
     this.cacheService.invalidate(this.userCacheKey(id));
     this.cacheService.invalidate(this.userEmailCacheKey(user.email ?? ''));
     this.cacheService.invalidate(`jwt:user:${id}`);
+    // User xóa cứng phải biến mất ngay khỏi trang checklist (cache 'activity:' TTL 5')
+    this.cacheService.invalidate('activity:');
 
     return { message: "User deleted successfully" };
   }
@@ -826,6 +830,8 @@ export class UsersService {
 
     this.cacheService.invalidate(this.userCacheKey(targetId));
     this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+    // Roster trang checklist cache theo prefix 'activity:' (TTL 5') — vô hiệu hóa phải ẩn ngay
+    this.cacheService.invalidate('activity:');
 
     return { message: 'Tài khoản đã được vô hiệu hóa', user: updated };
   }
@@ -852,6 +858,8 @@ export class UsersService {
 
     this.cacheService.invalidate(this.userCacheKey(targetId));
     this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+    // Kích hoạt lại phải hiện lại ngay trên trang checklist
+    this.cacheService.invalidate('activity:');
 
     return { message: 'Tài khoản đã được kích hoạt', user: updated };
   }
@@ -894,6 +902,8 @@ export class UsersService {
     this.cacheService.invalidate(this.userCacheKey(targetId));
     this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
     this.cacheService.invalidate(`jwt:user:${targetId}`);
+    // Trang nhân sự xóa qua endpoint này — roster checklist (cache 'activity:') phải mất ngay
+    this.cacheService.invalidate('activity:');
 
     return { message: 'Đã xóa tài khoản', user: updated };
   }
