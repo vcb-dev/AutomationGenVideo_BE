@@ -569,13 +569,13 @@ export class TaskAutoTeamsService {
     }
 
     if (!dto.name)       throw new BadRequestException('Tên source là bắt buộc khi tạo mới')
-    if (!dto.link)       throw new BadRequestException('Link là bắt buộc khi tạo mới')
+    if (!dto.nas_link)   throw new BadRequestException('Link ổ NAS là bắt buộc khi tạo mới')
     if (!dto.type)       throw new BadRequestException('Loại source là bắt buộc khi tạo mới')
     if (!dto.brand_type) throw new BadRequestException('brand_type là bắt buộc khi tạo mới')
     return this.prisma.teamSource.create({
       data: {
         team_id: teamId, brand_type: dto.brand_type, type: dto.type as any,
-        name: dto.name, link: dto.link, code: dto.code,
+        name: dto.name, link: dto.link || null, nas_link: dto.nas_link, code: dto.code,
         product_id: dto.product_id || null, team_product_id: dto.team_product_id || null,
         is_active: dto.is_active ?? true, added_by_id: userId,
       },

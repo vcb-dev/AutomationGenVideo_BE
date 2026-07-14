@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
 import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
@@ -1072,6 +1073,9 @@ export class TaskAutoCatalogService {
   }
 
   async createEditorSource(userId: string, dto: CreateEditorSourceDto) {
+    if (!dto.source_source_id && !dto.nas_link) {
+      throw new BadRequestException("Link ổ NAS là bắt buộc khi tạo mới");
+    }
     if (dto.source_source_id) {
       const src = await this.prisma.source.findUnique({
         where: { id: dto.source_source_id },
@@ -1108,6 +1112,7 @@ export class TaskAutoCatalogService {
         type: dto.type as any,
         name: dto.name ?? "",
         link: dto.link ?? "",
+        nas_link: dto.nas_link,
         code: dto.code,
         product_id: dto.product_id,
         editor_product_id: dto.editor_product_id,

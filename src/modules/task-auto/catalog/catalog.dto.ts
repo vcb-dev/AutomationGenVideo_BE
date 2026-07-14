@@ -7,6 +7,8 @@ import {
   IsInt,
   Min,
   IsArray,
+  IsNotEmpty,
+  ValidateIf,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -188,8 +190,8 @@ export class CreateSourceDto {
   type: string;
 
   @ApiProperty() @IsString() name: string;
-  @ApiProperty() @IsString() link: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiProperty() @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc' }) nas_link: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
@@ -290,7 +292,8 @@ export class CreateTeamSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_source_id trống)' })
+  @ValidateIf(o => !o.source_source_id) @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc khi tạo mới' }) nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
@@ -441,7 +444,8 @@ export class CreateEditorSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_source_id trống)' })
+  @ValidateIf(o => !o.source_source_id) @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc khi tạo mới' }) nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
