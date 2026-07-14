@@ -937,6 +937,7 @@ model video_management_ownedvideocontent {
   @@index([post_id])
   @@index([published_at])
   @@index([view_count])
+  @@index([like_count])
   @@index([managed_page_id, view_count(sort: Desc)])
 }
 
@@ -1370,10 +1371,12 @@ model SocialPost {
   result        Json?
   error_msg     String?
   thumb_url     String?
+  task_id       String?
   created_at    DateTime         @default(now())
   updated_at    DateTime         @updatedAt
   account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
   user          User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  task          Task?            @relation(fields: [task_id], references: [id])
 
   @@index([user_id])
   @@index([account_id])
@@ -1384,6 +1387,7 @@ model SocialPost {
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
+  @@index([task_id])
   @@map("social_posts")
 }
 
@@ -1486,6 +1490,7 @@ model ScraperFanpage {
 
   @@index([profile_id])
   @@index([handle])
+  @@index([is_bookmarked])
   @@index([is_periodic_crawl, last_scraped_at])
   @@index([is_visible_on_ui, followers_count(sort: Desc)])
   @@index([created_at(sort: Desc)])
@@ -1539,7 +1544,9 @@ model ScraperFacebookReel {
   metrics_history     ScraperReelMetrics[]
 
   @@index([fanpage_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([views_count(sort: Desc)])
+  @@index([likes_count(sort: Desc)])
   @@index([fanpage_id, views_count(sort: Desc)])
   @@index([post_id])
   @@index([shortcode])
@@ -1634,6 +1641,7 @@ model ScraperDouyinVideo {
   updated_at          DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
+  @@index([digg_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
   @@index([created_at(sort: Desc)])
   @@index([search_keyword])
@@ -1667,6 +1675,7 @@ model ScraperDouyinProfile {
 
   @@index([uid])
   @@index([username])
+  @@index([nickname])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([is_owned])
@@ -1740,6 +1749,7 @@ model ScraperTikTokProfileVideo {
   profile         ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([play_count(sort: Desc)])
   @@map("scraper_tiktok_profile_videos")
 }
@@ -1808,6 +1818,7 @@ model ScraperInstagramReel {
   profile             ScraperInstagramProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
   @@index([play_count(sort: Desc)])
   @@map("scraper_instagram_reels")
 }
@@ -1854,6 +1865,7 @@ model ScraperXiaohongshuVideo {
   profile    ScraperXiaohongshuProfile? @relation(fields: [profile_id], references: [id], onDelete: SetNull)
 
   @@index([liked_count(sort: Desc)])
+  @@index([collected_count(sort: Desc)])
   @@index([date_posted(sort: Desc)])
   @@index([created_at(sort: Desc)])
   @@index([profile_id])
@@ -1883,6 +1895,7 @@ model ScraperXiaohongshuProfile {
   videos ScraperXiaohongshuVideo[]
 
   @@index([is_tracked])
+  @@index([is_bookmarked])
   @@index([is_owned])
   @@index([scraping_status])
   @@map("scraper_xiaohongshu_profiles")
@@ -1921,6 +1934,7 @@ model ScraperYoutubeProfile {
   shorts             ScraperYoutubeShort[]
 
   @@index([title])
+  @@index([is_owned])
   @@index([is_bookmarked])
   @@index([subscriber_count(sort: Desc)])
   @@map("scraper_youtube_profiles")
@@ -1948,6 +1962,224 @@ model ScraperYoutubeShort {
   @@index([profile_id, view_count(sort: Desc)])
   @@index([view_count(sort: Desc)])
   @@map("scraper_youtube_shorts")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  KUAISHOU — Profile (User) Tracking
+//  Không có is_owned — Kuaishou chỉ có kênh ngoài (external), không có
+//  khái niệm kênh nội bộ như các nền tảng khác.
+// ═══════════════════════════════════════════════════════════
+
+model ScraperKuaishouProfile {
+  id                  BigInt    @id @default(autoincrement())
+  // eid: định danh trong URL profile (kuaishou.com/profile/{eid}) — dùng để
+  // gọi fetch_one_user_v2, không đổi, là key chính để add/lookup channel.
+  eid                 String    @unique @db.VarChar(50)
+  // user_id: numeric ID — CHỈ fetch_user_hot_post chấp nhận giá trị này (không
+  // chấp nhận eid). Resolve được từ fetch_one_user_v2(eid), nullable vì rỗng
+  // trong khoảnh khắc ngắn giữa lúc tạo placeholder và lần ingest đồng bộ đầu.
+  user_id             String?   @unique @db.VarChar(50)
+  username            String    @default("") @db.VarChar(255)
+  nickname            String    @default("") @db.VarChar(500)
+  url                 String    @db.VarChar(1000)
+  avatar_url          String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
+  biography           String?   @db.Text
+  gender              String    @default("") @db.VarChar(10)
+  followers_count     BigInt    @default(0)
+  following_count     BigInt    @default(0)
+  likes_count         BigInt    @default(0)
+  videos_count        Int       @default(0)
+  is_tracked          Boolean   @default(false)
+  is_bookmarked       Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  videos              ScraperKuaishouVideo[]
+
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_kuaishou_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  KUAISHOU — Video (thuộc 1 profile, từ fetch_user_hot_post)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperKuaishouVideo {
+  id                  BigInt                 @id @default(autoincrement())
+  profile_id          BigInt
+  post_id             String                 @unique @db.VarChar(50)
+  url                 String                 @db.VarChar(1000)
+  description         String                 @default("") @db.Text
+  hashtags            String[]               @default([])
+  thumbnail_url       String?                @db.Text
+  thumbnail_drive_url String?                @db.Text
+  video_duration      Int                    @default(0)
+  view_count          BigInt                 @default(0)
+  like_count          BigInt                 @default(0)
+  comment_count       BigInt                 @default(0)
+  share_count         BigInt                 @default(0)
+  collect_count       BigInt                 @default(0)
+  date_posted         DateTime               @db.Timestamptz(6)
+  created_at          DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime               @updatedAt @db.Timestamptz(6)
+  profile             ScraperKuaishouProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([view_count(sort: Desc)])
+  @@index([like_count(sort: Desc)])
+  @@index([comment_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@map("scraper_kuaishou_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  KUAISHOU — Keyword Video Search (search_video_v2, độc lập
+//  với ScraperKuaishouProfile — không có profile_id FK, giống
+//  pattern ScraperTikTokVideo/ScraperDouyinVideo)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperKuaishouSearchVideo {
+  id                  BigInt    @id @default(autoincrement())
+  post_id             String    @unique @db.VarChar(50)
+  url                 String    @db.VarChar(1000)
+  description         String    @default("") @db.Text
+  hashtags            String[]  @default([])
+  thumbnail_url       String?   @db.Text
+  video_duration      Int       @default(0)
+  author_id           String    @default("") @db.VarChar(50)
+  author_eid          String    @default("") @db.VarChar(50)
+  author_username     String    @default("") @db.VarChar(500)
+  author_avatar       String?   @db.Text
+  author_is_verified  Boolean   @default(false)
+  view_count          BigInt    @default(0)
+  like_count          BigInt    @default(0)
+  comment_count       BigInt    @default(0)
+  share_count         BigInt    @default(0)
+  collect_count       BigInt    @default(0)
+  search_keyword      String    @default("") @db.VarChar(500)
+  date_posted         DateTime  @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([view_count(sort: Desc)])
+  @@index([like_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_kuaishou_search_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BILIBILI — Profile (User) Tracking
+//  Không có is_owned — Bilibili chỉ có kênh ngoài (external), không có
+//  khái niệm kênh nội bộ như các nền tảng khác. mid là ID duy nhất (numeric),
+//  không có vấn đề 2 không gian ID như Kuaishou (eid vs user_id).
+// ═══════════════════════════════════════════════════════════
+
+model ScraperBilibiliProfile {
+  id                  BigInt    @id @default(autoincrement())
+  mid                 String    @unique @db.VarChar(50)
+  username            String    @default("") @db.VarChar(255)
+  nickname            String    @default("") @db.VarChar(500)
+  url                 String    @db.VarChar(1000)
+  avatar_url          String?   @db.Text
+  avatar_drive_url    String    @default("") @db.Text
+  biography           String?   @db.Text
+  is_verified         Boolean   @default(false)
+  verify_desc         String    @default("") @db.VarChar(255)
+  followers_count     BigInt    @default(0)
+  following_count     BigInt    @default(0)
+  likes_count         BigInt    @default(0)
+  videos_count        Int       @default(0)
+  is_tracked          Boolean   @default(false)
+  is_bookmarked       Boolean   @default(false)
+  is_initial_scraped  Boolean   @default(false)
+  last_scraped_at     DateTime? @db.Timestamptz(6)
+  scraping_status     String    @default("idle") @db.VarChar(20)
+  scrape_error        String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  videos              ScraperBilibiliVideo[]
+
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_bookmarked])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_bilibili_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BILIBILI — Video (thuộc 1 profile, từ fetch_user_videos)
+//  Lưu ý: fetch_user_videos chỉ trả play (view) + danmaku — KHÔNG có
+//  like/comment/share/collect count (khác các nền tảng khác), nên schema
+//  không có các cột đó — tránh field mặc định 0 giả tạo không đúng thực tế.
+// ═══════════════════════════════════════════════════════════
+
+model ScraperBilibiliVideo {
+  id                  BigInt                  @id @default(autoincrement())
+  profile_id          BigInt
+  post_id             String                  @unique @db.VarChar(20)
+  url                 String                  @db.VarChar(1000)
+  description         String                  @default("") @db.Text
+  thumbnail_url       String?                 @db.Text
+  thumbnail_drive_url String?                 @db.Text
+  video_duration      Int                     @default(0)
+  view_count          BigInt                  @default(0)
+  danmaku_count       BigInt                  @default(0)
+  date_posted         DateTime                @db.Timestamptz(6)
+  created_at          DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime                @updatedAt @db.Timestamptz(6)
+  profile             ScraperBilibiliProfile  @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([view_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@map("scraper_bilibili_videos")
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BILIBILI — Keyword Video Search (fetch_general_search, độc lập
+//  với ScraperBilibiliProfile — không có profile_id FK)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperBilibiliSearchVideo {
+  id                  BigInt    @id @default(autoincrement())
+  post_id             String    @unique @db.VarChar(20)
+  url                 String    @db.VarChar(1000)
+  description         String    @default("") @db.Text
+  hashtags            String[]  @default([])
+  thumbnail_url       String?   @db.Text
+  video_duration      Int       @default(0)
+  author_id           String    @default("") @db.VarChar(50)
+  author_username     String    @default("") @db.VarChar(500)
+  author_avatar       String?   @db.Text
+  view_count          BigInt    @default(0)
+  like_count          BigInt    @default(0)
+  comment_count       BigInt    @default(0)
+  collect_count       BigInt    @default(0)
+  danmaku_count       BigInt    @default(0)
+  search_keyword      String    @default("") @db.VarChar(500)
+  date_posted         DateTime  @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([author_id])
+  @@index([view_count(sort: Desc)])
+  @@index([like_count(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([created_at(sort: Desc)])
+  @@index([search_keyword])
+  @@map("scraper_bilibili_search_videos")
 }
 
 // ────────────────────────────────
@@ -2116,6 +2348,8 @@ model TeamContent {
   team_id                  String             @db.Uuid
   brand_type               BrandType          @default(DO_DA)
   market                   String             @default("VIETNAM")
+  /// Mã content (business code), unique toàn hệ thống
+  code                     String?            @unique
   title                    String?
   body                     String?
   script                   String?
@@ -2232,6 +2466,8 @@ model EditorContent {
   user_id           String
   brand_type        BrandType          @default(DO_DA)
   market            String             @default("VIETNAM")
+  /// Mã content (business code), unique toàn hệ thống
+  code              String?            @unique
   title             String?
   body              String?
   script            String?
@@ -2560,6 +2796,8 @@ model Content {
   id                     String             @id @default(uuid())
   brand_type             BrandType          @default(DO_DA)
   market                 ContentMarket      @default(VIETNAM)
+  /// Mã content (business code), unique toàn hệ thống
+  code                   String?            @unique
   title                  String?
   body                   String?
   script                 String?
@@ -2698,6 +2936,7 @@ model Task {
   notifications          Notification[]
   pending_video          TaskPendingVideo?
   video_script           TaskVideoScript?
+  scheduled_posts        SocialPost[]
 
   @@index([run_id])
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và

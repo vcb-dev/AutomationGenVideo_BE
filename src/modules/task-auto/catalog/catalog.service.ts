@@ -3,7 +3,9 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
+import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { TaskAutoTeamsService } from "../teams/teams.service";
 import {
@@ -235,10 +237,13 @@ export class TaskAutoCatalogService {
       where.OR = [
         { title: contains },
         { body: contains },
+        { code: contains },
         { source_team_content: { title: contains } },
         { source_team_content: { body: contains } },
+        { source_team_content: { code: contains } },
         { source_team_content: { source_editor_content: { title: contains } } },
         { source_team_content: { source_editor_content: { body: contains } } },
+        { source_team_content: { source_editor_content: { code: contains } } },
       ];
     }
     if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
@@ -256,6 +261,7 @@ export class TaskAutoCatalogService {
           source_team_content: {
             select: {
               id: true,
+              code: true,
               title: true,
               market: true,
               script: true,
@@ -266,6 +272,7 @@ export class TaskAutoCatalogService {
               source_editor_content: {
                 select: {
                   id: true,
+                  code: true,
                   title: true,
                   market: true,
                   script: true,
@@ -297,6 +304,7 @@ export class TaskAutoCatalogService {
         source_team_content: {
           select: {
             id: true,
+            code: true,
             title: true,
             market: true,
             script: true,
@@ -307,6 +315,7 @@ export class TaskAutoCatalogService {
             source_editor_content: {
               select: {
                 id: true,
+                code: true,
                 title: true,
                 market: true,
                 script: true,
@@ -325,6 +334,13 @@ export class TaskAutoCatalogService {
   }
 
   async createContent(dto: CreateContentDto, userId: string) {
+    if (dto.code) {
+      const exists = await this.prisma.content.findUnique({
+        where: { code: dto.code },
+      });
+      if (exists)
+        throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
+    }
     return this.prisma.content.create({
       data: {
         ...dto,
@@ -339,6 +355,13 @@ export class TaskAutoCatalogService {
   }
 
   async updateContent(id: string, dto: UpdateContentDto) {
+    if (dto.code) {
+      const exists = await this.prisma.content.findUnique({
+        where: { code: dto.code },
+      });
+      if (exists && exists.id !== id)
+        throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
+    }
     return runOrNotFound(
       () =>
         this.prisma.content.update({
@@ -864,6 +887,7 @@ export class TaskAutoCatalogService {
       where.OR = [
         { title: { contains: q.search, mode: "insensitive" } },
         { body: { contains: q.search, mode: "insensitive" } },
+        { code: { contains: q.search, mode: "insensitive" } },
       ];
     Object.assign(where, this.monthRange(q.month, "added_at"));
 
@@ -901,6 +925,14 @@ export class TaskAutoCatalogService {
   }
 
   async createEditorContent(userId: string, dto: CreateEditorContentDto) {
+    if (dto.code) {
+      const exists = await this.prisma.editorContent.findUnique({
+        where: { code: dto.code },
+      });
+      if (exists)
+        throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
+    }
+
     if (dto.source_content_id) {
       const src = await resolveContentSnapshot(this.prisma, dto.source_content_id);
       if (!src) throw new NotFoundException("Source content not found");
@@ -911,6 +943,7 @@ export class TaskAutoCatalogService {
           source_content_id: src.id,
           brand_type: (dto.brand_type ?? src.brand_type) as any,
           market: dto.market ?? (src.market as string),
+          code: dto.code,
           title: dto.title ?? src.title,
           body: dto.body ?? src.body,
           script: dto.script ?? src.script,
@@ -929,6 +962,7 @@ export class TaskAutoCatalogService {
         added_by_id: userId,
         brand_type: (dto.brand_type ?? "DO_DA") as any,
         market: dto.market ?? "VIETNAM",
+        code: dto.code,
         title: dto.title,
         body: dto.body,
         script: dto.script,
@@ -967,6 +1001,13 @@ export class TaskAutoCatalogService {
     roles: string[],
   ) {
     await this.getEditorContentOwnership(id, requesterId, roles);
+    if (dto.code) {
+      const exists = await this.prisma.editorContent.findUnique({
+        where: { code: dto.code },
+      });
+      if (exists && exists.id !== id)
+        throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
+    }
     return this.prisma.editorContent.update({
       where: { id },
       data: dto as any,
@@ -1032,6 +1073,9 @@ export class TaskAutoCatalogService {
   }
 
   async createEditorSource(userId: string, dto: CreateEditorSourceDto) {
+    if (!dto.source_source_id && !dto.nas_link) {
+      throw new BadRequestException("Link ổ NAS là bắt buộc khi tạo mới");
+    }
     if (dto.source_source_id) {
       const src = await this.prisma.source.findUnique({
         where: { id: dto.source_source_id },
@@ -1068,6 +1112,7 @@ export class TaskAutoCatalogService {
         type: dto.type as any,
         name: dto.name ?? "",
         link: dto.link ?? "",
+        nas_link: dto.nas_link,
         code: dto.code,
         product_id: dto.product_id,
         editor_product_id: dto.editor_product_id,
@@ -1419,6 +1464,63 @@ export class TaskAutoCatalogService {
       include: this.pushRequestInclude,
       orderBy: { created_at: "desc" },
     });
+  }
+
+  /**
+   * Thống kê số content mỗi thành viên đã được đẩy vào kho team trong tháng —
+   * chỉ tính các request type CONTENT đã APPROVED (dựa theo reviewed_at, tức
+   * ngày leader duyệt), không tính content leader/admin/manager đẩy thẳng
+   * (không tạo request nên không có ngày duyệt để tính).
+   */
+  async getTeamMonthlyPushStats(
+    teamId: string,
+    month: string | undefined,
+    userId: string,
+    userRoles: string[],
+  ) {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        members: {
+          include: {
+            user: { select: { id: true, full_name: true, email: true } },
+          },
+        },
+      },
+    });
+    if (!team) throw new NotFoundException("Team not found");
+    if (!this.canPushDirectly(team, userId, userRoles))
+      throw new ForbiddenException(
+        "Chỉ leader hoặc quản lý mới xem được thống kê đẩy kho của team",
+      );
+
+    const targetMonth =
+      month ?? DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyy-MM");
+
+    const grouped = await this.prisma.teamPushRequest.groupBy({
+      by: ["requested_by_id"],
+      where: {
+        team_id: teamId,
+        type: "CONTENT",
+        status: "APPROVED",
+        ...this.monthRange(targetMonth, "reviewed_at"),
+      },
+      _count: { id: true },
+    });
+    const countMap = new Map(
+      grouped.map((g) => [g.requested_by_id, g._count.id]),
+    );
+
+    const members = team.members
+      .map((m) => ({
+        user_id: m.user.id,
+        full_name: m.user.full_name,
+        email: m.user.email,
+        approved_content_pushes: countMap.get(m.user.id) ?? 0,
+      }))
+      .sort((a, b) => b.approved_content_pushes - a.approved_content_pushes);
+
+    return { team_id: teamId, month: targetMonth, members };
   }
 
   async listMyPushRequests(userId: string, status?: string) {

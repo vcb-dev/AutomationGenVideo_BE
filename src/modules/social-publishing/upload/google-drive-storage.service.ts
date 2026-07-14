@@ -89,6 +89,32 @@ export class GoogleDriveStorageService {
     return subfolder ? this.getOrCreateFolder(dateFolderId, subfolder) : dateFolderId;
   }
 
+  /** Cây folder gom file theo LOẠI thay vì theo ngày: Root/{name}/{YYYY-MM-DD}/
+   * Dùng cho các file không gắn với user (audio TTS, ảnh cào...) để tất cả file
+   * cùng loại nằm chung 1 nơi, bên trong mới chia theo ngày — thay vì rải mỗi
+   * folder ngày một ít như resolveTargetFolder. */
+  async resolveDatedFolder(name: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const typeFolderId = await this.getOrCreateFolder(rootFolderId, name);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(typeFolderId, dateStr);
+  }
+
+  private static readonly SCRAPER_ROOT_FOLDER_NAME = 'Scraper Cào Dữ Liệu';
+
+  /** Cây folder RIÊNG cho ảnh cào dữ liệu: Root/Scraper Cào Dữ Liệu/{Platform}/{YYYY-MM-DD}/
+   * Không đụng tới resolveTargetFolder ở trên (vẫn dùng nguyên cho luồng publish
+   * video, tổ chức theo user) — ảnh cào không gắn với user nào nên nhóm theo
+   * platform trước để dễ duyệt riêng từng nền tảng, mỗi platform tự giới hạn
+   * quy mô theo ngày thay vì dồn chung 1 folder ngày như trước. */
+  async resolveScraperFolder(platform: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const scraperRootId = await this.getOrCreateFolder(rootFolderId, GoogleDriveStorageService.SCRAPER_ROOT_FOLDER_NAME);
+    const platformFolderId = await this.getOrCreateFolder(scraperRootId, platform);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(platformFolderId, dateStr);
+  }
+
   private folderPending = new Map<string, Promise<string>>();
 
   async getOrCreateFolder(parentFolderId: string, folderName: string): Promise<string> {
@@ -162,14 +188,16 @@ export class GoogleDriveStorageService {
     filename: string,
     mimetype: string,
     user?: any,
-    opts?: { subfolder?: string; displayName?: string },
+    opts?: { subfolder?: string; displayName?: string; folderId?: string },
   ): Promise<GoogleDriveUploadResult> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
     const driveName = opts?.displayName || filename;
-    const folderId = await this.resolveTargetFolder(user, opts?.subfolder);
+    // folderId override — dùng cho luồng ảnh cào dữ liệu (resolveScraperFolder),
+    // bỏ qua resolveTargetFolder (vốn dành cho luồng publish video theo user).
+    const folderId = opts?.folderId ?? (await this.resolveTargetFolder(user, opts?.subfolder));
     const token = await this.getAccessToken();
     const fileSize = fs.statSync(filePath).size;
 
@@ -228,8 +256,51 @@ export class GoogleDriveStorageService {
     };
   }
 
-  /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền. */
-  async uploadThumbnailFromUrl(sourceUrl: string, filename: string): Promise<string> {
+  /**
+   * Tải file từ một URL rồi upload lên Drive, trả về link công khai.
+   * Trả '' nếu thất bại (không throw) — caller tự fallback về URL gốc.
+   */
+  async uploadFromUrl(
+    sourceUrl: string,
+    filename: string,
+    mimetype: string,
+    opts?: { subfolder?: string; folderId?: string; timeoutMs?: number },
+  ): Promise<string> {
+    if (!sourceUrl || !this.isAvailable()) return '';
+
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        timeout: opts?.timeoutMs ?? 60_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+    } catch (err: any) {
+      this.logger.warn(`[GoogleDrive] uploadFromUrl download failed (${sourceUrl.slice(0, 80)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `dl_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const uploaded = await this.uploadFromPath(tmpPath, filename, mimetype, undefined, {
+        subfolder: opts?.subfolder,
+        folderId: opts?.folderId,
+      });
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[GoogleDrive] uploadFromUrl upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+
+  /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền.
+   * platform (vd 'Kuaishou', 'TikTok') → upload vào Root/Scraper Cào Dữ Liệu/{platform}/{YYYY-MM-DD}/
+   * thay vì folder ngày dùng chung mặc định. */
+  async uploadThumbnailFromUrl(sourceUrl: string, filename: string, platform?: string): Promise<string> {
     if (!sourceUrl) return '';
     if (sourceUrl.includes('drive.google.com') || sourceUrl.includes('googleusercontent.com')) return sourceUrl;
     if (!this.isAvailable()) return '';
@@ -252,7 +323,8 @@ export class GoogleDriveStorageService {
     const tmpPath = path.join(os.tmpdir(), `thumb_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
     try {
       fs.writeFileSync(tmpPath, buffer);
-      const uploaded = await this.uploadFromPath(tmpPath, filename, 'image/jpeg');
+      const folderId = platform ? await this.resolveScraperFolder(platform) : undefined;
+      const uploaded = await this.uploadFromPath(tmpPath, filename, 'image/jpeg', undefined, folderId ? { folderId } : undefined);
       return uploaded.url;
     } catch (err: any) {
       this.logger.error(`[ThumbnailMigration] Upload failed ${filename}: ${err.message}`);

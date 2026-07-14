@@ -4,19 +4,28 @@ import { ConfigService } from '@nestjs/config';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 @Injectable()
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
   private readonly minimaxApiKey?: string;
+  /**
+   * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
+   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   */
+  private readonly minimaxVndPer1kChars: number;
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly driveStorage: GoogleDriveStorageService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     if (!this.minimaxApiKey) {
       this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
@@ -1662,6 +1671,10 @@ export class AiIntegrationService {
           })
         )
       );
+      // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
+      if (data && typeof data === 'object') {
+        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+      }
       return data;
     } catch (error: any) {
       if (error instanceof HttpException) throw error;
@@ -1876,6 +1889,46 @@ export class AiIntegrationService {
   }
 
   /**
+   * Đưa file audio TTS từ AI service về nơi công khai:
+   * 1. Rewrite host của audio_url về aiServiceUrl (AI có thể trả localhost nếu máy
+   *    chạy AI chưa set AI_SERVICE_URL trong .env của nó).
+   * 2. Upload lên Google Drive công ty → link vĩnh viễn, không phụ thuộc máy AI.
+   * Không bao giờ throw — TTS đã thành công thì tệ nhất người dùng vẫn nhận link qua tunnel.
+   */
+  private async publishTtsAudio(aiAudioUrl: string): Promise<string> {
+    let sourceUrl = aiAudioUrl;
+    try {
+      const parsed = new URL(aiAudioUrl);
+      // Chỉ rewrite link media NỘI BỘ của AI (/media/...) — AI có nhánh fallback trả
+      // thẳng URL CDN của MiniMax (link ngoài, vẫn phát được); rewrite link đó sẽ tạo
+      // ra đường dẫn tunnel không tồn tại.
+      if (parsed.pathname.startsWith('/media/')) {
+        sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
+      }
+    } catch {
+      return aiAudioUrl;
+    }
+
+    try {
+      const filename =
+        (sourceUrl.split('/').pop() || '').split('?')[0] || `tts_${Date.now()}.mp3`;
+      // Gom toàn bộ audio TTS về 1 nơi: Root/TTS Audio/{YYYY-MM-DD}/ (cùng kiểu
+      // với Scraper Cào Dữ Liệu) thay vì rải vào từng folder ngày dùng chung.
+      const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
+      const driveUrl = await this.driveStorage.uploadFromUrl(sourceUrl, filename, 'audio/mpeg', {
+        folderId,
+      });
+      if (driveUrl) {
+        this.logger.log(`TTS audio uploaded to Drive: ${driveUrl}`);
+        return driveUrl;
+      }
+    } catch (err: any) {
+      this.logger.warn(`TTS audio Drive upload failed, falling back to source URL: ${err.message}`);
+    }
+    return sourceUrl;
+  }
+
+  /**
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
@@ -1904,6 +1957,13 @@ export class AiIntegrationService {
           })
         )
       );
+      // AI build audio_url từ AI_SERVICE_URL của chính nó — máy AI thường để mặc định
+      // localhost:8001 nên link trả về chỉ mở được trên máy đó. BE tải file qua tunnel
+      // (aiServiceUrl BE đang giữ) rồi đẩy lên Google Drive công ty → link công khai,
+      // sống độc lập với máy AI. Drive lỗi thì fallback về link qua tunnel.
+      if (data?.success && data.audio_url) {
+        data.audio_url = await this.publishTtsAudio(String(data.audio_url));
+      }
       // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
       // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
       // được làm hỏng response TTS đã thành công.
@@ -1978,14 +2038,22 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
+    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
+    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    const byUserList = [...byUser.values()]
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .sort((a, b) => b.characters - a.characters);
+
     return {
       success: true,
+      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
+        cost_vnd: toVnd(totalCharacters),
       },
-      by_user: [...byUser.values()].sort((a, b) => b.characters - a.characters),
+      by_user: byUserList,
     };
   }
 }

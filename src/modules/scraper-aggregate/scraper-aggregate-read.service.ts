@@ -261,6 +261,31 @@ export class ScraperAggregateReadService {
       }
     }
 
+    if (!platform || platform === 'youtube') {
+      const shorts = await this.prisma.scraperYoutubeShort.findMany({
+        where: { profile: { is_owned: true } },
+        include: { profile: true },
+      });
+      for (const s of shorts) {
+        if (q && !unaccentMatch(s.title, q)) continue;
+        items.push({
+          platform: 'youtube',
+          post_id: s.video_id,
+          url: s.url,
+          description: s.title,
+          thumbnail_url: s.thumbnail_drive_url || s.thumbnail_url || '',
+          duration_seconds: null,
+          play_count: Number(s.view_count),
+          likes_count: 0,
+          comments_count: 0,
+          date_posted: s.created_at,
+          author_name: s.profile?.title || '',
+          author_avatar: s.profile?.avatar_url || '',
+          author_username: s.profile?.channel_id || '',
+        });
+      }
+    }
+
     if (!platform || platform === 'facebook') {
       const videos = await this.prisma.video_management_ownedvideocontent.findMany({
         include: { managed_page: true },
