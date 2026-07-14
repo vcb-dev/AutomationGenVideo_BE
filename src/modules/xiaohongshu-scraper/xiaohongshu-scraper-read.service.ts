@@ -155,7 +155,7 @@ export class XiaohongshuScraperReadService {
 
     const profiles = await this.prisma.scraperXiaohongshuProfile.findMany({
       where,
-      orderBy: { created_at: 'desc' },
+      orderBy: [{ is_bookmarked: 'desc' }, { created_at: 'desc' }],
       skip: start,
       take: pageSize,
     });
