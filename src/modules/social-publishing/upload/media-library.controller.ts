@@ -21,13 +21,19 @@ export class MediaLibraryController {
   constructor(private readonly library: MediaLibraryService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Danh sách file trong thư viện (có phân trang)' })
+  @ApiOperation({ summary: 'Danh sách file trong thư viện (có phân trang, lọc theo ngày)' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  list(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '20') {
+  @ApiQuery({ name: 'date', required: false, description: 'Lọc theo ngày tạo (YYYY-MM-DD)' })
+  list(
+    @Request() req: any,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('date') date?: string,
+  ) {
     const p = Math.max(1, parseInt(page, 10) || 1);
     const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
-    return this.library.list(req.user.id, p, l);
+    return this.library.list(req.user.id, p, l, date);
   }
 
   @Get('stats')

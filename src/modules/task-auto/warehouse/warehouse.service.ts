@@ -68,8 +68,8 @@ export class TaskAutoWarehouseService {
         include: {
           source_team_content: {
             select: {
-              title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true,
-              source_editor_content: { select: { title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
+              code: true, title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true,
+              source_editor_content: { select: { code: true, title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
             },
           },
         },
@@ -149,7 +149,7 @@ export class TaskAutoWarehouseService {
       this.prisma.teamContent.findMany({
         where: { team_id: teamId, status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
         include: {
-          source_editor_content: { select: { title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
+          source_editor_content: { select: { code: true, title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
         },
         orderBy: { added_at: "desc" },
       }),
