@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from "@nestjs/common";
+import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { TaskAutoTeamsService } from "../teams/teams.service";
 import {
@@ -1458,6 +1459,63 @@ export class TaskAutoCatalogService {
       include: this.pushRequestInclude,
       orderBy: { created_at: "desc" },
     });
+  }
+
+  /**
+   * Thống kê số content mỗi thành viên đã được đẩy vào kho team trong tháng —
+   * chỉ tính các request type CONTENT đã APPROVED (dựa theo reviewed_at, tức
+   * ngày leader duyệt), không tính content leader/admin/manager đẩy thẳng
+   * (không tạo request nên không có ngày duyệt để tính).
+   */
+  async getTeamMonthlyPushStats(
+    teamId: string,
+    month: string | undefined,
+    userId: string,
+    userRoles: string[],
+  ) {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        members: {
+          include: {
+            user: { select: { id: true, full_name: true, email: true } },
+          },
+        },
+      },
+    });
+    if (!team) throw new NotFoundException("Team not found");
+    if (!this.canPushDirectly(team, userId, userRoles))
+      throw new ForbiddenException(
+        "Chỉ leader hoặc quản lý mới xem được thống kê đẩy kho của team",
+      );
+
+    const targetMonth =
+      month ?? DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyy-MM");
+
+    const grouped = await this.prisma.teamPushRequest.groupBy({
+      by: ["requested_by_id"],
+      where: {
+        team_id: teamId,
+        type: "CONTENT",
+        status: "APPROVED",
+        ...this.monthRange(targetMonth, "reviewed_at"),
+      },
+      _count: { id: true },
+    });
+    const countMap = new Map(
+      grouped.map((g) => [g.requested_by_id, g._count.id]),
+    );
+
+    const members = team.members
+      .map((m) => ({
+        user_id: m.user.id,
+        full_name: m.user.full_name,
+        email: m.user.email,
+        approved_content_pushes: countMap.get(m.user.id) ?? 0,
+      }))
+      .sort((a, b) => b.approved_content_pushes - a.approved_content_pushes);
+
+    return { team_id: teamId, month: targetMonth, members };
   }
 
   async listMyPushRequests(userId: string, status?: string) {

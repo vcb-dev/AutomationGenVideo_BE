@@ -331,6 +331,24 @@ export class TaskAutoEditorCatalogController {
     );
   }
 
+  @Get("teams/:teamId/push-stats")
+  @ApiOperation({
+    summary:
+      "Monthly count of content approved into team catalog per member (leader/admin/manager)",
+  })
+  getTeamMonthlyPushStats(
+    @Param("teamId") teamId: string,
+    @Query("month") month: string | undefined,
+    @Request() req: any,
+  ) {
+    return this.catalog.getTeamMonthlyPushStats(
+      teamId,
+      month,
+      req.user.id,
+      req.user.roles ?? [],
+    );
+  }
+
   @Patch("push-requests/:id/review")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")
