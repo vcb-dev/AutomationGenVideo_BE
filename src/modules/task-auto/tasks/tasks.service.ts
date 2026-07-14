@@ -54,6 +54,7 @@ export class TaskAutoTasksService {
     content: {
       select: {
         id: true,
+        code: true,
         title: true,
         market: true,
         status: true,
@@ -61,6 +62,7 @@ export class TaskAutoTasksService {
         source_team_content: {
           select: {
             id: true,
+            code: true,
             title: true,
             market: true,
             script: true,
@@ -71,6 +73,7 @@ export class TaskAutoTasksService {
             source_editor_content: {
               select: {
                 id: true,
+                code: true,
                 title: true,
                 market: true,
                 script: true,
@@ -201,6 +204,7 @@ export class TaskAutoTasksService {
     editor_content: {
       select: {
         id: true,
+        code: true,
         title: true,
         market: true,
         script: true,
@@ -213,6 +217,7 @@ export class TaskAutoTasksService {
     team_content: {
       select: {
         id: true,
+        code: true,
         title: true,
         market: true,
         script: true,
@@ -223,6 +228,7 @@ export class TaskAutoTasksService {
         source_editor_content: {
           select: {
             id: true,
+            code: true,
             title: true,
             market: true,
             script: true,

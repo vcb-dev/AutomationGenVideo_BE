@@ -1371,10 +1371,12 @@ model SocialPost {
   result        Json?
   error_msg     String?
   thumb_url     String?
+  task_id       String?
   created_at    DateTime         @default(now())
   updated_at    DateTime         @updatedAt
   account       SocialAccount    @relation(fields: [account_id], references: [id], onDelete: Cascade)
   user          User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  task          Task?            @relation(fields: [task_id], references: [id])
 
   @@index([user_id])
   @@index([account_id])
@@ -1385,6 +1387,7 @@ model SocialPost {
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
+  @@index([task_id])
   @@map("social_posts")
 }
 
@@ -2345,6 +2348,8 @@ model TeamContent {
   team_id                  String             @db.Uuid
   brand_type               BrandType          @default(DO_DA)
   market                   String             @default("VIETNAM")
+  /// Mã content (business code), unique toàn hệ thống
+  code                     String?            @unique
   title                    String?
   body                     String?
   script                   String?
@@ -2461,6 +2466,8 @@ model EditorContent {
   user_id           String
   brand_type        BrandType          @default(DO_DA)
   market            String             @default("VIETNAM")
+  /// Mã content (business code), unique toàn hệ thống
+  code              String?            @unique
   title             String?
   body              String?
   script            String?
@@ -2789,6 +2796,8 @@ model Content {
   id                     String             @id @default(uuid())
   brand_type             BrandType          @default(DO_DA)
   market                 ContentMarket      @default(VIETNAM)
+  /// Mã content (business code), unique toàn hệ thống
+  code                   String?            @unique
   title                  String?
   body                   String?
   script                 String?
@@ -2927,6 +2936,7 @@ model Task {
   notifications          Notification[]
   pending_video          TaskPendingVideo?
   video_script           TaskVideoScript?
+  scheduled_posts        SocialPost[]
 
   @@index([run_id])
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và

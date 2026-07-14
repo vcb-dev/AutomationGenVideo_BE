@@ -49,6 +49,7 @@ export async function resolveContentSnapshot(prisma: PrismaService, contentId: s
     id: src.id,
     brand_type: src.brand_type,
     market: src.market,
+    code: src.code ?? tc?.code ?? ec?.code ?? null,
     title: src.title ?? tc?.title ?? ec?.title ?? null,
     body: src.body ?? tc?.body ?? ec?.body ?? null,
     script: src.script ?? tc?.script ?? ec?.script ?? null,

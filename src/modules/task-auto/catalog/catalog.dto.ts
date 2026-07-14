@@ -120,6 +120,7 @@ export class QueryProductDto {
 
 export class CreateContentDto {
   @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -135,6 +136,7 @@ export class CreateContentDto {
 
 export class UpdateContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -253,6 +255,7 @@ export class CreateTeamContentDto {
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -265,6 +268,7 @@ export class CreateTeamContentDto {
 export class UpdateTeamContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -390,6 +394,7 @@ export class CreateEditorContentDto {
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -402,6 +407,7 @@ export class CreateEditorContentDto {
 export class UpdateEditorContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;

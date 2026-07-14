@@ -220,7 +220,7 @@ export class TaskAutoTeamsService {
     classification: { select: { id: true, name: true } },
     source_editor_content: {
       select: {
-        id: true, title: true, body: true, script: true,
+        id: true, code: true, title: true, body: true, script: true,
         file_content_url: true, voice_url: true, content_line_id: true, classification_id: true,
         brand_type: true, market: true, status: true,
         content_line: { select: { id: true, name: true } },
@@ -397,9 +397,15 @@ export class TaskAutoTeamsService {
     })
   }
 
+  private async assertTeamContentCodeAvailable(code: string, excludeId?: string) {
+    const exists = await this.prisma.teamContent.findUnique({ where: { code } })
+    if (exists && exists.id !== excludeId) throw new ConflictException(`Mã content "${code}" đã tồn tại`)
+  }
+
   async addTeamContent(teamId: string, dto: CreateTeamContentDto, userId: string, userRoles: string[]) {
     const team = await this.findOne(teamId)
     this.assertCanManageContent(team, userId, userRoles, 'add')
+    if (dto.code) await this.assertTeamContentCodeAvailable(dto.code)
 
     if (dto.source_content_id) {
       const source = await resolveContentSnapshot(this.prisma, dto.source_content_id)
@@ -408,7 +414,7 @@ export class TaskAutoTeamsService {
       return this.prisma.teamContent.create({
         data: {
           team_id: teamId, source_content_id: source.id, brand_type: source.brand_type,
-          market: source.market ?? 'VIETNAM', title: source.title, body: source.body,
+          market: source.market ?? 'VIETNAM', code: dto.code, title: source.title, body: source.body,
           script: source.script, file_content_url: source.file_content_url, voice_url: source.voice_url,
           content_line_id: source.content_line_id, classification_id: source.classification_id,
           status: 'AVAILABLE', added_by_id: userId,
@@ -420,7 +426,7 @@ export class TaskAutoTeamsService {
     return this.prisma.teamContent.create({
       data: {
         team_id: teamId, brand_type: dto.brand_type, market: dto.market ?? 'VIETNAM',
-        title: dto.title, body: dto.body, script: dto.script, file_content_url: dto.file_content_url,
+        code: dto.code, title: dto.title, body: dto.body, script: dto.script, file_content_url: dto.file_content_url,
         voice_url: dto.voice_url, content_line_id: dto.content_line_id, classification_id: dto.classification_id,
         status: 'AVAILABLE',
         added_by_id: userId,
@@ -435,12 +441,14 @@ export class TaskAutoTeamsService {
 
     const entry = await this.prisma.teamContent.findFirst({ where: { id: teamContentId, team_id: teamId } })
     if (!entry) throw new NotFoundException('Content không có trong kho team')
+    if (dto.code) await this.assertTeamContentCodeAvailable(dto.code, teamContentId)
 
     return this.prisma.teamContent.update({
       where: { id: teamContentId },
       data: {
         ...(dto.brand_type !== undefined       && { brand_type: dto.brand_type }),
         ...(dto.market !== undefined           && { market: dto.market }),
+        ...(dto.code !== undefined             && { code: dto.code }),
         ...(dto.title !== undefined            && { title: dto.title }),
         ...(dto.body !== undefined             && { body: dto.body }),
         ...(dto.script !== undefined           && { script: dto.script }),

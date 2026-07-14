@@ -44,7 +44,7 @@ export class ScheduleService {
 
   async create(userId: string, dto: {
     accountId: string; message: string; mediaUrls?: string[];
-    pageId?: string; privacy?: string; scheduledAt: string; thumbUrl?: string;
+    pageId?: string; privacy?: string; scheduledAt: string; thumbUrl?: string; taskId?: string;
   }) {
     const scheduledAt = new Date(dto.scheduledAt);
     if (isNaN(scheduledAt.getTime())) throw new BadRequestException('scheduledAt không hợp lệ, hãy dùng định dạng ISO 8601 (vd: 2025-05-18T10:00:00+07:00)');
@@ -58,6 +58,12 @@ export class ScheduleService {
       },
     });
     if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
+
+    if (dto.taskId) {
+      const task = await this.prisma.task.findUnique({ where: { id: dto.taskId }, select: { status: true } });
+      if (!task) throw new NotFoundException('Task không tồn tại');
+      if (task.status !== 'APPROVED') throw new BadRequestException('Chỉ có thể lên lịch đăng bài cho task đã được duyệt');
+    }
 
     let thumbUrl = dto.thumbUrl || null;
     if (!thumbUrl && dto.mediaUrls?.length) {
@@ -84,6 +90,7 @@ export class ScheduleService {
         scheduled_at: scheduledAt,
         source: SocialPostSource.SCHEDULED,
         status: SocialPostStatus.PENDING,
+        task_id: dto.taskId ?? null,
         updated_at: new Date(),
       },
     });
@@ -93,6 +100,18 @@ export class ScheduleService {
     return this.prisma.socialPost.findMany({
       where: { user_id: userId, source: SocialPostSource.SCHEDULED },
       orderBy: { scheduled_at: 'asc' },
+      include: { account: { select: { name: true, username: true, avatar_url: true, platform: true } } },
+    });
+  }
+
+  /**
+   * Không lọc theo user_id — assignee lẫn approver của task đều cần thấy mọi bài
+   * đã lên lịch cho task đó (kể cả bài do người kia tạo). taskId là UUID không đoán được.
+   */
+  async findByTask(taskId: string) {
+    return this.prisma.socialPost.findMany({
+      where: { task_id: taskId },
+      orderBy: { created_at: 'desc' },
       include: { account: { select: { name: true, username: true, avatar_url: true, platform: true } } },
     });
   }
