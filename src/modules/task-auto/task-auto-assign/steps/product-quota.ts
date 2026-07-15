@@ -18,25 +18,47 @@ export async function loadProductQuotaState(
   month: string,
   monthStart: Date,
 ): Promise<ProductQuotaState> {
-  const teamRows = await prisma.teamProductWarehouse.findMany({
-    where: { month, team_product: { team_id: teamId } },
-    select: {
-      team_product_id: true,
-      target_quantity: true,
-      team_product: {
-        select: {
-          source_editor_product_id: true,
-          source_editor_product: { select: { user_id: true } },
+  // Đợt 1: teamRows (team_id/month) và personalRows (editorIds/month) không phụ thuộc nhau.
+  const [teamRows, personalRows] = await Promise.all([
+    prisma.teamProductWarehouse.findMany({
+      where: { month, team_product: { team_id: teamId } },
+      select: {
+        team_product_id: true,
+        target_quantity: true,
+        team_product: {
+          select: {
+            source_editor_product_id: true,
+            source_editor_product: { select: { user_id: true } },
+          },
         },
       },
-    },
-  });
+    }),
+    editorIds.length > 0
+      ? prisma.editorProductWarehouse.findMany({
+          where: { month, editor_product: { user_id: { in: editorIds } } },
+          select: {
+            editor_product_id: true,
+            target_quantity: true,
+            editor_product: { select: { user_id: true } },
+          },
+        })
+      : Promise.resolve([]),
+  ]);
 
   const teamProductIds = teamRows.map((r) => r.team_product_id);
+  const originSourceIds = [
+    ...new Set(
+      teamRows
+        .filter((r) => r.team_product.source_editor_product_id)
+        .map((r) => r.team_product.source_editor_product_id!),
+    ),
+  ];
+  const personalProductIds = personalRows.map((r) => r.editor_product_id);
 
-  const doneRows =
+  // Đợt 2: 3 lookup phụ thuộc kết quả đợt 1 nhưng độc lập với nhau — chạy song song.
+  const [doneRows, originWarehouseRows, personalDoneRows] = await Promise.all([
     teamProductIds.length > 0
-      ? await prisma.task.groupBy({
+      ? prisma.task.groupBy({
           by: ["team_product_id", "assignee_id"],
           where: {
             team_id: teamId,
@@ -46,7 +68,26 @@ export async function loadProductQuotaState(
           },
           _count: { id: true },
         })
-      : [];
+      : Promise.resolve([]),
+    originSourceIds.length > 0
+      ? prisma.editorProductWarehouse.findMany({
+          where: { month, editor_product_id: { in: originSourceIds } },
+          select: { editor_product_id: true, target_quantity: true },
+        })
+      : Promise.resolve([]),
+    personalProductIds.length > 0
+      ? prisma.task.groupBy({
+          by: ["editor_product_id", "assignee_id"],
+          where: {
+            assignee_id: { in: editorIds },
+            editor_product_id: { in: personalProductIds },
+            status: { not: "CANCELLED" },
+            assigned_at: { gte: monthStart },
+          },
+          _count: { id: true },
+        })
+      : Promise.resolve([]),
+  ]);
 
   // team_product_id -> tổng done (mọi assignee)
   const totalDoneByProduct = new Map<string, number>();
@@ -64,20 +105,6 @@ export async function loadProductQuotaState(
     doneByProductAndAssignee.get(productId)!.set(assigneeId, r._count.id);
   }
 
-  const originSourceIds = [
-    ...new Set(
-      teamRows
-        .filter((r) => r.team_product.source_editor_product_id)
-        .map((r) => r.team_product.source_editor_product_id!),
-    ),
-  ];
-  const originWarehouseRows =
-    originSourceIds.length > 0
-      ? await prisma.editorProductWarehouse.findMany({
-          where: { month, editor_product_id: { in: originSourceIds } },
-          select: { editor_product_id: true, target_quantity: true },
-        })
-      : [];
   const originTargetByEditorProductId = new Map(
     originWarehouseRows.map((r) => [r.editor_product_id, r.target_quantity]),
   );
@@ -104,31 +131,6 @@ export async function loadProductQuotaState(
   }
 
   // ── Cá nhân (lane sáng tạo) ────────────────────────────────────────────────
-  const personalRows =
-    editorIds.length > 0
-      ? await prisma.editorProductWarehouse.findMany({
-          where: { month, editor_product: { user_id: { in: editorIds } } },
-          select: {
-            editor_product_id: true,
-            target_quantity: true,
-            editor_product: { select: { user_id: true } },
-          },
-        })
-      : [];
-  const personalProductIds = personalRows.map((r) => r.editor_product_id);
-  const personalDoneRows =
-    personalProductIds.length > 0
-      ? await prisma.task.groupBy({
-          by: ["editor_product_id", "assignee_id"],
-          where: {
-            assignee_id: { in: editorIds },
-            editor_product_id: { in: personalProductIds },
-            status: { not: "CANCELLED" },
-            assigned_at: { gte: monthStart },
-          },
-          _count: { id: true },
-        })
-      : [];
   const personalDoneMap = new Map<string, number>(); // `${editorId}:${productId}` -> done
   for (const r of personalDoneRows) {
     personalDoneMap.set(`${r.assignee_id}:${r.editor_product_id}`, r._count.id);
