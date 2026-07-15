@@ -84,10 +84,14 @@ export class KuaishouAiClientService {
     return data;
   }
 
-  async fetchSearch(keyword: string, count: number): Promise<{ videos: ParsedKuaishouSearchVideo[] }> {
+  async fetchSearch(
+    keyword: string,
+    count: number,
+    cursor?: string | null,
+  ): Promise<{ videos: ParsedKuaishouSearchVideo[]; cursor: string | null; has_more: boolean }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/kuaishou/fetch/search/`,
-      { keyword, count },
+      { keyword, count, cursor },
       { headers: this.authHeaders(), timeout: 120_000 },
     );
     return data;

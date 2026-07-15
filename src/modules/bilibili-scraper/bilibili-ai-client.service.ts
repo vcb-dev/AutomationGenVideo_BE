@@ -72,10 +72,14 @@ export class BilibiliAiClientService {
     return data;
   }
 
-  async fetchSearch(keyword: string, count: number): Promise<{ videos: ParsedBilibiliSearchVideo[] }> {
+  async fetchSearch(
+    keyword: string,
+    count: number,
+    cursor?: number | null,
+  ): Promise<{ videos: ParsedBilibiliSearchVideo[]; cursor: number; has_more: boolean }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/bilibili/fetch/search/`,
-      { keyword, count },
+      { keyword, count, cursor },
       { headers: this.authHeaders(), timeout: 120_000 },
     );
     return data;

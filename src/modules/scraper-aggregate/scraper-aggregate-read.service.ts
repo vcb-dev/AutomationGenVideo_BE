@@ -146,20 +146,38 @@ export class ScraperAggregateReadService {
     };
   }
 
-  async ownedChannelVideos(params: { page?: string; page_size?: string; q?: string; sort?: string; platform?: string }) {
+  async ownedChannelVideos(params: {
+    page?: string; page_size?: string; q?: string; sort?: string; platform?: string;
+    min_plays?: string; date_from?: string; date_to?: string;
+  }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
     const q = (params.q || '').trim();
     const sort = params.sort || 'date';
     const platform = (params.platform || '').trim();
+    const minPlays = parseIntOrDefault(params.min_plays);
+    const dateFrom = (params.date_from || '').trim();
+    const dateTo = (params.date_to || '').trim();
+
+    // Douyin/Xiaohongshu không có field view/play thật (TikHub không trả về) —
+    // play_count luôn hardcode 0 bên dưới, nên khi lọc theo min_plays > 0
+    // không có video nào của 2 nền tảng này thoả, bỏ qua hẳn để tránh query thừa.
+    const canHaveViews = minPlays === undefined || minPlays <= 0;
+
+    function dateRangeWhere(field: string): any {
+      if (!dateFrom && !dateTo) return {};
+      const range: any = {};
+      if (dateFrom) range.gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) range.lte = new Date(`${dateTo}T23:59:59.999Z`);
+      return { [field]: range };
+    }
 
     const items: Omit<UnifiedItem, 'author_id'>[] = [];
 
     if (!platform || platform === 'tiktok') {
-      const videos = await this.prisma.scraperTikTokProfileVideo.findMany({
-        where: { profile: { is_owned: true } },
-        include: { profile: true },
-      });
+      const where: any = { profile: { is_owned: true }, ...dateRangeWhere('date_posted') };
+      if (minPlays !== undefined) where.play_count = { gte: BigInt(minPlays) };
+      const videos = await this.prisma.scraperTikTokProfileVideo.findMany({ where, include: { profile: true } });
       for (const v of videos) {
         if (q && !unaccentMatch(v.description, q)) continue;
         items.push({
@@ -181,10 +199,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'instagram') {
-      const reels = await this.prisma.scraperInstagramReel.findMany({
-        where: { profile: { is_owned: true } },
-        include: { profile: true },
-      });
+      const where: any = { profile: { is_owned: true }, ...dateRangeWhere('date_posted') };
+      if (minPlays !== undefined) where.play_count = { gte: BigInt(minPlays) };
+      const reels = await this.prisma.scraperInstagramReel.findMany({ where, include: { profile: true } });
       for (const r of reels) {
         if (q && !unaccentMatch(r.description, q)) continue;
         items.push({
@@ -205,7 +222,7 @@ export class ScraperAggregateReadService {
       }
     }
 
-    if (!platform || platform === 'douyin') {
+    if ((!platform || platform === 'douyin') && canHaveViews) {
       const ownedProfiles = await this.prisma.scraperDouyinProfile.findMany({
         where: { is_owned: true, username: { not: '' } },
         select: { username: true },
@@ -213,7 +230,7 @@ export class ScraperAggregateReadService {
       const ownedKeywords = ownedProfiles.map((p) => `@${p.username}`);
       if (ownedKeywords.length) {
         const videos = await this.prisma.scraperDouyinVideo.findMany({
-          where: { search_keyword: { in: ownedKeywords } },
+          where: { search_keyword: { in: ownedKeywords }, ...dateRangeWhere('date_posted') },
         });
         for (const v of videos) {
           if (q && !unaccentMatch(v.description, q)) continue;
@@ -236,9 +253,9 @@ export class ScraperAggregateReadService {
       }
     }
 
-    if (!platform || platform === 'xiaohongshu') {
+    if ((!platform || platform === 'xiaohongshu') && canHaveViews) {
       const videos = await this.prisma.scraperXiaohongshuVideo.findMany({
-        where: { profile: { is_owned: true } },
+        where: { profile: { is_owned: true }, ...dateRangeWhere('date_posted') },
       });
       for (const v of videos) {
         const text = `${v.title || ''} ${v.description || ''}`;
@@ -262,10 +279,10 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'youtube') {
-      const shorts = await this.prisma.scraperYoutubeShort.findMany({
-        where: { profile: { is_owned: true } },
-        include: { profile: true },
-      });
+      // ScraperYoutubeShort không có date_posted riêng — dùng created_at (ngày cào về).
+      const where: any = { profile: { is_owned: true }, ...dateRangeWhere('created_at') };
+      if (minPlays !== undefined) where.view_count = { gte: BigInt(minPlays) };
+      const shorts = await this.prisma.scraperYoutubeShort.findMany({ where, include: { profile: true } });
       for (const s of shorts) {
         if (q && !unaccentMatch(s.title, q)) continue;
         items.push({
@@ -287,9 +304,10 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'facebook') {
-      const videos = await this.prisma.video_management_ownedvideocontent.findMany({
-        include: { managed_page: true },
-      });
+      // video_management_ownedvideocontent dùng published_at, không phải date_posted.
+      const where: any = { ...dateRangeWhere('published_at') };
+      if (minPlays !== undefined) where.view_count = { gte: BigInt(minPlays) };
+      const videos = await this.prisma.video_management_ownedvideocontent.findMany({ where, include: { managed_page: true } });
       for (const v of videos) {
         if (q && !unaccentMatch(v.caption, q)) continue;
         items.push({

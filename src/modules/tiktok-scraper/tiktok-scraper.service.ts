@@ -72,16 +72,39 @@ export class TiktokScraperService {
     return { created: true };
   }
 
+  // Dedup (post_id đã có trong DB) làm giảm số video MỚI thực sự ingest được so
+  // với `count` yêu cầu — TikHub tự trả đủ `count` item thô mỗi lần gọi, nhưng
+  // nhiều item trong đó có thể trùng với video đã cào trước (cùng keyword tìm
+  // lại thấy top result cũ). Vòng lặp dưới đây gọi tiếp AI với cursor nối tiếp
+  // (không lặp lại từ đầu) để bù phần bị trùng, tối đa MAX_ROUNDS lần.
+  private static readonly MAX_SEARCH_ROUNDS = 5;
+
   async searchKeyword(keyword: string, count = 30, region = 'VN'): Promise<{ created: number; updated: number }> {
-    const { videos } = await this.aiClient.fetchSearch(keyword, count, region);
     let created = 0;
     let updated = 0;
-    for (const v of videos) {
-      const r = await this.upsertVideo(v);
-      if (r.created) created++;
-      else updated++;
+    let cursor = 0;
+    let hasMore = true;
+    let round = 0;
+
+    for (; round < TiktokScraperService.MAX_SEARCH_ROUNDS && created < count && hasMore; round++) {
+      const remaining = count - created;
+      const { videos, cursor: nextCursor, has_more } = await this.aiClient.fetchSearch(keyword, remaining, region, cursor);
+      if (videos.length === 0) break;
+
+      for (const v of videos) {
+        const r = await this.upsertVideo(v);
+        if (r.created) created++;
+        else updated++;
+      }
+
+      cursor = nextCursor;
+      hasMore = has_more;
     }
-    this.logger.log(`[TIKTOK] Ingest '${keyword}': +${created} new, ~${updated} updated`);
+
+    // Log rõ lý do dừng để phân biệt "TikHub hết kết quả thật" (hasMore=false) vs
+    // "chạm giới hạn an toàn MAX_SEARCH_ROUNDS trong khi vẫn còn trang" (hasMore=true).
+    const stopReason = created >= count ? 'đủ count' : hasMore ? 'chạm MAX_SEARCH_ROUNDS' : 'TikHub hết kết quả (has_more=false)';
+    this.logger.log(`[TIKTOK] Ingest '${keyword}': +${created}/${count} new, ~${updated} updated, ${round} round(s), dừng vì: ${stopReason}`);
     return { created, updated };
   }
 
