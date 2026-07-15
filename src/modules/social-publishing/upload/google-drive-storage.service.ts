@@ -89,6 +89,17 @@ export class GoogleDriveStorageService {
     return subfolder ? this.getOrCreateFolder(dateFolderId, subfolder) : dateFolderId;
   }
 
+  /** Cây folder gom file theo LOẠI thay vì theo ngày: Root/{name}/{YYYY-MM-DD}/
+   * Dùng cho các file không gắn với user (audio TTS, ảnh cào...) để tất cả file
+   * cùng loại nằm chung 1 nơi, bên trong mới chia theo ngày — thay vì rải mỗi
+   * folder ngày một ít như resolveTargetFolder. */
+  async resolveDatedFolder(name: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const typeFolderId = await this.getOrCreateFolder(rootFolderId, name);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(typeFolderId, dateStr);
+  }
+
   private static readonly SCRAPER_ROOT_FOLDER_NAME = 'Scraper Cào Dữ Liệu';
 
   /** Cây folder RIÊNG cho ảnh cào dữ liệu: Root/Scraper Cào Dữ Liệu/{Platform}/{YYYY-MM-DD}/
@@ -243,6 +254,47 @@ export class GoogleDriveStorageService {
       url: directUrl,
       webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
+  }
+
+  /**
+   * Tải file từ một URL rồi upload lên Drive, trả về link công khai.
+   * Trả '' nếu thất bại (không throw) — caller tự fallback về URL gốc.
+   */
+  async uploadFromUrl(
+    sourceUrl: string,
+    filename: string,
+    mimetype: string,
+    opts?: { subfolder?: string; folderId?: string; timeoutMs?: number },
+  ): Promise<string> {
+    if (!sourceUrl || !this.isAvailable()) return '';
+
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        timeout: opts?.timeoutMs ?? 60_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+    } catch (err: any) {
+      this.logger.warn(`[GoogleDrive] uploadFromUrl download failed (${sourceUrl.slice(0, 80)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `dl_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const uploaded = await this.uploadFromPath(tmpPath, filename, mimetype, undefined, {
+        subfolder: opts?.subfolder,
+        folderId: opts?.folderId,
+      });
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[GoogleDrive] uploadFromUrl upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
   }
 
   /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền.

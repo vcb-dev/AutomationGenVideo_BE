@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AiIntegrationService } from './ai-integration.service';
 import { AiIntegrationController } from './ai-integration.controller';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 @Global()
 @Module({
@@ -13,7 +14,7 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
     PrismaModule,
   ],
   controllers: [AiIntegrationController],
-  providers: [AiIntegrationService],
+  providers: [AiIntegrationService, GoogleDriveStorageService],
   exports: [AiIntegrationService],
 })
 export class AiIntegrationModule {}

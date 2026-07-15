@@ -1914,13 +1914,14 @@ export class LarkService implements OnModuleInit {
                         authoritativeUser = this.resolveKnownIdentityAlias(nameKeyMatchMap, emailKeyMatchMap, nameKey, emailKey);
                     }
 
-                    if (authoritativeUser && !isActiveEmployeeStatus(authoritativeUser.employee_status || authoritativeUser.status)) {
+                    // Không có authoritativeUser = đã bị xóa cứng khỏi users (hoặc không khớp alias nào)
+                    // → không hồi sinh vào roster từ báo cáo cũ; OFF cũng loại như trước.
+                    if (!authoritativeUser || !isActiveEmployeeStatus(authoritativeUser.employee_status || authoritativeUser.status)) {
                         return;
                     }
 
-                    const pKey = authoritativeUser
-                        ? (authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name))
-                        : (emailKey || nameKey || `unknown_r_${r.id}`);
+                    const pKey = authoritativeUser.email?.toLowerCase().trim() || normName(authoritativeUser.full_name);
+                    if (!pKey) return;
 
                     // Checklist: users.team (supports multi-team). Fallback to report.team if user not found.
                     const checklistTeamStr =
@@ -2316,6 +2317,14 @@ export class LarkService implements OnModuleInit {
                     const rEmailKey = report.email ? report.email.toLowerCase().trim() : '';
                     const rNameKey = report.name ? report.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : '';
                     if (!rEmailKey && !rNameKey) return;
+
+                    // Người nộp phải còn là user active — user đã xóa (mềm/cứng) không được
+                    // hồi sinh từ báo cáo cũ (bộ lọc OFF phía dưới không thấy họ nên sẽ cho qua).
+                    let reporterUser = (rEmailKey ? emailKeyMatchMap.get(rEmailKey) : null) || (rNameKey ? nameKeyMatchMap.get(rNameKey) : null);
+                    if (!reporterUser) {
+                        reporterUser = this.resolveKnownIdentityAlias(nameKeyMatchMap, emailKeyMatchMap, rNameKey || null, rEmailKey || null);
+                    }
+                    if (!reporterUser || !isActiveEmployeeStatus(reporterUser.employee_status || reporterUser.status)) return;
 
                     const isAlreadyIncluded = allResults.some(r => {
                         if (!r) return false;

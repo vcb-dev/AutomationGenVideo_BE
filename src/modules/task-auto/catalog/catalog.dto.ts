@@ -7,6 +7,8 @@ import {
   IsInt,
   Min,
   IsArray,
+  IsNotEmpty,
+  ValidateIf,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -120,6 +122,7 @@ export class QueryProductDto {
 
 export class CreateContentDto {
   @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -135,6 +138,7 @@ export class CreateContentDto {
 
 export class UpdateContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -186,8 +190,8 @@ export class CreateSourceDto {
   type: string;
 
   @ApiProperty() @IsString() name: string;
-  @ApiProperty() @IsString() link: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
+  @ApiProperty() @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc' }) nas_link: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
@@ -253,6 +257,7 @@ export class CreateTeamContentDto {
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -265,6 +270,7 @@ export class CreateTeamContentDto {
 export class UpdateTeamContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -286,7 +292,8 @@ export class CreateTeamSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_source_id trống)' })
+  @ValidateIf(o => !o.source_source_id) @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc khi tạo mới' }) nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string;
@@ -390,6 +397,7 @@ export class CreateEditorContentDto {
 
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -402,6 +410,7 @@ export class CreateEditorContentDto {
 export class UpdateEditorContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
@@ -435,7 +444,8 @@ export class CreateEditorSourceDto {
   @IsEnum(['PRODUCT_STOCK', 'COLLECTED', 'OUTRO', 'WORKSHOP', 'HUYK']) @IsOptional() type?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() link?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() nas_link?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_source_id trống)' })
+  @ValidateIf(o => !o.source_source_id) @IsString() @IsNotEmpty({ message: 'Link ổ NAS là bắt buộc khi tạo mới' }) nas_link?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string;
