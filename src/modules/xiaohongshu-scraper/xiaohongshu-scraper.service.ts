@@ -217,13 +217,14 @@ export class XiaohongshuScraperService {
     const result = await this.ingestProfileVideosSync(freshProfile, 20);
 
     if (result.videos_returned === 0) {
-      await this.prisma.scraperXiaohongshuProfile.update({
-        where: { id: profile.id },
-        data: {
-          scraping_status: 'idle',
-          scrape_error: 'Không có video được trả về (user không tồn tại hoặc không có video)',
-        },
-      });
+      if (wasCreated) {
+        await this.prisma.scraperXiaohongshuProfile.delete({ where: { id: profile.id } }).catch(() => {});
+      } else {
+        await this.prisma.scraperXiaohongshuProfile.update({
+          where: { id: profile.id },
+          data: { scraping_status: 'idle', scrape_error: 'Không có video được trả về (user không tồn tại hoặc không có video)' },
+        });
+      }
       throw new HttpException({ error: 'Không tìm thấy video cho user_id này' }, HttpStatus.NOT_FOUND);
     }
 

@@ -295,13 +295,14 @@ export class TiktokScraperService {
     const result = await this.ingestProfilePostsSync(freshProfile, 20);
 
     if (result.items_returned === 0) {
-      await this.prisma.scraperTikTokProfile.update({
-        where: { id: profile.id },
-        data: {
-          scraping_status: 'idle',
-          scrape_error: 'TikHub không trả về posts (profile không có video hoặc username không tồn tại)',
-        },
-      });
+      if (wasCreated) {
+        await this.prisma.scraperTikTokProfile.delete({ where: { id: profile.id } }).catch(() => {});
+      } else {
+        await this.prisma.scraperTikTokProfile.update({
+          where: { id: profile.id },
+          data: { scraping_status: 'idle', scrape_error: 'TikHub không trả về posts (profile không có video hoặc username không tồn tại)' },
+        });
+      }
       throw new HttpException({ error: 'Không tìm thấy posts cho username này' }, HttpStatus.NOT_FOUND);
     }
 

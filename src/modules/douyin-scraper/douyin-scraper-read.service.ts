@@ -91,7 +91,7 @@ export class DouyinScraperReadService {
   async keywordSuggest(q: string) {
     const groups = await this.prisma.scraperDouyinVideo.groupBy({
       by: ['search_keyword'],
-      where: { NOT: { search_keyword: '' } },
+      where: { NOT: [{ search_keyword: '' }, { search_keyword: { startsWith: '@' } }] },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 50,

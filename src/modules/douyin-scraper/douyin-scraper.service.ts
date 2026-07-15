@@ -176,6 +176,7 @@ export class DouyinScraperService {
     // Profile mới → cào đồng bộ 20 video đầu (await) để trả dữ liệu ngay
     const result = await this.scrapeProfileVideos(profile.id, 20);
     if (result.videos_returned === 0) {
+      await this.prisma.scraperDouyinProfile.delete({ where: { id: profile.id } }).catch(() => {});
       throw new HttpException({ error: 'Không tìm thấy video cho sec_user_id này' }, HttpStatus.NOT_FOUND);
     }
 

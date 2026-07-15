@@ -224,13 +224,14 @@ export class InstagramScraperService {
     const result = await this.ingestProfileReelsSync(freshProfile, 20);
 
     if (result.items_returned === 0) {
-      await this.prisma.scraperInstagramProfile.update({
-        where: { id: profile.id },
-        data: {
-          scraping_status: 'idle',
-          scrape_error: 'TikHub không trả về reels (profile không có video hoặc là private)',
-        },
-      });
+      if (wasCreated) {
+        await this.prisma.scraperInstagramProfile.delete({ where: { id: profile.id } }).catch(() => {});
+      } else {
+        await this.prisma.scraperInstagramProfile.update({
+          where: { id: profile.id },
+          data: { scraping_status: 'idle', scrape_error: 'TikHub không trả về reels (profile không có video hoặc là private)' },
+        });
+      }
       throw new HttpException({ error: 'Không tìm thấy reels cho username này' }, HttpStatus.NOT_FOUND);
     }
 
