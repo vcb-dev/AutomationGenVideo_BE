@@ -8,6 +8,7 @@ import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, Updat
 import { Prisma, UserRole } from '@prisma/client'
 import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
+import { findProductBySku, findTeamProductBySku, backfillTeamSourcesForNewTeamProduct } from '../../../common/utils/catalog-link.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -274,6 +275,12 @@ export class TaskAutoTeamsService {
     })
   }
 
+  private async assertTeamProductSkuAvailable(teamId: string, sku?: string | null) {
+    if (!sku) return
+    const exists = await this.prisma.teamProduct.findFirst({ where: { team_id: teamId, sku }, select: { id: true } })
+    if (exists) throw new ConflictException(`Mã sản phẩm "${sku}" đã tồn tại trong kho team`)
+  }
+
   async addTeamProduct(teamId: string, dto: CreateTeamProductDto, userId: string, userRoles: string[]) {
     const team = await this.findOne(teamId)
     this.assertCanManageProduct(team, userId, userRoles, 'add')
@@ -281,8 +288,9 @@ export class TaskAutoTeamsService {
     if (dto.source_product_id) {
       const source = await resolveProductSnapshot(this.prisma, dto.source_product_id)
       if (!source) throw new NotFoundException('Không tìm thấy sản phẩm gốc')
+      await this.assertTeamProductSkuAvailable(teamId, source.sku)
 
-      return this.prisma.teamProduct.create({
+      const teamProduct = await this.prisma.teamProduct.create({
         data: {
           team_id: teamId, source_product_id: source.id, sku: source.sku, name: source.name,
           brand_type: source.brand_type, image_url: source.image_url, image_urls: source.image_urls,
@@ -294,13 +302,16 @@ export class TaskAutoTeamsService {
         },
         include: this.teamProductInclude,
       })
+      await backfillTeamSourcesForNewTeamProduct(this.prisma, teamId, teamProduct.sku, teamProduct.id)
+      return teamProduct
     }
 
     if (!dto.name)       throw new BadRequestException('Tên sản phẩm là bắt buộc')
     if (!dto.brand_type) throw new BadRequestException('brand_type là bắt buộc khi tạo mới')
     const sku = dto.sku ?? `TEAM-${teamId.slice(0, 6)}-${Date.now()}`
+    await this.assertTeamProductSkuAvailable(teamId, sku)
 
-    return this.prisma.teamProduct.create({
+    const teamProduct = await this.prisma.teamProduct.create({
       data: {
         team_id: teamId, sku, name: dto.name, brand_type: dto.brand_type,
         image_url: dto.image_url, image_urls: dto.image_urls ?? [], price: dto.price,
@@ -312,6 +323,8 @@ export class TaskAutoTeamsService {
       },
       include: this.teamProductInclude,
     })
+    await backfillTeamSourcesForNewTeamProduct(this.prisma, teamId, teamProduct.sku, teamProduct.id)
+    return teamProduct
   }
 
   async updateTeamProduct(teamId: string, teamProductId: string, dto: UpdateTeamProductDto, userId: string, userRoles: string[]) {
@@ -557,12 +570,15 @@ export class TaskAutoTeamsService {
         const exists = await this.prisma.product.findUnique({ where: { id: src.product_id }, select: { id: true } })
         linkedProductId = exists ? src.product_id : null
       }
+      // Chưa có link tới kho tổng (vd source gốc tạo trước khi có product trùng mã) → thử khớp lại theo mã.
+      linkedProductId = linkedProductId ?? (await findProductBySku(this.prisma, src.code))?.id ?? null
+      const teamProductId = dto.team_product_id ?? (await findTeamProductBySku(this.prisma, teamId, src.code))?.id ?? null
 
       return this.prisma.teamSource.create({
         data: {
           team_id: teamId, source_source_id: src.id, brand_type: src.brand_type,
           type: src.type, name: src.name, link: src.link, nas_link: src.nas_link, code: src.code,
-          product_id: linkedProductId, is_active: src.is_active, added_by_id: userId,
+          product_id: linkedProductId, team_product_id: teamProductId, is_active: src.is_active, added_by_id: userId,
         },
         include: this.teamSourceInclude,
       })
@@ -572,11 +588,13 @@ export class TaskAutoTeamsService {
     if (!dto.nas_link)   throw new BadRequestException('Link ổ NAS là bắt buộc khi tạo mới')
     if (!dto.type)       throw new BadRequestException('Loại source là bắt buộc khi tạo mới')
     if (!dto.brand_type) throw new BadRequestException('brand_type là bắt buộc khi tạo mới')
+    const productId = dto.product_id || (await findProductBySku(this.prisma, dto.code))?.id || null
+    const teamProductId = dto.team_product_id || (await findTeamProductBySku(this.prisma, teamId, dto.code))?.id || null
     return this.prisma.teamSource.create({
       data: {
         team_id: teamId, brand_type: dto.brand_type, type: dto.type as any,
         name: dto.name, link: dto.link || null, nas_link: dto.nas_link, code: dto.code,
-        product_id: dto.product_id || null, team_product_id: dto.team_product_id || null,
+        product_id: productId, team_product_id: teamProductId,
         is_active: dto.is_active ?? true, added_by_id: userId,
       },
       include: this.teamSourceInclude,
@@ -590,6 +608,17 @@ export class TaskAutoTeamsService {
     const entry = await this.prisma.teamSource.findFirst({ where: { id: teamSourceId, team_id: teamId } })
     if (!entry) throw new NotFoundException('Source không có trong kho team')
 
+    let autoProductId: string | undefined
+    let autoTeamProductId: string | undefined
+    if (dto.code !== undefined) {
+      if (dto.product_id === undefined && entry.product_id == null) {
+        autoProductId = (await findProductBySku(this.prisma, dto.code))?.id
+      }
+      if (dto.team_product_id === undefined && entry.team_product_id == null) {
+        autoTeamProductId = (await findTeamProductBySku(this.prisma, teamId, dto.code))?.id
+      }
+    }
+
     return this.prisma.teamSource.update({
       where: { id: teamSourceId },
       data: {
@@ -601,6 +630,8 @@ export class TaskAutoTeamsService {
         ...(dto.code !== undefined            && { code: dto.code }),
         ...(dto.product_id !== undefined      && { product_id:      dto.product_id      ?? null }),
         ...(dto.team_product_id !== undefined && { team_product_id: dto.team_product_id ?? null }),
+        ...(autoProductId               && { product_id: autoProductId }),
+        ...(autoTeamProductId           && { team_product_id: autoTeamProductId }),
         ...(dto.is_active !== undefined       && { is_active: dto.is_active }),
       },
       include: this.teamSourceInclude,

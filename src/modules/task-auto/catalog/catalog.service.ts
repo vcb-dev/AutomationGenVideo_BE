@@ -12,6 +12,12 @@ import {
   resolveProductSnapshot,
   resolveContentSnapshot,
 } from "../../../common/utils/catalog-resolve.util";
+import {
+  findProductBySku,
+  findEditorProductBySku,
+  backfillSourcesForNewGlobalProduct,
+  backfillEditorSourcesForNewEditorProduct,
+} from "../../../common/utils/catalog-link.util";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import {
   CreateProductDto,
@@ -173,7 +179,7 @@ export class TaskAutoCatalogService {
       where: { sku: dto.sku },
     });
     if (exists) throw new ConflictException(`SKU "${dto.sku}" already exists`);
-    return this.prisma.product.create({
+    const product = await this.prisma.product.create({
       data: { ...dto, added_by_id: userId },
       include: {
         product_line: true,
@@ -181,6 +187,9 @@ export class TaskAutoCatalogService {
         classification: true,
       },
     });
+    // Liên kết ngược mọi source (kho tổng/team/cá nhân) đang treo trùng mã sku này.
+    await backfillSourcesForNewGlobalProduct(this.prisma, product.sku, product.id);
+    return product;
   }
 
   async updateProduct(id: string, dto: UpdateProductDto) {
@@ -630,9 +639,13 @@ export class TaskAutoCatalogService {
     userRoles: string[] = [],
   ) {
     const { team_id, ...rest } = dto;
+    // Nếu chưa chỉ định product_id tường minh, thử tự khớp theo mã (code == sku).
+    const linkedProductId =
+      dto.product_id ?? (await findProductBySku(this.prisma, dto.code))?.id ?? undefined;
     const source = await this.prisma.source.create({
       data: {
         ...rest,
+        product_id: linkedProductId,
         is_active: dto.is_active ?? true,
         added_by_id: userId,
         type: dto.type as any,
@@ -666,13 +679,19 @@ export class TaskAutoCatalogService {
   ) {
     const existing = await this.prisma.source.findUnique({
       where: { id },
-      select: { ordered_team_id: true },
+      select: { ordered_team_id: true, product_id: true },
     });
     if (!existing) throw new NotFoundException("Source not found");
     const { team_id, ...rest } = dto;
     const teamIdProvided = Object.prototype.hasOwnProperty.call(dto, "team_id");
     const oldTeamId = existing.ordered_team_id;
     const newTeamId = team_id ?? null;
+
+    // Chưa liên kết product và người dùng vừa sửa code → thử tự khớp lại theo mã.
+    if (dto.code !== undefined && dto.product_id === undefined && existing.product_id == null) {
+      const matched = await findProductBySku(this.prisma, dto.code);
+      if (matched) rest.product_id = matched.id;
+    }
 
     if (teamIdProvided && newTeamId !== oldTeamId) {
       // Tạo bản copy ở team mới trước — nếu bị từ chối quyền thì không đụng tới bản ở team cũ
@@ -777,16 +796,27 @@ export class TaskAutoCatalogService {
     return p;
   }
 
+  private async assertEditorProductSkuAvailable(userId: string, sku?: string | null) {
+    if (!sku) return;
+    const exists = await this.prisma.editorProduct.findFirst({
+      where: { user_id: userId, sku },
+      select: { id: true },
+    });
+    if (exists) throw new ConflictException(`Mã sản phẩm "${sku}" đã tồn tại trong kho cá nhân`);
+  }
+
   async createEditorProduct(userId: string, dto: CreateEditorProductDto) {
     if (dto.source_product_id) {
       const src = await resolveProductSnapshot(this.prisma, dto.source_product_id);
       if (!src) throw new NotFoundException("Source product not found");
-      return this.prisma.editorProduct.create({
+      const sku = dto.sku ?? src.sku;
+      await this.assertEditorProductSkuAvailable(userId, sku);
+      const ep = await this.prisma.editorProduct.create({
         data: {
           user_id: userId,
           added_by_id: userId,
           source_product_id: src.id,
-          sku: dto.sku ?? src.sku,
+          sku,
           name: dto.name ?? src.name,
           brand_type: (dto.brand_type ?? src.brand_type) as any,
           image_url: dto.image_url ?? src.image_url,
@@ -803,13 +833,17 @@ export class TaskAutoCatalogService {
         },
         include: { product_line: true, material: true, classification: true },
       });
+      await backfillEditorSourcesForNewEditorProduct(this.prisma, userId, ep.sku, ep.id);
+      return ep;
     }
 
-    return this.prisma.editorProduct.create({
+    const sku = dto.sku ?? `EP-${Date.now()}`;
+    await this.assertEditorProductSkuAvailable(userId, sku);
+    const ep = await this.prisma.editorProduct.create({
       data: {
         user_id: userId,
         added_by_id: userId,
-        sku: dto.sku ?? `EP-${Date.now()}`,
+        sku,
         name: dto.name ?? "",
         brand_type: (dto.brand_type ?? "DO_DA") as any,
         image_url: dto.image_url,
@@ -826,6 +860,8 @@ export class TaskAutoCatalogService {
       },
       include: { product_line: true, material: true, classification: true },
     });
+    await backfillEditorSourcesForNewEditorProduct(this.prisma, userId, ep.sku, ep.id);
+    return ep;
   }
 
   /** Lean ownership check — chỉ SELECT user_id thay vì tải cả EditorProduct với đầy đủ quan hệ. */
@@ -1081,6 +1117,11 @@ export class TaskAutoCatalogService {
         where: { id: dto.source_source_id },
       });
       if (!src) throw new NotFoundException("Source not found");
+      const code = dto.code ?? src.code;
+      const productId =
+        dto.product_id ?? src.product_id ?? (await findProductBySku(this.prisma, code))?.id ?? undefined;
+      const editorProductId =
+        dto.editor_product_id ?? (await findEditorProductBySku(this.prisma, userId, code))?.id ?? undefined;
       return this.prisma.editorSource.create({
         data: {
           user_id: userId,
@@ -1091,9 +1132,9 @@ export class TaskAutoCatalogService {
           name: dto.name ?? src.name,
           link: dto.link ?? src.link,
           nas_link: dto.nas_link ?? src.nas_link,
-          code: dto.code ?? src.code,
-          product_id: dto.product_id ?? src.product_id,
-          editor_product_id: dto.editor_product_id,
+          code,
+          product_id: productId,
+          editor_product_id: editorProductId,
           is_active: dto.is_active ?? true,
         },
         include: {
@@ -1104,6 +1145,10 @@ export class TaskAutoCatalogService {
       });
     }
 
+    const productId =
+      dto.product_id ?? (await findProductBySku(this.prisma, dto.code))?.id ?? undefined;
+    const editorProductId =
+      dto.editor_product_id ?? (await findEditorProductBySku(this.prisma, userId, dto.code))?.id ?? undefined;
     return this.prisma.editorSource.create({
       data: {
         user_id: userId,
@@ -1114,8 +1159,8 @@ export class TaskAutoCatalogService {
         link: dto.link ?? "",
         nas_link: dto.nas_link,
         code: dto.code,
-        product_id: dto.product_id,
-        editor_product_id: dto.editor_product_id,
+        product_id: productId,
+        editor_product_id: editorProductId,
         is_active: dto.is_active ?? true,
       },
       include: {
@@ -1152,11 +1197,28 @@ export class TaskAutoCatalogService {
     roles: string[],
   ) {
     await this.assertEditorSourceOwner(id, requesterId, roles);
+    const data: any = { ...dto };
+    if (dto.code !== undefined) {
+      const entry = await this.prisma.editorSource.findUnique({
+        where: { id },
+        select: { user_id: true, product_id: true, editor_product_id: true },
+      });
+      if (entry) {
+        if (dto.product_id === undefined && entry.product_id == null) {
+          const matched = await findProductBySku(this.prisma, dto.code);
+          if (matched) data.product_id = matched.id;
+        }
+        if (dto.editor_product_id === undefined && entry.editor_product_id == null) {
+          const matched = await findEditorProductBySku(this.prisma, entry.user_id, dto.code);
+          if (matched) data.editor_product_id = matched.id;
+        }
+      }
+    }
     return runOrNotFound(
       () =>
         this.prisma.editorSource.update({
           where: { id },
-          data: dto as any,
+          data,
           include: {
             product: { select: { id: true, name: true } },
             editor_product: { select: { id: true, name: true } },
