@@ -50,7 +50,9 @@ export class TaskAutoTasksService {
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
   // (create/update/submit/review) trả về task để FE cập nhật cache/detail panel.
   private taskDetailInclude = {
-    team: { select: { id: true, name: true } },
+    // leader_id thêm vào đây để update()/submit() đọc trực tiếp từ `updated.team.leader_id`
+    // thay vì phải query lại team.findUnique riêng chỉ để lấy leader_id (xem bên dưới).
+    team: { select: { id: true, name: true, leader_id: true } },
     content: {
       select: {
         id: true,
@@ -701,7 +703,10 @@ export class TaskAutoTasksService {
     userId: string,
     roles: string[],
   ) {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { task_type: true, assignee_id: true, status: true, team_id: true },
+    });
     if (!task) throw new NotFoundException("Task not found");
 
     if (
@@ -780,13 +785,10 @@ export class TaskAutoTasksService {
       );
     }
     if (dto.status === "SUBMITTED" && task.assignee_id) {
-      const team = await this.prisma.team.findUnique({
-        where: { id: task.team_id },
-        select: { leader_id: true },
-      });
-      if (team?.leader_id) {
+      // updated.team đã có leader_id sẵn từ taskDetailInclude — không cần query team lại.
+      if (updated.team.leader_id) {
         await this.notify(
-          team.leader_id,
+          updated.team.leader_id,
           "TASK_SUBMITTED",
           "Task đã được nộp",
           id,
@@ -814,7 +816,10 @@ export class TaskAutoTasksService {
   }
 
   async submit(id: string, dto: SubmitTaskDto, userId: string) {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { assignee_id: true, status: true },
+    });
     if (!task) throw new NotFoundException("Task not found");
     if (task.assignee_id !== userId)
       throw new ForbiddenException("Not your task");
@@ -832,13 +837,10 @@ export class TaskAutoTasksService {
       include: this.taskDetailInclude,
     });
 
-    const team = await this.prisma.team.findUnique({
-      where: { id: task.team_id },
-      select: { leader_id: true },
-    });
-    if (team?.leader_id) {
+    // updated.team đã có leader_id sẵn từ taskDetailInclude — không cần query team lại.
+    if (updated.team.leader_id) {
       await this.notify(
-        team.leader_id,
+        updated.team.leader_id,
         "TASK_SUBMITTED",
         "Task đã được nộp",
         id,
@@ -849,7 +851,10 @@ export class TaskAutoTasksService {
   }
 
   async review(id: string, dto: ReviewTaskDto, reviewerId: string) {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { status: true, assignee_id: true },
+    });
     if (!task) throw new NotFoundException("Task not found");
     if (task.status !== "SUBMITTED") {
       throw new BadRequestException("Task is not in SUBMITTED state");
@@ -1206,7 +1211,10 @@ export class TaskAutoTasksService {
   }
 
   async remove(id: string) {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { status: true },
+    });
     if (!task) throw new NotFoundException("Task not found");
     if (["APPROVED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Cannot delete a task in this state");

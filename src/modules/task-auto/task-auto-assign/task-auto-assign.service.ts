@@ -231,22 +231,16 @@ export class TaskAutoAssignService {
     deadline: Date,
     defaultCooldownDays: number,
   ): Promise<TeamResult> {
-    const editors = await loadEligibleEditors(
-      this.prisma,
-      teamId,
-      now,
-      month,
-      monthStart,
-    );
+    // loadTeamQuotaWeights chỉ phụ thuộc teamId/month, không phụ thuộc danh sách editor —
+    // chạy song song với loadEligibleEditors thay vì chờ tuần tự.
+    const [editors, { contentWeights, productWeights }] = await Promise.all([
+      loadEligibleEditors(this.prisma, teamId, now, month, monthStart),
+      this.loadTeamQuotaWeights(teamId, month),
+    ]);
     if (!editors.length) {
       this.logger.log(`Team ${teamId}: no eligible editors`);
       return { assigned: 0, skipped: 0 };
     }
-
-    const { contentWeights, productWeights } = await this.loadTeamQuotaWeights(
-      teamId,
-      month,
-    );
 
     const editorIds = editors.map((e) => e.userId);
 
@@ -583,26 +577,83 @@ export class TaskAutoAssignService {
     personalContentsByEditor: Map<string, ContentPoolItem[]>;
     personalProductsByEditor: Map<string, ProductPoolItem[]>;
   }> {
-    // ── Team content ──────────────────────────────────────────────────────
-    const teamContentsRaw = await this.prisma.teamContent.findMany({
-      where: {
-        team_id: teamId,
-        status: { not: "ARCHIVED" },
-        brand_type: brandType,
-        warehouses: { some: { month } },
-      },
-      select: {
-        id: true,
-        content_line_id: true,
-        source_content_id: true,
-        source_editor_content_id: true,
-        source_editor_content: {
-          select: { content_line_id: true, source_content_id: true },
-        },
-        added_at: true,
-      },
-      orderBy: { added_at: "asc" },
-    });
+    // Đợt 1: 4 lookup không phụ thuộc nhau (team/personal content/product) — chạy song song.
+    // (global content/product phải chờ đợt 1 vì cần loại trừ id đã có trong kho team, xem dưới.)
+    const [teamContentsRaw, teamProductsRaw, personalContentsRaw, personalProductsRaw] =
+      await Promise.all([
+        this.prisma.teamContent.findMany({
+          where: {
+            team_id: teamId,
+            status: { not: "ARCHIVED" },
+            brand_type: brandType,
+            warehouses: { some: { month } },
+          },
+          select: {
+            id: true,
+            content_line_id: true,
+            source_content_id: true,
+            source_editor_content_id: true,
+            source_editor_content: {
+              select: { content_line_id: true, source_content_id: true },
+            },
+            added_at: true,
+          },
+          orderBy: { added_at: "asc" },
+        }),
+        this.prisma.teamProduct.findMany({
+          where: {
+            team_id: teamId,
+            is_active: true,
+            brand_type: brandType,
+            warehouses: { some: { month } },
+          },
+          select: {
+            id: true,
+            product_line_id: true,
+            priority_score: true,
+            cooldown_days: true,
+            source_product_id: true,
+            source_editor_product_id: true,
+            source_editor_product: {
+              select: { product_line_id: true, source_product_id: true },
+            },
+          },
+          orderBy: { priority_score: "desc" },
+        }),
+        this.prisma.editorContent.findMany({
+          where: {
+            user_id: { in: editorIds },
+            status: { not: "ARCHIVED" },
+            brand_type: brandType,
+            warehouses: { some: { month } },
+          },
+          select: {
+            id: true,
+            content_line_id: true,
+            source_content_id: true,
+            user_id: true,
+          },
+          orderBy: { added_at: "asc" },
+        }),
+        this.prisma.editorProduct.findMany({
+          where: {
+            user_id: { in: editorIds },
+            is_active: true,
+            brand_type: brandType,
+            warehouses: { some: { month } },
+          },
+          select: {
+            id: true,
+            product_line_id: true,
+            priority_score: true,
+            cooldown_days: true,
+            user_id: true,
+            source_product_id: true,
+          },
+          orderBy: { priority_score: "desc" },
+        }),
+      ]);
+
     const teamContentPool: ContentPoolItem[] = teamContentsRaw.map((tc) => ({
       id: tc.id,
       content_line_id:
@@ -619,60 +670,6 @@ export class TaskAutoAssignService {
         .map((tc) => tc.source_content_id!),
     );
 
-    // ── Global content ────────────────────────────────────────────────────
-    const allGlobalContents = await this.prisma.content.findMany({
-      where: {
-        status: { not: "ARCHIVED" },
-        brand_type: brandType,
-        warehouses: { some: { month } },
-        ...(teamSourceContentIds.size > 0
-          ? { NOT: { id: { in: [...teamSourceContentIds] } } }
-          : {}),
-      },
-      select: {
-        id: true,
-        content_line_id: true,
-        source_team_content: {
-          select: {
-            content_line_id: true,
-            source_editor_content: { select: { content_line_id: true } },
-          },
-        },
-      },
-      orderBy: { created_at: "asc" },
-    });
-    const globalContentPool: ContentPoolItem[] = allGlobalContents.map((c) => ({
-      id: c.id,
-      content_line_id:
-        c.content_line_id ??
-        c.source_team_content?.content_line_id ??
-        c.source_team_content?.source_editor_content?.content_line_id ??
-        null,
-      source: "global" as const,
-      source_content_id: null,
-    }));
-
-    // ── Team product ──────────────────────────────────────────────────────
-    const teamProductsRaw = await this.prisma.teamProduct.findMany({
-      where: {
-        team_id: teamId,
-        is_active: true,
-        brand_type: brandType,
-        warehouses: { some: { month } },
-      },
-      select: {
-        id: true,
-        product_line_id: true,
-        priority_score: true,
-        cooldown_days: true,
-        source_product_id: true,
-        source_editor_product_id: true,
-        source_editor_product: {
-          select: { product_line_id: true, source_product_id: true },
-        },
-      },
-      orderBy: { priority_score: "desc" },
-    });
     const teamProductPool: ProductPoolItem[] = teamProductsRaw.map((tp) => ({
       id: tp.id,
       product_line_id:
@@ -691,30 +688,64 @@ export class TaskAutoAssignService {
         .map((tp) => tp.source_product_id!),
     );
 
-    // ── Global product ────────────────────────────────────────────────────
-    const globalProductsRaw = await this.prisma.product.findMany({
-      where: {
-        is_active: true,
-        brand_type: brandType,
-        warehouses: { some: { month } },
-        ...(teamSourceProductIds.size > 0
-          ? { NOT: { id: { in: [...teamSourceProductIds] } } }
-          : {}),
-      },
-      select: {
-        id: true,
-        product_line_id: true,
-        priority_score: true,
-        cooldown_days: true,
-        source_team_product: {
-          select: {
-            product_line_id: true,
-            source_editor_product: { select: { product_line_id: true } },
+    // Đợt 2: global content/product — 2 lookup độc lập nhau (chỉ cùng phụ thuộc kết quả đợt 1
+    // để loại trừ id đã có trong kho team).
+    const [allGlobalContents, globalProductsRaw] = await Promise.all([
+      this.prisma.content.findMany({
+        where: {
+          status: { not: "ARCHIVED" },
+          brand_type: brandType,
+          warehouses: { some: { month } },
+          ...(teamSourceContentIds.size > 0
+            ? { NOT: { id: { in: [...teamSourceContentIds] } } }
+            : {}),
+        },
+        select: {
+          id: true,
+          content_line_id: true,
+          source_team_content: {
+            select: {
+              content_line_id: true,
+              source_editor_content: { select: { content_line_id: true } },
+            },
           },
         },
-      },
-      orderBy: { priority_score: "desc" },
-    });
+        orderBy: { created_at: "asc" },
+      }),
+      this.prisma.product.findMany({
+        where: {
+          is_active: true,
+          brand_type: brandType,
+          warehouses: { some: { month } },
+          ...(teamSourceProductIds.size > 0
+            ? { NOT: { id: { in: [...teamSourceProductIds] } } }
+            : {}),
+        },
+        select: {
+          id: true,
+          product_line_id: true,
+          priority_score: true,
+          cooldown_days: true,
+          source_team_product: {
+            select: {
+              product_line_id: true,
+              source_editor_product: { select: { product_line_id: true } },
+            },
+          },
+        },
+        orderBy: { priority_score: "desc" },
+      }),
+    ]);
+    const globalContentPool: ContentPoolItem[] = allGlobalContents.map((c) => ({
+      id: c.id,
+      content_line_id:
+        c.content_line_id ??
+        c.source_team_content?.content_line_id ??
+        c.source_team_content?.source_editor_content?.content_line_id ??
+        null,
+      source: "global" as const,
+      source_content_id: null,
+    }));
     const globalProductPool: ProductPoolItem[] = globalProductsRaw.map((p) => ({
       id: p.id,
       product_line_id:
@@ -728,22 +759,6 @@ export class TaskAutoAssignService {
       source_product_id: null,
     }));
 
-    // ── Personal content per editor ───────────────────────────────────────
-    const personalContentsRaw = await this.prisma.editorContent.findMany({
-      where: {
-        user_id: { in: editorIds },
-        status: { not: "ARCHIVED" },
-        brand_type: brandType,
-        warehouses: { some: { month } },
-      },
-      select: {
-        id: true,
-        content_line_id: true,
-        source_content_id: true,
-        user_id: true,
-      },
-      orderBy: { added_at: "asc" },
-    });
     const personalContentsByEditor = new Map<string, ContentPoolItem[]>();
     for (const c of personalContentsRaw) {
       if (!personalContentsByEditor.has(c.user_id))
@@ -756,24 +771,6 @@ export class TaskAutoAssignService {
       });
     }
 
-    // ── Personal product per editor ───────────────────────────────────────
-    const personalProductsRaw = await this.prisma.editorProduct.findMany({
-      where: {
-        user_id: { in: editorIds },
-        is_active: true,
-        brand_type: brandType,
-        warehouses: { some: { month } },
-      },
-      select: {
-        id: true,
-        product_line_id: true,
-        priority_score: true,
-        cooldown_days: true,
-        user_id: true,
-        source_product_id: true,
-      },
-      orderBy: { priority_score: "desc" },
-    });
     const personalProductsByEditor = new Map<string, ProductPoolItem[]>();
     for (const p of personalProductsRaw) {
       if (!personalProductsByEditor.has(p.user_id))

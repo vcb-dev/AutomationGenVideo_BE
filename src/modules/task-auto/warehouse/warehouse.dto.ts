@@ -28,6 +28,22 @@ export class GetWarehouseQuery {
   @IsEnum(BRAND_TYPES)
   @IsOptional()
   brand_type?: BrandType;
+
+  // Không truyền → service trả mảng đầy đủ như cũ (tương thích ngược). Chỉ phân trang khi
+  // caller chủ động truyền page.
+  @ApiPropertyOptional({ description: "Trang (bỏ qua = lấy toàn bộ, không phân trang)" })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  page?: number;
+
+  @ApiPropertyOptional({ description: "Số dòng mỗi trang (mặc định 50 khi có page)" })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  limit?: number;
 }
 
 export class AddToWarehouseDto {

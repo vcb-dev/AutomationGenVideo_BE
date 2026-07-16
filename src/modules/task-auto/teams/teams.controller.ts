@@ -107,8 +107,15 @@ export class TaskAutoTeamsController {
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
+    @Query("search") search?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("product_line_id") productLineId?: string,
   ) {
-    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId);
+    // Không truyền page → service trả mảng đầy đủ như cũ (tương thích ngược cho các nơi
+    // cần lấy hết, vd dropdown chọn sản phẩm khi tạo task).
+    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, product_line_id: productLineId } : undefined;
+    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId, opts);
   }
 
   @Post("teams/:id/products")
@@ -169,8 +176,14 @@ export class TaskAutoTeamsController {
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
+    @Query("search") search?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("content_line_id") contentLineId?: string,
+    @Query("market") market?: string,
   ) {
-    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId);
+    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market } : undefined;
+    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts);
   }
 
   @Post("teams/:id/contents")
@@ -232,8 +245,14 @@ export class TaskAutoTeamsController {
     @Query("product_id") productId?: string,
     @Query("team_product_id") teamProductId?: string,
     @Query("month") month?: string,
+    @Query("search") search?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("type") type?: string,
+    @Query("added_by_id") addedById?: string,
   ) {
-    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month);
+    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, type, added_by_id: addedById } : undefined;
+    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month, opts);
   }
 
   @Post("teams/:id/sources")

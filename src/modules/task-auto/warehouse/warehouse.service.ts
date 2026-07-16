@@ -7,6 +7,7 @@ import {
 import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
 import { PrismaService } from "@/common/prisma/prisma.service";
+import { Semaphore } from "@/common/utils/semaphore";
 import {
   AddToWarehouseDto,
   AddProductsToWarehouseDto,
@@ -34,13 +35,26 @@ function normalizeProductItems(
 @Injectable()
 export class TaskAutoWarehouseService {
   private readonly logger = new Logger(TaskAutoWarehouseService.name);
+  // Giới hạn số editor xử lý auto-carry đồng thời — mỗi editor tốn tới ~3 connection cùng lúc
+  // ở carryEditorItems, giữ tổng đồng thời trong tầm connection_limit đã cấu hình cho Prisma.
+  private readonly carryConcurrency = new Semaphore(4);
 
   constructor(private prisma: PrismaService) {}
 
   // ── Kho tổng (Global) ────────────────────────────────────────────────────
 
-  async getGlobalWarehouse(month: string, brandType?: BrandType) {
+  async getGlobalWarehouse(
+    month: string,
+    brandType?: BrandType,
+    opts?: { page?: number; limit?: number },
+  ) {
     const brandFilter = brandType ? { brand_type: brandType } : {};
+    // Không truyền page → giữ hành vi cũ (mảng đầy đủ, không giới hạn) — tương thích ngược,
+    // cùng convention với teams.service.ts listTeamProducts/Contents/Sources.
+    const page = opts?.page;
+    const limit = opts?.limit ?? 50;
+    const skip = page ? (page - 1) * limit : undefined;
+    const take = page ? limit : undefined;
     const [products, contents, sources] = await Promise.all([
       this.prisma.product.findMany({
         where: {
@@ -58,6 +72,8 @@ export class TaskAutoWarehouseService {
           },
         },
         orderBy: { created_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.content.findMany({
         where: {
@@ -74,6 +90,8 @@ export class TaskAutoWarehouseService {
           },
         },
         orderBy: { created_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.source.findMany({
         where: {
@@ -90,6 +108,8 @@ export class TaskAutoWarehouseService {
           },
         },
         orderBy: { created_at: "desc" },
+        skip,
+        take,
       }),
     ]);
     return { month, products, contents, sources };
@@ -136,7 +156,15 @@ export class TaskAutoWarehouseService {
 
   // ── Kho team ────────────────────────────────────────────────────────────
 
-  async getTeamWarehouse(teamId: string, month: string) {
+  async getTeamWarehouse(
+    teamId: string,
+    month: string,
+    opts?: { page?: number; limit?: number },
+  ) {
+    const page = opts?.page;
+    const limit = opts?.limit ?? 50;
+    const skip = page ? (page - 1) * limit : undefined;
+    const take = page ? limit : undefined;
     const [products, contents, sources] = await Promise.all([
       this.prisma.teamProduct.findMany({
         where: { team_id: teamId, is_active: true, warehouses: { some: { month } } },
@@ -145,6 +173,8 @@ export class TaskAutoWarehouseService {
           warehouses: { where: { month }, select: { target_quantity: true } },
         },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.teamContent.findMany({
         where: { team_id: teamId, status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
@@ -152,6 +182,8 @@ export class TaskAutoWarehouseService {
           source_editor_content: { select: { code: true, title: true, body: true, script: true, file_content_url: true, voice_url: true, content_line_id: true } },
         },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.teamSource.findMany({
         where: { team_id: teamId, is_active: true, warehouses: { some: { month } } },
@@ -159,6 +191,8 @@ export class TaskAutoWarehouseService {
           source_editor_source: { select: { type: true, name: true, link: true, nas_link: true, code: true, product_id: true } },
         },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
     ]);
     return { team_id: teamId, month, products, contents, sources };
@@ -329,7 +363,15 @@ export class TaskAutoWarehouseService {
 
   // ── Kho editor ───────────────────────────────────────────────────────────
 
-  async getEditorWarehouse(editorId: string, month: string) {
+  async getEditorWarehouse(
+    editorId: string,
+    month: string,
+    opts?: { page?: number; limit?: number },
+  ) {
+    const page = opts?.page;
+    const limit = opts?.limit ?? 50;
+    const skip = page ? (page - 1) * limit : undefined;
+    const take = page ? limit : undefined;
     const [products, contents, sources] = await Promise.all([
       this.prisma.editorProduct.findMany({
         where: { user_id: editorId, is_active: true, warehouses: { some: { month } } },
@@ -337,10 +379,14 @@ export class TaskAutoWarehouseService {
           warehouses: { where: { month }, select: { target_quantity: true } },
         },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.editorContent.findMany({
         where: { user_id: editorId, status: { not: "ARCHIVED" }, warehouses: { some: { month } } },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
       this.prisma.editorSource.findMany({
         where: { user_id: editorId, is_active: true, warehouses: { some: { month } } },
@@ -348,6 +394,8 @@ export class TaskAutoWarehouseService {
           source_source: { select: { type: true, name: true, link: true } },
         },
         orderBy: { added_at: "desc" },
+        skip,
+        take,
       }),
     ]);
     return { editor_id: editorId, month, products, contents, sources };
@@ -515,18 +563,21 @@ export class TaskAutoWarehouseService {
     const from = prevMonth(month);
     const result: any = {};
 
-    if (!tier || tier === "global") {
-      result.global = await this.carryGlobal(from, month);
-    }
+    const runGlobal = !tier || tier === "global";
+    const runEditor = !tier || tier === "editor";
 
-    if (!tier || tier === "editor") {
-      if (editor_id) {
-        const r = await this.carryEditorItems(editor_id, from, month);
-        result.editors = { [editor_id]: r };
-      } else {
-        result.editors = await this.carryAllEditors(from, month);
-      }
-    }
+    // Khi tier không truyền (chạy cả 2 nhánh), global và editor độc lập nhau — chạy song song
+    // thay vì tuần tự.
+    const [globalResult, editorResult] = await Promise.all([
+      runGlobal ? this.carryGlobal(from, month) : Promise.resolve(undefined),
+      runEditor
+        ? editor_id
+          ? this.carryEditorItems(editor_id, from, month).then((r) => ({ [editor_id]: r }))
+          : this.carryAllEditors(from, month)
+        : Promise.resolve(undefined),
+    ]);
+    if (runGlobal) result.global = globalResult;
+    if (runEditor) result.editors = editorResult;
 
     return result;
   }
@@ -663,9 +714,17 @@ export class TaskAutoWarehouseService {
     ]);
 
     const results: Record<string, { products: number; contents: number; sources: number }> = {};
-    for (const editorId of allEditorIds) {
-      results[editorId] = await this.carryEditorItems(editorId, from, to);
-    }
+    // Trước đây chạy tuần tự từng editor (mỗi editor ~9 query round-trip) — với team/kho lớn có
+    // thể thành hàng trăm round-trip nối tiếp. Giới hạn song song qua Semaphore thay vì
+    // Promise.all không giới hạn, để không mở nhiều connection hơn connection_limit đã cấu hình
+    // cho Prisma (xem build-prisma-db-url.ts).
+    await Promise.all(
+      [...allEditorIds].map((editorId) =>
+        this.carryConcurrency.run(async () => {
+          results[editorId] = await this.carryEditorItems(editorId, from, to);
+        }),
+      ),
+    );
 
     this.logger.log(
       `Auto-carry editors: ${from} → ${to}: ${allEditorIds.size} editors processed`,

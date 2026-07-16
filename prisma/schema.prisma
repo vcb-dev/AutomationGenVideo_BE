@@ -2339,6 +2339,7 @@ model TeamProduct {
   global_product        Product?               @relation("ProductTeamRef")
 
   @@unique([team_id, source_editor_product_id])
+  @@unique([team_id, sku])
   @@index([team_id, is_active])
   @@map("team_products")
 }
@@ -2457,6 +2458,7 @@ model EditorProduct {
   warehouses     EditorProductWarehouse[]
   push_requests  TeamPushRequest[]
 
+  @@unique([user_id, sku])
   @@index([user_id, is_active])
   @@map("editor_products")
 }

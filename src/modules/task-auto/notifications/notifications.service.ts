@@ -17,7 +17,26 @@ export class NotificationsService {
     const [data, total] = await Promise.all([
       this.prisma.notification.findMany({
         where,
-        include: { task: { select: { id: true, status: true } } },
+        include: {
+          task: {
+            select: {
+              id: true,
+              status: true,
+              content: {
+                select: {
+                  title: true,
+                  source_team_content: {
+                    select: { title: true, source_editor_content: { select: { title: true } } },
+                  },
+                },
+              },
+              editor_content: { select: { title: true } },
+              team_content: {
+                select: { title: true, source_editor_content: { select: { title: true } } },
+              },
+            },
+          },
+        },
         orderBy: [{ created_at: "desc" }],
         skip,
         take: limit,
@@ -25,7 +44,22 @@ export class NotificationsService {
       this.prisma.notification.count({ where }),
     ]);
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    const flattened = data.map((n) => {
+      if (!n.task) return n;
+      const { content, editor_content, team_content, ...taskRest } = n.task as any;
+      const g_tc = content?.source_team_content;
+      const content_title =
+        editor_content?.title ??
+        team_content?.title ??
+        team_content?.source_editor_content?.title ??
+        content?.title ??
+        g_tc?.title ??
+        g_tc?.source_editor_content?.title ??
+        null;
+      return { ...n, task: { ...taskRest, content_title } };
+    });
+
+    return { data: flattened, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async unreadCount(userId: string) {

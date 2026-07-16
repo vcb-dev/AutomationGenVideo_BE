@@ -1,5 +1,6 @@
+import { randomUUID } from "crypto";
 import { Logger } from "@nestjs/common";
-import { BrandType } from "@prisma/client";
+import { BrandType, Prisma } from "@prisma/client";
 import { AssignmentPair, ScheduledAssignment } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
@@ -78,6 +79,58 @@ function resolveOutroSourceId(
   return null;
 }
 
+type PreparedTask = {
+  id: string;
+  editorId: string;
+  data: Prisma.TaskCreateManyInput;
+};
+
+function notificationBody(deadline: Date): string {
+  return `Bạn có task mới cần hoàn thành trước ${deadline.toLocaleDateString("vi-VN")}.`;
+}
+
+/**
+ * Fallback best-effort: chỉ chạy khi batch createMany thất bại cả loạt (vd 1 assignment
+ * trỏ tới content/product vừa bị xoá giữa lúc load pool và lúc ghi) — tạo tuần tự từng task
+ * để những assignment hợp lệ vẫn được ghi, log/skip riêng assignment lỗi.
+ */
+async function createTasksSequentially(
+  prisma: PrismaService,
+  prepared: PreparedTask[],
+  runId: string,
+  deadline: Date,
+): Promise<number> {
+  let created = 0;
+  for (const { id, editorId, data } of prepared) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.task.create({ data });
+        await Promise.all([
+          tx.taskAssignment.create({
+            data: { task_id: id, user_id: editorId, deadline, run_id: runId },
+          }),
+          tx.notification.create({
+            data: {
+              user_id: editorId,
+              type: "TASK_ASSIGNED",
+              title: "Task mới được phân công tự động",
+              body: notificationBody(deadline),
+              task_id: id,
+            },
+          }),
+        ]);
+      });
+      created++;
+    } catch (err) {
+      logger.warn(
+        `Failed to create task for editor=${editorId} (id=${id})`,
+        err,
+      );
+    }
+  }
+  return created;
+}
+
 export async function createTasksFromAssignments(
   prisma: PrismaService,
   teamId: string,
@@ -112,24 +165,24 @@ export async function createTasksFromAssignments(
     ),
   ];
 
-  const editorProductInfoRaw =
+  // Đợt 1: 2 lookup độc lập (personal product / team product) — chạy song song.
+  const [editorProductInfoRaw, teamProductInfoRaw] = await Promise.all([
     personalProductIds.length > 0
-      ? await prisma.editorProduct.findMany({
+      ? prisma.editorProduct.findMany({
           where: { id: { in: personalProductIds } },
           select: { id: true, source_product_id: true, user_id: true },
         })
-      : [];
-  const editorProductSourceMap = new Map(
-    editorProductInfoRaw.map((p) => [p.id, p.source_product_id]),
-  );
-
-  const teamProductInfoRaw =
+      : Promise.resolve([]),
     teamProductIds.length > 0
-      ? await prisma.teamProduct.findMany({
+      ? prisma.teamProduct.findMany({
           where: { id: { in: teamProductIds } },
           select: { id: true, source_product_id: true },
         })
-      : [];
+      : Promise.resolve([]),
+  ]);
+  const editorProductSourceMap = new Map(
+    editorProductInfoRaw.map((p) => [p.id, p.source_product_id]),
+  );
   const teamProductSourceMap = new Map(
     teamProductInfoRaw.map((p) => [p.id, p.source_product_id]),
   );
@@ -142,138 +195,142 @@ export async function createTasksFromAssignments(
     ]),
   ];
 
-  const editorOutroSources =
-    editorIds.length > 0
-      ? await prisma.editorSource.findMany({
-          where: {
-            user_id: { in: editorIds },
-            type: "OUTRO",
-            brand_type: brandType,
-            is_active: true,
-            source_source_id: { not: null },
-            OR: [
-              ...(personalProductIds.length > 0
-                ? [{ editor_product_id: { in: personalProductIds } }]
-                : []),
-              ...(allGlobalProductIds.length > 0
-                ? [{ product_id: { in: allGlobalProductIds } }]
-                : []),
-            ],
-          },
-          select: {
-            editor_product_id: true,
-            product_id: true,
-            source_source_id: true,
-            user_id: true,
-          },
-        })
-      : [];
+  // Đợt 2: 3 lookup outro-source độc lập nhau (chỉ cùng phụ thuộc allGlobalProductIds vừa tính).
+  const [editorOutroSources, teamOutroSources, globalOutroSources] =
+    await Promise.all([
+      editorIds.length > 0
+        ? prisma.editorSource.findMany({
+            where: {
+              user_id: { in: editorIds },
+              type: "OUTRO",
+              brand_type: brandType,
+              is_active: true,
+              source_source_id: { not: null },
+              OR: [
+                ...(personalProductIds.length > 0
+                  ? [{ editor_product_id: { in: personalProductIds } }]
+                  : []),
+                ...(allGlobalProductIds.length > 0
+                  ? [{ product_id: { in: allGlobalProductIds } }]
+                  : []),
+              ],
+            },
+            select: {
+              editor_product_id: true,
+              product_id: true,
+              source_source_id: true,
+              user_id: true,
+            },
+          })
+        : Promise.resolve([]),
+      prisma.teamSource.findMany({
+        where: {
+          team_id: teamId,
+          type: "OUTRO",
+          brand_type: brandType,
+          is_active: true,
+          source_source_id: { not: null },
+          OR: [
+            ...(teamProductIds.length > 0
+              ? [{ team_product_id: { in: teamProductIds } }]
+              : []),
+            ...(allGlobalProductIds.length > 0
+              ? [{ product_id: { in: allGlobalProductIds } }]
+              : []),
+          ],
+        },
+        select: {
+          team_product_id: true,
+          product_id: true,
+          source_source_id: true,
+        },
+      }),
+      allGlobalProductIds.length > 0
+        ? prisma.source.findMany({
+            where: {
+              product_id: { in: allGlobalProductIds },
+              type: "OUTRO",
+              brand_type: brandType,
+              is_active: true,
+            },
+            select: { product_id: true, id: true },
+          })
+        : Promise.resolve([]),
+    ]);
 
-  const teamOutroSources = await prisma.teamSource.findMany({
-    where: {
-      team_id: teamId,
-      type: "OUTRO",
-      brand_type: brandType,
-      is_active: true,
-      source_source_id: { not: null },
-      OR: [
-        ...(teamProductIds.length > 0
-          ? [{ team_product_id: { in: teamProductIds } }]
-          : []),
-        ...(allGlobalProductIds.length > 0
-          ? [{ product_id: { in: allGlobalProductIds } }]
-          : []),
-      ],
-    },
-    select: {
-      team_product_id: true,
-      product_id: true,
-      source_source_id: true,
-    },
+  // Tính toàn bộ dữ liệu ghi trong bộ nhớ trước — không còn query nào trong vòng lặp.
+  const prepared: PreparedTask[] = assignments.map(({ editorId, pair }) => {
+    const id = randomUUID();
+    return {
+      id,
+      editorId,
+      data: {
+        id,
+        team_id: teamId,
+        content_id: pair.contentSource === "global" ? pair.contentId : null,
+        editor_content_id:
+          pair.contentSource === "personal" ? pair.contentId : null,
+        team_content_id:
+          pair.contentSource === "team" ? pair.contentId : null,
+        product_id: pair.productSource === "global" ? pair.productId : null,
+        editor_product_id:
+          pair.productSource === "personal" ? pair.productId : null,
+        team_product_id:
+          pair.productSource === "team" ? pair.productId : null,
+        content_line_id: pair.contentLineId,
+        product_line_id: pair.productLineId,
+        // SP kho team = SP có kế hoạch đẩy video
+        is_product_push: pair.productSource === "team",
+        source_outro_id: resolveOutroSourceId(
+          pair,
+          editorId,
+          editorOutroSources,
+          teamOutroSources,
+          globalOutroSources,
+          editorProductSourceMap,
+          teamProductSourceMap,
+        ),
+        status: "ASSIGNED",
+        assignee_id: editorId,
+        assigned_at: new Date(),
+        deadline,
+        // AUTO chỉ dành cho lane đẩy SP theo kế hoạch; lane sáng tạo = EXTRA như task tạo tay
+        task_type: pair.productSource === "team" ? "AUTO" : "EXTRA",
+        run_id: runId,
+      },
+    };
   });
 
-  const globalOutroSources =
-    allGlobalProductIds.length > 0
-      ? await prisma.source.findMany({
-          where: {
-            product_id: { in: allGlobalProductIds },
-            type: "OUTRO",
-            brand_type: brandType,
-            is_active: true,
-          },
-          select: { product_id: true, id: true },
-        })
-      : [];
-
-  let created = 0;
-
-  for (const { editorId, pair } of assignments) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        const task = await tx.task.create({
-          data: {
-            team_id: teamId,
-            content_id: pair.contentSource === "global" ? pair.contentId : null,
-            editor_content_id:
-              pair.contentSource === "personal" ? pair.contentId : null,
-            team_content_id:
-              pair.contentSource === "team" ? pair.contentId : null,
-            product_id: pair.productSource === "global" ? pair.productId : null,
-            editor_product_id:
-              pair.productSource === "personal" ? pair.productId : null,
-            team_product_id:
-              pair.productSource === "team" ? pair.productId : null,
-            content_line_id: pair.contentLineId,
-            product_line_id: pair.productLineId,
-            // SP kho team = SP có kế hoạch đẩy video
-            is_product_push: pair.productSource === "team",
-            source_outro_id: resolveOutroSourceId(
-              pair,
-              editorId,
-              editorOutroSources,
-              teamOutroSources,
-              globalOutroSources,
-              editorProductSourceMap,
-              teamProductSourceMap,
-            ),
-            status: "ASSIGNED",
-            assignee_id: editorId,
-            assigned_at: new Date(),
-            deadline,
-            // AUTO chỉ dành cho lane đẩy SP theo kế hoạch; lane sáng tạo = EXTRA như task tạo tay
-            task_type: pair.productSource === "team" ? "AUTO" : "EXTRA",
-            run_id: runId,
-          },
-        });
-
-        await tx.taskAssignment.create({
-          data: {
-            task_id: task.id,
+  // Ghi theo lô: 1 transaction cho toàn bộ team thay vì 1 transaction/assignment
+  // (trước đây tốn N transaction tuần tự, chiếm hết connection pool trong lúc chạy).
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.task.createMany({ data: prepared.map((p) => p.data) });
+      await Promise.all([
+        tx.taskAssignment.createMany({
+          data: prepared.map(({ id, editorId }) => ({
+            task_id: id,
             user_id: editorId,
             deadline,
             run_id: runId,
-          },
-        });
-
-        await tx.notification.create({
-          data: {
+          })),
+        }),
+        tx.notification.createMany({
+          data: prepared.map(({ id, editorId }) => ({
             user_id: editorId,
             type: "TASK_ASSIGNED",
             title: "Task mới được phân công tự động",
-            body: `Bạn có task mới cần hoàn thành trước ${deadline.toLocaleDateString("vi-VN")}.`,
-            task_id: task.id,
-          },
-        });
-
-        created++;
-      });
-    } catch (err) {
-      logger.warn(
-        `Failed to create task for editor=${editorId} content=${pair.contentId}(${pair.contentSource}) product=${pair.productId}(${pair.productSource})`,
-        err,
-      );
-    }
+            body: notificationBody(deadline),
+            task_id: id,
+          })),
+        }),
+      ]);
+    });
+    return prepared.length;
+  } catch (err) {
+    logger.warn(
+      `Batch create failed for ${prepared.length} assignments in team=${teamId}, falling back to per-item creation: ${(err as Error).message}`,
+    );
+    return createTasksSequentially(prisma, prepared, runId, deadline);
   }
-
-  return created;
 }

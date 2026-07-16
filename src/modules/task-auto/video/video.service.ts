@@ -188,20 +188,22 @@ export class TaskAutoVideoService {
 
     const webViewUrl = driveResult.webViewUrl
 
-    // Lưu metadata để có thể xóa Drive file khi task bị REJECT
-    try {
-      await (this.prisma as any).taskPendingVideo.upsert({
-        where:  { task_id: taskId },
-        create: { task_id: taskId, uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
-        update: { uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
-      })
-    } catch (err: any) {
-      if (isTableMissing(err)) this.logger.warn('[VideoUpload] Bảng task_pending_videos chưa tồn tại')
-      else throw err
-    }
-
-    // result_url = webViewUrl để FE embed Drive iframe
-    await this.prisma.task.update({ where: { id: taskId }, data: { result_url: webViewUrl } })
+    // Lưu metadata (để có thể xóa Drive file khi task bị REJECT) và cập nhật result_url — 2 ghi
+    // độc lập trên 2 bảng khác nhau, chạy song song thay vì tuần tự.
+    await Promise.all([
+      (this.prisma as any).taskPendingVideo
+        .upsert({
+          where:  { task_id: taskId },
+          create: { task_id: taskId, uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
+          update: { uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
+        })
+        .catch((err: any) => {
+          if (isTableMissing(err)) this.logger.warn('[VideoUpload] Bảng task_pending_videos chưa tồn tại')
+          else throw err
+        }),
+      // result_url = webViewUrl để FE embed Drive iframe
+      this.prisma.task.update({ where: { id: taskId }, data: { result_url: webViewUrl } }),
+    ])
 
     // Lưu ngay vào media library để hiển thị trong Thư viện media
     if (task?.assignee_id) {
@@ -260,12 +262,6 @@ export class TaskAutoVideoService {
 
     if (!pending) { this.logger.warn(`[VideoApprove] Task ${taskId}: không có video pending`); return null }
 
-    const task = await this.prisma.task.findUnique({
-      where: { id: taskId },
-      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
-    })
-    const ownerId = task?.assignee_id
-
     // Video đã trên Drive (upload khi nộp) — media library đã lưu lúc nộp, chỉ cần xóa pending record
     if (pending.storage === 'google_drive') {
       await (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {})
@@ -279,6 +275,14 @@ export class TaskAutoVideoService {
       await (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {})
       return null
     }
+
+    // Chỉ fetch task khi thật sự cần upload lên Drive (dùng cho userObj metadata) — 2 nhánh
+    // early-return ở trên không dùng tới nên không cần fetch trước.
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
+    })
+    const ownerId = task?.assignee_id
 
     this.logger.log(`[VideoApprove] Uploading task ${taskId} → Drive (${(pending.size / 1024 / 1024).toFixed(1)}MB)`)
 
@@ -308,8 +312,11 @@ export class TaskAutoVideoService {
       }).catch(err => this.logger.warn(`[VideoApprove] library.save failed: ${err.message}`))
     }
 
-    await this.prisma.task.update({ where: { id: taskId }, data: { result_url: driveUrl } })
-    await (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {})
+    // 2 ghi độc lập trên 2 bảng khác nhau — chạy song song.
+    await Promise.all([
+      this.prisma.task.update({ where: { id: taskId }, data: { result_url: driveUrl } }),
+      (this.prisma as any).taskPendingVideo.delete({ where: { task_id: taskId } }).catch(() => {}),
+    ])
 
     this.logger.log(`[VideoApprove] ✅ Task ${taskId} promoted to Drive: ${driveUrl}`)
     return driveUrl
@@ -319,15 +326,19 @@ export class TaskAutoVideoService {
 
   async removeVideo(taskId: string, userId: string, roles: string[]) {
     let pending: any
+    let task: any
     try {
-      pending = await (this.prisma as any).taskPendingVideo.findUnique({ where: { task_id: taskId } })
+      // 2 lookup độc lập nhau (chỉ cùng khoá theo taskId) — chạy song song thay vì tuần tự.
+      ;[pending, task] = await Promise.all([
+        (this.prisma as any).taskPendingVideo.findUnique({ where: { task_id: taskId } }),
+        this.prisma.task.findUnique({ where: { id: taskId } }),
+      ])
     } catch (err: any) {
       if (isTableMissing(err)) return null
       throw err
     }
     if (!pending) return null
 
-    const task = await this.prisma.task.findUnique({ where: { id: taskId } })
     const isPrivileged = roles.some(r => ['ADMIN', 'MANAGER', 'LEADER'].includes(r))
     const isOwner = pending.uploader_id === userId
     if (!isOwner && !isPrivileged) throw new ForbiddenException('Không có quyền xoá video này')
