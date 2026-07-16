@@ -137,7 +137,9 @@ export class FacebookOwnedPagesReadService {
         this.prisma.video_management_ownedvideocontent.count({ where }),
         this.prisma.video_management_ownedvideocontent.findMany({
           where,
-          orderBy: { view_count: 'desc' },
+          // id desc làm tiebreaker: view_count trùng nhau mà thứ tự không cố định
+          // thì phân trang 2 query (count + skip/take) có thể lặp/sót dòng giữa các trang
+          orderBy: [{ view_count: 'desc' }, { id: 'desc' }],
           select: videoSelect,
           skip: start,
           take: pageSize,
@@ -150,7 +152,7 @@ export class FacebookOwnedPagesReadService {
       // rồi mới fetch đầy đủ đúng 1 trang theo id.
       const light = await this.prisma.video_management_ownedvideocontent.findMany({
         where,
-        orderBy: { view_count: 'desc' },
+        orderBy: [{ view_count: 'desc' }, { id: 'desc' }],
         select: { id: true, caption: true },
       });
       const matchedIds = light
