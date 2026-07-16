@@ -107,17 +107,67 @@ export class FacebookOwnedPagesReadService {
       if (dateTo) where.published_at.lte = new Date(`${dateTo}T23:59:59.999Z`);
     }
 
-    const all = await this.prisma.video_management_ownedvideocontent.findMany({
-      where,
-      orderBy: { view_count: 'desc' },
-    });
+    // Chỉ select cột thực dùng — cột raw_data (JSON thô từ Facebook API, ~3KB/dòng)
+    // chiếm phần lớn dung lượng bảng; fetch kèm nó cho 17k dòng là ~50MB+/request,
+    // chính là lý do trang load ~9.5s trước đây (đo pg_stat_statements 2026-07-16).
+    const videoSelect = {
+      id: true,
+      post_id: true,
+      caption: true,
+      published_at: true,
+      permalink_url: true,
+      thumbnail_url: true,
+      video_url: true,
+      view_count: true,
+      like_count: true,
+      comment_count: true,
+      share_count: true,
+      reach_count: true,
+      link_clicks: true,
+      last_updated_at: true,
+    } as const;
 
-    const filtered = search ? all.filter((v) => unaccentMatch(v.caption || '', search)) : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    let total: number;
+    let paginated: Array<any>;
     const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+
+    if (!search) {
+      // Không search → phân trang thẳng tại DB (index managed_page_id+view_count DESC có sẵn)
+      const [count, rows] = await this.prisma.$transaction([
+        this.prisma.video_management_ownedvideocontent.count({ where }),
+        this.prisma.video_management_ownedvideocontent.findMany({
+          where,
+          orderBy: { view_count: 'desc' },
+          select: videoSelect,
+          skip: start,
+          take: pageSize,
+        }),
+      ]);
+      total = count;
+      paginated = rows;
+    } else {
+      // Search cần unaccentMatch (bỏ dấu) chạy ở JS — kéo bản NHẸ (id+caption) để lọc,
+      // rồi mới fetch đầy đủ đúng 1 trang theo id.
+      const light = await this.prisma.video_management_ownedvideocontent.findMany({
+        where,
+        orderBy: { view_count: 'desc' },
+        select: { id: true, caption: true },
+      });
+      const matchedIds = light
+        .filter((v) => unaccentMatch(v.caption || '', search))
+        .map((v) => v.id);
+      total = matchedIds.length;
+      const pageIds = matchedIds.slice(start, start + pageSize);
+      const rows = await this.prisma.video_management_ownedvideocontent.findMany({
+        where: { id: { in: pageIds } },
+        select: videoSelect,
+      });
+      // Giữ nguyên thứ tự view_count desc như danh sách đã lọc
+      const order = new Map(pageIds.map((id, i) => [id.toString(), i]));
+      paginated = rows.sort((a, b) => order.get(a.id.toString())! - order.get(b.id.toString())!);
+    }
+
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
 
     return {
       status: 'ok',

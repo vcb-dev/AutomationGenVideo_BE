@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { unaccentMatch, unaccentIncludesHashtag } from '../../common/utils/unaccent.util';
 
@@ -305,11 +306,42 @@ export class ScraperAggregateReadService {
 
     if (!platform || platform === 'facebook') {
       // video_management_ownedvideocontent dùng published_at, không phải date_posted.
-      const where: any = { ...dateRangeWhere('published_at') };
-      if (minPlays !== undefined) where.view_count = { gte: BigInt(minPlays) };
-      const videos = await this.prisma.video_management_ownedvideocontent.findMany({ where, include: { managed_page: true } });
+      // Raw query thay vì findMany: (1) bỏ cột raw_data (JSON thô FB API ~3KB/dòng)
+      // và access token của page mà include:managed_page kéo theo; (2) COALESCE sang
+      // *_drive_url ngay tại DB — thumbnail_url CDN gốc (~516 ký tự) + avatar_url
+      // page (~550) lặp ~17k lần qua join là lý do endpoint này từng trả hàng chục
+      // MB, mất ~9.5s/lần gọi (đo pg_stat_statements 2026-07-16); bản drive ~69 ký tự.
+      const conds: Prisma.Sql[] = [];
+      if (dateFrom) conds.push(Prisma.sql`o.published_at >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+      if (dateTo) conds.push(Prisma.sql`o.published_at <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+      if (minPlays !== undefined) conds.push(Prisma.sql`o.view_count >= ${minPlays}`);
+      const whereSql = conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, ' AND ')}` : Prisma.empty;
+
+      const videos = await this.prisma.$queryRaw<Array<{
+        post_id: string;
+        permalink_url: string | null;
+        caption: string | null;
+        thumbnail_url: string | null;
+        view_count: bigint;
+        like_count: number;
+        comment_count: number;
+        published_at: Date;
+        page_name: string | null;
+        page_avatar: string | null;
+        page_pid: string | null;
+      }>>(Prisma.sql`
+        SELECT o.post_id, o.permalink_url, o.caption,
+               COALESCE(NULLIF(o.thumbnail_drive_url, ''), o.thumbnail_url, '') AS thumbnail_url,
+               o.view_count, o.like_count, o.comment_count, o.published_at,
+               p.name AS page_name,
+               COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS page_avatar,
+               p.page_id AS page_pid
+        FROM video_management_ownedvideocontent o
+        LEFT JOIN video_management_managedfacebookpage p ON p.id = o.managed_page_id
+        ${whereSql}
+      `);
       for (const v of videos) {
-        if (q && !unaccentMatch(v.caption, q)) continue;
+        if (q && !unaccentMatch(v.caption || '', q)) continue;
         items.push({
           platform: 'facebook',
           post_id: v.post_id,
@@ -321,9 +353,9 @@ export class ScraperAggregateReadService {
           likes_count: v.like_count,
           comments_count: v.comment_count,
           date_posted: v.published_at,
-          author_name: v.managed_page?.name || '',
-          author_avatar: v.managed_page?.avatar_url || '',
-          author_username: v.managed_page?.page_id || '',
+          author_name: v.page_name || '',
+          author_avatar: v.page_avatar || '',
+          author_username: v.page_pid || '',
         });
       }
     }
@@ -335,6 +367,7 @@ export class ScraperAggregateReadService {
     const total = items.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (pageNum - 1) * pageSize;
+    const paginated = items.slice(start, start + pageSize);
 
     return {
       status: 'ok',
@@ -342,7 +375,7 @@ export class ScraperAggregateReadService {
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: items.slice(start, start + pageSize),
+      videos: paginated,
     };
   }
 }
