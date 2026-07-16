@@ -50,6 +50,17 @@ export interface GoogleDriveResumableStatus {
   fileId?: string;
 }
 
+export interface GoogleDriveReadStream {
+  stream: NodeJS.ReadableStream;
+  /** 200, hoặc 206 khi request có Range */
+  status: number;
+  name: string;
+  mimetype: string;
+  size: number;
+  contentRange?: string;
+  contentLength?: number;
+}
+
 @Injectable()
 export class GoogleDriveStorageService {
   private readonly logger = new Logger(GoogleDriveStorageService.name);
@@ -497,6 +508,47 @@ export class GoogleDriveStorageService {
       url: directUrl,
       webViewUrl: res.data.webViewLink,
       thumbnailUrl,
+    };
+  }
+
+  /**
+   * Mở stream nội dung file từ Drive bằng token service-account. Dùng khi cần
+   * đưa file về trình duyệt qua BE — link công khai uc?export=download redirect
+   * qua trang HTML của Google nên <audio>/<a download> dùng trực tiếp không ổn
+   * định. Forward được Range header để trình duyệt seek/đọc metadata.
+   */
+  async openReadStream(fileId: string, rangeHeader?: string): Promise<GoogleDriveReadStream> {
+    if (!this.isAvailable()) {
+      throw new Error('Google Drive storage is not configured');
+    }
+    const token = await this.getAccessToken();
+
+    const metaRes = await axios.get(`${DRIVE_API_URL}/${encodeURIComponent(fileId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { supportsAllDrives: true, fields: 'id,name,mimeType,size' },
+      timeout: 30_000,
+    });
+
+    const res = await axios.get(`${DRIVE_API_URL}/${encodeURIComponent(fileId)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(rangeHeader ? { Range: rangeHeader } : {}),
+      },
+      params: { alt: 'media', supportsAllDrives: true },
+      responseType: 'stream',
+      timeout: 300_000,
+      validateStatus: (s) => s === 200 || s === 206,
+    });
+
+    const contentLength = res.headers['content-length'] ? Number(res.headers['content-length']) : undefined;
+    return {
+      stream: res.data,
+      status: res.status,
+      name: metaRes.data.name,
+      mimetype: metaRes.data.mimeType || 'application/octet-stream',
+      size: Number(metaRes.data.size || 0),
+      contentRange: res.headers['content-range'],
+      contentLength,
     };
   }
 
