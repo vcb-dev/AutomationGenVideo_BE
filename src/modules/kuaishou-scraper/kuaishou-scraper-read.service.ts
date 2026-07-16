@@ -1,10 +1,34 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch, unaccentIncludesHashtag } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+// search dùng immutable_unaccent() qua GIN trigram index (Phase 1+2)
+function unaccentLike(col: Prisma.Sql, q: string): Prisma.Sql {
+  return Prisma.sql`lower(immutable_unaccent(${col})) LIKE '%' || lower(immutable_unaccent(${q})) || '%'`;
+}
+
+// Khớp unaccentIncludesHashtag() cũ — hashtags KHÔNG unaccent, chỉ lowercase.
+function hashtagLike(hashtagsCol: Prisma.Sql, q: string): Prisma.Sql {
+  const hq = q.replace(/^#/, '');
+  return Prisma.sql`EXISTS (SELECT 1 FROM unnest(${hashtagsCol}) h WHERE lower(h) LIKE '%' || lower(${hq}) || '%')`;
+}
+
+interface KuaishouSearchVideoRow {
+  post_id: string; url: string; description: string; hashtags: string[]; thumbnail_url: string | null;
+  video_duration: number; view_count: bigint; like_count: bigint; comment_count: bigint; share_count: bigint;
+  collect_count: bigint; search_keyword: string; date_posted: Date;
+  author_id: string; author_eid: string; author_username: string; author_avatar: string | null; author_is_verified: boolean;
+}
+
+interface KuaishouVideoRow {
+  post_id: string; url: string; description: string; hashtags: string[]; thumbnail_url: string | null;
+  thumbnail_drive_url: string | null; video_duration: number; view_count: bigint; like_count: bigint;
+  comment_count: bigint; share_count: bigint; collect_count: bigint; date_posted: Date; created_at: Date;
 }
 
 // Nền tảng mới — BE sở hữu đọc từ đầu, không có view AI cũ để migrate.
@@ -20,7 +44,7 @@ export class KuaishouScraperReadService {
       username: p.username,
       nickname: p.nickname,
       url: p.url,
-      avatar_url: p.avatar_url || '',
+      avatar_url: p.avatar_drive_url || p.avatar_url || '',
       biography: p.biography || '',
       gender: p.gender,
       followers_count: Number(p.followers_count),
@@ -55,38 +79,44 @@ export class KuaishouScraperReadService {
     const sort = params.sort || 'scraped';
     const kwFilter = (params.search_keyword || '').trim();
 
-    const where: any = {};
-    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
-    if (dateFrom || dateTo) {
-      where.date_posted = {};
-      if (dateFrom) where.date_posted.gte = new Date(`${dateFrom}T00:00:00.000Z`);
-      if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
-    }
-    if (kwFilter) where.search_keyword = { contains: kwFilter, mode: 'insensitive' };
-    if (q) where.OR = [
-      { description: { contains: q, mode: 'insensitive' } },
-      { search_keyword: { contains: q, mode: 'insensitive' } },
-    ];
+    const conditions: Prisma.Sql[] = [];
+    if (minViews !== undefined) conditions.push(Prisma.sql`view_count >= ${BigInt(minViews)}`);
+    if (dateFrom) conditions.push(Prisma.sql`date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+    if (dateTo) conditions.push(Prisma.sql`date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+    if (kwFilter) conditions.push(unaccentLike(Prisma.sql`search_keyword`, kwFilter));
+    if (q) conditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${unaccentLike(Prisma.sql`search_keyword`, q)})`);
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    let orderBy: any = { created_at: 'desc' };
-    if (sort === 'views') orderBy = { view_count: 'desc' };
-    else if (sort === 'likes') orderBy = { like_count: 'desc' };
-    else if (sort === 'comments') orderBy = { comment_count: 'desc' };
-    else if (sort === 'date') orderBy = { date_posted: 'desc' };
+    let orderCol: Prisma.Sql = Prisma.sql`created_at`;
+    if (sort === 'views') orderCol = Prisma.sql`view_count`;
+    else if (sort === 'likes') orderCol = Prisma.sql`like_count`;
+    else if (sort === 'comments') orderCol = Prisma.sql`comment_count`;
+    else if (sort === 'date') orderCol = Prisma.sql`date_posted`;
 
-    const [total, paginated] = await Promise.all([
-      this.prisma.scraperKuaishouSearchVideo.count({ where }),
-      this.prisma.scraperKuaishouSearchVideo.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
-    ]);
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_kuaishou_search_videos ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
+
+    const videos = await this.prisma.$queryRaw<KuaishouSearchVideoRow[]>`
+      SELECT post_id, url, description, hashtags, thumbnail_url, video_duration, view_count, like_count,
+             comment_count, share_count, collect_count, search_keyword, date_posted,
+             author_id, author_eid, author_username, author_avatar, author_is_verified
+      FROM scraper_kuaishou_search_videos
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: paginated.map((v) => ({
+      videos: videos.map((v) => ({
         post_id: v.post_id,
         url: v.url,
         description: v.description,
@@ -112,15 +142,19 @@ export class KuaishouScraperReadService {
   }
 
   async keywordSuggest(q: string) {
-    const groups = await this.prisma.scraperKuaishouSearchVideo.groupBy({
-      by: ['search_keyword'],
-      where: { NOT: { search_keyword: '' } },
-      _count: { id: true },
-      orderBy: { _count: { id: 'desc' } },
-    });
+    const whereClause = q
+      ? Prisma.sql`WHERE search_keyword <> '' AND ${unaccentLike(Prisma.sql`search_keyword`, q)}`
+      : Prisma.sql`WHERE search_keyword <> ''`;
 
-    const rows = groups.map((g) => ({ keyword: g.search_keyword, count: g._count.id }));
-    const results = q ? rows.filter((r) => unaccentMatch(r.keyword, q)).slice(0, 10) : rows.slice(0, 10);
+    const rows = await this.prisma.$queryRaw<{ keyword: string; count: bigint }[]>`
+      SELECT search_keyword AS keyword, COUNT(*) AS count
+      FROM scraper_kuaishou_search_videos
+      ${whereClause}
+      GROUP BY search_keyword
+      ORDER BY count DESC
+      LIMIT 10
+    `;
+    const results = rows.map((r) => ({ keyword: r.keyword, count: Number(r.count) }));
 
     return { suggestions: results };
   }
@@ -196,33 +230,47 @@ export class KuaishouScraperReadService {
     const q = (params.q || '').trim();
     const minViews = parseIntOrDefault(params.min_views);
 
-    const where: any = { profile_id: profileId };
-    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
+    // baseConditions (profile_id + minViews) dùng cho videos_in_db của profile —
+    // KHÔNG áp dụng q, khớp đúng hành vi cũ (all.length trước khi filter theo q).
+    const baseConditions: Prisma.Sql[] = [Prisma.sql`profile_id = ${profileId}`];
+    if (minViews !== undefined) baseConditions.push(Prisma.sql`view_count >= ${BigInt(minViews)}`);
+    const fullConditions = [...baseConditions];
+    if (q) fullConditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${hashtagLike(Prisma.sql`hashtags`, q)})`);
 
-    let orderBy: any = { created_at: 'desc' };
-    if (sort === 'views') orderBy = { view_count: 'desc' };
-    else if (sort === 'likes') orderBy = { like_count: 'desc' };
-    else if (sort === 'comments') orderBy = { comment_count: 'desc' };
-    else if (sort === 'date') orderBy = { date_posted: 'desc' };
+    let orderCol: Prisma.Sql = Prisma.sql`created_at`;
+    if (sort === 'views') orderCol = Prisma.sql`view_count`;
+    else if (sort === 'likes') orderCol = Prisma.sql`like_count`;
+    else if (sort === 'comments') orderCol = Prisma.sql`comment_count`;
+    else if (sort === 'date') orderCol = Prisma.sql`date_posted`;
 
-    const all = await this.prisma.scraperKuaishouVideo.findMany({ where, orderBy });
+    const [[{ total: baseTotal }], [{ total }]] = await Promise.all([
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM scraper_kuaishou_videos WHERE ${Prisma.join(baseConditions, ' AND ')}
+      `,
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM scraper_kuaishou_videos WHERE ${Prisma.join(fullConditions, ' AND ')}
+      `,
+    ]);
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = q
-      ? all.filter((v) => unaccentMatch(v.description, q) || unaccentIncludesHashtag(v.hashtags, q))
-      : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = await this.prisma.$queryRaw<KuaishouVideoRow[]>`
+      SELECT post_id, url, description, hashtags, thumbnail_url, thumbnail_drive_url, video_duration,
+             view_count, like_count, comment_count, share_count, collect_count, date_posted, created_at
+      FROM scraper_kuaishou_videos
+      WHERE ${Prisma.join(fullConditions, ' AND ')}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      profile: this.serializeProfile(profile, all.length),
+      profile: this.serializeProfile(profile, Number(baseTotal)),
       videos: paginated.map((v) => ({
         post_id: v.post_id,
         url: v.url,

@@ -1,17 +1,30 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
 }
 
+// search dùng immutable_unaccent() qua GIN trigram index (Phase 1+2)
+function unaccentLike(col: Prisma.Sql, q: string): Prisma.Sql {
+  return Prisma.sql`lower(immutable_unaccent(${col})) LIKE '%' || lower(immutable_unaccent(${q})) || '%'`;
+}
+
 // Khớp Django ArrayField `hashtags__icontains` cũ: Postgres cast array sang text
 // dạng '{tag1,tag2}' rồi LIKE case-insensitive trên chuỗi đó (không phải so khớp
-// từng phần tử) — quirk cố ý giữ nguyên, không phải bug mới.
-function arrayTextIncludes(items: string[], substr: string): boolean {
-  return `{${(items || []).join(',')}}`.toLowerCase().includes(substr.toLowerCase());
+// từng phần tử) — quirk cố ý giữ nguyên, không phải bug mới. hashtags::text
+// trong Postgres cho ra đúng định dạng '{tag1,tag2}' này.
+function arrayTextIncludes(col: Prisma.Sql, substr: string): Prisma.Sql {
+  return Prisma.sql`lower(${col}::text) LIKE '%' || lower(${substr}) || '%'`;
+}
+
+interface FacebookReelRow {
+  post_id: string; shortcode: string; url: string; content: string; hashtags: string[];
+  video_url: string | null; thumbnail_url: string | null; duration_seconds: number | null;
+  has_audio: boolean; date_posted: Date; views_count: bigint; likes_count: bigint;
+  comments_count: bigint; shares_count: bigint; fanpage_id: bigint;
 }
 
 // Port từ scraper_views.py::discovered_fanpages/fanpage_detail/search_reels
@@ -27,7 +40,7 @@ export class FacebookExternalScraperReadService {
       name: p.name,
       handle: p.handle,
       page_url: p.page_url,
-      avatar_url: p.avatar_url,
+      avatar_url: p.avatar_drive_url || p.avatar_url,
       is_verified: p.is_verified,
       followers_count: Number(p.followers_count),
       likes_count: Number(p.likes_count),
@@ -52,38 +65,43 @@ export class FacebookExternalScraperReadService {
     const bookmarked = (params.bookmarked || '').trim();
     const periodic = (params.periodic || '').trim();
 
-    const where: any = { is_visible_on_ui: true };
-    if (bookmarked === 'true') where.is_bookmarked = true;
-    if (periodic === 'true') where.is_periodic_crawl = true;
+    const conditions: Prisma.Sql[] = [Prisma.sql`is_visible_on_ui = true`];
+    if (bookmarked === 'true') conditions.push(Prisma.sql`is_bookmarked = true`);
+    if (periodic === 'true') conditions.push(Prisma.sql`is_periodic_crawl = true`);
+    if (search) conditions.push(unaccentLike(Prisma.sql`name`, search));
+    const whereClause = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
-    const all = await this.prisma.scraperFanpage.findMany({
-      where,
-      orderBy: [{ is_bookmarked: 'desc' }, { followers_count: 'desc' }],
-    });
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_fanpages ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = search ? all.filter((p) => unaccentMatch(p.name, search)) : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
-
-    const reelCounts = paginated.length
-      ? await this.prisma.scraperFacebookReel.groupBy({
-          by: ['fanpage_id'],
-          where: { fanpage_id: { in: paginated.map((p) => p.id) } },
-          _count: { id: true },
-        })
-      : [];
-    const countMap = new Map(reelCounts.map((r) => [r.fanpage_id.toString(), r._count.id]));
+    const paginated = await this.prisma.$queryRaw<{
+      id: bigint; profile_id: string; name: string; handle: string; page_url: string; avatar_url: string | null;
+      avatar_drive_url: string | null; is_verified: boolean | null; followers_count: bigint; likes_count: bigint;
+      is_visible_on_ui: boolean; is_periodic_crawl: boolean; is_bookmarked: boolean; is_initial_scraped: boolean;
+      scraping_status: string; last_scraped_at: Date | null; scrape_error: string | null; created_at: Date;
+      reels_count: bigint;
+    }[]>`
+      SELECT p.id, p.profile_id, p.name, p.handle, p.page_url, p.avatar_url, p.avatar_drive_url, p.is_verified,
+             p.followers_count, p.likes_count, p.is_visible_on_ui, p.is_periodic_crawl, p.is_bookmarked,
+             p.is_initial_scraped, p.scraping_status, p.last_scraped_at, p.scrape_error, p.created_at,
+             (SELECT COUNT(*) FROM scraper_facebook_reels r WHERE r.fanpage_id = p.id) AS reels_count
+      FROM scraper_fanpages p
+      ${whereClause}
+      ORDER BY p.is_bookmarked DESC, p.followers_count DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      fanpages: paginated.map((p) => this.serializeFanpage(p, countMap.get(p.id.toString()) || 0)),
+      fanpages: paginated.map((p) => this.serializeFanpage(p, Number(p.reels_count))),
     };
   }
 
@@ -121,43 +139,49 @@ export class FacebookExternalScraperReadService {
     const dateTo = (params.date_to || '').trim();
     const sortBy = params.sort || 'date';
 
-    const where: any = {};
-    if (fanpageId) where.fanpage_id = BigInt(fanpageId);
-    if (minViews !== undefined) where.views_count = { gte: BigInt(minViews) };
-    if (minLikes !== undefined) where.likes_count = { gte: BigInt(minLikes) };
-    if (dateFrom || dateTo) {
-      where.date_posted = {};
-      if (dateFrom) where.date_posted.gte = new Date(`${dateFrom}T00:00:00.000Z`);
-      if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
-    }
-
-    let orderBy: any = { date_posted: 'desc' };
-    if (sortBy === 'views') orderBy = { views_count: 'desc' };
-    else if (sortBy === 'likes') orderBy = { likes_count: 'desc' };
-
-    const all = await this.prisma.scraperFacebookReel.findMany({ where, orderBy, include: { fanpage: true } });
-
-    let filteredReels: typeof all;
+    const conditions: Prisma.Sql[] = [];
+    if (fanpageId) conditions.push(Prisma.sql`r.fanpage_id = ${BigInt(fanpageId)}`);
+    if (minViews !== undefined) conditions.push(Prisma.sql`r.views_count >= ${BigInt(minViews)}`);
+    if (minLikes !== undefined) conditions.push(Prisma.sql`r.likes_count >= ${BigInt(minLikes)}`);
+    if (dateFrom) conditions.push(Prisma.sql`r.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+    if (dateTo) conditions.push(Prisma.sql`r.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
     if (q) {
-      const qLower = q.toLowerCase().replace(/^#/, '');
-      const hashtagMatchIds = new Set(all.filter((r) => arrayTextIncludes(r.hashtags, qLower)).map((r) => r.id));
-      const captionMatchIds = new Set(all.filter((r) => unaccentMatch(r.content, q)).map((r) => r.id));
-      const allMatchIds = new Set<bigint>([...hashtagMatchIds, ...captionMatchIds]);
-      filteredReels = allMatchIds.size > 0
-        ? all.filter((r) => allMatchIds.has(r.id)).sort((a, b) => (b.views_count > a.views_count ? 1 : b.views_count < a.views_count ? -1 : 0))
-        : [];
-    } else {
-      filteredReels = all;
+      const qLower = q.replace(/^#/, '');
+      conditions.push(Prisma.sql`(${arrayTextIncludes(Prisma.sql`r.hashtags`, qLower)} OR ${unaccentLike(Prisma.sql`r.content`, q)})`);
     }
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    const total = filteredReels.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filteredReels.slice(start, start + pageSize);
+    // Khớp hành vi cũ: khi có q, LUÔN sort theo views_count DESC bất kể sortBy
+    // (ưu tiên hiển thị video hot nhất trong kết quả search) — chỉ tôn trọng
+    // sortBy khi không search.
+    let orderCol: Prisma.Sql = Prisma.sql`r.date_posted`;
+    if (sortBy === 'views') orderCol = Prisma.sql`r.views_count`;
+    else if (sortBy === 'likes') orderCol = Prisma.sql`r.likes_count`;
+    if (q) orderCol = Prisma.sql`r.views_count`;
+
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_facebook_reels r ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
+
+    const paginated = await this.prisma.$queryRaw<(FacebookReelRow & { fanpage_name: string | null; fanpage_handle: string | null; fanpage_avatar_url: string | null; fanpage_avatar_drive_url: string | null })[]>`
+      SELECT r.post_id, r.shortcode, r.url, r.content, r.hashtags, r.video_url, r.thumbnail_url,
+             r.duration_seconds, r.has_audio, r.date_posted, r.views_count, r.likes_count,
+             r.comments_count, r.shares_count, r.fanpage_id,
+             f.name AS fanpage_name, f.handle AS fanpage_handle, f.avatar_url AS fanpage_avatar_url,
+             f.avatar_drive_url AS fanpage_avatar_drive_url
+      FROM scraper_facebook_reels r
+      LEFT JOIN scraper_fanpages f ON f.id = r.fanpage_id
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
@@ -176,12 +200,12 @@ export class FacebookExternalScraperReadService {
         likes_count: Number(r.likes_count),
         comments_count: Number(r.comments_count),
         shares_count: Number(r.shares_count),
-        fanpage: r.fanpage
+        fanpage: r.fanpage_id
           ? {
-              id: Number(r.fanpage.id),
-              name: r.fanpage.name,
-              handle: r.fanpage.handle,
-              avatar_url: r.fanpage.avatar_url,
+              id: Number(r.fanpage_id),
+              name: r.fanpage_name,
+              handle: r.fanpage_handle,
+              avatar_url: r.fanpage_avatar_drive_url || r.fanpage_avatar_url,
             }
           : null,
       })),
