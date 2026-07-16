@@ -76,10 +76,15 @@ export class TiktokAiClientService {
     return { Authorization: `Bearer ${token}` };
   }
 
-  async fetchSearch(keyword: string, count = 30, region = 'VN'): Promise<{ videos: ParsedTikTokVideo[] }> {
+  async fetchSearch(
+    keyword: string,
+    count = 30,
+    region = 'VN',
+    cursor = 0,
+  ): Promise<{ videos: ParsedTikTokVideo[]; cursor: number; has_more: boolean }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/tiktok/fetch/search/`,
-      { keyword, count, region },
+      { keyword, count, region, cursor },
       { headers: this.authHeaders(), timeout: 120_000 },
     );
     return data;

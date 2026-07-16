@@ -1,10 +1,29 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch, unaccentIncludesHashtag } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+// search dùng immutable_unaccent() qua GIN trigram index (Phase 1+2)
+function unaccentLike(col: Prisma.Sql, q: string): Prisma.Sql {
+  return Prisma.sql`lower(immutable_unaccent(${col})) LIKE '%' || lower(immutable_unaccent(${q})) || '%'`;
+}
+
+// Khớp unaccentIncludesHashtag() cũ — hashtags KHÔNG unaccent, chỉ lowercase.
+function hashtagLike(hashtagsCol: Prisma.Sql, q: string): Prisma.Sql {
+  const hq = q.replace(/^#/, '');
+  return Prisma.sql`EXISTS (SELECT 1 FROM unnest(${hashtagsCol}) h WHERE lower(h) LIKE '%' || lower(${hq}) || '%')`;
+}
+
+interface DouyinVideoRow {
+  post_id: string; url: string; description: string; hashtags: string[]; preview_image: string | null;
+  video_duration: number; region: string; digg_count: bigint; comment_count: bigint; share_count: bigint;
+  collect_count: bigint; music_title: string; search_keyword: string; date_posted: Date;
+  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null;
+  author_followers: bigint; author_is_verified: boolean;
 }
 
 // Port từ scraper_views.py::douyin_videos_list/douyin_keyword_suggest/douyin_profiles_list/
@@ -26,42 +45,44 @@ export class DouyinScraperReadService {
     const sort = params.sort || 'scraped';
     const kwFilter = (params.search_keyword || '').trim();
 
-    const where: any = {};
-    if (minDigg !== undefined) where.digg_count = { gte: BigInt(minDigg) };
-    if (dateFrom || dateTo) {
-      where.date_posted = {};
-      if (dateFrom) where.date_posted.gte = new Date(`${dateFrom}T00:00:00.000Z`);
-      if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
+    const conditions: Prisma.Sql[] = [];
+    if (minDigg !== undefined) conditions.push(Prisma.sql`digg_count >= ${BigInt(minDigg)}`);
+    if (dateFrom) conditions.push(Prisma.sql`date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+    if (dateTo) conditions.push(Prisma.sql`date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+    if (kwFilter) conditions.push(unaccentLike(Prisma.sql`search_keyword`, kwFilter));
+    if (q) {
+      conditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${unaccentLike(Prisma.sql`search_keyword`, q)} OR ${hashtagLike(Prisma.sql`hashtags`, q)})`);
     }
-    if (kwFilter) where.search_keyword = { contains: kwFilter, mode: 'insensitive' };
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    let orderBy: any = { created_at: 'desc' };
-    if (sort === 'likes') orderBy = { digg_count: 'desc' };
-    else if (sort === 'date') orderBy = { date_posted: 'desc' };
+    let orderCol: Prisma.Sql = Prisma.sql`created_at`;
+    if (sort === 'likes') orderCol = Prisma.sql`digg_count`;
+    else if (sort === 'date') orderCol = Prisma.sql`date_posted`;
 
-    const all = await this.prisma.scraperDouyinVideo.findMany({ where, orderBy });
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_douyin_videos ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = q
-      ? all.filter(
-          (v) =>
-            unaccentMatch(v.description, q) ||
-            unaccentMatch(v.search_keyword, q) ||
-            unaccentIncludesHashtag(v.hashtags, q),
-        )
-      : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const videos = await this.prisma.$queryRaw<DouyinVideoRow[]>`
+      SELECT post_id, url, description, hashtags, preview_image, video_duration, region, digg_count,
+             comment_count, share_count, collect_count, music_title, search_keyword, date_posted,
+             author_id, author_username, author_display_name, author_avatar, author_followers, author_is_verified
+      FROM scraper_douyin_videos
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: paginated.map((v) => ({
+      videos: videos.map((v) => ({
         post_id: v.post_id,
         url: v.url,
         description: v.description,
@@ -89,16 +110,18 @@ export class DouyinScraperReadService {
   }
 
   async keywordSuggest(q: string) {
-    const groups = await this.prisma.scraperDouyinVideo.groupBy({
-      by: ['search_keyword'],
-      where: { NOT: { search_keyword: '' } },
-      _count: { id: true },
-      orderBy: { _count: { id: 'desc' } },
-      take: 50,
-    });
+    const conditions: Prisma.Sql[] = [Prisma.sql`search_keyword <> ''`, Prisma.sql`search_keyword NOT LIKE '@%'`];
+    if (q) conditions.push(unaccentLike(Prisma.sql`search_keyword`, q));
 
-    const rows = groups.map((g) => ({ keyword: g.search_keyword, count: g._count.id }));
-    const results = q ? rows.filter((r) => unaccentMatch(r.keyword, q)).slice(0, 10) : rows.slice(0, 10);
+    const rows = await this.prisma.$queryRaw<{ keyword: string; count: bigint }[]>`
+      SELECT search_keyword AS keyword, COUNT(*) AS count
+      FROM scraper_douyin_videos
+      WHERE ${Prisma.join(conditions, ' AND ')}
+      GROUP BY search_keyword
+      ORDER BY count DESC
+      LIMIT 10
+    `;
+    const results = rows.map((r) => ({ keyword: r.keyword, count: Number(r.count) }));
 
     return { suggestions: results };
   }
@@ -110,7 +133,7 @@ export class DouyinScraperReadService {
       uid: p.uid,
       username: p.username,
       nickname: p.nickname,
-      avatar_url: p.avatar_url,
+      avatar_url: p.avatar_drive_url || p.avatar_url,
       biography: p.biography,
       is_verified: p.is_verified,
       followers_count: Number(p.followers_count),

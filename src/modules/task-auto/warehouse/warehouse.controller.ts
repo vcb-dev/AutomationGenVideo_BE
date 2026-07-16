@@ -51,7 +51,8 @@ export class TaskAutoWarehouseController {
   @Get("warehouse/global")
   @ApiOperation({ summary: "Lấy kho tháng tổng (global)" })
   getGlobalWarehouse(@Query() q: GetWarehouseQuery) {
-    return this.warehouse.getGlobalWarehouse(q.month, q.brand_type);
+    const opts = q.page ? { page: q.page, limit: q.limit } : undefined;
+    return this.warehouse.getGlobalWarehouse(q.month, q.brand_type, opts);
   }
 
   @Post("warehouse/global/products")
@@ -105,7 +106,8 @@ export class TaskAutoWarehouseController {
   @Get("warehouse/teams/:teamId")
   @ApiOperation({ summary: "Lấy kho tháng của team" })
   getTeamWarehouse(@Param("teamId") teamId: string, @Query() q: GetWarehouseQuery) {
-    return this.warehouse.getTeamWarehouse(teamId, q.month);
+    const opts = q.page ? { page: q.page, limit: q.limit } : undefined;
+    return this.warehouse.getTeamWarehouse(teamId, q.month, opts);
   }
 
   @Post("warehouse/teams/:teamId/products")
@@ -183,7 +185,8 @@ export class TaskAutoWarehouseController {
     @Request() req: any,
   ) {
     this.assertOwnerOrPrivileged(editorId, req);
-    return this.warehouse.getEditorWarehouse(editorId, q.month);
+    const opts = q.page ? { page: q.page, limit: q.limit } : undefined;
+    return this.warehouse.getEditorWarehouse(editorId, q.month, opts);
   }
 
   @Post("warehouse/editors/:editorId/products")

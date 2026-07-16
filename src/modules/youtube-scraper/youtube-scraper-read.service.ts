@@ -1,10 +1,36 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch, unaccentIncludesHashtag } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+// search dùng immutable_unaccent() qua GIN trigram index (Phase 1+2)
+function unaccentLike(col: Prisma.Sql, q: string): Prisma.Sql {
+  return Prisma.sql`lower(immutable_unaccent(${col})) LIKE '%' || lower(immutable_unaccent(${q})) || '%'`;
+}
+
+// Khớp unaccentIncludesHashtag() cũ — hashtags KHÔNG unaccent, chỉ lowercase.
+function hashtagLike(hashtagsCol: Prisma.Sql, q: string): Prisma.Sql {
+  const hq = q.replace(/^#/, '');
+  return Prisma.sql`EXISTS (SELECT 1 FROM unnest(${hashtagsCol}) h WHERE lower(h) LIKE '%' || lower(${hq}) || '%')`;
+}
+
+interface YoutubeShortRow {
+  video_id: string; title: string; hashtags: string[]; url: string; thumbnail_url: string | null;
+  thumbnail_drive_url: string | null; view_count: bigint; view_count_text: string; created_at: Date;
+  profile_id: bigint;
+}
+
+interface YoutubeProfileRow {
+  id: bigint; channel_id: string; title: string; description: string | null; url: string;
+  avatar_url: string | null; banner_url: string | null; is_verified: boolean; has_business_email: boolean;
+  subscriber_count: bigint; video_count: number; view_count: bigint; country: string | null;
+  channel_created_at: Date | null; is_tracked: boolean; is_bookmarked: boolean; is_owned: boolean;
+  is_initial_scraped: boolean; scraping_status: string; scrape_error: string | null;
+  last_scraped_at: Date | null; created_at: Date; shorts_count: bigint;
 }
 
 // Nền tảng mới — BE sở hữu đọc từ đầu, không có view AI cũ để migrate.
@@ -50,40 +76,40 @@ export class YoutubeScraperReadService {
     const sortBy = params.sort_by || 'subscribers';
     const isOwnedParam = (params.is_owned || '').trim();
 
-    const where: any = {};
-    if (isOwnedParam === 'true') where.is_owned = true;
-    else if (isOwnedParam === 'false') where.is_owned = false;
+    const conditions: Prisma.Sql[] = [];
+    if (isOwnedParam === 'true') conditions.push(Prisma.sql`is_owned = true`);
+    else if (isOwnedParam === 'false') conditions.push(Prisma.sql`is_owned = false`);
+    if (search) conditions.push(unaccentLike(Prisma.sql`title`, search));
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { subscriber_count: 'desc' as const };
+    const secondaryOrderCol = sortBy === 'recent' ? Prisma.sql`created_at` : Prisma.sql`subscriber_count`;
 
-    const all = await this.prisma.scraperYoutubeProfile.findMany({
-      where,
-      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy],
-    });
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_youtube_profiles ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = search ? all.filter((p) => unaccentMatch(p.title, search)) : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
-
-    const shortsCounts = paginated.length
-      ? await this.prisma.scraperYoutubeShort.groupBy({
-          by: ['profile_id'],
-          where: { profile_id: { in: paginated.map((p) => p.id) } },
-          _count: { id: true },
-        })
-      : [];
-    const countMap = new Map(shortsCounts.map((c) => [c.profile_id.toString(), c._count.id]));
+    const profiles = await this.prisma.$queryRaw<YoutubeProfileRow[]>`
+      SELECT p.id, p.channel_id, p.title, p.description, p.url, p.avatar_url, p.banner_url, p.is_verified,
+             p.has_business_email, p.subscriber_count, p.video_count, p.view_count, p.country,
+             p.channel_created_at, p.is_tracked, p.is_bookmarked, p.is_owned, p.is_initial_scraped,
+             p.scraping_status, p.scrape_error, p.last_scraped_at, p.created_at,
+             (SELECT COUNT(*) FROM scraper_youtube_shorts s WHERE s.profile_id = p.id) AS shorts_count
+      FROM scraper_youtube_profiles p
+      ${whereClause}
+      ORDER BY p.is_bookmarked DESC, ${secondaryOrderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      profiles: paginated.map((p) => this.serializeProfile(p, countMap.get(p.id.toString()) || 0)),
+      profiles: profiles.map((p) => this.serializeProfile(p, Number(p.shorts_count))),
     };
   }
 
@@ -98,28 +124,35 @@ export class YoutubeScraperReadService {
     const sort = params.sort || 'views';
     const profileId = parseIntOrDefault(params.profile_id);
 
-    const where: any = {};
-    if (profileId !== undefined) where.profile_id = BigInt(profileId);
-    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
-    if (q) where.title = { contains: q, mode: 'insensitive' };
+    const conditions: Prisma.Sql[] = [];
+    if (profileId !== undefined) conditions.push(Prisma.sql`s.profile_id = ${BigInt(profileId)}`);
+    if (minViews !== undefined) conditions.push(Prisma.sql`s.view_count >= ${BigInt(minViews)}`);
+    if (q) conditions.push(unaccentLike(Prisma.sql`s.title`, q));
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    const orderBy: any = sort === 'recent' ? { created_at: 'desc' } : { view_count: 'desc' };
+    const orderCol = sort === 'recent' ? Prisma.sql`s.created_at` : Prisma.sql`s.view_count`;
 
-    const [total, shorts] = await Promise.all([
-      this.prisma.scraperYoutubeShort.count({ where }),
-      this.prisma.scraperYoutubeShort.findMany({
-        where,
-        orderBy,
-        include: { profile: { select: { id: true, channel_id: true, title: true, avatar_url: true } } },
-        skip: (pageNum - 1) * pageSize,
-        take: pageSize,
-      }),
-    ]);
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_youtube_shorts s ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
+
+    const shorts = await this.prisma.$queryRaw<(YoutubeShortRow & { profile_channel_id: string; profile_title: string; profile_avatar_url: string | null })[]>`
+      SELECT s.video_id, s.title, s.hashtags, s.url, s.thumbnail_url, s.thumbnail_drive_url,
+             s.view_count, s.view_count_text, s.created_at, s.profile_id,
+             p.channel_id AS profile_channel_id, p.title AS profile_title, p.avatar_url AS profile_avatar_url
+      FROM scraper_youtube_shorts s
+      JOIN scraper_youtube_profiles p ON p.id = s.profile_id
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
@@ -128,15 +161,15 @@ export class YoutubeScraperReadService {
         title: s.title,
         hashtags: s.hashtags,
         url: s.url,
-        thumbnail_url: (s as any).thumbnail_drive_url || s.thumbnail_url || '',
+        thumbnail_url: s.thumbnail_drive_url || s.thumbnail_url || '',
         view_count: Number(s.view_count),
         view_count_text: s.view_count_text,
         created_at: s.created_at,
         profile: {
-          id: Number(s.profile.id),
-          channel_id: s.profile.channel_id,
-          title: s.profile.title,
-          avatar_url: s.profile.avatar_url || '',
+          id: Number(s.profile_id),
+          channel_id: s.profile_channel_id,
+          title: s.profile_title,
+          avatar_url: s.profile_avatar_url || '',
         },
       })),
     };
@@ -171,30 +204,43 @@ export class YoutubeScraperReadService {
     const q = (params.q || '').trim();
     const minViews = parseIntOrDefault(params.min_views);
 
-    const where: any = { profile_id: profileId };
-    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
+    // baseConditions (profile_id + minViews) dùng cho shorts_in_db của profile —
+    // KHÔNG áp dụng q, khớp đúng hành vi cũ (all.length trước khi filter theo q).
+    const baseConditions: Prisma.Sql[] = [Prisma.sql`profile_id = ${profileId}`];
+    if (minViews !== undefined) baseConditions.push(Prisma.sql`view_count >= ${BigInt(minViews)}`);
+    const fullConditions = [...baseConditions];
+    if (q) fullConditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`title`, q)} OR ${hashtagLike(Prisma.sql`hashtags`, q)})`);
 
-    let orderBy: any = { created_at: 'desc' };
-    if (sort === 'views') orderBy = { view_count: 'desc' };
+    const orderCol = sort === 'views' ? Prisma.sql`view_count` : Prisma.sql`created_at`;
 
-    const all = await this.prisma.scraperYoutubeShort.findMany({ where, orderBy });
+    const [[{ total: baseTotal }], [{ total }]] = await Promise.all([
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM scraper_youtube_shorts WHERE ${Prisma.join(baseConditions, ' AND ')}
+      `,
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM scraper_youtube_shorts WHERE ${Prisma.join(fullConditions, ' AND ')}
+      `,
+    ]);
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = q
-      ? all.filter((s) => unaccentMatch(s.title, q) || unaccentIncludesHashtag(s.hashtags, q))
-      : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = await this.prisma.$queryRaw<YoutubeShortRow[]>`
+      SELECT video_id, title, hashtags, url, thumbnail_url, thumbnail_drive_url, view_count,
+             view_count_text, created_at, profile_id
+      FROM scraper_youtube_shorts
+      WHERE ${Prisma.join(fullConditions, ' AND ')}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      profile: this.serializeProfile(profile, all.length),
+      profile: this.serializeProfile(profile, Number(baseTotal)),
       shorts: paginated.map((s) => ({
         video_id: s.video_id,
         title: s.title,

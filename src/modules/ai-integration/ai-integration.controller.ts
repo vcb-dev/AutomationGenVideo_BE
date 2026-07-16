@@ -732,6 +732,26 @@ export class AiIntegrationController {
     return this.aiService.getVoiceUsageStats(dateFrom, dateTo);
   }
 
+  // KHÔNG gắn JwtAuthGuard: thẻ <audio src> của trình duyệt không gửi được JWT
+  // header. Service tự giới hạn chỉ stream file TTS (tts_*.mp3, mimeType audio/*).
+  @Get('voice/tts/audio/:fileId')
+  @ApiOperation({ summary: 'Stream/tải file TTS audio từ Drive qua BE (?download=1 để tải về, ?filename= đặt tên file tải)' })
+  async streamTtsAudio(
+    @Param('fileId') fileId: string,
+    @Req() req: any,
+    @Res() res: Response,
+    @Query('download') download?: string,
+    @Query('filename') filename?: string,
+  ) {
+    return this.aiService.streamTtsAudio(
+      fileId,
+      res,
+      download === '1' || download === 'true',
+      req.headers?.['range'],
+      filename,
+    );
+  }
+
   @Post('voice/tts')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)

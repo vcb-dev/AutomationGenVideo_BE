@@ -1894,8 +1894,13 @@ export class AiIntegrationService {
    *    chạy AI chưa set AI_SERVICE_URL trong .env của nó).
    * 2. Upload lên Google Drive công ty → link vĩnh viễn, không phụ thuộc máy AI.
    * Không bao giờ throw — TTS đã thành công thì tệ nhất người dùng vẫn nhận link qua tunnel.
+   *
+   * Trả kèm fileId (khi upload Drive thành công) để FE phát/tải audio qua proxy
+   * BE (streamTtsAudio) — link Drive uc?export=download KHÔNG stream chuẩn cho
+   * trình duyệt: <audio> không đọc được duration (hiện 00:00), <a download>
+   * cross-origin bị bỏ qua và điều hướng sang Drive hay lỗi.
    */
-  private async publishTtsAudio(aiAudioUrl: string): Promise<string> {
+  private async publishTtsAudio(aiAudioUrl: string): Promise<{ url: string; fileId: string | null }> {
     let sourceUrl = aiAudioUrl;
     try {
       const parsed = new URL(aiAudioUrl);
@@ -1906,12 +1911,15 @@ export class AiIntegrationService {
         sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
       }
     } catch {
-      return aiAudioUrl;
+      return { url: aiAudioUrl, fileId: null };
     }
 
     try {
-      const filename =
+      let filename =
         (sourceUrl.split('/').pop() || '').split('?')[0] || `tts_${Date.now()}.mp3`;
+      // Proxy stream (streamTtsAudio) chỉ phục vụ file tên tts_*.mp3 — ép prefix
+      // cho cả nhánh fallback URL CDN MiniMax (tên file bất kỳ).
+      if (!/^tts_/i.test(filename)) filename = `tts_${Date.now()}.mp3`;
       // Gom toàn bộ audio TTS về 1 nơi: Root/TTS Audio/{YYYY-MM-DD}/ (cùng kiểu
       // với Scraper Cào Dữ Liệu) thay vì rải vào từng folder ngày dùng chung.
       const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
@@ -1920,12 +1928,67 @@ export class AiIntegrationService {
       });
       if (driveUrl) {
         this.logger.log(`TTS audio uploaded to Drive: ${driveUrl}`);
-        return driveUrl;
+        // uploadFromUrl trả URL dạng uc?...&id=<fileId> — lấy lại fileId từ đó
+        // để khỏi đổi chữ ký hàm dùng chung với các module scraper.
+        let fileId: string | null = null;
+        try {
+          fileId = new URL(driveUrl).searchParams.get('id');
+        } catch { /* giữ fileId null — FE fallback về link Drive */ }
+        return { url: driveUrl, fileId };
       }
     } catch (err: any) {
       this.logger.warn(`TTS audio Drive upload failed, falling back to source URL: ${err.message}`);
     }
-    return sourceUrl;
+    return { url: sourceUrl, fileId: null };
+  }
+
+  /**
+   * Stream file TTS audio từ Drive về trình duyệt (phát trực tiếp hoặc tải về).
+   * Route này công khai vì thẻ <audio> không gửi được JWT header — bù lại chỉ
+   * phục vụ đúng file TTS (tên tts_*.mp3, mimeType audio/*), không cho lấy file
+   * Drive tùy ý qua service account.
+   */
+  async streamTtsAudio(fileId: string, res: any, download = false, rangeHeader?: string, downloadName?: string): Promise<void> {
+    let file: Awaited<ReturnType<GoogleDriveStorageService['openReadStream']>>;
+    try {
+      file = await this.driveStorage.openReadStream(fileId, rangeHeader);
+    } catch (err: any) {
+      this.logger.warn(`streamTtsAudio: cannot open Drive file ${fileId}: ${err.message}`);
+      throw new HttpException('Audio file not found', HttpStatus.NOT_FOUND);
+    }
+
+    const isTtsAudio = /^tts_[\w.-]+\.mp3$/i.test(file.name) && (file.mimetype || '').startsWith('audio/');
+    if (!isTtsAudio) {
+      (file.stream as any).destroy?.();
+      throw new HttpException('Not a TTS audio file', HttpStatus.FORBIDDEN);
+    }
+
+    res.status(file.status);
+    res.setHeader('Content-Type', file.mimetype);
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (file.contentRange) res.setHeader('Content-Range', file.contentRange);
+    const length = file.contentLength ?? (file.status === 200 && file.size ? file.size : undefined);
+    if (length) res.setHeader('Content-Length', String(length));
+    // Tên file khi tải về: ưu tiên tên FE truyền qua ?filename= (vd "HuyK_2026-07-16_1435.mp3"
+    // — dễ đọc hơn tên tts_<hex>.mp3 trên Drive). Sanitize để chống header injection /
+    // ký tự cấm trên Windows; tên có dấu tiếng Việt gửi qua filename* (RFC 5987).
+    let outName = file.name;
+    if (download && downloadName) {
+      const cleaned = downloadName.replace(/[\r\n\/\\:*?"<>|]+/g, ' ').trim().slice(0, 150);
+      if (cleaned) outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+    }
+    const asciiName = outName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+    const utf8Name = encodeURIComponent(outName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    res.setHeader(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    );
+    // Drive đứt kết nối giữa chừng → kết thúc response thay vì để trình duyệt chờ treo
+    (file.stream as any).on?.('error', (err: any) => {
+      this.logger.warn(`streamTtsAudio: stream error for ${fileId}: ${err?.message}`);
+      try { res.end(); } catch { /* response có thể đã đóng */ }
+    });
+    file.stream.pipe(res);
   }
 
   /**
@@ -1962,7 +2025,11 @@ export class AiIntegrationService {
       // (aiServiceUrl BE đang giữ) rồi đẩy lên Google Drive công ty → link công khai,
       // sống độc lập với máy AI. Drive lỗi thì fallback về link qua tunnel.
       if (data?.success && data.audio_url) {
-        data.audio_url = await this.publishTtsAudio(String(data.audio_url));
+        const published = await this.publishTtsAudio(String(data.audio_url));
+        data.audio_url = published.url;
+        // Có audio_file_id → FE phát/tải qua GET ai/voice/tts/audio/:fileId (proxy
+        // BE stream chuẩn); null → FE dùng thẳng audio_url như cũ.
+        data.audio_file_id = published.fileId;
       }
       // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
       // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
