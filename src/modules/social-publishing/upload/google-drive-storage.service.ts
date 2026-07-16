@@ -325,6 +325,11 @@ export class GoogleDriveStorageService {
         responseType: 'arraybuffer',
       });
       buffer = Buffer.from(res.data);
+      const contentType = (res.headers['content-type'] || '') as string;
+      if (!contentType.startsWith('image/')) {
+        this.logger.warn(`[ThumbnailMigration] Expected image, got '${contentType}' from ${sourceUrl.slice(0, 80)}`);
+        return '';
+      }
     } catch (err: any) {
       this.logger.warn(`[ThumbnailMigration] Download failed (${sourceUrl.slice(0, 70)}...): ${err.message}`);
       return '';

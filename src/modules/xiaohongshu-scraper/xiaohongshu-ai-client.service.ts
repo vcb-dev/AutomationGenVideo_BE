@@ -38,10 +38,14 @@ export class XiaohongshuAiClientService {
     return { Authorization: `Bearer ${token}` };
   }
 
-  async fetchSearch(keyword: string, count = 20): Promise<{ videos: ParsedXhsVideo[] }> {
+  async fetchSearch(
+    keyword: string,
+    count = 20,
+    cursor?: unknown,
+  ): Promise<{ videos: ParsedXhsVideo[]; cursor: unknown; has_more: boolean }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/xiaohongshu/fetch/search/`,
-      { keyword, count },
+      { keyword, count, cursor },
       { headers: this.authHeaders(), timeout: 120_000 },
     );
     return data;

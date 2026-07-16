@@ -53,15 +53,32 @@ export class BilibiliScraperService {
     return { created: true };
   }
 
+  // Dedup (post_id đã có trong DB) làm giảm số video MỚI thực sự ingest được so
+  // với `count` yêu cầu — vòng lặp dưới đây gọi tiếp AI với cursor nối tiếp
+  // (không lặp lại từ đầu) để bù phần bị trùng, tối đa MAX_SEARCH_ROUNDS lần.
+  private static readonly MAX_SEARCH_ROUNDS = 5;
+
   async searchKeyword(keyword: string, count = 30): Promise<{ created: number; updated: number }> {
-    const { videos } = await this.aiClient.fetchSearch(keyword, count);
     let created = 0;
     let updated = 0;
-    for (const v of videos) {
-      const r = await this.upsertSearchVideo(v);
-      if (r.created) created++;
-      else updated++;
+    let cursor: number | null | undefined = undefined;
+    let hasMore = true;
+
+    for (let round = 0; round < BilibiliScraperService.MAX_SEARCH_ROUNDS && created < count && hasMore; round++) {
+      const remaining = count - created;
+      const { videos, cursor: nextCursor, has_more } = await this.aiClient.fetchSearch(keyword, remaining, cursor);
+      if (videos.length === 0) break;
+
+      for (const v of videos) {
+        const r = await this.upsertSearchVideo(v);
+        if (r.created) created++;
+        else updated++;
+      }
+
+      cursor = nextCursor;
+      hasMore = has_more;
     }
+
     this.logger.log(`[BILIBILI-SEARCH] Ingest '${keyword}': +${created} new, ~${updated} updated`);
     return { created, updated };
   }

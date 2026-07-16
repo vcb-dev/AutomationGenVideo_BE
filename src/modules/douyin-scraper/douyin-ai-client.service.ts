@@ -49,10 +49,14 @@ export class DouyinAiClientService {
     return { Authorization: `Bearer ${token}` };
   }
 
-  async fetchSearch(keyword: string, count = 30): Promise<{ videos: ParsedDouyinVideo[] }> {
+  async fetchSearch(
+    keyword: string,
+    count = 30,
+    cursor?: unknown,
+  ): Promise<{ videos: ParsedDouyinVideo[]; cursor: unknown; has_more: boolean }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/douyin/fetch/search/`,
-      { keyword, count },
+      { keyword, count, cursor },
       { headers: this.authHeaders(), timeout: 120_000 },
     );
     return data;
