@@ -1,10 +1,46 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+interface ManagedPageRow {
+  page_id: string;
+  name: string;
+  username: string | null;
+  category: string;
+  avatar_url: string | null;
+  avatar_drive_url: string | null;
+  followers_count: bigint;
+  likes_count: bigint;
+  is_active: boolean;
+  is_scraping: boolean;
+  is_backfilled: boolean;
+  last_synced_at: Date | null;
+  last_scraped_at: Date | null;
+  scrape_error: string | null;
+  created_at: Date;
+  updated_at: Date;
+  video_count: bigint;
+}
+
+interface SyncedVideoRow {
+  post_id: string;
+  caption: string;
+  published_at: Date;
+  permalink_url: string | null;
+  thumbnail_url: string | null;
+  video_url: string | null;
+  view_count: bigint;
+  like_count: number;
+  comment_count: number;
+  share_count: number;
+  reach_count: number;
+  link_clicks: number;
+  last_updated_at: Date;
 }
 
 // Port từ facebook_views.py::get_managed_pages/get_synced_videos (AI đã xóa) — chỉ đọc, không ghi.
@@ -23,46 +59,58 @@ export class FacebookOwnedPagesReadService {
     const minLikes = parseIntOrDefault(params.min_likes);
     const minFollowers = parseIntOrDefault(params.min_followers);
 
-    const where: any = {};
-    if (filterStatus === 'active') where.is_active = true;
-    else if (filterStatus === 'inactive') where.is_active = false;
-    if (minLikes !== undefined) where.likes_count = { gte: BigInt(minLikes) };
-    if (minFollowers !== undefined) where.followers_count = { gte: BigInt(minFollowers) };
+    // Điều kiện WHERE dùng chung cho cả query lấy data lẫn query đếm total —
+    // search dùng immutable_unaccent() (Phase 1) qua GIN trigram index
+    // managed_facebook_page_name_trgm (Phase 2), thay vì kéo hết về rồi
+    // filter bằng unaccentMatch() ở JS như trước.
+    const conditions: Prisma.Sql[] = [];
+    if (filterStatus === 'active') conditions.push(Prisma.sql`is_active = true`);
+    else if (filterStatus === 'inactive') conditions.push(Prisma.sql`is_active = false`);
+    if (minLikes !== undefined) conditions.push(Prisma.sql`likes_count >= ${BigInt(minLikes)}`);
+    if (minFollowers !== undefined) conditions.push(Prisma.sql`followers_count >= ${BigInt(minFollowers)}`);
+    if (search) {
+      conditions.push(
+        Prisma.sql`lower(immutable_unaccent(name)) LIKE '%' || lower(immutable_unaccent(${search})) || '%'`,
+      );
+    }
+    const whereClause = conditions.length
+      ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
+      : Prisma.empty;
 
-    const pages = await this.prisma.video_management_managedfacebookpage.findMany({
-      where,
-      include: { _count: { select: { owned_videos: true } } },
-    });
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM video_management_managedfacebookpage ${whereClause}
+    `;
 
-    // Sort: -video_count, -last_scraped_at, name (khớp order_by gốc)
-    pages.sort((a, b) => {
-      const vc = b._count.owned_videos - a._count.owned_videos;
-      if (vc !== 0) return vc;
-      const at = a.last_scraped_at ? a.last_scraped_at.getTime() : -Infinity;
-      const bt = b.last_scraped_at ? b.last_scraped_at.getTime() : -Infinity;
-      if (bt !== at) return bt - at;
-      return a.name.localeCompare(b.name);
-    });
+    const offset = (pageNum - 1) * pageSize;
+    // Sort: -video_count, -last_scraped_at, name (khớp order_by gốc) — video_count
+    // là subquery đếm owned_videos, alias có thể dùng lại trong ORDER BY (Postgres).
+    const pages = await this.prisma.$queryRaw<ManagedPageRow[]>`
+      SELECT
+        p.page_id, p.name, p.username, p.category, p.avatar_url, p.avatar_drive_url,
+        p.followers_count, p.likes_count, p.is_active, p.is_scraping, p.is_backfilled,
+        p.last_synced_at, p.last_scraped_at, p.scrape_error, p.created_at, p.updated_at,
+        (SELECT COUNT(*) FROM video_management_ownedvideocontent ov WHERE ov.managed_page_id = p.id) AS video_count
+      FROM video_management_managedfacebookpage p
+      ${whereClause}
+      ORDER BY video_count DESC, p.last_scraped_at DESC NULLS LAST, p.name ASC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
-    const filtered = search ? pages.filter((p) => unaccentMatch(p.name, search)) : pages;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      pages: paginated.map((p) => ({
+      pages: pages.map((p) => ({
         page_id: p.page_id,
         name: p.name,
         username: p.username,
         category: p.category,
-        avatar_url: p.avatar_url,
+        avatar_url: p.avatar_drive_url || p.avatar_url,
         followers_count: Number(p.followers_count),
         likes_count: Number(p.likes_count),
         is_active: p.is_active,
@@ -71,7 +119,7 @@ export class FacebookOwnedPagesReadService {
         last_synced_at: p.last_synced_at,
         last_scraped_at: p.last_scraped_at,
         scrape_error: p.scrape_error,
-        video_count: p._count.owned_videos,
+        video_count: Number(p.video_count),
         created_at: p.created_at,
         updated_at: p.updated_at,
       })),
@@ -97,79 +145,39 @@ export class FacebookOwnedPagesReadService {
     const dateFrom = (params.date_from || '').trim();
     const dateTo = (params.date_to || '').trim();
 
-    const where: any = { managed_page_id: pageObj.id };
-    if (minViews !== undefined) where.view_count = { gte: BigInt(minViews) };
-    if (minLikes !== undefined) where.like_count = { gte: minLikes };
-    if (hashtagCat) where.caption = { contains: `#${hashtagCat}`, mode: 'insensitive' };
-    if (dateFrom || dateTo) {
-      where.published_at = {};
-      if (dateFrom) where.published_at.gte = new Date(`${dateFrom}T00:00:00.000Z`);
-      if (dateTo) where.published_at.lte = new Date(`${dateTo}T23:59:59.999Z`);
+    // Điều kiện WHERE dùng chung cho query data lẫn query đếm total — search
+    // dùng immutable_unaccent() qua GIN trigram index
+    // owned_video_content_caption_trgm (Phase 1+2), thay vì kéo hết video của
+    // page về rồi filter bằng unaccentMatch() ở JS như trước.
+    const conditions: Prisma.Sql[] = [Prisma.sql`managed_page_id = ${pageObj.id}`];
+    if (minViews !== undefined) conditions.push(Prisma.sql`view_count >= ${BigInt(minViews)}`);
+    if (minLikes !== undefined) conditions.push(Prisma.sql`like_count >= ${minLikes}`);
+    if (hashtagCat) conditions.push(Prisma.sql`caption ILIKE ${'%#' + hashtagCat + '%'}`);
+    if (dateFrom) conditions.push(Prisma.sql`published_at >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+    if (dateTo) conditions.push(Prisma.sql`published_at <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+    if (search) {
+      conditions.push(
+        Prisma.sql`lower(immutable_unaccent(caption)) LIKE '%' || lower(immutable_unaccent(${search})) || '%'`,
+      );
     }
+    const whereClause = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
-    // Chỉ select cột thực dùng — cột raw_data (JSON thô từ Facebook API, ~3KB/dòng)
-    // chiếm phần lớn dung lượng bảng; fetch kèm nó cho 17k dòng là ~50MB+/request,
-    // chính là lý do trang load ~9.5s trước đây (đo pg_stat_statements 2026-07-16).
-    const videoSelect = {
-      id: true,
-      post_id: true,
-      caption: true,
-      published_at: true,
-      permalink_url: true,
-      thumbnail_url: true,
-      video_url: true,
-      view_count: true,
-      like_count: true,
-      comment_count: true,
-      share_count: true,
-      reach_count: true,
-      link_clicks: true,
-      last_updated_at: true,
-    } as const;
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM video_management_ownedvideocontent ${whereClause}
+    `;
 
-    let total: number;
-    let paginated: Array<any>;
-    const start = (pageNum - 1) * pageSize;
+    const offset = (pageNum - 1) * pageSize;
+    const videos = await this.prisma.$queryRaw<SyncedVideoRow[]>`
+      SELECT post_id, caption, published_at, permalink_url, thumbnail_url, video_url,
+             view_count, like_count, comment_count, share_count, reach_count, link_clicks, last_updated_at
+      FROM video_management_ownedvideocontent
+      ${whereClause}
+      ORDER BY view_count DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
-    if (!search) {
-      // Không search → phân trang thẳng tại DB (index managed_page_id+view_count DESC có sẵn)
-      const [count, rows] = await this.prisma.$transaction([
-        this.prisma.video_management_ownedvideocontent.count({ where }),
-        this.prisma.video_management_ownedvideocontent.findMany({
-          where,
-          // id desc làm tiebreaker: view_count trùng nhau mà thứ tự không cố định
-          // thì phân trang 2 query (count + skip/take) có thể lặp/sót dòng giữa các trang
-          orderBy: [{ view_count: 'desc' }, { id: 'desc' }],
-          select: videoSelect,
-          skip: start,
-          take: pageSize,
-        }),
-      ]);
-      total = count;
-      paginated = rows;
-    } else {
-      // Search cần unaccentMatch (bỏ dấu) chạy ở JS — kéo bản NHẸ (id+caption) để lọc,
-      // rồi mới fetch đầy đủ đúng 1 trang theo id.
-      const light = await this.prisma.video_management_ownedvideocontent.findMany({
-        where,
-        orderBy: [{ view_count: 'desc' }, { id: 'desc' }],
-        select: { id: true, caption: true },
-      });
-      const matchedIds = light
-        .filter((v) => unaccentMatch(v.caption || '', search))
-        .map((v) => v.id);
-      total = matchedIds.length;
-      const pageIds = matchedIds.slice(start, start + pageSize);
-      const rows = await this.prisma.video_management_ownedvideocontent.findMany({
-        where: { id: { in: pageIds } },
-        select: videoSelect,
-      });
-      // Giữ nguyên thứ tự view_count desc như danh sách đã lọc
-      const order = new Map(pageIds.map((id, i) => [id.toString(), i]));
-      paginated = rows.sort((a, b) => order.get(a.id.toString())! - order.get(b.id.toString())!);
-    }
-
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
 
     return {
       status: 'ok',
@@ -177,18 +185,18 @@ export class FacebookOwnedPagesReadService {
         page_id: pageObj.page_id,
         name: pageObj.name,
         username: pageObj.username,
-        avatar_url: pageObj.avatar_url,
+        avatar_url: pageObj.avatar_drive_url || pageObj.avatar_url,
         category: pageObj.category,
         followers_count: Number(pageObj.followers_count),
         likes_count: Number(pageObj.likes_count),
         is_scraping: pageObj.is_scraping,
         last_scraped_at: pageObj.last_scraped_at,
       },
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: paginated.map((v) => ({
+      videos: videos.map((v) => ({
         post_id: v.post_id,
         caption: v.caption,
         published_at: v.published_at,

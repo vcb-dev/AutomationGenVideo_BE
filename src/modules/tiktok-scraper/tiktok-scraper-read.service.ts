@@ -1,10 +1,40 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { unaccentMatch, unaccentIncludesHashtag } from '../../common/utils/unaccent.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+// search dùng immutable_unaccent() qua GIN trigram index (Phase 1+2) — không
+// dấu + không phân biệt hoa/thường, khớp hành vi unaccentMatch() cũ nhưng chạy
+// được ở DB thay vì kéo hết về JS.
+function unaccentLike(col: Prisma.Sql, q: string): Prisma.Sql {
+  return Prisma.sql`lower(immutable_unaccent(${col})) LIKE '%' || lower(immutable_unaccent(${q})) || '%'`;
+}
+
+// Khớp unaccentIncludesHashtag() cũ — hashtags KHÔNG unaccent, chỉ lowercase.
+function hashtagLike(hashtagsCol: Prisma.Sql, q: string): Prisma.Sql {
+  const hq = q.replace(/^#/, '');
+  return Prisma.sql`EXISTS (SELECT 1 FROM unnest(${hashtagsCol}) h WHERE lower(h) LIKE '%' || lower(${hq}) || '%')`;
+}
+
+interface TiktokVideoRow {
+  post_id: string; shortcode: string; url: string; description: string; hashtags: string[];
+  video_url: string | null; cdn_url: string | null; preview_image: string | null;
+  video_duration: number; region: string;
+  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null;
+  author_url: string; author_followers: bigint; author_is_verified: boolean;
+  play_count: bigint; digg_count: bigint; comment_count: bigint; share_count: bigint; collect_count: bigint;
+  music_title: string; search_keyword: string; date_posted: Date;
+}
+
+interface TiktokProfileVideoRow {
+  video_id: string; shortcode: string; url: string; description: string; hashtags: string[];
+  cover_image: string | null; video_duration: number; region: string; post_type: string;
+  play_count: bigint; digg_count: bigint; comment_count: bigint; share_count: bigint; favorites_count: bigint;
+  music_title: string; music_author: string; date_posted: Date;
 }
 
 // Port từ scraper_views.py::tiktok_videos/tiktok_keyword_suggest/tiktok_profiles_list/
@@ -26,37 +56,46 @@ export class TiktokScraperReadService {
     const sort = params.sort || 'scraped';
     const kwFilter = (params.search_keyword || '').trim();
 
-    const where: any = {};
-    if (minPlays !== undefined) where.play_count = { gte: BigInt(minPlays) };
-    if (dateFrom || dateTo) {
-      where.date_posted = {};
-      if (dateFrom) where.date_posted.gte = new Date(`${dateFrom}T00:00:00.000Z`);
-      if (dateTo) where.date_posted.lte = new Date(`${dateTo}T23:59:59.999Z`);
+    const conditions: Prisma.Sql[] = [];
+    if (minPlays !== undefined) conditions.push(Prisma.sql`play_count >= ${BigInt(minPlays)}`);
+    if (dateFrom) conditions.push(Prisma.sql`date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+    if (dateTo) conditions.push(Prisma.sql`date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+    if (kwFilter) conditions.push(unaccentLike(Prisma.sql`search_keyword`, kwFilter));
+    if (q) {
+      conditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${unaccentLike(Prisma.sql`search_keyword`, q)})`);
     }
-    if (kwFilter) where.search_keyword = { contains: kwFilter, mode: 'insensitive' };
-    if (q) where.OR = [
-      { description: { contains: q, mode: 'insensitive' } },
-      { search_keyword: { contains: q, mode: 'insensitive' } },
-    ];
+    const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
-    let orderBy: any = { created_at: 'desc' };
-    if (sort === 'plays') orderBy = { play_count: 'desc' };
-    else if (sort === 'likes') orderBy = { digg_count: 'desc' };
-    else if (sort === 'date') orderBy = { date_posted: 'desc' };
+    let orderCol: Prisma.Sql = Prisma.sql`created_at`;
+    if (sort === 'plays') orderCol = Prisma.sql`play_count`;
+    else if (sort === 'likes') orderCol = Prisma.sql`digg_count`;
+    else if (sort === 'date') orderCol = Prisma.sql`date_posted`;
 
-    const [total, paginated] = await Promise.all([
-      this.prisma.scraperTikTokVideo.count({ where }),
-      this.prisma.scraperTikTokVideo.findMany({ where, orderBy, skip: (pageNum - 1) * pageSize, take: pageSize }),
-    ]);
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_tiktok_videos ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
+
+    const videos = await this.prisma.$queryRaw<TiktokVideoRow[]>`
+      SELECT post_id, shortcode, url, description, hashtags, video_url, cdn_url, preview_image,
+             video_duration, region, author_id, author_username, author_display_name, author_avatar,
+             author_url, author_followers, author_is_verified, play_count, digg_count, comment_count,
+             share_count, collect_count, music_title, search_keyword, date_posted
+      FROM scraper_tiktok_videos
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: paginated.map((v) => ({
+      videos: videos.map((v) => ({
         post_id: v.post_id,
         shortcode: v.shortcode,
         url: v.url,
@@ -89,15 +128,19 @@ export class TiktokScraperReadService {
   }
 
   async keywordSuggest(q: string) {
-    const groups = await this.prisma.scraperTikTokVideo.groupBy({
-      by: ['search_keyword'],
-      where: { NOT: { search_keyword: '' } },
-      _count: { id: true },
-      orderBy: { _count: { id: 'desc' } },
-    });
+    const whereClause = q
+      ? Prisma.sql`WHERE search_keyword <> '' AND ${unaccentLike(Prisma.sql`search_keyword`, q)}`
+      : Prisma.sql`WHERE search_keyword <> ''`;
 
-    const rows = groups.map((g) => ({ keyword: g.search_keyword, count: g._count.id }));
-    const results = q ? rows.filter((r) => unaccentMatch(r.keyword, q)).slice(0, 10) : rows.slice(0, 10);
+    const rows = await this.prisma.$queryRaw<{ keyword: string; count: bigint }[]>`
+      SELECT search_keyword AS keyword, COUNT(*) AS count
+      FROM scraper_tiktok_videos
+      ${whereClause}
+      GROUP BY search_keyword
+      ORDER BY count DESC
+      LIMIT 10
+    `;
+    const results = rows.map((r) => ({ keyword: r.keyword, count: Number(r.count) }));
 
     return { suggestions: results };
   }
@@ -149,7 +192,7 @@ export class TiktokScraperReadService {
         username: p.username,
         nickname: p.nickname,
         url: p.url,
-        avatar_url: p.avatar_url || '',
+        avatar_url: p.avatar_drive_url || p.avatar_url || '',
         biography: p.biography || '',
         is_verified: p.is_verified,
         followers_count: Number(p.followers_count),
@@ -185,7 +228,7 @@ export class TiktokScraperReadService {
       username: p.username,
       nickname: p.nickname,
       url: p.url,
-      avatar_url: p.avatar_url || '',
+      avatar_url: p.avatar_drive_url || p.avatar_url || '',
       biography: p.biography || '',
       is_verified: p.is_verified,
       followers_count: Number(p.followers_count),
@@ -220,31 +263,39 @@ export class TiktokScraperReadService {
     const q = (params.q || '').trim();
     const minPlays = parseIntOrDefault(params.min_plays);
 
-    const where: any = { profile_id: profileId };
-    if (minPlays !== undefined) where.play_count = { gte: BigInt(minPlays) };
+    const conditions: Prisma.Sql[] = [Prisma.sql`profile_id = ${profileId}`];
+    if (minPlays !== undefined) conditions.push(Prisma.sql`play_count >= ${BigInt(minPlays)}`);
+    if (q) conditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${hashtagLike(Prisma.sql`hashtags`, q)})`);
+    const whereClause = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
-    let orderBy: any = { date_posted: 'desc' };
-    if (sort === 'plays') orderBy = { play_count: 'desc' };
-    else if (sort === 'likes') orderBy = { digg_count: 'desc' };
+    let orderCol: Prisma.Sql = Prisma.sql`date_posted`;
+    if (sort === 'plays') orderCol = Prisma.sql`play_count`;
+    else if (sort === 'likes') orderCol = Prisma.sql`digg_count`;
 
-    const all = await this.prisma.scraperTikTokProfileVideo.findMany({ where, orderBy });
+    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM scraper_tiktok_profile_videos ${whereClause}
+    `;
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
+    const offset = (pageNum - 1) * pageSize;
 
-    const filtered = q
-      ? all.filter((v) => unaccentMatch(v.description, q) || unaccentIncludesHashtag(v.hashtags, q))
-      : all;
-
-    const total = filtered.length;
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
-    const start = (pageNum - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const videos = await this.prisma.$queryRaw<TiktokProfileVideoRow[]>`
+      SELECT video_id, shortcode, url, description, hashtags, cover_image, video_duration, region,
+             post_type, play_count, digg_count, comment_count, share_count, favorites_count,
+             music_title, music_author, date_posted
+      FROM scraper_tiktok_profile_videos
+      ${whereClause}
+      ORDER BY ${orderCol} DESC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
 
     return {
       status: 'ok',
-      count: total,
+      count: totalNum,
       page: pageNum,
       page_size: pageSize,
       total_pages: totalPages,
-      videos: paginated.map((v) => ({
+      videos: videos.map((v) => ({
         video_id: v.video_id,
         shortcode: v.shortcode,
         url: v.url,
@@ -266,7 +317,7 @@ export class TiktokScraperReadService {
           id: Number(profile.id),
           username: profile.username,
           nickname: profile.nickname,
-          avatar_url: profile.avatar_url || '',
+          avatar_url: profile.avatar_drive_url || profile.avatar_url || '',
         },
       })),
     };
