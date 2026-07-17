@@ -33,6 +33,7 @@ interface SyncedVideoRow {
   published_at: Date;
   permalink_url: string | null;
   thumbnail_url: string | null;
+  thumbnail_drive_url: string | null;
   video_url: string | null;
   view_count: bigint;
   like_count: number;
@@ -168,7 +169,7 @@ export class FacebookOwnedPagesReadService {
 
     const offset = (pageNum - 1) * pageSize;
     const videos = await this.prisma.$queryRaw<SyncedVideoRow[]>`
-      SELECT post_id, caption, published_at, permalink_url, thumbnail_url, video_url,
+      SELECT post_id, caption, published_at, permalink_url, thumbnail_url, thumbnail_drive_url, video_url,
              view_count, like_count, comment_count, share_count, reach_count, link_clicks, last_updated_at
       FROM video_management_ownedvideocontent
       ${whereClause}
@@ -201,7 +202,7 @@ export class FacebookOwnedPagesReadService {
         caption: v.caption,
         published_at: v.published_at,
         permalink_url: v.permalink_url,
-        thumbnail_url: v.thumbnail_url,
+        thumbnail_url: v.thumbnail_drive_url || v.thumbnail_url,
         video_url: v.video_url,
         view_count: Number(v.view_count),
         like_count: v.like_count,
