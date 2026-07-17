@@ -1,14 +1,21 @@
 
 
-import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, Header, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, UseGuards, Request, Header, Logger } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { LarkService } from './lark.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Public } from '../../common/decorators/public.decorator';
+import { UserRole } from '@prisma/client';
 
 @ApiTags('Lark Report')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('lark')
 @SkipThrottle({ long: true, short: true })
 export class LarkController {
@@ -27,7 +34,9 @@ export class LarkController {
     }
 
     @Post('clear')
-    @ApiOperation({ summary: 'Clear all larkReport data' })
+    @UseGuards(RolesGuard)
+    @Roles(UserRole.ADMIN)
+    @ApiOperation({ summary: 'Clear all larkReport data (ADMIN only — irreversible, wipes full checklist history)' })
     async clearData() {
         try {
             await this.larkService.clearAllReports();
@@ -147,7 +156,8 @@ export class LarkController {
     }
 
     @Get('media/:mediaId')
-    @ApiOperation({ summary: 'Proxy Lark media download' })
+    @Public() // Nhúng trực tiếp vào <img src>/<video src> — browser không gắn Authorization header được.
+    @ApiOperation({ summary: 'Proxy Lark media download (public — mediaId là token không đoán được)' })
     async getMedia(@Param('mediaId') mediaId: string, @Query('extra') extra: string, @Res() res: Response) {
         // Ensure browser can read the response even on failures.
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -187,7 +197,9 @@ export class LarkController {
     }
 
     @Post('update-outstanding-status')
-    @ApiOperation({ summary: 'Update status of a ReportOutstanding record' })
+    @UseGuards(RolesGuard)
+    @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+    @ApiOperation({ summary: 'Update status of a ReportOutstanding record (LEADER/MANAGER/ADMIN only)' })
     async updateOutstandingStatus(
         @Body('id') id: string,
         @Body('status') status: string,
@@ -215,9 +227,12 @@ export class LarkController {
 
     @Post('checklist-report')
     @ApiOperation({ summary: 'Submit daily checklist report (replaces Django AI endpoint)' })
-    async submitChecklistReport(@Body() data: any) {
+    async submitChecklistReport(@Body() data: any, @Request() req: any) {
         try {
-            const result = await this.larkService.submitChecklistReport(data);
+            // Danh tính báo cáo PHẢI lấy từ JWT của người gọi, không tin email/name client gửi lên
+            // (nếu không, ai đăng nhập cũng có thể nộp báo cáo giả danh người khác).
+            const identity = { email: req.user.email, name: req.user.full_name, userEmail: req.user.email, userName: req.user.full_name };
+            const result = await this.larkService.submitChecklistReport({ ...data, ...identity });
             return result;
         } catch (error) {
             this.logger.error(`[checklist-report] Failed: ${error?.message}`, error?.stack);
@@ -227,8 +242,9 @@ export class LarkController {
 
     @Post('traffic-report')
     @ApiOperation({ summary: 'Submit daily traffic report' })
-    async submitTrafficReport(@Body() data: any) {
-        return this.larkService.submitTrafficReport(data);
+    async submitTrafficReport(@Body() data: any, @Request() req: any) {
+        // Danh tính báo cáo PHẢI lấy từ JWT của người gọi, không tin email/name client gửi lên.
+        return this.larkService.submitTrafficReport({ ...data, email: req.user.email, name: req.user.full_name });
     }
 
     @Post('upload-evidence')

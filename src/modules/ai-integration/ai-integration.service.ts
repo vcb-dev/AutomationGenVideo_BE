@@ -2030,6 +2030,15 @@ export class AiIntegrationService {
         // Có audio_file_id → FE phát/tải qua GET ai/voice/tts/audio/:fileId (proxy
         // BE stream chuẩn); null → FE dùng thẳng audio_url như cũ.
         data.audio_file_id = published.fileId;
+        // Drive chưa cấu hình / upload lỗi → audio_url là link /media của AI, vốn
+        // chết trên production (Django DEBUG=False không serve /media, và localhost
+        // của server không mở được từ trình duyệt người dùng). Trả thêm tên file để
+        // FE phát/tải qua proxy GET ai/voice/tts/stream/:filename — BE tự kéo file
+        // từ AI (route /api/voice/tts/file/ của AI hoạt động cả khi DEBUG=False).
+        if (!published.fileId) {
+          const m = /\/media\/minimax_tts\/(tts_[0-9a-f]{32}\.mp3)$/i.exec(published.url);
+          data.audio_file_name = m ? m[1] : null;
+        }
       }
       // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
       // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
@@ -2122,5 +2131,131 @@ export class AiIntegrationService {
       },
       by_user: byUserList,
     };
+  }
+
+  /**
+   * Fallback không-Drive: stream file TTS thẳng từ AI service về trình duyệt.
+   * Dùng khi Drive chưa cấu hình/upload lỗi (generateTTS trả audio_file_name).
+   * AI serve file qua /api/voice/tts/file/<filename> — route thường, hoạt động
+   * cả khi DEBUG=False (link /media/... chỉ sống khi DEBUG=True).
+   */
+  async streamTtsAudioFromAi(filename: string, res: any, download = false, downloadName?: string): Promise<void> {
+    if (!/^tts_[0-9a-f]{32}\.mp3$/i.test(filename || '')) {
+      throw new HttpException('Invalid TTS filename', HttpStatus.BAD_REQUEST);
+    }
+    let response: any;
+    try {
+      response = await this.httpService.axiosRef.get(
+        `${this.aiServiceUrl}/api/voice/tts/file/${filename}`,
+        { responseType: 'stream', timeout: 0 },
+      );
+    } catch (error: any) {
+      throw new HttpException(
+        error.response?.status === 404 ? 'Audio file not found' : (error.message || 'Không kết nối được tới AI service.'),
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
+    res.status(200);
+    res.setHeader('Content-Type', response.headers['content-type'] || 'audio/mpeg');
+    const contentLength = response.headers['content-length'];
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    // Tên file tải về: cùng logic sanitize với streamTtsAudio (chống header injection,
+    // ký tự cấm Windows; tên có dấu tiếng Việt gửi qua filename* RFC 5987).
+    let outName = filename;
+    if (download && downloadName) {
+      const cleaned = downloadName.replace(/[\r\n\/\\:*?"<>|]+/g, ' ').trim().slice(0, 150);
+      if (cleaned) outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+    }
+    const asciiName = outName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+    const utf8Name = encodeURIComponent(outName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    res.setHeader(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    );
+    response.data.on('error', (err: any) => {
+      this.logger.warn(`streamTtsAudioFromAi: stream error for ${filename}: ${err?.message}`);
+      try { res.end(); } catch { /* response có thể đã đóng */ }
+    });
+    response.data.pipe(res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Tiện ích tải video (trang dashboard/tools/video-downloader + extension VCB)
+  // Quy tắc FE → BE → AI: Next route proxy same-origin của FE gọi vào đây,
+  // BE mới là bên gọi sang AI service (yt-dlp) — FE không nối thẳng AI.
+  // ═══════════════════════════════════════════════════════════════
+
+  private videoDownloaderUrl(path: string): string {
+    return `${this.aiServiceUrl}/api/tools/video-downloader/${path}`;
+  }
+
+  /** Lỗi từ AI trả nguyên body về FE (trang đọc data.error để hiện toast). */
+  private rethrowVideoDownloaderError(error: any): never {
+    throw new HttpException(
+      error.response?.data ?? { success: false, error: error.message || 'Không kết nối được tới AI service.' },
+      error.response?.status || HttpStatus.BAD_GATEWAY,
+    );
+  }
+
+  async videoDownloaderInfo(body: { url: string }): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('info/'), body, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 120000, // yt-dlp extract info có thể chậm với link lạ
+      });
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  async videoDownloaderStartJob(body: { url: string; type?: string; quality?: string }): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('jobs/'), body, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000,
+      });
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  async videoDownloaderJobStatus(jobId: string): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.get(
+        this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/`),
+        { timeout: 30000 },
+      );
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  /** Stream file đã tải xong từ AI về FE, giữ Content-Disposition để FE lấy tên file. */
+  async videoDownloaderJobFile(jobId: string, res: any): Promise<void> {
+    try {
+      const response = await this.httpService.axiosRef.get(
+        this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/file/`),
+        { responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
+      );
+      res.status(response.status);
+      for (const h of ['content-type', 'content-length', 'content-disposition', 'accept-ranges']) {
+        const v = response.headers[h];
+        if (v) res.setHeader(h, v);
+      }
+      response.data.on('error', (err: any) => {
+        this.logger.warn(`videoDownloaderJobFile: stream error for job ${jobId}: ${err?.message}`);
+        try { res.end(); } catch { /* response có thể đã đóng */ }
+      });
+      response.data.pipe(res);
+    } catch (error: any) {
+      // error.response.data lúc này là stream — không đưa vào body lỗi
+      throw new HttpException(
+        error.response?.status === 404 ? 'Không tìm thấy file của tiến trình tải.' : (error.message || 'Không kết nối được tới AI service.'),
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
   }
 }

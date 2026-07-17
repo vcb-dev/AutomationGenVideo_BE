@@ -135,13 +135,22 @@ export class LarkService implements OnModuleInit {
     }
 
     /**
-     * Normalize any parsed date into a stable instant representing that Vietnam day.
-     * We store 12:00 VN (05:00 UTC) so both VN date and UTC date remain the same calendar day.
+     * Nghiệp vụ: báo cáo (checklist/traffic) nộp sáng ngày S là dữ liệu VỀ ngày S-1
+     * (ví dụ nộp sáng 17/7 → dữ liệu của 16/7). Trả về key YYYY-MM-DD của ngày S-1 (VN).
      */
-    private toVietnamNoonUtc(date: Date): Date {
-        const dateKey = this.toVietnamDateKey(date); // YYYY-MM-DD in VN
+    private previousVietnamDateKey(dateInput?: string | Date): string {
+        const base = dateInput ? (typeof dateInput === 'string' ? new Date(dateInput) : dateInput) : new Date();
+        const dateKey = this.toVietnamDateKey(base);
         const [y, m, d] = dateKey.split('-').map(Number);
-        return new Date(Date.UTC(y, m - 1, d, 5, 0, 0, 0)); // 12:00 Asia/Ho_Chi_Minh
+        const anchor = new Date(Date.UTC(y, m - 1, d, 5, 0, 0, 0)); // 12:00 VN của ngày S
+        const prev = new Date(anchor.getTime() - 24 * 60 * 60 * 1000);
+        return this.toVietnamDateKey(prev);
+    }
+
+    /** Dựng instant 12:00 VN (05:00 UTC) từ 1 key YYYY-MM-DD — dùng để lưu cột `date` ổn định theo ngày VN. */
+    private vietnamNoonUtcFromKey(dateKey: string): Date {
+        const [y, m, d] = dateKey.split('-').map(Number);
+        return new Date(Date.UTC(y, m - 1, d, 5, 0, 0, 0));
     }
 
     async getAccessToken(): Promise<string> {
@@ -260,9 +269,12 @@ export class LarkService implements OnModuleInit {
 
         const trafficDetails = (payload as any).trafficDetails;
         const breakdown = trafficDetails?.breakdown || {};
-        const now = reportDate ? new Date(reportDate) : new Date();
-        const monthString = 'T' + (now.getMonth() + 1).toString();
-        const bounds = getVietnamBounds(reportDate || now);
+        // Nghiệp vụ: nộp sáng ngày reportDate là báo cáo VỀ ngày reportDate-1 → lưu `date` = hôm qua,
+        // không phải ngày nộp (ví dụ nộp sáng 17/7 → lưu 16/7).
+        const targetDateKey = this.previousVietnamDateKey(reportDate || undefined);
+        const now = this.vietnamNoonUtcFromKey(targetDateKey);
+        const monthString = 'T' + parseInt(targetDateKey.split('-')[1], 10).toString();
+        const bounds = getVietnamBounds(targetDateKey);
 
         // Guard: once a user already submitted traffic for this day, prevent duplicate re-submit.
         // Ưu tiên khớp theo email (định danh ổn định) — CHỈ fallback về khớp theo tên khi thực sự
@@ -372,6 +384,8 @@ export class LarkService implements OnModuleInit {
                 });
             }
 
+            this.invalidateActivityCache();
+
             return {
                 message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
                 recordIds: recordsToCreate.map(r => r.id)
@@ -406,9 +420,10 @@ export class LarkService implements OnModuleInit {
         const { email, name, team, reportDate, userEmail, userName, userTeam } = payload;
 
         const normalizedEmail = (email || userEmail || '').trim().toLowerCase();
-        // Normalize to VN noon UTC (05:00 UTC = 12:00 Asia/Ho_Chi_Minh) so both VN and UTC
-        // sides see the same calendar day, preventing off-by-one date display bugs.
-        const dateObj = this.toVietnamNoonUtc(reportDate ? new Date(reportDate) : new Date());
+        // Nghiệp vụ: nộp sáng ngày reportDate là báo cáo VỀ ngày reportDate-1 (checklist hỏi "hôm qua...")
+        // → lưu `date` = hôm qua, không phải ngày nộp (ví dụ nộp sáng 17/7 → lưu 16/7).
+        const targetDateKey = this.previousVietnamDateKey(reportDate || undefined);
+        const dateObj = this.vietnamNoonUtcFromKey(targetDateKey);
 
         // Check for existing user to get fallback values
         const userRec = await this.prisma.user.findFirst({
@@ -450,7 +465,7 @@ export class LarkService implements OnModuleInit {
             };
         };
 
-        const bounds = getVietnamBounds(reportDate || dateObj);
+        const bounds = getVietnamBounds(targetDateKey);
 
         // Check for Admin/Manager to bypass constraints
         const roles = userRec?.roles || [];
@@ -671,6 +686,7 @@ export class LarkService implements OnModuleInit {
     // Clear cache immediately after a report submission to prevent stale UI
     invalidateActivityCache() {
         this.cacheService.invalidate('activity:');
+        this.cacheService.invalidate('dashboard-analytics:');
     }
 
     // Get combined user activity reports (ChecklistReport + Kpi)
@@ -808,10 +824,11 @@ export class LarkService implements OnModuleInit {
                 };
 
                 /**
-                 * Dùng cho `report_kpi` (lịch sử, lệch D+1) và cho CHECKLIST ở dashboard:
-                 * checklist lưu theo ngày NỘP, nhưng nghiệp vụ là sáng D+1 nộp báo cáo VỀ ngày D
-                 * → xem ngày D phải đọc cửa sổ D+1. Traffic vẫn đọc đúng ngày D
-                 * (xem `larkKpiStartOfDay`/`larkKpiEndOfDay`, cùng cửa sổ với `lark_kpi.report_date` = D).
+                 * Dùng CHỈ cho `report_kpi` (bảng sync ngoài, lịch sử ghi lệch D+1 ở nguồn — không
+                 * liên quan tới submitChecklistReport/submitTrafficReport trong file này).
+                 * CHECKLIST và TRAFFIC (form nộp trong app) từ 2026-07-17 đã lưu thẳng `date` = ngày
+                 * NGHIỆP VỤ D (submit* đã tự trừ lùi 1 ngày so với ngày nộp) → xem ngày D đọc đúng
+                 * cửa sổ D (`larkKpiStartOfDay`/`larkKpiEndOfDay`), KHÔNG cộng thêm D+1 ở đây nữa.
                  */
                 const getNextVietnamDateString = (dateInput: string) => {
                     const p = getVietnamParts(dateInput);
@@ -869,12 +886,11 @@ export class LarkService implements OnModuleInit {
                     `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist + report_kpi (D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
 
-                // Checklist: nghiệp vụ là "sáng ngày D+1 nộp báo cáo VỀ ngày D" (các câu hỏi đều là "hôm qua...").
-                // Record lưu theo ngày NỘP (D+1), nên khi UI chọn xem ngày D phải đọc cửa sổ D+1
-                // (memberReportStart/End). Traffic vẫn đọc đúng ngày D (số liệu của chính ngày đó).
+                // Checklist: record đã lưu thẳng `date` = ngày nghiệp vụ D (submitChecklistReport tự
+                // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
                 whereClause.date = {
-                    gte: memberReportStart,
-                    lte: memberReportEnd,
+                    gte: larkKpiStartOfDay,
+                    lte: larkKpiEndOfDay,
                 };
 
                 let kpiMonthFallback = false;
@@ -1201,7 +1217,8 @@ export class LarkService implements OnModuleInit {
                     reportsUnfilteredCount,
                     globalIndoKpisRaw,
                 ] = await Promise.all([
-                    // trafficReport lưu đúng ngày D user chọn — dùng cửa sổ D (larkKpiStartOfDay/EndOfDay), không +1.
+                    // trafficReport: record đã lưu thẳng `date` = ngày nghiệp vụ D (submitTrafficReport tự
+                    // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
                     this.prisma.trafficReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
@@ -2916,7 +2933,10 @@ export class LarkService implements OnModuleInit {
     }
 
     async getUserReportDetails(email: string, dateStr: string) {
-        // `dateStr` = ngày báo cáo (reportDate) user chọn trên form (VN). Checklist/traffic in-app lưu đúng ngày này → query đúng ngày đó (không +1).
+        // `dateStr` = ngày báo cáo (reportDate) user chọn trên form (VN). Nộp sáng ngày reportDate là
+        // báo cáo VỀ ngày reportDate-1 → submitChecklistReport/submitTrafficReport lưu `date` = hôm qua.
+        // Đọc lại phải dùng CÙNG ngày đã lưu (reportDate-1), không dùng reportDate thô, nếu không sẽ
+        // không thấy record vừa gửi (form hiển thị "chưa báo cáo" ngay sau khi vừa nộp).
         const vnYmdFromDate = (dateObj: Date) => {
             const dtf = new Intl.DateTimeFormat('en-CA', {
                 timeZone: 'Asia/Ho_Chi_Minh',
@@ -2933,10 +2953,8 @@ export class LarkService implements OnModuleInit {
         const uiYmd = dateStr.includes('T')
             ? vnYmdFromDate(new Date(dateStr))
             : dateStr.slice(0, 10);
-        // Form checklist/traffic in-app lưu ĐÚNG ngày user chọn (reportDate) — đọc lại phải dùng cùng ngày.
-        // KHÔNG cộng D+1 (quy ước cũ của dashboard): nếu cộng +1, đọc lại không thấy record vừa gửi
-        // → cho báo cáo trùng cùng 1 ngày & hiển thị nhầm dữ liệu của ngày hôm sau.
-        const [y, mo, da] = uiYmd.split('-').map((x) => parseInt(x, 10));
+        const targetYmd = this.previousVietnamDateKey(uiYmd);
+        const [y, mo, da] = targetYmd.split('-').map((x) => parseInt(x, 10));
         const m = mo - 1;
 
         const startOfDay = new Date(Date.UTC(y, m, da - 1, 17, 0, 0, 0));
@@ -3467,11 +3485,10 @@ export class LarkService implements OnModuleInit {
 
                 const history = Array.from(monthlyData.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-                // Dùng ranh giới ngày theo giờ VN (mốc 17:00 UTC), không dùng giờ hệ thống server —
-                // nếu server chạy UTC, new Date().setHours(...) lệch ngày so với VN trong khoảng
-                // 00:00-07:00 giờ VN mỗi ngày, khiến "đã báo cáo hôm nay" bị tính nhầm ngày.
-                const todayVNKey = this.toVietnamDateKey(new Date());
-                const [todayY, todayM, todayD] = todayVNKey.split('-').map(Number);
+                // Nộp báo cáo sáng hôm nay là báo cáo VỀ hôm qua → checklistReport.date lưu ngày hôm qua.
+                // "Đã báo cáo hôm nay chưa" phải đọc cửa sổ hôm qua (ngày nghiệp vụ), không phải hôm nay.
+                const targetVNKey = this.previousVietnamDateKey(new Date());
+                const [todayY, todayM, todayD] = targetVNKey.split('-').map(Number);
                 const startOfToday = new Date(Date.UTC(todayY, todayM - 1, todayD - 1, 17, 0, 0, 0));
                 const endOfToday = new Date(Date.UTC(todayY, todayM - 1, todayD, 16, 59, 59, 999));
 
@@ -3837,6 +3854,8 @@ export class LarkService implements OnModuleInit {
                     status, id
                 );
             }
+
+            this.invalidateActivityCache();
 
             return { success: true, message: 'Status updated successfully (Local only)' };
         } catch (error) {
