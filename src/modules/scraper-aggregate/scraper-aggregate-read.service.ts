@@ -110,11 +110,13 @@ export class ScraperAggregateReadService {
       if (q) conditions.push(searchCondition(Prisma.sql`r.content`, Prisma.sql`r.hashtags`, q));
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
-        SELECT 'facebook' AS platform, r.post_id, r.url, r.content AS description, r.thumbnail_url,
+        SELECT 'facebook' AS platform, r.post_id, r.url, r.content AS description,
+               COALESCE(NULLIF(r.thumbnail_drive_url, ''), r.thumbnail_url, '') AS thumbnail_url,
                r.duration_seconds::double precision AS duration_seconds, r.views_count AS play_count,
                r.likes_count, r.comments_count, r.date_posted,
                COALESCE(f.profile_id, '') AS author_id, COALESCE(f.name, '') AS author_name,
-               COALESCE(f.avatar_url, '') AS author_avatar, COALESCE(f.handle, '') AS author_username
+               COALESCE(NULLIF(f.avatar_drive_url, ''), f.avatar_url, '') AS author_avatar,
+               COALESCE(f.handle, '') AS author_username
         FROM scraper_facebook_reels r
         LEFT JOIN scraper_fanpages f ON f.id = r.fanpage_id
         ${where}
@@ -312,10 +314,12 @@ export class ScraperAggregateReadService {
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
         SELECT 'facebook' AS platform, v.post_id, COALESCE(v.permalink_url, '') AS url, COALESCE(v.caption, '') AS description,
-               COALESCE(v.thumbnail_url, '') AS thumbnail_url, NULL::double precision AS duration_seconds,
+               COALESCE(NULLIF(v.thumbnail_drive_url, ''), v.thumbnail_url, '') AS thumbnail_url,
+               NULL::double precision AS duration_seconds,
                v.view_count AS play_count, v.like_count::bigint AS likes_count, v.comment_count::bigint AS comments_count,
                v.published_at AS date_posted,
-               COALESCE(mp.name, '') AS author_name, COALESCE(mp.avatar_url, '') AS author_avatar,
+               COALESCE(mp.name, '') AS author_name,
+               COALESCE(NULLIF(mp.avatar_drive_url, ''), mp.avatar_url, '') AS author_avatar,
                COALESCE(mp.page_id, '') AS author_username
         FROM video_management_ownedvideocontent v
         LEFT JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
