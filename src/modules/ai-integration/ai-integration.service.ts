@@ -1907,8 +1907,14 @@ export class AiIntegrationService {
       // Chỉ rewrite link media NỘI BỘ của AI (/media/...) — AI có nhánh fallback trả
       // thẳng URL CDN của MiniMax (link ngoài, vẫn phát được); rewrite link đó sẽ tạo
       // ra đường dẫn tunnel không tồn tại.
-      if (parsed.pathname.startsWith('/media/')) {
-        sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}${parsed.pathname}`;
+      // KHÔNG dùng thẳng /media/minimax_tts/<file> — Django chỉ serve /media qua static()
+      // khi DEBUG=True, trên server thật (DEBUG=False) link này 404 nên uploadFromUrl()
+      // luôn fail âm thầm và Drive không bao giờ nhận được file dù đã cấu hình đúng.
+      // Dùng route whitelist /api/voice/tts/file/<file> (serve_minimax_tts_file) — hoạt
+      // động cả khi DEBUG=False.
+      const mediaMatch = /^\/media\/minimax_tts\/(tts_[0-9a-f]{32}\.mp3)$/i.exec(parsed.pathname);
+      if (mediaMatch) {
+        sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}/api/voice/tts/file/${mediaMatch[1]}`;
       }
     } catch {
       return { url: aiAudioUrl, fileId: null };
@@ -2036,7 +2042,10 @@ export class AiIntegrationService {
         // FE phát/tải qua proxy GET ai/voice/tts/stream/:filename — BE tự kéo file
         // từ AI (route /api/voice/tts/file/ của AI hoạt động cả khi DEBUG=False).
         if (!published.fileId) {
-          const m = /\/media\/minimax_tts\/(tts_[0-9a-f]{32}\.mp3)$/i.exec(published.url);
+          // published.url ở đây là link AI (đã rewrite sang /api/voice/tts/file/<file>
+          // trong publishTtsAudio, hoặc /media/... nếu URL gốc không khớp pattern) —
+          // chỉ cần lấy đúng tên file tts_<hex32>.mp3 bất kể nằm sau prefix nào.
+          const m = /(tts_[0-9a-f]{32}\.mp3)$/i.exec(published.url);
           data.audio_file_name = m ? m[1] : null;
         }
       }
@@ -2139,7 +2148,7 @@ export class AiIntegrationService {
    * AI serve file qua /api/voice/tts/file/<filename> — route thường, hoạt động
    * cả khi DEBUG=False (link /media/... chỉ sống khi DEBUG=True).
    */
-  async streamTtsAudioFromAi(filename: string, res: any, download = false, downloadName?: string): Promise<void> {
+  async streamTtsAudioFromAi(filename: string, res: any, download = false, downloadName?: string, rangeHeader?: string): Promise<void> {
     if (!/^tts_[0-9a-f]{32}\.mp3$/i.test(filename || '')) {
       throw new HttpException('Invalid TTS filename', HttpStatus.BAD_REQUEST);
     }
@@ -2147,7 +2156,12 @@ export class AiIntegrationService {
     try {
       response = await this.httpService.axiosRef.get(
         `${this.aiServiceUrl}/api/voice/tts/file/${filename}`,
-        { responseType: 'stream', timeout: 0 },
+        {
+          responseType: 'stream',
+          timeout: 0,
+          headers: rangeHeader ? { Range: rangeHeader } : undefined,
+          validateStatus: (s) => s === 200 || s === 206,
+        },
       );
     } catch (error: any) {
       throw new HttpException(
@@ -2155,8 +2169,14 @@ export class AiIntegrationService {
         error.response?.status || HttpStatus.BAD_GATEWAY,
       );
     }
-    res.status(200);
+    // Forward nguyên trạng thái 200/206 + Content-Range của AI — <audio> của trình
+    // duyệt cần Accept-Ranges/206 để đọc được duration mp3 streamed, thiếu thì player
+    // kẹt ở 0:00/0:00 (cùng lỗi từng vá cho nhánh Drive, xem streamTtsAudio()).
+    res.status(response.status);
     res.setHeader('Content-Type', response.headers['content-type'] || 'audio/mpeg');
+    res.setHeader('Accept-Ranges', 'bytes');
+    const contentRange = response.headers['content-range'];
+    if (contentRange) res.setHeader('Content-Range', contentRange);
     const contentLength = response.headers['content-length'];
     if (contentLength) res.setHeader('Content-Length', contentLength);
     // Tên file tải về: cùng logic sanitize với streamTtsAudio (chống header injection,

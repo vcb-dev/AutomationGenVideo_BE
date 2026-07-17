@@ -759,6 +759,7 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Stream/tải file TTS từ AI service khi chưa có Drive (?download=1, ?filename= đặt tên file tải)' })
   async streamTtsAudioFromAi(
     @Param('filename') filename: string,
+    @Req() req: any,
     @Res() res: Response,
     @Query('download') download?: string,
     @Query('filename') downloadName?: string,
@@ -768,6 +769,7 @@ export class AiIntegrationController {
       res,
       download === '1' || download === 'true',
       downloadName,
+      req.headers?.['range'],
     );
   }
 
@@ -791,6 +793,23 @@ export class AiIntegrationController {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
     return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
+  }
+
+  @Post('voice/translate-text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Dịch văn bản (trang Clone Voice) sang một ngôn ngữ đã chọn, dùng lại AI dịch kịch bản video' })
+  async translateVoiceText(
+    @Body('text') text: string,
+    @Body('language') language: string,
+  ) {
+    if (!text) {
+      throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!language) {
+      throw new HttpException('language is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.translateVideoScript({ content: text, hashtags: [], language });
   }
 
   // ═══════════════════════════════════════════════════════════════
