@@ -594,20 +594,27 @@ export class UsersService {
     }
 
     if (callerRoles.includes(UserRole.LEADER)) {
-      // Thay cho where: { team_leader_id: callerId } — team_leader_id giờ là giá trị phái
-      // sinh từ Team/TeamMember, nguồn sự thật là "user là TeamMember của Team mà callerId lãnh đạo".
-      const ledTeams = await this.prisma.team.findMany({ where: { leader_id: callerId }, select: { id: true } });
-      const teamIds = ledTeams.map((t) => t.id);
-      if (teamIds.length === 0) return [];
-      const memberships = await this.prisma.teamMember.findMany({
-        where: { team_id: { in: teamIds } },
-        select: { user_id: true },
+      // Find all teams led by this leader
+      const ledTeams = await this.prisma.team.findMany({
+        where: { leader_id: callerId },
+        select: { name: true },
       });
-      // Loại chính leader ra khỏi danh sách "team của tôi" — leader cũng có thể là TeamMember
-      // của chính team mình (vd sau backfill), nhưng "member tôi quản lý" không nên gồm chính tôi.
-      const userIds = [...new Set(memberships.map((m) => m.user_id))].filter((id) => id !== callerId);
+      const ledTeamNames = ledTeams.map((t) => t.name.trim());
+      if (ledTeamNames.length === 0) return [];
+
+      // Construct a query to match any user whose 'team' string contains or equals any of the ledTeamNames
+      const OR = ledTeamNames.flatMap((name) => [
+        { team: { equals: name, mode: 'insensitive' as any } },
+        { team: { startsWith: `${name},`, mode: 'insensitive' as any } },
+        { team: { endsWith: `,${name}`, mode: 'insensitive' as any } },
+        { team: { contains: `,${name},`, mode: 'insensitive' as any } },
+      ]);
+
       return this.prisma.user.findMany({
-        where: { id: { in: userIds } },
+        where: {
+          id: { not: callerId },
+          OR,
+        },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },
       });

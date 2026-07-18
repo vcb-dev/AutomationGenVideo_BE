@@ -24,6 +24,7 @@ import { SocialPublishingModule } from './modules/social-publishing/social-publi
 import { ContentReportModule } from './modules/content-report/content-report.module';
 import { ChannelsModule } from "./modules/channels-team/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
+import { ContentTransformModule } from './modules/content-transform/content-transform.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { TaskAutoModule } from './modules/task-auto/task-auto.module';
     ContentReportModule,
     ChannelsModule,
     TaskAutoModule,
+    ContentTransformModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

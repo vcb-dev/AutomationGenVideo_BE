@@ -94,6 +94,7 @@ model User {
   task_assignments          TaskAssignment[] @relation("AssignmentUser")
   notifications             Notification[]   @relation("NotificationOf")
   owned_channels            Channel[]        @relation("ChannelOwnerUser")
+  content_transforms        ContentTransformHistory[] @relation("ContentTransformOf")
 
   @@index([email])
   @@index([roles])
@@ -2564,4 +2565,66 @@ model MeetingSessionLog {
 
   @@index([session_id])
   @@map("meeting_session_logs")
+}
+
+// ─────────────────────────────────────────────
+//  CONTENT TRANSFORM (Chuyển đổi kịch bản AI)
+// ─────────────────────────────────────────────
+
+/// Nhân vật AI — lưu system_prompt để rewrite kịch bản
+model Character {
+  id             String   @id @default(uuid())
+  name           String   @unique          // "HuyK", "Chị Nhạn", "Chung Bùi"...
+  slug           String   @unique          // "huyk", "chi-nhan", "chung-bui" — dùng làm key ổn định
+  description    String?  @db.Text         // Mô tả ngắn hiển thị trên UI
+  avatar_url     String?                   // Ảnh đại diện nhân vật
+  system_prompt  String   @db.Text         // Prompt đầy đủ — chỉ BE đọc, không expose FE
+  is_active      Boolean  @default(true)   // Ẩn/hiện nhân vật mà không xoá
+  order_index    Int      @default(0)      // Thứ tự hiển thị trong danh sách
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  histories ContentTransformHistory[]
+
+  @@index([is_active])
+  @@index([order_index])
+  @@map("characters")
+}
+
+/// Lịch sử mỗi lần chuyển đổi content
+model ContentTransformHistory {
+  id             String          @id @default(uuid())
+  user_id        String          // User thực hiện
+  character_id   String          // Nhân vật được chọn
+  input_text     String          @db.Text   // Kịch bản gốc user nhập
+  output_text    String?         @db.Text   // Kết quả AI trả về (null khi lỗi)
+  status         TransformStatus @default(PENDING)
+  input_type     InputType       @default(TEXT) // Loại dữ liệu đầu vào (TEXT/VIDEO/AUDIO)
+  error_message  String?                    // Lý do lỗi nếu status = FAILED
+  model_used     String?                    // Tên model AI ("mock", "gpt-4o", ...)
+  duration_ms    Int?                       // Thời gian xử lý (ms) — monitoring
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  user      User      @relation("ContentTransformOf", fields: [user_id],      references: [id])
+  character Character @relation(fields: [character_id], references: [id])
+
+  @@index([user_id])
+  @@index([character_id])
+  @@index([status])
+  @@index([created_at])
+  @@index([user_id, created_at])   // Query lịch sử theo user + phân trang
+  @@map("content_transform_histories")
+}
+
+enum TransformStatus {
+  PENDING    // Đang xử lý
+  SUCCESS    // Thành công
+  FAILED     // AI lỗi / timeout
+}
+
+enum InputType {
+  TEXT
+  VIDEO
+  AUDIO
 }
