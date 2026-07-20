@@ -45,5 +45,5 @@ COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
 
-# Start the application directly to avoid startup timeouts
-CMD ["node", "dist/main.js"]
+# Support both Nest layouts (dist/main.js with rootDir=src, or dist/src/main.js fallback)
+CMD ["sh", "-c", "if [ -f dist/main.js ]; then exec node dist/main.js; elif [ -f dist/src/main.js ]; then exec node dist/src/main.js; else echo 'No dist/main.js found' >&2; ls -laR dist 2>/dev/null; exit 1; fi"]
