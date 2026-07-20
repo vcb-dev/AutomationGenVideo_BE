@@ -21,5 +21,6 @@ test/
 !package*.json
 !nest-cli.json
 !tsconfig.json
+!tsconfig.build.json
 !*.prisma
 !.env.example
