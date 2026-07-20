@@ -65,7 +65,7 @@ export class OAuthService {
     private readonly zalo: ZaloOAuthStrategy,
   ) {}
 
-  async getAuthUrl(platform: string, userId: string): Promise<{ url: string }> {
+  async getAuthUrl(platform: string, userId: string, extra?: { igMode?: string }): Promise<{ url: string }> {
     let url: string;
 
     switch (platform) {
@@ -75,8 +75,10 @@ export class OAuthService {
         break;
       }
       case 'INSTAGRAM': {
-        const state = encodeState({ userId, platform });
-        url = this.instagram.getAuthUrl(state);
+        // igMode: 'via_facebook' (default) hoặc 'direct' (Instagram Login — không cần FB Page)
+        const igMode = (extra?.igMode === 'direct' ? 'direct' : 'via_facebook') as 'via_facebook' | 'direct';
+        const state = encodeState({ userId, platform, igMode });
+        url = this.instagram.getAuthUrl(state, igMode);
         break;
       }
       case 'TIKTOK': {
@@ -131,7 +133,12 @@ export class OAuthService {
 
     switch (platform) {
       case 'FACEBOOK':  result = await this.facebook.exchangeCode(code); break;
-      case 'INSTAGRAM': result = await this.instagram.exchangeCode(code); break;
+      case 'INSTAGRAM': {
+        // Đọc igMode từ state để biết flow nào được dùng lúc tạo URL
+        const igMode = (decoded.igMode === 'direct' ? 'direct' : 'via_facebook') as 'via_facebook' | 'direct';
+        result = await this.instagram.exchangeCode(code, igMode);
+        break;
+      }
       case 'TIKTOK': {
         if (!codeVerifier) throw new BadRequestException('TikTok PKCE verifier thiếu trong state');
         result = await this.tiktok.exchangeCode(code, state, codeVerifier);

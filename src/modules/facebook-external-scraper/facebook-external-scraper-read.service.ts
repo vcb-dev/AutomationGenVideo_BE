@@ -22,9 +22,9 @@ function arrayTextIncludes(col: Prisma.Sql, substr: string): Prisma.Sql {
 
 interface FacebookReelRow {
   post_id: string; shortcode: string; url: string; content: string; hashtags: string[];
-  video_url: string | null; thumbnail_url: string | null; duration_seconds: number | null;
-  has_audio: boolean; date_posted: Date; views_count: bigint; likes_count: bigint;
-  comments_count: bigint; shares_count: bigint; fanpage_id: bigint;
+  video_url: string | null; thumbnail_url: string | null; thumbnail_drive_url: string | null;
+  duration_seconds: number | null; has_audio: boolean; date_posted: Date; views_count: bigint;
+  likes_count: bigint; comments_count: bigint; shares_count: bigint; fanpage_id: bigint;
 }
 
 // Port từ scraper_views.py::discovered_fanpages/fanpage_detail/search_reels
@@ -168,8 +168,8 @@ export class FacebookExternalScraperReadService {
 
     const paginated = await this.prisma.$queryRaw<(FacebookReelRow & { fanpage_name: string | null; fanpage_handle: string | null; fanpage_avatar_url: string | null; fanpage_avatar_drive_url: string | null })[]>`
       SELECT r.post_id, r.shortcode, r.url, r.content, r.hashtags, r.video_url, r.thumbnail_url,
-             r.duration_seconds, r.has_audio, r.date_posted, r.views_count, r.likes_count,
-             r.comments_count, r.shares_count, r.fanpage_id,
+             r.thumbnail_drive_url, r.duration_seconds, r.has_audio, r.date_posted, r.views_count,
+             r.likes_count, r.comments_count, r.shares_count, r.fanpage_id,
              f.name AS fanpage_name, f.handle AS fanpage_handle, f.avatar_url AS fanpage_avatar_url,
              f.avatar_drive_url AS fanpage_avatar_drive_url
       FROM scraper_facebook_reels r
@@ -192,7 +192,7 @@ export class FacebookExternalScraperReadService {
         content: r.content,
         hashtags: r.hashtags,
         video_url: r.video_url,
-        thumbnail_url: r.thumbnail_url,
+        thumbnail_url: r.thumbnail_drive_url || r.thumbnail_url,
         duration_seconds: r.duration_seconds,
         has_audio: r.has_audio,
         date_posted: r.date_posted,

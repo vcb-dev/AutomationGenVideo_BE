@@ -752,6 +752,27 @@ export class AiIntegrationController {
     );
   }
 
+  // KHÔNG gắn JwtAuthGuard: thẻ <audio src> không gửi được JWT header (giống
+  // voice/tts/audio/:fileId). Service whitelist tên file tts_<hex32>.mp3.
+  // Fallback khi Drive chưa cấu hình — stream file TTS thẳng từ AI service.
+  @Get('voice/tts/stream/:filename')
+  @ApiOperation({ summary: 'Stream/tải file TTS từ AI service khi chưa có Drive (?download=1, ?filename= đặt tên file tải)' })
+  async streamTtsAudioFromAi(
+    @Param('filename') filename: string,
+    @Req() req: any,
+    @Res() res: Response,
+    @Query('download') download?: string,
+    @Query('filename') downloadName?: string,
+  ) {
+    return this.aiService.streamTtsAudioFromAi(
+      filename,
+      res,
+      download === '1' || download === 'true',
+      downloadName,
+      req.headers?.['range'],
+    );
+  }
+
   @Post('voice/tts')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -772,5 +793,68 @@ export class AiIntegrationController {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
     return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
+  }
+
+  @Post('voice/translate-text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Dịch văn bản (trang Clone Voice) sang một ngôn ngữ đã chọn, dùng lại AI dịch kịch bản video' })
+  async translateVoiceText(
+    @Body('text') text: string,
+    @Body('language') language: string,
+  ) {
+    if (!text) {
+      throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!language) {
+      throw new HttpException('language is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Tiện ích tải video (trang dashboard/tools/video-downloader + extension VCB)
+  // Quy tắc FE → BE → AI: Next route proxy của FE gọi vào đây thay vì nối
+  // thẳng AI service. FE luôn gửi kèm Bearer token nên gắn JwtAuthGuard.
+  // ═══════════════════════════════════════════════════════════════
+
+  @Post('tools/video-downloader/info')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: đọc thông tin video qua yt-dlp (proxy AI)' })
+  async videoDownloaderInfo(@Body() body: { url: string }) {
+    if (!body?.url?.trim()) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.videoDownloaderInfo({ url: body.url.trim() });
+  }
+
+  @Post('tools/video-downloader/jobs')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: khởi tạo tiến trình tải (proxy AI)' })
+  async videoDownloaderStartJob(@Body() body: { url: string; type?: string; quality?: string }) {
+    if (!body?.url?.trim()) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.videoDownloaderStartJob(body);
+  }
+
+  @Get('tools/video-downloader/jobs/:jobId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: trạng thái tiến trình tải (proxy AI)' })
+  async videoDownloaderJobStatus(@Param('jobId') jobId: string) {
+    return this.aiService.videoDownloaderJobStatus(jobId);
+  }
+
+  @Get('tools/video-downloader/jobs/:jobId/file')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: stream file đã tải xong (proxy AI)' })
+  async videoDownloaderJobFile(@Param('jobId') jobId: string, @Res() res: Response) {
+    return this.aiService.videoDownloaderJobFile(jobId, res);
   }
 }

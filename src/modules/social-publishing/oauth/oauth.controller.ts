@@ -15,9 +15,13 @@ export class OAuthController {
   @Get(':platform/url')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Lấy OAuth login URL (mở popup)' })
-  getAuthUrl(@Param('platform') platform: string, @Request() req) {
-    return this.oauthService.getAuthUrl(platform.toUpperCase(), req.user.id);
+  @ApiOperation({ summary: 'Lấy OAuth login URL (mở popup). Với Instagram, truyền ?igMode=direct để dùng Instagram Login trực tiếp (không cần FB Page).' })
+  getAuthUrl(
+    @Param('platform') platform: string,
+    @Query('igMode') igMode: string | undefined,
+    @Request() req,
+  ) {
+    return this.oauthService.getAuthUrl(platform.toUpperCase(), req.user.id, { igMode });
   }
 
   /** Callback từ Facebook */
