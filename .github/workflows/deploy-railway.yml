@@ -2,8 +2,7 @@ name: Deploy Railway
 
 on:
   push:
-    # Chỉ deploy từ truqhieu — main đang lệch rất xa, push main sẽ ghi đè :latest bằng code cũ.
-    branches: [truqhieu]
+    branches: [main]
   workflow_dispatch:
     inputs:
       skip_docker_push:
@@ -48,9 +47,7 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ env.IMAGE }}
-            viejhaf/automationgenvideo-be:${{ github.sha }}
+          tags: ${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -62,7 +59,7 @@ jobs:
     if: |
       always() &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/truqhieu')
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
 
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

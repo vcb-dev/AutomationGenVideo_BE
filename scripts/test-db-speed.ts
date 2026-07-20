@@ -1,5 +1,5 @@
 /**
- * Diagnostic script: kiểm tra tốc độ kết nối và INSERT vào bảng lark_kpi
+ * Diagnostic script: kiểm tra tốc độ kết nối và INSERT vào bảng kpi
  * trên Supabase PgBouncer port 6543
  */
 import { PrismaClient } from '@prisma/client';
@@ -26,21 +26,21 @@ async function main() {
   const count = await prisma.$executeRawUnsafe('SELECT 1');
   console.log(`✅ Test 2 - SELECT 1: ${Date.now() - t}ms`);
 
-  // Test 3: Count lark_kpi
+  // Test 3: Count kpi
   t = Date.now();
-  const rows: any[] = await prisma.$queryRawUnsafe('SELECT COUNT(*) as cnt FROM "lark_kpi"');
-  console.log(`✅ Test 3 - COUNT lark_kpi: ${Date.now() - t}ms (${rows[0]?.cnt} rows)`);
+  const rows: any[] = await prisma.$queryRawUnsafe('SELECT COUNT(*) as cnt FROM "kpi"');
+  console.log(`✅ Test 3 - COUNT kpi: ${Date.now() - t}ms (${rows[0]?.cnt} rows)`);
 
   // Test 4: Count Đồ Da only
   t = Date.now();
-  const dodaRows: any[] = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as cnt FROM "lark_kpi" WHERE LOWER(COALESCE("team",'')) LIKE '%đồ da%' OR LOWER(COALESCE("team",'')) LIKE '%do da%'`);
+  const dodaRows: any[] = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as cnt FROM "kpi" WHERE LOWER(COALESCE("team",'')) LIKE '%đồ da%' OR LOWER(COALESCE("team",'')) LIKE '%do da%'`);
   console.log(`✅ Test 4 - COUNT Đồ Da: ${Date.now() - t}ms (${dodaRows[0]?.cnt} rows)`);
 
   // Test 5: INSERT 1 row raw SQL
   t = Date.now();
   const testId = `test_speed_${Date.now()}`;
   await prisma.$executeRawUnsafe(`
-    INSERT INTO "lark_kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
+    INSERT INTO "kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
     VALUES ('${testId}', 'TEST', 'TEST_TEAM', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NOW(), NOW())
   `);
   console.log(`✅ Test 5 - INSERT 1 row (raw SQL): ${Date.now() - t}ms`);
@@ -51,7 +51,7 @@ async function main() {
     `('test_10_${Date.now()}_${i}', 'TEST${i}', 'TEST_TEAM', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NOW(), NOW())`
   ).join(',');
   await prisma.$executeRawUnsafe(`
-    INSERT INTO "lark_kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
+    INSERT INTO "kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
     VALUES ${vals10}
   `);
   console.log(`✅ Test 6 - INSERT 10 rows (raw SQL): ${Date.now() - t}ms`);
@@ -62,14 +62,14 @@ async function main() {
     `('test_50_${Date.now()}_${i}', 'TEST${i}', 'TEST_TEAM', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NOW(), NOW())`
   ).join(',');
   await prisma.$executeRawUnsafe(`
-    INSERT INTO "lark_kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
+    INSERT INTO "kpi" ("id", "name", "team", "kpi_day", "kpi_month", "completed_day", "completed_month", "task_new", "task_new_month", "task_auto", "task_auto_month", "task_creative", "revenue_month", "traffic_month", "created_at", "updated_at")
     VALUES ${vals50}
   `);
   console.log(`✅ Test 7 - INSERT 50 rows (raw SQL): ${Date.now() - t}ms`);
 
   // Test 8: Prisma createMany 10 rows
   t = Date.now();
-  await prisma.larkKPI.createMany({
+  await prisma.kpi.createMany({
     data: Array.from({length: 10}, (_, i) => ({
       id: `test_prisma_${Date.now()}_${i}`,
       name: `PRISMA_TEST_${i}`,
@@ -84,7 +84,7 @@ async function main() {
 
   // Test 9: Prisma createMany 100 rows
   t = Date.now();
-  await prisma.larkKPI.createMany({
+  await prisma.kpi.createMany({
     data: Array.from({length: 100}, (_, i) => ({
       id: `test_prisma100_${Date.now()}_${i}`,
       name: `PRISMA_TEST_${i}`,
@@ -99,7 +99,7 @@ async function main() {
 
   // Cleanup test data
   t = Date.now();
-  await prisma.$executeRawUnsafe(`DELETE FROM "lark_kpi" WHERE "id" LIKE 'test_%'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM "kpi" WHERE "id" LIKE 'test_%'`);
   console.log(`✅ Cleanup: ${Date.now() - t}ms`);
 
   console.log('\n=== TEST COMPLETE ===');

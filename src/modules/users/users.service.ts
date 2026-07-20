@@ -3,15 +3,26 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { CacheService } from "../../common/cache/cache.service";
+import { GoogleDriveStorageService } from "../social-publishing/upload/google-drive-storage.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserRole } from "@prisma/client";
 import * as bcrypt from "bcrypt";
-import { LarkService } from "../lark-sync/lark.service";
+import * as fs from "fs";
+import {
+  getUserTeamIds,
+  assignUserToTeams,
+  clearUserTeams,
+  isUserUnassigned,
+  isTeamLeaderOfUser,
+  assignUserToTeamsByName,
+  replaceUserTeamsByName,
+} from "../../common/utils/team-membership.util";
 
 // Helper: check if roles array contains a staff role (MEMBER)
 function hasStaffRole(roles: UserRole[]): boolean {
@@ -33,8 +44,8 @@ export class UsersService {
 
   constructor(
     private prisma: PrismaService,
-    private larkService: LarkService,
     private cacheService: CacheService,
+    private googleDrive: GoogleDriveStorageService,
   ) { }
 
   private userCacheKey(id: string) { return `user:id:${id}`; }
@@ -66,19 +77,6 @@ export class UsersService {
       }
     }
 
-    // Validate team_leader_id if provided (now just manager_id logic effectively)
-    if (createUserDto.team_leader_id) {
-      const teamLeader = await this.prisma.user.findUnique({
-        where: { id: createUserDto.team_leader_id },
-      });
-
-      if (!teamLeader || !teamLeader.roles.includes(UserRole.MANAGER)) {
-        throw new BadRequestException(
-          "Invalid team_leader_id: must reference a user with MANAGER role",
-        );
-      }
-    }
-
     // Hash password
     const password_hash = createUserDto.password
       ? await bcrypt.hash(createUserDto.password, 10)
@@ -91,9 +89,10 @@ export class UsersService {
         ? [(createUserDto as any).role as UserRole]
         : [];
 
-    // Create user
+    // Create user — strip cả team/team_leader_id khỏi spread: đây là field phái sinh từ
+    // Team/TeamMember, client không được ghi trực tiếp (các luồng HR gán team riêng sau khi tạo).
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _password, role: _role, avatar: _a, ...userData } = createUserDto as any;
+    const { password: _password, role: _role, avatar: _a, team: _team, ...userData } = createUserDto as any;
     const img = (createUserDto as any).image_url ?? (createUserDto as any).avatar;
     const user = await this.prisma.user.create({
       data: {
@@ -102,7 +101,6 @@ export class UsersService {
         password_hash,
         roles,
         manager_id: createUserDto.manager_id || null,
-        team_leader_id: createUserDto.team_leader_id || null,
       },
     });
 
@@ -118,9 +116,7 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -137,9 +133,7 @@ export class UsersService {
         roles: true,
         team: true,
         manager_id: true,
-        team_leader_id: true,
         is_active: true,
-        custom_permissions: true,
         created_at: true,
         updated_at: true,
       },
@@ -208,14 +202,16 @@ export class UsersService {
     delete updateData.role;
 
     // --- Cross-table sync ---
-    const nameChanged = updateUserDto.full_name && updateUserDto.full_name !== user.full_name;
+    // !== undefined (not a truthy check): an explicit full_name: "" must still be treated as a
+    // change and synced to Lark, otherwise the users table and Lark tables end up out of sync.
+    const nameChanged = updateUserDto.full_name !== undefined && updateUserDto.full_name !== user.full_name;
     const teamChanged = updateUserDto.team !== undefined && updateUserDto.team !== user.team;
     const emailChanged = updateUserDto.email && updateUserDto.email !== user.email;
 
     const oldEmail = user.email;
     const oldName = user.full_name;
     const newName = updateUserDto.full_name ?? user.full_name;
-    const newTeam = updateUserDto.team ?? user.team;
+    const newTeam = updateUserDto.team !== undefined ? updateUserDto.team : user.team;
     const newEmail = updateUserDto.email ?? user.email;
 
     // Run main update + sync in transaction
@@ -223,29 +219,28 @@ export class UsersService {
       const result = await tx.user.update({
         where: { id },
         data: {
-          ...updateUserDto,
-          last_app_update_at: new Date(),
+          ...updateData,
         },
         select: {
           id: true,
           email: true,
           full_name: true,
           roles: true,
+          team: true,
           manager_id: true,
-          team_leader_id: true,
           is_active: true,
           created_at: true,
           updated_at: true,
         },
       });
 
-      // Sync LarkReport (match by email hoặc name)
+      // Sync ChecklistReport (match by email hoặc name)
       if (nameChanged || teamChanged || emailChanged) {
-        const larkReportWhere: any = {};
-        if (oldEmail) larkReportWhere.email = oldEmail;
+        const checklistReportWhere: any = {};
+        if (oldEmail) checklistReportWhere.email = oldEmail;
 
         if (oldEmail || oldName) {
-          await tx.larkReport.updateMany({
+          await tx.checklistReport.updateMany({
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
@@ -254,8 +249,8 @@ export class UsersService {
             },
           });
 
-          // Sync LarkReportKPI
-          await tx.larkReportKPI.updateMany({
+          // Sync ReportKpi
+          await tx.reportKpi.updateMany({
             where: oldEmail ? { email: oldEmail } : { name: oldName },
             data: {
               ...(nameChanged ? { name: newName } : {}),
@@ -264,8 +259,8 @@ export class UsersService {
             },
           });
 
-          // Sync LarkListTask (match by email or name)
-          await tx.larkListTask.updateMany({
+          // Sync ReportedTask (match by email or name)
+          await tx.reportedTask.updateMany({
             where: oldEmail ? { employee_email: oldEmail } : { employee_name: oldName },
             data: {
               ...(nameChanged ? { employee_name: newName } : {}),
@@ -274,9 +269,9 @@ export class UsersService {
             },
           });
 
-          // Sync LarkKPI (match by name)
+          // Sync Kpi (match by name)
           if (nameChanged || teamChanged) {
-            await tx.larkKPI.updateMany({
+            await tx.kpi.updateMany({
               where: { name: oldName },
               data: {
                 ...(nameChanged ? { name: newName } : {}),
@@ -303,34 +298,6 @@ export class UsersService {
 
       return [result];
     });
-
-    // --- Fire-and-forget với Retry: Push lên Lark sau khi DB đã cập nhật ---
-    if (nameChanged || teamChanged || emailChanged) {
-      const pushParams = {
-        oldName,
-        oldEmail,
-        ...(nameChanged ? { newName } : {}),
-        ...(teamChanged ? { newTeam } : {}),
-        ...(emailChanged ? { newEmail } : {}),
-      };
-
-      // Chạy nền (không chặn response), retry tối đa 3 lần
-      this.larkService
-        .withRetry(
-          () => this.larkService.pushUserChangesToLark(pushParams),
-          3,
-          `pushUserChangesToLark(${oldEmail || oldName})`,
-        )
-        .then(() =>
-          this.logger.log(`[LarkSync] ✅ Push lên Lark thành công cho: ${oldEmail || oldName}`),
-        )
-        .catch(err =>
-          this.logger.error(
-            `[LarkSync] ❌ Push lên Lark thất bại sau 3 lần thử cho: ${oldEmail || oldName}`,
-            err.message,
-          ),
-        );
-    }
 
     // Invalidate caches so JWT validation gets fresh data
     this.cacheService.invalidate(this.userCacheKey(id));
@@ -359,13 +326,9 @@ export class UsersService {
   }
 
   async getMyEditors(managerId: string, platform?: string) {
-    console.log('🔍 getMyEditors called with:', { managerId, platform });
-
     const manager = await this.prisma.user.findUnique({
       where: { id: managerId },
     });
-
-    console.log('👤 Manager found:', manager ? { id: manager.id, email: manager.email, roles: manager.roles } : 'NOT FOUND');
 
     if (!manager || (!manager.roles.includes(UserRole.MANAGER) && !manager.roles.includes(UserRole.ADMIN))) {
       throw new BadRequestException('Only managers and admins can view their team members');
@@ -395,8 +358,6 @@ export class UsersService {
     })) as unknown as Array<
       UserWithImageSelect & { is_active: boolean; created_at: Date }
     >;
-
-    console.log('📝 Team members found:', editors.length);
 
     const editorsWithStats = await Promise.all(
       editors.map(async (editor) => {
@@ -503,6 +464,34 @@ export class UsersService {
     return managers.map((m) => ({ ...m, avatar: m.image_url }));
   }
 
+  async getAvailableLeaders() {
+    const leaders = await this.prisma.user.findMany({
+      where: {
+        roles: { has: UserRole.LEADER },
+        is_active: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        image_url: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        is_active: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: {
+        full_name: 'asc',
+      },
+    });
+
+    return leaders;
+  }
+
   async selectManager(userId: string, managerId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -540,6 +529,363 @@ export class UsersService {
       message: 'Manager assigned successfully',
       user: updatedUser,
     };
+  }
 
+  /** Lấy danh sách nhân sự theo role của người gọi */
+  async getTeamMembers(callerId: string, callerRoles: UserRole[]) {
+    const selectFields = {
+      id: true,
+      email: true,
+      full_name: true,
+      roles: true,
+      team: true,
+      manager_id: true,
+      is_active: true,
+      image_url: true,
+      employee_id: true,
+      employee_position: true,
+      created_at: true,
+      updated_at: true,
+    };
+
+    if (callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER)) {
+      return this.prisma.user.findMany({
+        where: { id: { not: callerId } },
+        select: selectFields as any,
+        orderBy: { created_at: 'desc' },
+      });
+    }
+
+    if (callerRoles.includes(UserRole.LEADER)) {
+      // Thay cho where: { team_leader_id: callerId } — team_leader_id giờ là giá trị phái
+      // sinh từ Team/TeamMember, nguồn sự thật là "user là TeamMember của Team mà callerId lãnh đạo".
+      const ledTeams = await this.prisma.team.findMany({ where: { leader_id: callerId }, select: { id: true } });
+      const teamIds = ledTeams.map((t) => t.id);
+      if (teamIds.length === 0) return [];
+      const memberships = await this.prisma.teamMember.findMany({
+        where: { team_id: { in: teamIds } },
+        select: { user_id: true },
+      });
+      // Loại chính leader ra khỏi danh sách "team của tôi" — leader cũng có thể là TeamMember
+      // của chính team mình (vd sau backfill), nhưng "member tôi quản lý" không nên gồm chính tôi.
+      const userIds = [...new Set(memberships.map((m) => m.user_id))].filter((id) => id !== callerId);
+      return this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: selectFields as any,
+        orderBy: { created_at: 'desc' },
+      });
+    }
+
+    return [];
+  }
+
+  /**
+   * Nhân sự chưa được gán team (vd: vừa đăng nhập Gmail lần đầu).
+   * ADMIN/MANAGER/LEADER đều thấy chung pool này để "nhận" về team mình —
+   * khác với getTeamMembers (LEADER chỉ thấy member ĐÃ thuộc team mình).
+   */
+  async getUnassignedMembers() {
+    // Thay cho where: { team: null } — "chưa gán team" giờ nghĩa là không có TeamMember nào.
+    const assignedUserIds = (
+      await this.prisma.teamMember.findMany({ select: { user_id: true }, distinct: ['user_id'] })
+    ).map((m) => m.user_id);
+    return this.prisma.user.findMany({
+      where: { id: { notIn: assignedUserIds } },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        is_active: true,
+        image_url: true,
+        employee_id: true,
+        employee_position: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
+  /**
+   * Với role không phải LEADER, mọi tên team trong multi-select phải tồn tại sẵn — validate
+   * TRƯỚC khi ghi bất cứ thứ gì để lỗi không để lại dữ liệu dở dang (user mồ côi, User.team ma).
+   */
+  private async assertAssignableTeamNames(teamNamesRaw: string, roles: UserRole[]) {
+    if (roles.includes(UserRole.LEADER)) return;
+    const names = teamNamesRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!names.length) return;
+    const found = await this.prisma.team.findMany({ where: { name: { in: names } }, select: { name: true } });
+    const foundNames = new Set(found.map((t) => t.name));
+    const missing = names.filter((n) => !foundNames.has(n));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Đội nhóm không tồn tại: ${missing.join(', ')}. Chỉ Leader mới được tạo team mới.`,
+      );
+    }
+  }
+
+  /** Tạo nhân sự (MANAGER=ADMIN có full quyền, LEADER chỉ tạo MEMBER) */
+  async createHR(callerId: string, callerRoles: UserRole[], dto: CreateUserDto) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+    let leaderTeamIds: string[] | null = null;
+
+    if (!isManagerOrAdmin && isLeader) {
+      const requestedRoles: UserRole[] = dto.roles?.length
+        ? dto.roles
+        : dto.role ? [dto.role] : [];
+
+      if (requestedRoles.some(r => r !== UserRole.MEMBER)) {
+        throw new ForbiddenException('Leader chỉ được tạo MEMBER');
+      }
+      // Force roles to exactly [MEMBER] — don't just validate "nothing else requested", since
+      // an empty/omitted roles field would otherwise pass that check and create() would persist
+      // roles: [], leaving the account without any role (locked out of every RolesGuard route).
+      dto.roles = [UserRole.MEMBER];
+      delete dto.role;
+      // Gán member mới vào (các) Team mà leader đang thuộc/lãnh đạo — không tin payload client,
+      // lấy thẳng từ TeamMember/Team.leader_id của caller (Team/TeamMember là nguồn sự thật;
+      // team/team_leader_id trên User chỉ còn là giá trị phái sinh, tính lại sau khi tạo user).
+      leaderTeamIds = await getUserTeamIds(this.prisma, callerId);
+      delete dto.team;
+      // A leader may only set name/email/password for a new hire — strip fields that grant
+      // capability beyond that (manager_id ties them into an unrelated manager's hierarchy,
+      // is_active should only go through deactivate/reactivate). The UI never sends these
+      // for a LEADER, this only closes a direct-API gap.
+      delete dto.manager_id;
+      delete (dto as any).is_active;
+    }
+
+    // Validate tên team TRƯỚC khi tạo user: với role không phải LEADER, tên team lạ sẽ bị
+    // assignUserToTeamsByName từ chối — nếu để lỗi đó nổ SAU this.create() thì đã lỡ tạo một
+    // user mồ côi (có tài khoản nhưng request báo lỗi). create() không còn ghi dto.team nữa.
+    const adminTeamNames = isManagerOrAdmin ? (dto.team ?? '').trim() : '';
+    if (adminTeamNames) {
+      await this.assertAssignableTeamNames(adminTeamNames, dto.roles ?? []);
+    }
+
+    const user = await this.create(dto);
+    if (leaderTeamIds) {
+      await assignUserToTeams(this.prisma, user.id, leaderTeamIds, callerId);
+    } else if (adminTeamNames) {
+      // ADMIN/MANAGER chọn/gõ (các) team qua multi-select khi tạo user mới — đi qua Team/TeamMember
+      // thật sự (LEADER: tự tạo/nhận team; role khác: chỉ gán vào team đã có sẵn) thay vì chỉ ghi
+      // chuỗi vào User.team. Không làm vậy thì editor-eligibility.ts sẽ không thấy họ thuộc team nào.
+      await assignUserToTeamsByName(this.prisma, user.id, adminTeamNames, user.roles, callerId);
+    }
+    return user;
+  }
+
+  /** Cập nhật nhân sự (MANAGER=ADMIN full quyền, LEADER chỉ member team mình) */
+  async updateHR(callerId: string, callerRoles: UserRole[], targetId: string, dto: UpdateUserDto) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+    let claimToCallerId: string | null = null;
+    let releaseTarget = false;
+
+    if (!isManagerOrAdmin && isLeader) {
+      const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+      if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+      // Thay cho target.team_leader_id === callerId — nguồn sự thật giờ là TeamMember/Team.leader_id.
+      const isOwnMember = await isTeamLeaderOfUser(this.prisma, callerId, targetId);
+      // "Unclaimed" must match getUnassignedMembers()'s definition (không có TeamMember nào), không
+      // phải "chưa có team_leader_id cụ thể" — nếu không sẽ cho phép LEADER bất kỳ hijack một member
+      // đã được MANAGER gán team nhưng chưa gán leader cụ thể.
+      const isUnclaimed = await isUserUnassigned(this.prisma, targetId);
+
+      if (!isOwnMember && !isUnclaimed) {
+        throw new ForbiddenException('Leader chỉ được cập nhật member trong team mình');
+      }
+      if (dto.roles || (dto as any).role) {
+        throw new ForbiddenException('Leader không được thay đổi role');
+      }
+      // A leader may only edit name/email/team(forced below) for a member they own — strip
+      // fields that would let a direct API call bypass deactivate/reactivate's stricter
+      // ownership check (is_active) or alter authorization-relevant data outside their scope
+      // (manager_id). The UI never sends these for a LEADER.
+      delete dto.manager_id;
+      delete (dto as any).is_active;
+      // team/team_leader_id giờ là giá trị phái sinh — không set trực tiếp qua dto, xử lý bằng
+      // TeamMember sau khi update() xong (xem claimToCallerId/releaseTarget bên dưới). Chụp lại ý
+      // định "release" (dto.team === null) trước khi xoá field.
+      const wantsRelease = dto.team === null;
+      delete dto.team;
+
+      if (isUnclaimed) {
+        // Claiming a not-yet-assigned member (e.g. a fresh Gmail signup) always attaches them to
+        // this leader's own team(s) — force it server-side instead of trusting the client payload.
+        claimToCallerId = callerId;
+      } else if (wantsRelease) {
+        // Already-claimed own member, leader explicitly releases them back to the shared
+        // "unassigned" pool (e.g. member is moving teams and the new leader will claim them).
+        releaseTarget = true;
+      }
+      // else: any other team change (i.e. picking a specific different team) is a manager-level
+      // reassignment decision — dto.team/team_leader_id đã bị xoá ở trên, giữ nguyên giá trị cũ.
+    }
+
+    // dto.team !== undefined nghĩa là ADMIN/MANAGER thực sự đổi multi-select (kể cả xoá hết về
+    // rỗng) — undefined nghĩa là field không được gửi lên, không đụng tới team hiện có.
+    const shouldReplaceTeams = isManagerOrAdmin && dto.team !== undefined;
+    const teamNamesForUpdate = dto.team;
+    if (shouldReplaceTeams && teamNamesForUpdate) {
+      // Validate TRƯỚC this.update() — update() ghi dto.team vào User.team và sync sang các bảng
+      // checklist; nếu để replaceUserTeamsByName ném lỗi sau đó thì chuỗi team ma đã nằm lại.
+      const targetRoles = dto.roles?.length
+        ? dto.roles
+        : ((await this.prisma.user.findUnique({ where: { id: targetId }, select: { roles: true } }))?.roles ?? []);
+      await this.assertAssignableTeamNames(teamNamesForUpdate, targetRoles);
+    }
+    const updated = await this.update(targetId, dto);
+    if (claimToCallerId) {
+      await assignUserToTeams(this.prisma, targetId, await getUserTeamIds(this.prisma, claimToCallerId), claimToCallerId);
+    } else if (releaseTarget) {
+      await clearUserTeams(this.prisma, targetId);
+    } else if (shouldReplaceTeams) {
+      // Cùng lý do như createHR(): ADMIN/MANAGER chọn/gõ (các) team qua multi-select khi sửa user —
+      // phải đi qua Team/TeamMember thật sự, và coi danh sách mới là TOÀN BỘ sự thật (team nào bị
+      // bỏ chọn thì user rời khỏi team đó).
+      await replaceUserTeamsByName(this.prisma, targetId, teamNamesForUpdate, updated.roles, callerId);
+    }
+    return updated;
+  }
+
+  /** Vô hiệu hóa tài khoản (soft delete) */
+  async deactivate(callerId: string, callerRoles: UserRole[], targetId: string) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+    if (callerId === targetId) {
+      throw new ForbiddenException('Không thể vô hiệu hóa tài khoản của chính mình');
+    }
+
+    if (!isManagerOrAdmin && isLeader) {
+      if (!(await isTeamLeaderOfUser(this.prisma, callerId, targetId))) {
+        throw new ForbiddenException('Leader chỉ được vô hiệu hóa member trong team mình');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: targetId },
+      data: { is_active: false },
+      select: { id: true, email: true, full_name: true, is_active: true },
+    });
+
+    this.cacheService.invalidate(this.userCacheKey(targetId));
+    this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+
+    return { message: 'Tài khoản đã được vô hiệu hóa', user: updated };
+  }
+
+  /** Kích hoạt lại tài khoản */
+  async reactivate(callerId: string, callerRoles: UserRole[], targetId: string) {
+    const isManagerOrAdmin = callerRoles.includes(UserRole.ADMIN) || callerRoles.includes(UserRole.MANAGER);
+    const isLeader = callerRoles.includes(UserRole.LEADER);
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException(`User ${targetId} not found`);
+
+    if (!isManagerOrAdmin && isLeader) {
+      if (!(await isTeamLeaderOfUser(this.prisma, callerId, targetId))) {
+        throw new ForbiddenException('Leader chỉ được kích hoạt member trong team mình');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: targetId },
+      data: { is_active: true },
+      select: { id: true, email: true, full_name: true, is_active: true },
+    });
+
+    this.cacheService.invalidate(this.userCacheKey(targetId));
+    this.cacheService.invalidate(this.userEmailCacheKey(target.email ?? ''));
+
+    return { message: 'Tài khoản đã được kích hoạt', user: updated };
+  }
+
+  /**
+   * Upload avatar for user and store in Google Drive (portraits bucket)
+   * Returns the permanent URL
+   */
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    this.logger.log(`[UploadAvatar] User ${userId} uploading avatar: ${file.originalname}`);
+
+    // Validate user exists
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, full_name: true, image_url: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (!this.googleDrive.isAvailable()) {
+      throw new BadRequestException('Google Drive storage is not configured');
+    }
+
+    try {
+      // Generate clean filename
+      const timestamp = Date.now();
+      const ext = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
+      const cleanName = user.email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `avatar_${cleanName}_${timestamp}.${ext}`;
+
+      // Upload to Google Drive
+      const uploaded = await this.googleDrive.uploadFromPath(
+        file.path,
+        filename,
+        file.mimetype,
+        { id: userId, email: user.email }
+      );
+
+      // Update user record with new avatar URL
+      const updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data: { image_url: uploaded.url },
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          image_url: true,
+        },
+      });
+
+      // Invalidate cache
+      this.cacheService.invalidate(this.userCacheKey(userId));
+      this.cacheService.invalidate(this.userEmailCacheKey(user.email));
+
+      this.logger.log(`[UploadAvatar] ✅ Avatar uploaded successfully for user ${userId}: ${uploaded.url}`);
+
+      // Clean up temp file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        this.logger.warn(`[UploadAvatar] Failed to delete temp file ${file.path}: ${err}`);
+      }
+
+      return {
+        success: true,
+        image_url: uploaded.url,
+        message: 'Avatar uploaded successfully',
+        user: updatedUser,
+      };
+    } catch (error) {
+      this.logger.error(`[UploadAvatar] ❌ Failed to upload avatar for user ${userId}:`, error);
+
+      // Clean up temp file on error
+      try {
+        fs.unlinkSync(file.path);
+      } catch {}
+
+      throw new BadRequestException(`Failed to upload avatar: ${error.message}`);
+    }
   }
 }

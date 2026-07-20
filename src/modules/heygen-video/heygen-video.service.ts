@@ -68,7 +68,7 @@ export class HeygenVideoService {
       };
     } catch (error) {
       throw new HttpException(
-        error.response?.data?.error || 'Failed to get voices',
+        error.response?.data || 'Failed to get voices',
         error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
@@ -124,6 +124,7 @@ export class HeygenVideoService {
         this.httpService.post(
           `${this.aiServiceUrl}/api/heygen/clone-voice`,
           { video_url: videoUrl, voice_name: voiceName },
+          { timeout: 300000 }, // downloading + extracting + cloning can take a while; no default timeout otherwise
         ),
       );
       return {
@@ -132,7 +133,7 @@ export class HeygenVideoService {
       };
     } catch (error) {
       throw new HttpException(
-        error.response?.data?.error || 'Failed to clone voice',
+        error.response?.data || 'Failed to clone voice',
         error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

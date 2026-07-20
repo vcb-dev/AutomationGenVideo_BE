@@ -3,12 +3,12 @@
 Railway chạy image **`viejhaf/automationgenvideo-be:latest`** (không build từ GitHub).
 
 ```text
-push truqhieu (hoặc main)
-  → GitHub Actions: docker build (linux/amd64) → push Docker Hub :latest + :sha
+push main
+  → GitHub Actions: docker build (linux/amd64) → push Docker Hub :latest
   → railway redeploy API  (kéo lại :latest)
 ```
 
-> **Quan trọng:** nhánh `main` từng chậm `truqhieu` hàng trăm commit. Deploy production ưu tiên push/`workflow_dispatch` từ **`truqhieu`** (code đang chạy thật). Workflow file phải có trên nhánh được push.
+> Làm việc trên nhánh feature/`truqhieu` → **merge vào `main`** khi muốn deploy. Chỉ push `main` mới ra production.
 
 ## GitHub Secrets (bắt buộc)
 

@@ -12,6 +12,7 @@ class DraftDto {
   @IsOptional() @IsEnum(SocialPlatform) platform?: SocialPlatform;
   @IsOptional() @IsString() accountId?: string;
   @IsOptional() @IsString() pageId?: string;
+  @IsOptional() @IsString() thumbUrl?: string;
 }
 
 class UpdateDraftDto {
@@ -20,6 +21,7 @@ class UpdateDraftDto {
   @IsOptional() @IsArray() mediaUrls?: string[];
   @IsOptional() @IsEnum(SocialPlatform) platform?: SocialPlatform;
   @IsOptional() @IsString() accountId?: string;
+  @IsOptional() @IsString() thumbUrl?: string;
 }
 
 @ApiTags('Social Drafts')

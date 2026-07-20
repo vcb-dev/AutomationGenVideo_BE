@@ -1,12 +1,12 @@
 import {
-  Controller, Get, Post, Delete, Param, Query, Request,
+  Controller, Get, Post, Delete, Param, Query, Request, Body,
   UseGuards, UseInterceptors, UploadedFile, Logger, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery, ApiConsumes } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MediaLibraryService } from './media-library.service';
 import { UploadService, UPLOAD_DIR } from './upload.service';
@@ -25,7 +25,9 @@ export class MediaLibraryController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   list(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '20') {
-    return this.library.list(req.user.id, Number(page), Number(limit));
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    return this.library.list(req.user.id, p, l);
   }
 
   @Get('stats')
@@ -41,7 +43,7 @@ export class MediaLibraryController {
   }
 
   @Post('upload')
-  @ApiOperation({ summary: 'Upload file vào thư viện — nén video + lưu Supabase/DB' })
+  @ApiOperation({ summary: 'Upload file vao thu vien - luu binary tren Google Drive, DB chi luu metadata' })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -62,13 +64,20 @@ export class MediaLibraryController {
       },
     }),
   )
-  async upload(@UploadedFile() file: Express.Multer.File, @Request() req: any) {
+  async upload(
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req: any,
+    @Query('type') type?: string,
+    @Query('thumbFor') thumbFor?: string,
+  ) {
     if (!file) throw new BadRequestException('Không có file nào được upload');
-    const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
     this.logger.log(`[Library] Upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
     const result = await this.library.uploadAndStore(req.user.id, file.path, {
-      originalname: file.originalname, mimetype: file.mimetype, baseUrl,
-    });
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      isThumbnail: type === 'thumb',
+      thumbFor,
+    }, req.user);
     return { success: true, file: result };
   }
 
@@ -76,5 +85,31 @@ export class MediaLibraryController {
   @ApiOperation({ summary: 'Xoá file khỏi thư viện' })
   remove(@Param('id') id: string, @Request() req: any) {
     return this.library.remove(id, req.user.id);
+  }
+
+  @Post(':id/preview-frame')
+  @ApiOperation({ summary: 'Preview frame tại giây bất kỳ — trả URL tạm để FE hiện trước khi confirm (tự xóa sau 5 phút)' })
+  @ApiBody({ schema: { properties: { timeSeconds: { type: 'number', example: 5 } }, required: ['timeSeconds'] } })
+  async previewFrame(
+    @Param('id') id: string,
+    @Body() body: { timeSeconds: number },
+    @Request() req: any,
+  ) {
+    const ts = Number(body.timeSeconds);
+    if (isNaN(ts) || ts < 0) throw new BadRequestException('timeSeconds phải là số không âm');
+    return this.library.previewFrameAtTime(id, req.user.id, ts);
+  }
+
+  @Post(':id/set-thumbnail')
+  @ApiOperation({ summary: 'Chọn ảnh bìa tại giây bất kỳ — upload lên Drive và cập nhật thumbnail_url trong DB' })
+  @ApiBody({ schema: { properties: { timeSeconds: { type: 'number', example: 10 } }, required: ['timeSeconds'] } })
+  async setThumbnail(
+    @Param('id') id: string,
+    @Body() body: { timeSeconds: number },
+    @Request() req: any,
+  ) {
+    const ts = Number(body.timeSeconds);
+    if (isNaN(ts) || ts < 0) throw new BadRequestException('timeSeconds phải là số không âm');
+    return this.library.setThumbnailAtTime(id, req.user.id, ts, req.user);
   }
 }

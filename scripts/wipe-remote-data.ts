@@ -1,32 +1,35 @@
-import { PrismaClient } from '@prisma/client';
 import * as dotenv from 'dotenv';
+import { getRemoteDbUrl, withRemoteClient } from './lib/remote-prisma';
+
 dotenv.config();
 
 async function main() {
-  const serverUrl = process.env.SERVER_DATABASE_URL;
-  if (!serverUrl) {
+  if (!process.env.SERVER_DATABASE_URL) {
     console.error('Missing SERVER_DATABASE_URL');
     process.exit(1);
   }
 
-  const serverUrlWithLimit = serverUrl.includes('?') 
-    ? `${serverUrl}&connection_limit=1` 
-    : `${serverUrl}?connection_limit=1`;
-
-  const server = new PrismaClient({ datasources: { db: { url: serverUrlWithLimit } } });
-
-  console.log('⚠️  WIPING DATA ON REMOTE SERVER...');
+  const serverUrl = getRemoteDbUrl(true);
+  console.log('🧹 Clearing sync buffer tables (users/channels/social giữ nguyên)...');
 
   try {
-    // Wipe Users only — lark_kpi is handled by UPSERT in force-sync, no need to delete
-    const userCount = await server.user.deleteMany({});
-    console.log(`✅ Wiped Users: ${userCount.count} records`);
+    await withRemoteClient(serverUrl, async (prisma) => {
+      console.log('🔗 Connected');
+      for (const t of [
+        'sync_lark_kpi_buffer',
+        'sync_lark_kpi_doda_editor_buffer',
+        'sync_channels_buffer',
+      ]) {
+        console.log(`   → DROP ${t}...`);
+        await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS ${t}`);
+        console.log(`   ✅ ${t}`);
+      }
+    });
 
-    console.log('--- WIPE COMPLETED ---');
+    console.log('--- DONE (sync scripts sẽ tự update/replace data) ---');
   } catch (error) {
-    console.error('❌ Wipe failed:', error);
-  } finally {
-    await server.$disconnect();
+    console.error('❌ Failed:', error);
+    process.exit(1);
   }
 }
 

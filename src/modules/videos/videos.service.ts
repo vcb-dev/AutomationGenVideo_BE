@@ -99,7 +99,10 @@ export class VideosService {
     const uploadDir = path.join(this.storageBasePath, userId);
     await fs.mkdir(uploadDir, { recursive: true });
 
-    const filename = `${Date.now()}_${file.originalname}`;
+    // Chống path traversal: originalname do client cung cấp có thể chứa "../"
+    // → chỉ lấy phần tên file, loại bỏ mọi thành phần thư mục.
+    const safeOriginalName = path.basename(file.originalname || 'video');
+    const filename = `${Date.now()}_${safeOriginalName}`;
     const filepath = path.join(uploadDir, filename);
 
     this.logger.log(`  Upload directory: ${uploadDir}`);

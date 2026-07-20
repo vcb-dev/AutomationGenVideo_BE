@@ -21,6 +21,8 @@ export class TrackedChannelsService {
       select: { email: true, full_name: true, team: true },
     });
 
+
+
     // Upsert vào Channel table (huyk_channels) — link kênh với công ty
     const channelId = `manual_${createDto.platform}_${createDto.username}`.toLowerCase();
     const platformLabel = this.mapPlatformToLabel(createDto.platform);
@@ -62,8 +64,8 @@ export class TrackedChannelsService {
         display_name: createDto.display_name,
         avatar_url: createDto.avatar_url,
         total_followers: createDto.total_followers,
-        total_likes: createDto.total_likes ? BigInt(createDto.total_likes) : undefined,
-        total_views: createDto.total_views ? BigInt(createDto.total_views) : undefined,
+        total_likes: createDto.total_likes !== undefined ? BigInt(createDto.total_likes) : undefined,
+        total_views: createDto.total_views !== undefined ? BigInt(createDto.total_views) : undefined,
         total_videos: createDto.total_videos,
         posts_count: createDto.posts_count,
         engagement_rate: createDto.engagement_rate,
@@ -124,17 +126,31 @@ export class TrackedChannelsService {
   async findAllByUser(userId: string, platform?: string, team?: string) {
     if (team) {
       // Single-query path: JOIN tracked_channels → huyk_channels on lark_channel_id = id
-      const platformFilter = platform ? `AND tc.platform = ${platform.toUpperCase()}` : '';
-      const rows = await this.prisma.$queryRaw<any[]>`
-        SELECT tc.*
-        FROM tracked_channels tc
-        JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
-        WHERE tc.user_id = ${userId}
-          AND tc.is_active = true
-          AND hc.team_traffic ILIKE ${'%' + team + '%'}
-          ${platformFilter}
-        ORDER BY tc.created_at DESC
-      `;
+      // Dùng 2 query riêng thay vì string interpolation để tránh lỗi parameterized SQL
+      const likeParam = '%' + team + '%';
+      let rows: any[];
+      if (platform) {
+        rows = await this.prisma.$queryRaw<any[]>`
+          SELECT tc.*
+          FROM tracked_channels tc
+          JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
+          WHERE tc.user_id::text = ${userId}
+            AND tc.is_active = true
+            AND hc.team_traffic ILIKE ${likeParam}
+            AND tc.platform::text = ${platform.toUpperCase()}
+          ORDER BY tc.created_at DESC
+        `;
+      } else {
+        rows = await this.prisma.$queryRaw<any[]>`
+          SELECT tc.*
+          FROM tracked_channels tc
+          JOIN huyk_channels hc ON hc.id = tc.lark_channel_id
+          WHERE tc.user_id::text = ${userId}
+            AND tc.is_active = true
+            AND hc.team_traffic ILIKE ${likeParam}
+          ORDER BY tc.created_at DESC
+        `;
+      }
       return rows.map((ch) => ({
         ...ch,
         total_likes: Number(ch.total_likes ?? 0),
@@ -303,9 +319,9 @@ export class TrackedChannelsService {
       const data = await response.json();
       return data;
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error checking channel:', error);
-      throw new Error(`Failed to check channel: ${error.message}`);
+      throw new Error(`Failed to check channel: ${error?.message || error}`);
     }
   }
 
@@ -316,8 +332,8 @@ export class TrackedChannelsService {
       where: { id },
       data: {
         ...updateDto,
-        total_likes: updateDto.total_likes ? BigInt(updateDto.total_likes) : undefined,
-        total_views: updateDto.total_views ? BigInt(updateDto.total_views) : undefined,
+        total_likes: updateDto.total_likes !== undefined ? BigInt(updateDto.total_likes) : undefined,
+        total_views: updateDto.total_views !== undefined ? BigInt(updateDto.total_views) : undefined,
         last_synced_at: new Date(),
       } as any,
     });
@@ -394,25 +410,38 @@ export class TrackedChannelsService {
     );
 
     // Generate trend data (mock for now - in real app, you'd query historical data)
+    // Biến thiên "ngẫu nhiên" được seed theo platform+ngày để mỗi lần refresh
+    // dashboard trả về cùng một dãy số — trước đây dùng Math.random() nên số liệu
+    // và % tăng trưởng đổi loạn xạ theo từng request.
+    const seededFactor = (seed: string): number => {
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) {
+        hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+      }
+      const normalized = (Math.abs(hash) % 1000) / 1000; // 0..1 ổn định theo seed
+      return 0.8 + normalized * 0.4;
+    };
+
     const platformTrends: PlatformTrendDto[] = Object.entries(platformGroups).map(
       ([platform, channels]) => {
         // Generate 30 days of mock trend data
         const trends: TrendDataDto[] = [];
         const now = new Date();
 
+        const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
+        const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
+
         for (let i = 29; i >= 0; i--) {
           const date = new Date(now);
           date.setDate(date.getDate() - i);
+          const dateStr = date.toISOString().split('T')[0];
 
           // Mock data with some growth pattern
           const dayFactor = (30 - i) / 30; // Growth factor
-          const randomFactor = 0.8 + Math.random() * 0.4; // Random variation
-
-          const totalLikes = channels.reduce((sum, ch) => sum + Number(ch.total_likes), 0);
-          const totalViews = channels.reduce((sum, ch) => sum + Number(ch.total_views), 0);
+          const randomFactor = seededFactor(`${platform}:${dateStr}`);
 
           trends.push({
-            date: date.toISOString().split('T')[0],
+            date: dateStr,
             likes: Math.floor(totalLikes * dayFactor * randomFactor),
             views: Math.floor(totalViews * dayFactor * randomFactor),
             comments: Math.floor((totalLikes * 0.1) * dayFactor * randomFactor),

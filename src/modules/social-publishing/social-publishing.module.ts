@@ -6,10 +6,11 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
 import { UploadController } from './upload/upload.controller';
 import { UploadService } from './upload/upload.service';
 import { MediaController } from './upload/media.controller';
-import { SupabaseStorageService } from './upload/supabase-storage.service';
+import { GoogleDriveStorageService } from './upload/google-drive-storage.service';
 import { MediaLibraryController } from './upload/media-library.controller';
 import { MediaLibraryService } from './upload/media-library.service';
 import { ChunkedUploadController } from './upload/chunked-upload.controller';
+import { ThumbnailMigrationService } from './upload/thumbnail-migration.service';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -57,6 +58,10 @@ import { DraftsService } from './drafts/drafts.service';
 // Hashtag
 import { HashtagController } from './hashtag/hashtag.controller';
 
+// TikTok Clone
+import { TiktokCloneController } from './tiktok-clone/tiktok-clone.controller';
+import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
+
 @Module({
   imports: [PrismaModule, MulterModule.register()],
   controllers: [
@@ -72,13 +77,15 @@ import { HashtagController } from './hashtag/hashtag.controller';
     HistoryController,
     DraftsController,
     HashtagController,
+    TiktokCloneController,
   ],
   providers: [
     // Core
     CryptoService,
-    SupabaseStorageService,
+    GoogleDriveStorageService,
     UploadService,
     MediaLibraryService,
+    ThumbnailMigrationService,
     // Accounts
     AccountsService,
     // OAuth
@@ -105,7 +112,9 @@ import { HashtagController } from './hashtag/hashtag.controller';
     HistoryService,
     // Drafts
     DraftsService,
+    // TikTok Clone
+    TiktokCloneService,
   ],
-  exports: [AccountsService, PublishService],
+  exports: [AccountsService, PublishService, GoogleDriveStorageService],
 })
 export class SocialPublishingModule {}

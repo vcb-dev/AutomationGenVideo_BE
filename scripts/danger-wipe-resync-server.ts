@@ -128,7 +128,7 @@ async function main() {
     
     // Clear self-references first
     await prismaServer.user.updateMany({
-      data: { manager_id: null, team_leader_id: null }
+      data: { manager_id: null }
     });
 
     // Delete all users

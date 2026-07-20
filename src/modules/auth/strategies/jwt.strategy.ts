@@ -18,7 +18,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   ) {
     const secret = getRuntimeJwtSecret(configService);
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // Accept token from Authorization header OR ?access_token= (needed for video stream in <video> tags)
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        ExtractJwt.fromUrlQueryParameter('access_token'),
+      ]),
       ignoreExpiration: false,
       secretOrKey: secret,
     });
@@ -35,7 +39,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           email: true,
           full_name: true,
           roles: true,
-          custom_permissions: true,
           manager_id: true,
           is_active: true,
           team: true,

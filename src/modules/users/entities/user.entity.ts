@@ -27,20 +27,8 @@ export class UserEntity {
   @ApiProperty({ required: false, nullable: true })
   team: string | null;
 
-  @ApiProperty({ required: false, nullable: true })
-  lark_permissions: any | null;
-
-
-
   manager_id: string | null;
-  team_leader_id: string | null;
   is_active: boolean;
-
-  @ApiProperty({ type: [String] })
-  custom_permissions: string[];
-
-  @ApiProperty({ required: false, nullable: true })
-  last_app_update_at: Date | null;
 
   @ApiProperty({ required: false, nullable: true })
   lark_employee_record_id: string | null;

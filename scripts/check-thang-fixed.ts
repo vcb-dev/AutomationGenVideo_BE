@@ -3,8 +3,8 @@ import { PrismaClient } from '@prisma/client';
 async function main() {
   const prisma = new PrismaClient();
   try {
-    console.log('--- SEARCHING FOR TRAN THANG IN LARK KPI ---');
-    const kpis = await prisma.larkKPI.findMany({
+    console.log('--- SEARCHING FOR TRAN THANG IN KPI ---');
+    const kpis = await prisma.kpi.findMany({
       where: {
         OR: [
           { name: { contains: 'Thắng', mode: 'insensitive' } },

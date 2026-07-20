@@ -7,16 +7,21 @@ export class YoutubePublisher {
 
   async publish(token: string, opts: {
     title: string; description?: string; privacy?: string; mediaUrls: string[];
-    refreshToken?: string; onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
+    thumbUrl?: string;
+    refreshToken?: string; tokenExpiresAt?: Date;
+    onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
   }): Promise<{ videoId: string; url: string }> {
     if (!opts.mediaUrls?.length) throw new Error('YouTube yêu cầu video file');
     const videoUrl = opts.mediaUrls[0];
 
-    // Refresh token nếu cần (được gọi trước mỗi upload)
+    // Chỉ refresh khi token hết hạn hoặc sắp hết hạn trong 5 phút
     let accessToken = token;
-    if (opts.refreshToken) {
+    const needsRefresh = opts.refreshToken && (
+      !opts.tokenExpiresAt || opts.tokenExpiresAt.getTime() < Date.now() + 5 * 60 * 1000
+    );
+    if (needsRefresh) {
       try {
-        const refreshed = await this.refreshAccessToken(opts.refreshToken);
+        const refreshed = await this.refreshAccessToken(opts.refreshToken!);
         accessToken = refreshed.accessToken;
         opts.onTokenRefreshed?.(refreshed.accessToken, refreshed.tokenExpiresAt);
         this.logger.log('[YouTube] Token refreshed OK');
@@ -37,43 +42,111 @@ export class YoutubePublisher {
       status: { privacyStatus },
     };
 
-    // HEAD request để lấy file size
-    const headRes = await axios.head(videoUrl).catch(() => null);
-    const rawContentLength = headRes?.headers?.['content-length'];
-    const fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+    // Lấy file size (thử HEAD trước, nếu không được thì fallback sang GET Range)
+    let fileSize = 0;
+    try {
+      const headRes = await axios.head(videoUrl, { timeout: 15000 });
+      const rawContentLength = headRes?.headers?.['content-length'];
+      fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+    } catch (e: any) {
+      this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
+    }
+
+    if (fileSize === 0) {
+      try {
+        const getRangeRes = await axios.get(videoUrl, {
+          headers: { Range: 'bytes=0-0' },
+          timeout: 15000,
+        });
+        const contentRange = getRangeRes.headers['content-range'];
+        if (contentRange) {
+          fileSize = parseInt(contentRange.split('/').pop() || '0', 10);
+        }
+        if (fileSize === 0) {
+          const rawContentLength = getRangeRes.headers['content-length'];
+          fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+        }
+      } catch (e: any) {
+        this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
+      }
+    }
+
+    if (fileSize === 0) {
+      throw new Error(`YouTube: không lấy được kích thước file từ URL ${videoUrl}`);
+    }
 
     // Initiate resumable upload session
-    const initRes = await axios.post(
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
-      metadata,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-Upload-Content-Type': 'video/mp4',
-          ...(fileSize > 0 && { 'X-Upload-Content-Length': fileSize }),
+    let initRes: any;
+    try {
+      initRes = await axios.post(
+        'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+        metadata,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-Upload-Content-Type': 'video/mp4',
+            'X-Upload-Content-Length': fileSize,
+          },
+          timeout: 30000,
         },
-      },
-    );
+      );
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube init upload session failed: ${detail}`);
+    }
     const uploadUrl = initRes.headers.location;
     if (!uploadUrl) throw new Error('YouTube: không nhận được upload URL');
 
     // Stream video trực tiếp vào upload — không load toàn bộ file vào RAM
     const videoStream = await axios.get(videoUrl, { responseType: 'stream', timeout: 300000 });
 
-    const uploadRes = await axios.put(uploadUrl, videoStream.data, {
-      headers: {
-        'Content-Type': 'video/mp4',
-        ...(fileSize > 0 && { 'Content-Length': fileSize }),
-        Authorization: `Bearer ${accessToken}`,
-      },
-      timeout: 600000,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-    });
+    let uploadRes: any;
+    try {
+      uploadRes = await axios.put(uploadUrl, videoStream.data, {
+        headers: {
+          'Content-Type': 'video/mp4',
+          ...(fileSize > 0 && { 'Content-Length': fileSize }),
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 600000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube video upload failed: ${detail}`);
+    } finally {
+      try { videoStream?.data?.destroy(); } catch {}
+    }
 
     const videoId = uploadRes.data.id;
     if (!videoId) throw new Error('YouTube: upload thành công nhưng không nhận được video ID');
+
+    // Upload thumbnail nếu có
+    if (opts.thumbUrl) {
+      try {
+        const thumbRes = await axios.get(opts.thumbUrl, { responseType: 'stream', timeout: 30000 });
+        const contentType = thumbRes.headers['content-type'] || 'image/jpeg';
+        await axios.post(
+          `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}&uploadType=media`,
+          thumbRes.data,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': contentType,
+            },
+            timeout: 60000,
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+          },
+        );
+        this.logger.log(`[YouTube] Thumbnail đã được upload cho video ${videoId}`);
+      } catch (e: any) {
+        const detail = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${detail}`);
+      }
+    }
 
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
   }
@@ -87,7 +160,7 @@ export class YoutubePublisher {
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
     );
     return {
       accessToken: res.data.access_token,

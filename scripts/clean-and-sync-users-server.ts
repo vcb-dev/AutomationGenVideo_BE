@@ -82,23 +82,26 @@ async function syncUsers() {
 
         console.log('--- SYNCING TO SERVER DB ---');
         let count = 0;
+        const created: { id: string; team: string | null; roles: string[] }[] = [];
         for (const user of userEntries) {
             if (!user.full_name || !user.email) continue;
             try {
-                await serverPrisma.user.create({ 
+                const row = await serverPrisma.user.create({
                     data: {
                         ...user,
                         is_active: true
-                    } 
+                    },
+                    select: { id: true, team: true, roles: true },
                 });
+                created.push(row);
                 count++;
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`Error creating user ${user.email}:`, err.message);
             }
         }
 
         console.log(`SUCCESS: ${count} users synced to server.`);
-    } catch (error) {
+    } catch (error: any) {
         console.error('SYNC ERROR:', error.response?.data || error.message);
     } finally {
         await serverPrisma.$disconnect();
