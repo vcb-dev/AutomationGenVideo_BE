@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { PushService } from "../../../common/push/push.service";
 import { TaskAutoTeamsService } from "../teams/teams.service";
 import {
   resolveProductSnapshot,
@@ -45,6 +46,7 @@ export class TaskAutoCatalogService {
   constructor(
     private prisma: PrismaService,
     private teamsService: TaskAutoTeamsService,
+    private push: PushService,
   ) {}
 
   private monthRange(month?: string, field = "created_at") {
@@ -1363,6 +1365,7 @@ export class TaskAutoCatalogService {
     await this.prisma.notification
       .create({ data: { user_id: userId, type, title, body } })
       .catch(() => null); // notification lỗi không chặn nghiệp vụ chính
+    this.push.sendToUser(userId, { title, body }).catch(() => {});
   }
 
   /** Copy product cá nhân → kho team (kèm nguồn OUTRO đi theo sản phẩm) */

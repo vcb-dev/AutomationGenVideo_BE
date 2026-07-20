@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import {
   CreateTaskDto,
@@ -45,6 +46,7 @@ export class TaskAutoTasksService {
   constructor(
     private prisma: PrismaService,
     private videoService: TaskAutoVideoService,
+    private push: PushService,
   ) {}
 
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
@@ -1352,5 +1354,8 @@ export class TaskAutoTasksService {
           `[notify] failed to create ${type} for user ${userId}: ${err.message}`,
         ),
       );
+    this.push
+      .sendToUser(userId, { title, url: "/dashboard/task-auto/tasks" })
+      .catch(() => {});
   }
 }
