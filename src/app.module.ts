@@ -25,6 +25,7 @@ import { ContentReportModule } from './modules/content-report/content-report.mod
 import { ChannelsModule } from "./modules/channels-team/channels.module";
 import { TaskAutoModule } from './modules/task-auto/task-auto.module';
 import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
+import { ContentTransformModule } from './modules/content-transform/content-transform.module';
 // TelegramReportModule: tạm tắt (nhánh khai) — bảng `telegram_report_config` chưa có migration/chưa
 // tồn tại trên DB, TelegramReportService.onModuleInit() query bảng này lúc khởi động làm BE crash.
 // import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
@@ -85,6 +86,7 @@ import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module
     ContentReportModule,
     ChannelsModule,
     TaskAutoModule,
+    ContentTransformModule,
     BusinessConnectionsModule,
     OAuthModule,
     FacebookOwnedPagesModule,

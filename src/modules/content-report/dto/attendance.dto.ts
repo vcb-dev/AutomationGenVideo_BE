@@ -11,6 +11,7 @@ import {
   IsInt,
   Min,
   Max,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { AttendanceStatus } from '@prisma/client';
@@ -59,21 +60,20 @@ export class CreateMeetingSessionDto {
 
 export class UpsertAttendanceDto {
   @ApiProperty({
-    enum: AttendanceStatus,
+    enum: ['PRESENT', 'ABSENT'],
     example: AttendanceStatus.PRESENT,
-    description: 'Trạng thái điểm danh — do người điểm danh tự chọn thủ công',
+    description: 'Trạng thái điểm danh — chỉ cho phép PRESENT hoặc ABSENT',
   })
-  @IsEnum(AttendanceStatus)
+  @IsIn(['PRESENT', 'ABSENT'], { message: 'Trạng thái điểm danh phải là PRESENT hoặc ABSENT' })
   status: AttendanceStatus;
 
   @ApiProperty({
     description:
-      'Ghi chú / lý do. BẮT BUỘC khi status = ON_LEAVE. Optional khi ABSENT (có thể bổ sung sau).',
+      'Ghi chú / lý do. Optional khi ABSENT (có thể bổ sung sau).',
     required: false,
-    example: 'Nghỉ ốm có đơn bác sĩ',
+    example: 'Nghỉ ốm có lý do',
   })
-  @ValidateIf((o) => o.status === AttendanceStatus.ON_LEAVE)
-  @IsNotEmpty({ message: 'note là bắt buộc khi nghỉ phép (ON_LEAVE)' })
+  @IsOptional()
   @IsString()
   note?: string;
 }
@@ -88,15 +88,14 @@ export class BulkAttendanceItemDto {
   user_id: string;
 
   @ApiProperty({
-    enum: AttendanceStatus,
+    enum: ['PRESENT', 'ABSENT'],
     example: AttendanceStatus.PRESENT,
   })
-  @IsEnum(AttendanceStatus)
+  @IsIn(['PRESENT', 'ABSENT'], { message: 'Trạng thái điểm danh phải là PRESENT hoặc ABSENT' })
   status: AttendanceStatus;
 
-  @ApiProperty({ required: false, description: 'Bắt buộc khi status = ON_LEAVE' })
-  @ValidateIf((o) => o.status === AttendanceStatus.ON_LEAVE)
-  @IsNotEmpty({ message: 'note là bắt buộc khi ON_LEAVE' })
+  @ApiProperty({ required: false, description: 'Ghi chú / lý do' })
+  @IsOptional()
   @IsString()
   note?: string;
 }
