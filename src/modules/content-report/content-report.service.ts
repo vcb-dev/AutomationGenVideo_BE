@@ -29,6 +29,16 @@ import {
 // không thuộc phạm vi báo cáo content hàng tuần).
 export const CONTENT_REPORT_TEAM_NAMES = ['Team K1', 'Team K2', 'Team K3', 'Team K4'];
 
+// Chuỗi deadline từ FE không kèm timezone — new Date() mặc định hiểu theo giờ local của
+// tiến trình Node, đúng ở máy local (giờ VN) nhưng lệch 7 tiếng trên server deploy (UTC).
+// Ép rõ +07:00 để nhất quán bất kể server chạy timezone gì.
+function parseVNDeadline(value: string): Date {
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(value)) return new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T00:00:00+07:00`);
+  const withSeconds = /T\d{2}:\d{2}$/.test(value) ? `${value}:00` : value;
+  return new Date(`${withSeconds}+07:00`);
+}
+
 @Injectable()
 export class ContentReportService {
   private readonly logger = new Logger(ContentReportService.name);
@@ -616,7 +626,7 @@ export class ContentReportService {
         assignee_id,
         title: dto.title,
         description: dto.description,
-        deadline: dto.deadline ? new Date(dto.deadline) : undefined,
+        deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
         status: dto.status ?? 'PENDING',
         priority: dto.priority ?? 'MEDIUM',
         notes: dto.notes,
@@ -628,7 +638,7 @@ export class ContentReportService {
 
   async updateActionItem(id: string, dto: UpdateActionItemDto) {
     const data: any = { ...dto };
-    if (dto.deadline) data.deadline = new Date(dto.deadline);
+    if (dto.deadline) data.deadline = parseVNDeadline(dto.deadline);
     if (dto.assignee || dto.assignee_id) {
       data.assignee_id = await this.resolveUser(dto.assignee_id, dto.assignee);
       delete data.assignee;

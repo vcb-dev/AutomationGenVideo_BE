@@ -17,6 +17,17 @@ import {
   ReviewTaskDto,
 } from "./task.dto";
 
+// FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
+// nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
+// tình cờ đúng, nhưng server deploy (Docker) chạy UTC nên bị lệch 7 tiếng. Ép rõ +07:00
+// để nhất quán bất kể server chạy timezone gì.
+function parseVNDeadline(value: string): Date {
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(value)) return new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T00:00:00+07:00`);
+  const withSeconds = /T\d{2}:\d{2}$/.test(value) ? `${value}:00` : value;
+  return new Date(`${withSeconds}+07:00`);
+}
+
 // Các field content/sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa
 const CATALOG_FIELDS = [
   "content_id",
@@ -745,7 +756,7 @@ export class TaskAutoTasksService {
               team_source_workshop_id: dto.team_source_workshop_id ?? null,
               team_source_huyk_id: dto.team_source_huyk_id ?? null,
               assignee_id: dto.assignee_id,
-              deadline: dto.deadline ? new Date(dto.deadline) : undefined,
+              deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
               status: dto.assignee_id ? "ASSIGNED" : "PENDING",
               assigned_at: dto.assignee_id ? new Date() : undefined,
             },
@@ -835,7 +846,7 @@ export class TaskAutoTasksService {
     }
 
     const data: any = { ...dto };
-    if (dto.deadline) data.deadline = new Date(dto.deadline);
+    if (dto.deadline) data.deadline = parseVNDeadline(dto.deadline);
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;
       if (dto.assignee_id && task.status === "PENDING") {
