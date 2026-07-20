@@ -41,4 +41,4 @@ push main
 ## Khác biệt so với CQA_BE
 - BE này chỉ có **1 service API** (không có worker riêng), nên workflow đã lược bỏ phần redeploy worker.
 - Prisma dùng `DATABASE_URL` + `DIRECT_DATABASE_URL` (CQA dùng `DIRECT_URL`).
-- Health check `/api` (global prefix `api`), build output `dist/src/main.js`.
+- Health check `/api` (global prefix `api`), build output `dist/main.js`.

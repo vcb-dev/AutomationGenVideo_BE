@@ -44,4 +44,4 @@ COPY --from=builder /app/dist ./dist
 EXPOSE 3000
 
 # Start the application directly to avoid startup timeouts
-CMD ["node", "dist/src/main"]
+CMD ["node", "dist/main"]

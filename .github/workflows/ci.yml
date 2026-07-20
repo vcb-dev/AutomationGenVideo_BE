@@ -46,5 +46,5 @@ jobs:
 
       - name: Check dist outputs
         run: |
-          test -f dist/src/main.js
-          echo "Build OK — dist/src/main.js present"
+          test -f dist/main.js
+          echo "Build OK — dist/main.js present"
