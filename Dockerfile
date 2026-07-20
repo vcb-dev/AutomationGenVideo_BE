@@ -17,9 +17,11 @@ RUN npm ci
 # Generate Prisma client
 RUN npx prisma generate
 
-# Copy source code and build
+# Copy source code and build — Nest emits dist/main.js (rootDir=src)
 COPY . .
-RUN npm run build
+RUN npm run build \
+  && test -f dist/main.js \
+  && echo "Build OK — dist/main.js present"
 
 # Prune devDependencies to keep only production dependencies in node_modules
 RUN npm prune --omit=dev && npm cache clean --force
@@ -43,5 +45,5 @@ COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
 
-# Start the application directly to avoid startup timeouts
-CMD ["node", "dist/src/main"]
+# Support both Nest layouts (dist/main.js with rootDir=src, or dist/src/main.js fallback)
+CMD ["sh", "-c", "if [ -f dist/main.js ]; then exec node dist/main.js; elif [ -f dist/src/main.js ]; then exec node dist/src/main.js; else echo 'No dist/main.js found' >&2; ls -laR dist 2>/dev/null; exit 1; fi"]

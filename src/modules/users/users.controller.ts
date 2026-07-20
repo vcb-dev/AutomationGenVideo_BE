@@ -13,6 +13,7 @@ import {
   Query,
   UploadedFile,
   BadRequestException,
+  ParseUUIDPipe,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
@@ -197,7 +198,7 @@ export class UsersController {
     type: UserResponseDto,
   })
   @ApiResponse({ status: 404, description: "User not found" })
-  async findOne(@Param("id") id: string) {
+  async findOne(@Param("id", ParseUUIDPipe) id: string) {
     const user = await this.usersService.findOne(id);
     return new UserResponseDto(user);
   }
