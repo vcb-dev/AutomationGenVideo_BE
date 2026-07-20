@@ -125,6 +125,12 @@ export class UsersService {
   }
 
   async findOne(id: string) {
+    // Prisma @db.Uuid throws opaque "Inconsistent column data" on bad ids
+    // (e.g. "undefined", "team") — reject early with a clear 400.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+      throw new BadRequestException(`Invalid user id: expected UUID, got "${id}"`);
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: {
