@@ -71,3 +71,7 @@ cloudflared.exe
 
 # Lark secrets (refresh tokens — never commit)
 .lark-global-indo-refresh.txt
+
+# Env files (except .env.example)
+.env.*
+!.env.example
