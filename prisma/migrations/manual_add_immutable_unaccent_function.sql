@@ -19,10 +19,12 @@
 
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
-CREATE OR REPLACE FUNCTION immutable_unaccent(input text)
+-- Schema-qualify public.unaccent / public.unaccent dict — khi CREATE INDEX,
+-- Postgres thu hẹp search_path nên lookup bare "unaccent" sẽ fail.
+CREATE OR REPLACE FUNCTION public.immutable_unaccent(input text)
 RETURNS text AS $$
   SELECT translate(
-    unaccent('unaccent'::regdictionary, input),
+    public.unaccent('public.unaccent'::regdictionary, input),
     'đĐ',
     'dD'
   );
