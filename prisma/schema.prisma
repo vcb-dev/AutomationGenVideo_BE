@@ -93,6 +93,7 @@ model User {
   tasks_reviewed              Task[]              @relation("TaskReviewer")
   task_assignments            TaskAssignment[]    @relation("AssignmentUser")
   notifications                Notification[]      @relation("NotificationOf")
+  push_subscriptions           PushSubscription[]  @relation("PushSubscriptionOf")
   owned_channels               Channel[]           @relation("ChannelOwnerUser")
   ai_voice_usages              AiVoiceUsage[]      @relation("AiVoiceUsageOf")
   content_transforms           ContentTransformHistory[] @relation("ContentTransformOf")
@@ -1972,34 +1973,34 @@ model ScraperYoutubeShort {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperKuaishouProfile {
-  id                  BigInt    @id @default(autoincrement())
+  id                 BigInt                 @id @default(autoincrement())
   // eid: định danh trong URL profile (kuaishou.com/profile/{eid}) — dùng để
   // gọi fetch_one_user_v2, không đổi, là key chính để add/lookup channel.
-  eid                 String    @unique @db.VarChar(50)
+  eid                String                 @unique @db.VarChar(50)
   // user_id: numeric ID — CHỈ fetch_user_hot_post chấp nhận giá trị này (không
   // chấp nhận eid). Resolve được từ fetch_one_user_v2(eid), nullable vì rỗng
   // trong khoảnh khắc ngắn giữa lúc tạo placeholder và lần ingest đồng bộ đầu.
-  user_id             String?   @unique @db.VarChar(50)
-  username            String    @default("") @db.VarChar(255)
-  nickname            String    @default("") @db.VarChar(500)
-  url                 String    @db.VarChar(1000)
-  avatar_url          String?   @db.Text
-  avatar_drive_url    String    @default("") @db.Text
-  biography           String?   @db.Text
-  gender              String    @default("") @db.VarChar(10)
-  followers_count     BigInt    @default(0)
-  following_count     BigInt    @default(0)
-  likes_count         BigInt    @default(0)
-  videos_count        Int       @default(0)
-  is_tracked          Boolean   @default(false)
-  is_bookmarked       Boolean   @default(false)
-  is_initial_scraped  Boolean   @default(false)
-  last_scraped_at     DateTime? @db.Timestamptz(6)
-  scraping_status     String    @default("idle") @db.VarChar(20)
-  scrape_error        String?   @db.Text
-  created_at          DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
-  videos              ScraperKuaishouVideo[]
+  user_id            String?                @unique @db.VarChar(50)
+  username           String                 @default("") @db.VarChar(255)
+  nickname           String                 @default("") @db.VarChar(500)
+  url                String                 @db.VarChar(1000)
+  avatar_url         String?                @db.Text
+  avatar_drive_url   String                 @default("") @db.Text
+  biography          String?                @db.Text
+  gender             String                 @default("") @db.VarChar(10)
+  followers_count    BigInt                 @default(0)
+  following_count    BigInt                 @default(0)
+  likes_count        BigInt                 @default(0)
+  videos_count       Int                    @default(0)
+  is_tracked         Boolean                @default(false)
+  is_bookmarked      Boolean                @default(false)
+  is_initial_scraped Boolean                @default(false)
+  last_scraped_at    DateTime?              @db.Timestamptz(6)
+  scraping_status    String                 @default("idle") @db.VarChar(20)
+  scrape_error       String?                @db.Text
+  created_at         DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime               @updatedAt @db.Timestamptz(6)
+  videos             ScraperKuaishouVideo[]
 
   @@index([username])
   @@index([is_tracked, last_scraped_at])
@@ -2048,27 +2049,27 @@ model ScraperKuaishouVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperKuaishouSearchVideo {
-  id                  BigInt    @id @default(autoincrement())
-  post_id             String    @unique @db.VarChar(50)
-  url                 String    @db.VarChar(1000)
-  description         String    @default("") @db.Text
-  hashtags            String[]  @default([])
-  thumbnail_url       String?   @db.Text
-  video_duration      Int       @default(0)
-  author_id           String    @default("") @db.VarChar(50)
-  author_eid          String    @default("") @db.VarChar(50)
-  author_username     String    @default("") @db.VarChar(500)
-  author_avatar       String?   @db.Text
-  author_is_verified  Boolean   @default(false)
-  view_count          BigInt    @default(0)
-  like_count          BigInt    @default(0)
-  comment_count       BigInt    @default(0)
-  share_count         BigInt    @default(0)
-  collect_count       BigInt    @default(0)
-  search_keyword      String    @default("") @db.VarChar(500)
-  date_posted         DateTime  @db.Timestamptz(6)
-  created_at          DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  id                 BigInt   @id @default(autoincrement())
+  post_id            String   @unique @db.VarChar(50)
+  url                String   @db.VarChar(1000)
+  description        String   @default("") @db.Text
+  hashtags           String[] @default([])
+  thumbnail_url      String?  @db.Text
+  video_duration     Int      @default(0)
+  author_id          String   @default("") @db.VarChar(50)
+  author_eid         String   @default("") @db.VarChar(50)
+  author_username    String   @default("") @db.VarChar(500)
+  author_avatar      String?  @db.Text
+  author_is_verified Boolean  @default(false)
+  view_count         BigInt   @default(0)
+  like_count         BigInt   @default(0)
+  comment_count      BigInt   @default(0)
+  share_count        BigInt   @default(0)
+  collect_count      BigInt   @default(0)
+  search_keyword     String   @default("") @db.VarChar(500)
+  date_posted        DateTime @db.Timestamptz(6)
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([view_count(sort: Desc)])
@@ -2087,29 +2088,29 @@ model ScraperKuaishouSearchVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperBilibiliProfile {
-  id                  BigInt    @id @default(autoincrement())
-  mid                 String    @unique @db.VarChar(50)
-  username            String    @default("") @db.VarChar(255)
-  nickname            String    @default("") @db.VarChar(500)
-  url                 String    @db.VarChar(1000)
-  avatar_url          String?   @db.Text
-  avatar_drive_url    String    @default("") @db.Text
-  biography           String?   @db.Text
-  is_verified         Boolean   @default(false)
-  verify_desc         String    @default("") @db.VarChar(255)
-  followers_count     BigInt    @default(0)
-  following_count     BigInt    @default(0)
-  likes_count         BigInt    @default(0)
-  videos_count        Int       @default(0)
-  is_tracked          Boolean   @default(false)
-  is_bookmarked       Boolean   @default(false)
-  is_initial_scraped  Boolean   @default(false)
-  last_scraped_at     DateTime? @db.Timestamptz(6)
-  scraping_status     String    @default("idle") @db.VarChar(20)
-  scrape_error        String?   @db.Text
-  created_at          DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
-  videos              ScraperBilibiliVideo[]
+  id                 BigInt                 @id @default(autoincrement())
+  mid                String                 @unique @db.VarChar(50)
+  username           String                 @default("") @db.VarChar(255)
+  nickname           String                 @default("") @db.VarChar(500)
+  url                String                 @db.VarChar(1000)
+  avatar_url         String?                @db.Text
+  avatar_drive_url   String                 @default("") @db.Text
+  biography          String?                @db.Text
+  is_verified        Boolean                @default(false)
+  verify_desc        String                 @default("") @db.VarChar(255)
+  followers_count    BigInt                 @default(0)
+  following_count    BigInt                 @default(0)
+  likes_count        BigInt                 @default(0)
+  videos_count       Int                    @default(0)
+  is_tracked         Boolean                @default(false)
+  is_bookmarked      Boolean                @default(false)
+  is_initial_scraped Boolean                @default(false)
+  last_scraped_at    DateTime?              @db.Timestamptz(6)
+  scraping_status    String                 @default("idle") @db.VarChar(20)
+  scrape_error       String?                @db.Text
+  created_at         DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime               @updatedAt @db.Timestamptz(6)
+  videos             ScraperBilibiliVideo[]
 
   @@index([username])
   @@index([is_tracked, last_scraped_at])
@@ -2126,20 +2127,20 @@ model ScraperBilibiliProfile {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperBilibiliVideo {
-  id                  BigInt                  @id @default(autoincrement())
+  id                  BigInt                 @id @default(autoincrement())
   profile_id          BigInt
-  post_id             String                  @unique @db.VarChar(20)
-  url                 String                  @db.VarChar(1000)
-  description         String                  @default("") @db.Text
-  thumbnail_url       String?                 @db.Text
-  thumbnail_drive_url String?                 @db.Text
-  video_duration      Int                     @default(0)
-  view_count          BigInt                  @default(0)
-  danmaku_count       BigInt                  @default(0)
-  date_posted         DateTime                @db.Timestamptz(6)
-  created_at          DateTime                @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime                @updatedAt @db.Timestamptz(6)
-  profile             ScraperBilibiliProfile  @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  post_id             String                 @unique @db.VarChar(20)
+  url                 String                 @db.VarChar(1000)
+  description         String                 @default("") @db.Text
+  thumbnail_url       String?                @db.Text
+  thumbnail_drive_url String?                @db.Text
+  video_duration      Int                    @default(0)
+  view_count          BigInt                 @default(0)
+  danmaku_count       BigInt                 @default(0)
+  date_posted         DateTime               @db.Timestamptz(6)
+  created_at          DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime               @updatedAt @db.Timestamptz(6)
+  profile             ScraperBilibiliProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
   @@index([view_count(sort: Desc)])
@@ -2154,25 +2155,25 @@ model ScraperBilibiliVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperBilibiliSearchVideo {
-  id                  BigInt    @id @default(autoincrement())
-  post_id             String    @unique @db.VarChar(20)
-  url                 String    @db.VarChar(1000)
-  description         String    @default("") @db.Text
-  hashtags            String[]  @default([])
-  thumbnail_url       String?   @db.Text
-  video_duration      Int       @default(0)
-  author_id           String    @default("") @db.VarChar(50)
-  author_username     String    @default("") @db.VarChar(500)
-  author_avatar       String?   @db.Text
-  view_count          BigInt    @default(0)
-  like_count          BigInt    @default(0)
-  comment_count       BigInt    @default(0)
-  collect_count       BigInt    @default(0)
-  danmaku_count       BigInt    @default(0)
-  search_keyword      String    @default("") @db.VarChar(500)
-  date_posted         DateTime  @db.Timestamptz(6)
-  created_at          DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+  id              BigInt   @id @default(autoincrement())
+  post_id         String   @unique @db.VarChar(20)
+  url             String   @db.VarChar(1000)
+  description     String   @default("") @db.Text
+  hashtags        String[] @default([])
+  thumbnail_url   String?  @db.Text
+  video_duration  Int      @default(0)
+  author_id       String   @default("") @db.VarChar(50)
+  author_username String   @default("") @db.VarChar(500)
+  author_avatar   String?  @db.Text
+  view_count      BigInt   @default(0)
+  like_count      BigInt   @default(0)
+  comment_count   BigInt   @default(0)
+  collect_count   BigInt   @default(0)
+  danmaku_count   BigInt   @default(0)
+  search_keyword  String   @default("") @db.VarChar(500)
+  date_posted     DateTime @db.Timestamptz(6)
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([view_count(sort: Desc)])
@@ -3065,6 +3066,21 @@ model Notification {
   @@index([created_at(sort: Desc)])
   @@index([expires_at])
   @@map("notifications")
+}
+
+model PushSubscription {
+  id         String   @id @default(uuid())
+  user_id    String   @db.Uuid
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  user_agent String?
+  created_at DateTime @default(now())
+
+  user User @relation("PushSubscriptionOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("push_subscriptions")
 }
 
 model SocialDriveUploadSession {

@@ -20,6 +20,7 @@ import {
 } from "./steps/product-quota";
 import { createTasksFromAssignments } from "./steps/task-creator";
 import { PrismaService } from "@/common/prisma/prisma.service";
+import { PushService } from "@/common/push/push.service";
 import { UpdateAutoAssignSettingDto } from "../settings/settings.dto";
 import {
   DEADLINE_CALENDAR_DAYS,
@@ -49,7 +50,10 @@ import {
 export class TaskAutoAssignService {
   private readonly logger = new Logger(TaskAutoAssignService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private pushService: PushService,
+  ) {}
 
   // ── Settings ──────────────────────────────────────────────────────────────
 
@@ -553,6 +557,7 @@ export class TaskAutoAssignService {
 
     const assigned = await createTasksFromAssignments(
       this.prisma,
+      this.pushService,
       teamId,
       teamBrandType,
       runId,

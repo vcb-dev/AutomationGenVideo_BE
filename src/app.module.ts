@@ -7,6 +7,7 @@ import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./common/prisma/prisma.module";
+import { PushModule } from "./common/push/push.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
@@ -67,6 +68,7 @@ import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module
     ]),
     ScheduleModule.forRoot(),
     PrismaModule,
+    PushModule,
     AuthModule,
     UsersModule,
     AiIntegrationModule,
