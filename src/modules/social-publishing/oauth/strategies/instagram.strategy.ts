@@ -51,7 +51,11 @@ export class InstagramOAuthStrategy {
         response_type: 'code',
         state,
       });
-      return `https://api.instagram.com/oauth/authorize?${params}`;
+      // Lưu ý: authorize endpoint của "Instagram API with Instagram Login" là
+      // www.instagram.com — KHÔNG phải api.instagram.com (đó là endpoint của
+      // Instagram Basic Display API đã bị Meta khai tử). Redirect URI được khai
+      // trong Meta dashboard chỉ được product mới (www.instagram.com) nhận diện.
+      return `https://www.instagram.com/oauth/authorize?${params}`;
     }
 
     // Flow 1: Via Facebook OAuth (default) — cho Business/Creator có FB Page
