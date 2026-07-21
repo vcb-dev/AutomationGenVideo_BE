@@ -17,8 +17,15 @@ push main
 | `RAILWAY_SERVICE_API` | Service ID của automationgenvideo-be |
 | `DOCKERHUB_USERNAME` | Username Docker Hub (vd `viejhaf`) |
 | `DOCKERHUB_TOKEN` | Access Token Docker Hub |
-| `DATABASE_URL` | Connection string DB production (bắt buộc) |
-| `DIRECT_DATABASE_URL` | Optional — nếu không có thì CI dùng luôn `DATABASE_URL` |
+| `DATABASE_URL` | Connection string DB (có thể qua pooler) |
+| `DIRECT_DATABASE_URL` | **Nên có** — URL **port 5432 trực tiếp**, không `pgbouncer=true`. Nếu thiếu mà `DATABASE_URL` là PgBouncer thì migrate sẽ treo/fail. |
+
+### Migrate bị treo / cancel (~15 phút)?
+Thường do:
+1. Secret là URL **PgBouncer** → Prisma không lấy được advisory lock → treo. Fix: thêm `DIRECT_DATABASE_URL` port 5432.
+2. DB chặn IP GitHub Actions → thêm allowlist `0.0.0.0/0` (hoặc chạy migrate từ máy/VPN có quyền).
+3. Session khác đang giữ migration lock trên DB.
+
 
 ## Workflows
 
