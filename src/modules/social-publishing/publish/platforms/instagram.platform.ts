@@ -28,10 +28,16 @@ export class InstagramPublisher {
     caption: string;
     mediaUrls: string[];
     igUserId: string;
-    accountType?: string; // 'instagram_business' | 'instagram_direct' | undefined
+    accountType?: string; // 'instagram_business' | 'instagram_via_facebook' | 'instagram_direct' | undefined
   }): Promise<{ postId: string; url?: string }> {
     const { igUserId, caption, mediaUrls, accountType } = opts;
-    const base = accountType === 'instagram_business' ? FB_BASE : IG_BASE;
+    // Token của flow qua Facebook là PAGE token → phải gọi graph.facebook.com.
+    // OAuth strategy lưu type='instagram_via_facebook', auto-save FB pages lưu
+    // type='instagram_business' — cả 2 đều là page token, chỉ 'instagram_direct'
+    // (token Instagram Login) mới dùng được graph.instagram.com.
+    const base = accountType === 'instagram_business' || accountType === 'instagram_via_facebook'
+      ? FB_BASE
+      : IG_BASE;
 
     this.logger.log(`[IG] Publish — accountType=${accountType ?? 'direct'} base=${base} igUserId=${igUserId}`);
 

@@ -60,7 +60,10 @@ export class InstagramOAuthStrategy {
       redirect_uri: this.redirectUri,
       scope: [
         'instagram_basic',
-        'instagram_content_publishing',  // phải có "ing" ở cuối
+        // Tên quyền chuẩn theo docs Meta là 'instagram_content_publish' (KHÔNG có
+        // "ing" — 'instagram_content_publishing' không tồn tại, Meta sẽ strip scope
+        // lạ → account kết nối xong thiếu quyền đăng bài).
+        'instagram_content_publish',
         'instagram_manage_insights',
         'pages_show_list',
         'pages_read_engagement',
@@ -125,6 +128,9 @@ export class InstagramOAuthStrategy {
       params: {
         access_token: userToken,
         fields: 'id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}',
+        // Mặc định Graph API chỉ trả 25 page/trang — user quản lý nhiều page có thể
+        // có page gắn IG nằm ngoài trang đầu → báo nhầm "chưa kết nối Instagram".
+        limit: 100,
       },
       timeout: 15000,
     });
