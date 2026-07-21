@@ -4,11 +4,10 @@ Railway chạy image **`viejhaf/automationgenvideo-be:latest`** (không build t�
 
 ```text
 push main
-  → GitHub Actions: docker build (linux/amd64) → push Docker Hub :latest
-  → railway redeploy API  (kéo lại :latest)
+  → GitHub Actions: docker build → push :latest
+  → prisma migrate deploy  (apply bảng/cột mới trên DB production)
+  → railway redeploy API
 ```
-
-> Làm việc trên nhánh feature/`truqhieu` → **merge vào `main`** khi muốn deploy. Chỉ push `main` mới ra production.
 
 ## GitHub Secrets (bắt buộc)
 
@@ -17,28 +16,28 @@ push main
 | `RAILWAY_TOKEN` | Project Token (Railway → Project → Settings → Tokens) |
 | `RAILWAY_SERVICE_API` | Service ID của automationgenvideo-be |
 | `DOCKERHUB_USERNAME` | Username Docker Hub (vd `viejhaf`) |
-| `DOCKERHUB_TOKEN` | Access Token Docker Hub (Account Settings → Security) |
+| `DOCKERHUB_TOKEN` | Access Token Docker Hub |
+| `DATABASE_URL` | Connection string DB production (bắt buộc) |
+| `DIRECT_DATABASE_URL` | Optional — nếu không có thì CI dùng luôn `DATABASE_URL` |
 
 ## Workflows
 
 | File | Khi chạy |
 |------|----------|
-| `ci.yml` | PR / push `main`,`truqhieu` — npm build + check `dist/src/main.js` |
+| `ci.yml` | PR / push — npm build |
 | `deploy-railway.yml` | Push `main` hoặc **Actions → Deploy Railway → Run workflow** |
 
 ### Test thủ công
 1. Actions → **Deploy Railway** → **Run workflow**
-2. `skip_docker_push` = `false` (build + push + redeploy) hoặc `true` (chỉ redeploy Railway)
+2. `skip_docker_push` / `skip_migrate` tùy nhu cầu
 
-## Railway (không cần connect nhánh GitHub)
+## Auto migrate
+Job **Prisma migrate deploy** chạy **trước** redeploy:
+- Chỉ apply folder chuẩn `prisma/migrations/<timestamp>_*/migration.sql`
+- File `manual_*.sql` rời **không** tự chạy — phải tạo migration Prisma (`prisma migrate dev`) rồi commit
+
+## Railway
 
 - Source Image: `viejhaf/automationgenvideo-be:latest`
-- Start Command mặc định: `node dist/src/main` (theo Dockerfile)
-- Port: `3000` (Nest listen `process.env.PORT || 3000`)
-- Healthcheck (khuyến nghị): `/api`
-- Env bắt buộc: `DATABASE_URL`, `DIRECT_DATABASE_URL`, `AI_SERVICE_URL`, `JWT_SECRET`, … (xem `.env`)
-
-## Khác biệt so với CQA_BE
-- BE này chỉ có **1 service API** (không có worker riêng), nên workflow đã lược bỏ phần redeploy worker.
-- Prisma dùng `DATABASE_URL` + `DIRECT_DATABASE_URL` (CQA dùng `DIRECT_URL`).
-- Health check `/api` (global prefix `api`), build output `dist/main.js`.
+- Start Command: `node dist/main.js` (hoặc để mặc định Dockerfile)
+- Env: `DATABASE_URL`, `DIRECT_DATABASE_URL`, `AI_SERVICE_URL`, `JWT_SECRET`, …

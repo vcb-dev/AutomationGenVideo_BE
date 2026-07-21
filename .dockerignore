@@ -16,7 +16,10 @@ test/
 *.zip
 *.rar
 *.7z
+# Keep Prisma migration SQL in the image (needed for migrate deploy at boot)
 *.sql
+!prisma/migrations/**/*.sql
+!prisma/migrations/**/*.sql
 *.json
 !package*.json
 !nest-cli.json

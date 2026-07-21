@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_migrate:
+        description: 'Bỏ qua prisma migrate deploy'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-railway-production
@@ -51,14 +56,65 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  redeploy:
-    name: Redeploy Railway
+  migrate:
+    name: Prisma migrate deploy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [build-and-push]
     if: |
       always() &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.skip_migrate != 'true')
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Validate DB secrets
+        env:
+          DIRECT_DATABASE_URL_SECRET: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Thiếu secret DATABASE_URL (connection string production)"
+            exit 1
+          fi
+          if [ -n "$DIRECT_DATABASE_URL_SECRET" ]; then
+            echo "DIRECT_DATABASE_URL=$DIRECT_DATABASE_URL_SECRET" >> "$GITHUB_ENV"
+            echo "Dùng secret DIRECT_DATABASE_URL"
+          else
+            echo "DIRECT_DATABASE_URL=$DATABASE_URL" >> "$GITHUB_ENV"
+            echo "Không có DIRECT_DATABASE_URL — fallback = DATABASE_URL"
+          fi
+          echo "DATABASE_URL OK"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+
+  redeploy:
+    name: Redeploy Railway
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build-and-push, migrate]
+    if: |
+      always() &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
       (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
 
     env:

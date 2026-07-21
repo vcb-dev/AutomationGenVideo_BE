@@ -21,6 +21,7 @@
     "prisma:generate": "prisma generate",
     "prisma:generate:fresh": "node -e \"try{require('fs').rmSync('node_modules/.prisma/client',{recursive:true,force:true})}catch(e){}\" && prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio"
   },
   "prisma": {
@@ -64,6 +65,7 @@
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
     "pdfkit": "^0.18.0",
+    "prisma": "^5.8.1",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",
     "ws": "^8.20.0"
@@ -91,7 +93,6 @@
     "eslint-plugin-prettier": "^5.0.0",
     "jest": "^29.5.0",
     "prettier": "^3.0.0",
-    "prisma": "^5.8.1",
     "prisma-erd-generator": "^2.4.2",
     "source-map-support": "^0.5.21",
     "supertest": "^6.3.3",
