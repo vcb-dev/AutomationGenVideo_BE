@@ -1949,6 +1949,35 @@ export class AiIntegrationService {
   }
 
   /**
+   * Upload thẳng bytes TTS (base64 AI trả kèm response POST /voice/tts/) lên
+   * Drive — không GET ngược lại đĩa cục bộ của AI như publishTtsAudio() (fragile
+   * trên Railway multi-replica, xem generateTTS()). Drive lỗi/chưa cấu hình →
+   * nhúng bytes vào data: URL để FE phát/tải trực tiếp, không phụ thuộc AI hay
+   * Drive nữa. Không bao giờ throw, luôn trả được ít nhất data: URL.
+   */
+  private async publishTtsAudioFromBase64(base64: string): Promise<{ url: string; fileId: string | null }> {
+    const dataUrl = `data:audio/mpeg;base64,${base64}`;
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length) return { url: dataUrl, fileId: null };
+
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const tmpPath = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
+      const uploaded = await this.driveStorage.uploadFromPath(tmpPath, path.basename(tmpPath), 'audio/mpeg', undefined, { folderId });
+      return { url: uploaded.url, fileId: uploaded.fileId };
+    } catch (err: any) {
+      this.logger.warn(`TTS audio Drive upload (base64) failed, falling back to data URL: ${err.message}`);
+      return { url: dataUrl, fileId: null };
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* tmp file có thể chưa từng tạo */ }
+    }
+  }
+
+  /**
    * Stream file TTS audio từ Drive về trình duyệt (phát trực tiếp hoặc tải về).
    * Route này công khai vì thẻ <audio> không gửi được JWT header — bù lại chỉ
    * phục vụ đúng file TTS (tên tts_*.mp3, mimeType audio/*), không cho lấy file
@@ -2026,25 +2055,28 @@ export class AiIntegrationService {
           })
         )
       );
-      // AI build audio_url từ AI_SERVICE_URL của chính nó — máy AI thường để mặc định
-      // localhost:8001 nên link trả về chỉ mở được trên máy đó. BE tải file qua tunnel
-      // (aiServiceUrl BE đang giữ) rồi đẩy lên Google Drive công ty → link công khai,
-      // sống độc lập với máy AI. Drive lỗi thì fallback về link qua tunnel.
-      if (data?.success && data.audio_url) {
-        const published = await this.publishTtsAudio(String(data.audio_url));
+      // AI trả kèm audio_base64 (bytes thật của file vừa sinh) — dùng thẳng bytes
+      // đó để upload Drive thay vì GET ngược lại route local-disk của AI
+      // (publishTtsAudio/streamTtsAudioFromAi): route đó chỉ đọc được file nếu
+      // request rơi đúng instance/đĩa vừa ghi, trên Railway (nhiều replica, không
+      // volume dùng chung) gần như luôn 404 ngay cả khi gọi lại tức thì — xác
+      // minh thực tế 2026-07-20, audio_file_id luôn null và /tts/stream 404.
+      if (data?.success && data.audio_base64) {
+        const published = await this.publishTtsAudioFromBase64(String(data.audio_base64));
         data.audio_url = published.url;
         // Có audio_file_id → FE phát/tải qua GET ai/voice/tts/audio/:fileId (proxy
-        // BE stream chuẩn); null → FE dùng thẳng audio_url như cũ.
+        // BE stream chuẩn từ Drive). Drive lỗi/chưa cấu hình → audio_url là
+        // data: URL nhúng thẳng bytes — FE phát/tải trực tiếp, không phụ thuộc AI
+        // hay Drive nữa (audio_file_name bỏ hẳn, route đó không còn dùng).
         data.audio_file_id = published.fileId;
-        // Drive chưa cấu hình / upload lỗi → audio_url là link /media của AI, vốn
-        // chết trên production (Django DEBUG=False không serve /media, và localhost
-        // của server không mở được từ trình duyệt người dùng). Trả thêm tên file để
-        // FE phát/tải qua proxy GET ai/voice/tts/stream/:filename — BE tự kéo file
-        // từ AI (route /api/voice/tts/file/ của AI hoạt động cả khi DEBUG=False).
+        delete data.audio_base64;
+      } else if (data?.success && data.audio_url) {
+        // Fallback cho AI chưa deploy bản trả audio_base64 (rollout lệch giữa 2
+        // service) — giữ nguyên đường đi cũ, vẫn còn nguy cơ 404 như trên.
+        const published = await this.publishTtsAudio(String(data.audio_url));
+        data.audio_url = published.url;
+        data.audio_file_id = published.fileId;
         if (!published.fileId) {
-          // published.url ở đây là link AI (đã rewrite sang /api/voice/tts/file/<file>
-          // trong publishTtsAudio, hoặc /media/... nếu URL gốc không khớp pattern) —
-          // chỉ cần lấy đúng tên file tts_<hex32>.mp3 bất kể nằm sau prefix nào.
           const m = /(tts_[0-9a-f]{32}\.mp3)$/i.exec(published.url);
           data.audio_file_name = m ? m[1] : null;
         }

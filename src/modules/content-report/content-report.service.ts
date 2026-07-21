@@ -29,6 +29,16 @@ import {
 // không thuộc phạm vi báo cáo content hàng tuần).
 export const CONTENT_REPORT_TEAM_NAMES = ['Team K1', 'Team K2', 'Team K3', 'Team K4'];
 
+// Chuỗi deadline từ FE không kèm timezone — new Date() mặc định hiểu theo giờ local của
+// tiến trình Node, đúng ở máy local (giờ VN) nhưng lệch 7 tiếng trên server deploy (UTC).
+// Ép rõ +07:00 để nhất quán bất kể server chạy timezone gì.
+function parseVNDeadline(value: string): Date {
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(value)) return new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T00:00:00+07:00`);
+  const withSeconds = /T\d{2}:\d{2}$/.test(value) ? `${value}:00` : value;
+  return new Date(`${withSeconds}+07:00`);
+}
+
 @Injectable()
 export class ContentReportService {
   private readonly logger = new Logger(ContentReportService.name);
@@ -616,7 +626,7 @@ export class ContentReportService {
         assignee_id,
         title: dto.title,
         description: dto.description,
-        deadline: dto.deadline ? new Date(dto.deadline) : undefined,
+        deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
         status: dto.status ?? 'PENDING',
         priority: dto.priority ?? 'MEDIUM',
         notes: dto.notes,
@@ -628,7 +638,7 @@ export class ContentReportService {
 
   async updateActionItem(id: string, dto: UpdateActionItemDto) {
     const data: any = { ...dto };
-    if (dto.deadline) data.deadline = new Date(dto.deadline);
+    if (dto.deadline) data.deadline = parseVNDeadline(dto.deadline);
     if (dto.assignee || dto.assignee_id) {
       data.assignee_id = await this.resolveUser(dto.assignee_id, dto.assignee);
       delete data.assignee;
@@ -820,6 +830,36 @@ export class ContentReportService {
     return views.toString();
   }
 
+  private async resolveUserTeamIds(teamString: string | null | undefined): Promise<string[]> {
+    if (!teamString) return [];
+    const parsedNames = teamString
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const searchNames = [...parsedNames];
+    parsedNames.forEach((name) => {
+      if (name.toLowerCase().startsWith('team ')) {
+        searchNames.push(name.substring(5).trim());
+      } else {
+        searchNames.push(`Team ${name}`);
+      }
+    });
+
+    if (searchNames.length === 0) return [];
+
+    const matchedTeams = await this.prisma.team.findMany({
+      where: {
+        name: {
+          in: searchNames,
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true },
+    });
+    return matchedTeams.map((t) => t.id);
+  }
+
   // ───────────────────── ATTENDANCE ─────────────────────
 
   /**
@@ -846,35 +886,8 @@ export class ContentReportService {
     // Admin bypasses all checks
     if (actor.roles.includes(UserRole.ADMIN)) return;
 
-    // Resolve team_ids from actor.team (parsed as comma-separated list, e.g. "Team K1, MEDIA, Scale Data" -> ["K1", "MEDIA", "Scale Data"])
-    const resolvedTeamIds: string[] = [];
-    if (actor.team) {
-      const parsedNames = actor.team
-        .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) {
-            trimmed = trimmed.substring(5).trim();
-          }
-          return trimmed;
-        })
-        .filter((t) => t.length > 0);
-
-      this.logger.log(`assertManagerCanEditTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
-
-      if (parsedNames.length > 0) {
-        const matchedTeams = await this.prisma.team.findMany({
-          where: {
-            name: {
-              in: parsedNames,
-              mode: 'insensitive',
-            },
-          },
-          select: { id: true },
-        });
-        matchedTeams.forEach((t) => resolvedTeamIds.push(t.id));
-      }
-    }
+    // Resolve team_ids from actor.team using helper
+    const resolvedTeamIds = await this.resolveUserTeamIds(actor.team);
 
     // Collect all team IDs this user is associated with
     const associatedTeamIds = new Set<string>();
@@ -916,35 +929,8 @@ export class ContentReportService {
       `assertMemberBelongsToTeam debug: userId=${userId}, teamId=${teamId}, teamName=${user.team}`
     );
 
-    // Resolve team_ids from user.team (comma-separated list)
-    const resolvedTeamIds: string[] = [];
-    if (user.team) {
-      const parsedNames = user.team
-        .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) {
-            trimmed = trimmed.substring(5).trim();
-          }
-          return trimmed;
-        })
-        .filter((t) => t.length > 0);
-
-      this.logger.log(`assertMemberBelongsToTeam debug: parsedNames=${JSON.stringify(parsedNames)}`);
-
-      if (parsedNames.length > 0) {
-        const matchedTeams = await this.prisma.team.findMany({
-          where: {
-            name: {
-              in: parsedNames,
-              mode: 'insensitive',
-            },
-          },
-          select: { id: true },
-        });
-        matchedTeams.forEach((t) => resolvedTeamIds.push(t.id));
-      }
-    }
+    // Resolve team_ids from user.team using helper
+    const resolvedTeamIds = await this.resolveUserTeamIds(user.team);
 
     const associatedTeamIds = new Set<string>();
     resolvedTeamIds.forEach((id) => associatedTeamIds.add(id));
@@ -1036,20 +1022,29 @@ export class ContentReportService {
       orderBy: { full_name: 'asc' }
     });
 
+    const teamVariations = [team];
+    if (team.toLowerCase().startsWith('team ')) {
+      teamVariations.push(team.substring(5).trim());
+    } else {
+      teamVariations.push(`Team ${team}`);
+    }
+
     const teamMembers = allUsers
       .filter((user) => {
         if (!user.team) return false;
-        const parsedNames = user.team
+        const userTeams = user.team
           .split(',')
-          .map((t) => {
-            let trimmed = t.trim();
-            if (trimmed.toLowerCase().startsWith('team ')) {
-              trimmed = trimmed.substring(5).trim();
-            }
-            return trimmed;
-          })
+          .map((t) => t.trim().toLowerCase())
           .filter((t) => t.length > 0);
-        return parsedNames.some((name) => name.toLowerCase() === team.toLowerCase());
+
+        return userTeams.some((userTeam) => {
+          return teamVariations.some(
+            (variant) =>
+              userTeam === variant.toLowerCase() ||
+              userTeam === `team ${variant.toLowerCase()}` ||
+              `team ${userTeam}` === variant.toLowerCase()
+          );
+        });
       })
       .map((user) => ({
         id: user.id,
@@ -1077,6 +1072,10 @@ export class ContentReportService {
 
     if (session.is_finalized) {
       throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    if (dto.status === 'LATE' || dto.status === 'ON_LEAVE') {
+      throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
     }
 
     // Member chỉ được điểm danh trong team của mình
@@ -1121,6 +1120,10 @@ export class ContentReportService {
 
     if (session.is_finalized) {
       throw new ForbiddenException('Buổi họp đã chốt, không thể chỉnh sửa điểm danh');
+    }
+
+    if (dto.status === 'LATE' || dto.status === 'ON_LEAVE') {
+      throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
     }
 
     // Kiểm tra actor có quyền quản lý team này
@@ -1168,6 +1171,13 @@ export class ContentReportService {
 
     // Kiểm tra actor có quyền quản lý team này
     await this.assertManagerCanEditTeam(actorId, session.team_id);
+
+    // Validate no items have LATE or ON_LEAVE
+    for (const r of dto.records) {
+      if (r.status === 'LATE' || r.status === 'ON_LEAVE') {
+        throw new BadRequestException('Trạng thái điểm danh không hợp lệ (LATE/ON_LEAVE không còn được hỗ trợ)');
+      }
+    }
 
     // Chạy toàn bộ trong 1 transaction — nếu 1 item fail → rollback hết
     const results = await this.prisma.$transaction(
@@ -1367,19 +1377,28 @@ export class ContentReportService {
       orderBy: { full_name: 'asc' },
     });
 
+    const teamVariations = [teamName];
+    if (teamName.toLowerCase().startsWith('team ')) {
+      teamVariations.push(teamName.substring(5).trim());
+    } else {
+      teamVariations.push(`Team ${teamName}`);
+    }
+
     const teamMembers = allUsers.filter((user) => {
       if (!user.team) return false;
-      const parsedNames = user.team
+      const userTeams = user.team
         .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) {
-            trimmed = trimmed.substring(5).trim();
-          }
-          return trimmed;
-        })
+        .map((t) => t.trim().toLowerCase())
         .filter((t) => t.length > 0);
-      return parsedNames.some((n) => n.toLowerCase() === teamName.toLowerCase());
+
+      return userTeams.some((userTeam) => {
+        return teamVariations.some(
+          (variant) =>
+            userTeam === variant.toLowerCase() ||
+            userTeam === `team ${variant.toLowerCase()}` ||
+            `team ${userTeam}` === variant.toLowerCase()
+        );
+      });
     });
 
     const totalMembers = teamMembers.length;
@@ -1502,21 +1521,8 @@ export class ContentReportService {
         (actorFull.teams_leading || []).forEach((t) => managedTeamIds.add(t.id));
 
         if (actorFull.team) {
-          const parsedNames = actorFull.team
-            .split(',')
-            .map((t) => {
-              let trimmed = t.trim();
-              if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
-              return trimmed;
-            })
-            .filter((t) => t.length > 0);
-          if (parsedNames.length > 0) {
-            const matchedTeams = await this.prisma.team.findMany({
-              where: { name: { in: parsedNames, mode: 'insensitive' } },
-              select: { id: true },
-            });
-            matchedTeams.forEach((t) => managedTeamIds.add(t.id));
-          }
+          const actorTeamIds = await this.resolveUserTeamIds(actorFull.team);
+          actorTeamIds.forEach((id) => managedTeamIds.add(id));
         }
 
         if (managedTeamIds.size === 0) {
@@ -1525,22 +1531,8 @@ export class ContentReportService {
 
         let hasAccess = false;
         if (targetUser.team) {
-          const targetTeamNames = targetUser.team
-            .split(',')
-            .map((t) => {
-              let trimmed = t.trim();
-              if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
-              return trimmed;
-            })
-            .filter((t) => t.length > 0);
-
-          if (targetTeamNames.length > 0) {
-            const targetTeams = await this.prisma.team.findMany({
-              where: { name: { in: targetTeamNames, mode: 'insensitive' } },
-              select: { id: true },
-            });
-            hasAccess = targetTeams.some((t) => managedTeamIds.has(t.id));
-          }
+          const targetTeamIds = await this.resolveUserTeamIds(targetUser.team);
+          hasAccess = targetTeamIds.some((id) => managedTeamIds.has(id));
         }
 
         if (!hasAccess) {
@@ -1554,24 +1546,7 @@ export class ContentReportService {
     const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
 
     // Tìm team IDs của targetUser
-    const userTeamIds: string[] = [];
-    if (targetUser.team) {
-      const parsedNames = targetUser.team
-        .split(',')
-        .map((t) => {
-          let trimmed = t.trim();
-          if (trimmed.toLowerCase().startsWith('team ')) trimmed = trimmed.substring(5).trim();
-          return trimmed;
-        })
-        .filter((t) => t.length > 0);
-      if (parsedNames.length > 0) {
-        const matchedTeams = await this.prisma.team.findMany({
-          where: { name: { in: parsedNames, mode: 'insensitive' } },
-          select: { id: true },
-        });
-        matchedTeams.forEach((t) => userTeamIds.push(t.id));
-      }
-    }
+    const userTeamIds = await this.resolveUserTeamIds(targetUser.team);
 
     // Lấy tất cả sessions trong tháng thuộc team của user
     const allSessions = userTeamIds.length > 0

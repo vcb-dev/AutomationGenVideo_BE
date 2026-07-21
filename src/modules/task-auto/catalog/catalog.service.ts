@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { PushService } from "../../../common/push/push.service";
 import { TaskAutoTeamsService } from "../teams/teams.service";
 import {
   resolveProductSnapshot,
@@ -45,6 +46,7 @@ export class TaskAutoCatalogService {
   constructor(
     private prisma: PrismaService,
     private teamsService: TaskAutoTeamsService,
+    private push: PushService,
   ) {}
 
   private monthRange(month?: string, field = "created_at") {
@@ -1330,6 +1332,30 @@ export class TaskAutoCatalogService {
     if (!member) throw new ForbiddenException("Bạn không thuộc team này");
   }
 
+  /**
+   * Ai được xem kho cá nhân (editor product/content/source) của `ownerId`:
+   * - Chính chủ, hoặc ADMIN/MANAGER (xem toàn bộ).
+   * - LEADER: chỉ khi `ownerId` là thành viên của một team mà LEADER đó đang quản lý.
+   */
+  async assertCanViewEditorCatalog(
+    ownerId: string,
+    requesterId: string,
+    roles: string[],
+  ) {
+    if (requesterId === ownerId) return;
+    if (roles.some((r) => ["ADMIN", "MANAGER"].includes(r))) return;
+    if (roles.includes("LEADER")) {
+      const isManagedMember = await this.prisma.teamMember.findFirst({
+        where: { user_id: ownerId, team: { leader_id: requesterId } },
+        select: { id: true },
+      });
+      if (isManagedMember) return;
+    }
+    throw new ForbiddenException(
+      "Bạn chỉ có thể xem kho cá nhân của mình hoặc của thành viên trong team bạn quản lý",
+    );
+  }
+
   private async notifyUser(
     userId: string,
     type: string,
@@ -1339,6 +1365,7 @@ export class TaskAutoCatalogService {
     await this.prisma.notification
       .create({ data: { user_id: userId, type, title, body } })
       .catch(() => null); // notification lỗi không chặn nghiệp vụ chính
+    this.push.sendToUser(userId, { title, body }).catch(() => {});
   }
 
   /** Copy product cá nhân → kho team (kèm nguồn OUTRO đi theo sản phẩm) */

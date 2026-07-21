@@ -566,20 +566,15 @@ export class UsersService {
     }
 
     if (callerRoles.includes(UserRole.LEADER)) {
-      // Thay cho where: { team_leader_id: callerId } — team_leader_id giờ là giá trị phái
-      // sinh từ Team/TeamMember, nguồn sự thật là "user là TeamMember của Team mà callerId lãnh đạo".
-      const ledTeams = await this.prisma.team.findMany({ where: { leader_id: callerId }, select: { id: true } });
-      const teamIds = ledTeams.map((t) => t.id);
-      if (teamIds.length === 0) return [];
-      const memberships = await this.prisma.teamMember.findMany({
-        where: { team_id: { in: teamIds } },
-        select: { user_id: true },
-      });
-      // Loại chính leader ra khỏi danh sách "team của tôi" — leader cũng có thể là TeamMember
-      // của chính team mình (vd sau backfill), nhưng "member tôi quản lý" không nên gồm chính tôi.
-      const userIds = [...new Set(memberships.map((m) => m.user_id))].filter((id) => id !== callerId);
+      // Nguồn sự thật là bảng team_members (join qua Team.leader_id) — KHÔNG match chuỗi
+      // User.team (derived-only, có thể lệch với user cũ gán tay trước migration team_members,
+      // xem team-derived-sync.service.ts). Cùng pattern với assertCanViewEditorCatalog().
       return this.prisma.user.findMany({
-        where: { id: { in: userIds }, deleted_at: null },
+        where: {
+          id: { not: callerId },
+          deleted_at: null,
+          team_memberships: { some: { team: { leader_id: callerId } } },
+        },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },
       });

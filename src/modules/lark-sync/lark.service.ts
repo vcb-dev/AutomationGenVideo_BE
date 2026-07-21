@@ -978,6 +978,24 @@ export class LarkService implements OnModuleInit {
                         employee_position: true,
                     },
                 });
+                // Trùng tên giữa 2 user active KHÁC email (vd VN team và Global team giờ dùng chung
+                // roster) không được để map theo tên tự ý chọn 1 người — ai "thắng" phụ thuộc thứ tự
+                // trả về không đảm bảo của Postgres (không ORDER BY), có thể đổi giữa các lần chạy.
+                // Với tên này, chỉ tin được kết quả tra theo email; loại hẳn khỏi mọi map theo-tên.
+                const nameToActiveEmails = new Map<string, Set<string>>();
+                for (const u of allUsersForTeam) {
+                    const nk = normName(u.full_name || '');
+                    const em = String(u.email || '').toLowerCase().trim();
+                    if (!nk || !em) continue;
+                    if (!nameToActiveEmails.has(nk)) nameToActiveEmails.set(nk, new Set());
+                    nameToActiveEmails.get(nk)!.add(em);
+                }
+                const ambiguousActiveNameKeys = new Set(
+                    Array.from(nameToActiveEmails.entries())
+                        .filter(([, emails]) => emails.size > 1)
+                        .map(([nk]) => nk),
+                );
+
                 const userTeamByEmail = new Map<string, string>();
                 const userTeamByName = new Map<string, string>();
                 const userAvatarByEmail = new Map<string, string>();
@@ -987,14 +1005,16 @@ export class LarkService implements OnModuleInit {
                 const userEmailByName = new Map<string, string>();
                 const userEmailByNameCompact = new Map<string, string>();
                 for (const u of allUsersForTeam) {
-                    if (u.email && u.full_name) {
+                    const nkRaw = normName(u.full_name || '');
+                    const isAmbiguousName = !!nkRaw && ambiguousActiveNameKeys.has(nkRaw);
+                    if (u.email && u.full_name && !isAmbiguousName) {
                         const nk = normName(u.full_name);
                         if (nk) userEmailByName.set(nk, u.email.toLowerCase().trim());
                         const ck = compactNameKey(u.full_name);
                         if (ck) userEmailByNameCompact.set(ck, u.email.toLowerCase().trim());
                     }
                     if (u.image_url && u.email) userAvatarByEmail.set(u.email.toLowerCase().trim(), u.image_url);
-                    if (u.image_url && u.full_name) {
+                    if (u.image_url && u.full_name && !isAmbiguousName) {
                         const nk = normName(u.full_name);
                         if (nk) userAvatarByName.set(nk, u.image_url);
                         const ck = compactNameKey(u.full_name);
@@ -1005,7 +1025,7 @@ export class LarkService implements OnModuleInit {
                     const t = (u.team || '').trim();
                     if (!t) continue;
                     if (u.email) userTeamByEmail.set(u.email.toLowerCase().trim(), t);
-                    if (u.full_name) { const nk = normName(u.full_name); if (nk) userTeamByName.set(nk, t); }
+                    if (u.full_name && !isAmbiguousName) { const nk = normName(u.full_name); if (nk) userTeamByName.set(nk, t); }
                 }
 
                 // Build employee snapshot from Users table (Authoritative for Identity: Team, Role)
@@ -1076,9 +1096,16 @@ export class LarkService implements OnModuleInit {
                 const employees = Array.from(employeesMap.values());
                 const emailKeyMatchMap = new Map<string, any>();
                 const nameKeyMatchMap = new Map<string, any>();
+                // Trùng tên khác email (xem ambiguousActiveNameKeys ở trên): không cho map theo tên
+                // (kể cả alias Lark bên dưới) trỏ về MỘT trong hai người một cách tuỳ tiện — danh tính
+                // của họ chỉ được resolve qua email chính xác.
+                const isAmbiguousEmpName = (e: any) => {
+                    const nk = normName(e?.full_name || '');
+                    return !!nk && ambiguousActiveNameKeys.has(nk);
+                };
                 employees.forEach(emp => {
                     if (emp.email) emailKeyMatchMap.set(emp.email.toLowerCase().trim(), emp);
-                    if (emp.full_name) {
+                    if (emp.full_name && !isAmbiguousEmpName(emp)) {
                         nameKeyMatchMap.set(normName(emp.full_name), emp);
                         nameKeyMatchMap.set(compactNameKey(emp.full_name), emp);
                         // sorted-word key handles name-order variations (e.g. "Thị Duyên Lê" vs "Lê Thị Duyên")
@@ -1089,6 +1116,7 @@ export class LarkService implements OnModuleInit {
 
                 // Second pass: Lark aliases and swapped names (only write if key doesn't conflict with any official user's full name)
                 employees.forEach(emp => {
+                    if (isAmbiguousEmpName(emp)) return;
                     const larkData = (emp as any).employee_data || [];
                     if (Array.isArray(larkData)) {
                         larkData.forEach((d: any) => {
@@ -1430,7 +1458,12 @@ export class LarkService implements OnModuleInit {
                     if (row.name) {
                         // Dùng normName() closure đã memoize thay vì gọi chain trực tiếp
                         const nameKey = normName(row.name);
-                        if (!employeeMap.has(nameKey)) employeeMap.set(nameKey, row);
+                        // 2 người active status cùng tên khác email: không cho map theo tên trỏ tuỳ
+                        // tiện vào 1 trong 2 (first-write-wins không có nghĩa gì khi cả 2 đều hợp lệ) —
+                        // bắt buộc phải resolve qua email cho tên này.
+                        if (!employeeMap.has(nameKey) && (duplicateNameCounts.get(nameKey) || 0) <= 1) {
+                            employeeMap.set(nameKey, row);
+                        }
                     }
                 });
 
@@ -2989,9 +3022,14 @@ export class LarkService implements OnModuleInit {
             }),
         ]);
 
+        // QUAN TRỌNG: nếu dòng báo cáo CÓ email thì phải khớp đúng email đó — không được rơi
+        // xuống so tên. Trước đây rơi xuống so tên ngay cả khi rowEmail khác normalizedEmail,
+        // nên 2 người trùng tên khác email (có thật trong DB, vd 2 tài khoản "Nguyễn Công Toàn")
+        // bị lẫn báo cáo của nhau: người chưa nộp mở form vẫn thấy bị khóa + có sẵn câu trả lời
+        // của người trùng tên đã nộp. Chỉ so tên khi dòng đó KHÔNG có email ghi nhận.
         const isMatchedPerson = (rowEmail?: string | null, rowName?: string | null): boolean => {
             const rowEmailNorm = (rowEmail || '').trim().toLowerCase();
-            if (rowEmailNorm && rowEmailNorm === normalizedEmail) return true;
+            if (rowEmailNorm) return rowEmailNorm === normalizedEmail;
             if (!fullNameNorm) return false;
             const rowNameNorm = normalizeName(rowName);
             return !!rowNameNorm && rowNameNorm === fullNameNorm;

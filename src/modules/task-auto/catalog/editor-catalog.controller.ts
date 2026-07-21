@@ -36,7 +36,7 @@ export class TaskAutoEditorCatalogController {
   constructor(private catalog: TaskAutoCatalogService) {}
 
   // Chỉ chính chủ (userId khớp req.user.id) hoặc ADMIN/MANAGER mới được
-  // truy cập kho cá nhân của một editor — mirrors the ownership check
+  // thêm mới vào kho cá nhân của một editor — mirrors the ownership check
   // already used by catalog.service.ts's update/remove editor-* methods.
   private assertOwnerOrPrivileged(ownerId: string, req: any) {
     const roles: string[] = req.user?.roles ?? [];
@@ -48,16 +48,26 @@ export class TaskAutoEditorCatalogController {
     }
   }
 
+  // Dùng cho các route chỉ đọc (list/get): ngoài chính chủ và ADMIN/MANAGER,
+  // LEADER cũng được xem kho cá nhân của thành viên trong team mình quản lý.
+  private assertCanView(ownerId: string, req: any) {
+    return this.catalog.assertCanViewEditorCatalog(
+      ownerId,
+      req.user?.id,
+      req.user?.roles ?? [],
+    );
+  }
+
   // ── Editor Products ───────────────────────────────────────────────────────
 
   @Get("editors/:userId/products")
   @ApiOperation({ summary: "List editor personal products" })
-  listEditorProducts(
+  async listEditorProducts(
     @Param("userId") userId: string,
     @Query() q: QueryEditorProductDto,
     @Request() req: any,
   ) {
-    this.assertOwnerOrPrivileged(userId, req);
+    await this.assertCanView(userId, req);
     return this.catalog.findAllEditorProducts(userId, q);
   }
 
@@ -83,7 +93,7 @@ export class TaskAutoEditorCatalogController {
     @Request() req: any,
   ) {
     const ep = await this.catalog.findOneEditorProduct(epId);
-    this.assertOwnerOrPrivileged(ep.user_id, req);
+    await this.assertCanView(ep.user_id, req);
     return ep;
   }
 
@@ -140,12 +150,12 @@ export class TaskAutoEditorCatalogController {
 
   @Get("editors/:userId/contents")
   @ApiOperation({ summary: "List editor personal contents" })
-  listEditorContents(
+  async listEditorContents(
     @Param("userId") userId: string,
     @Query() q: QueryEditorContentDto,
     @Request() req: any,
   ) {
-    this.assertOwnerOrPrivileged(userId, req);
+    await this.assertCanView(userId, req);
     return this.catalog.findAllEditorContents(userId, q);
   }
 
@@ -171,7 +181,7 @@ export class TaskAutoEditorCatalogController {
     @Request() req: any,
   ) {
     const ec = await this.catalog.findOneEditorContent(ecId);
-    this.assertOwnerOrPrivileged(ec.user_id, req);
+    await this.assertCanView(ec.user_id, req);
     return ec;
   }
 
@@ -228,12 +238,12 @@ export class TaskAutoEditorCatalogController {
 
   @Get("editors/:userId/sources")
   @ApiOperation({ summary: "List editor personal sources" })
-  listEditorSources(
+  async listEditorSources(
     @Param("userId") userId: string,
     @Query() q: QueryEditorSourceDto,
     @Request() req: any,
   ) {
-    this.assertOwnerOrPrivileged(userId, req);
+    await this.assertCanView(userId, req);
     return this.catalog.findAllEditorSources(userId, q);
   }
 
@@ -259,7 +269,7 @@ export class TaskAutoEditorCatalogController {
     @Request() req: any,
   ) {
     const es = await this.catalog.findOneEditorSource(esId);
-    this.assertOwnerOrPrivileged(es.user_id, req);
+    await this.assertCanView(es.user_id, req);
     return es;
   }
 

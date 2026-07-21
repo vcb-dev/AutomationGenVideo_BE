@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { PushService, PushSubscriptionInput } from "../../../common/push/push.service";
 import { QueryNotificationDto } from "./notifications.dto";
 
 @Injectable()
 export class NotificationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private push: PushService,
+  ) {}
 
   async findAll(userId: string, q: QueryNotificationDto) {
     const where: any = { user_id: userId };
@@ -86,5 +90,18 @@ export class NotificationsService {
       data: { is_read: true },
     });
     return { updated: result.count };
+  }
+
+  getVapidPublicKey() {
+    return { publicKey: this.push.getPublicKey() ?? null };
+  }
+
+  subscribePush(userId: string, sub: PushSubscriptionInput, userAgent?: string) {
+    return this.push.subscribe(userId, sub, userAgent);
+  }
+
+  async unsubscribePush(userId: string, endpoint: string) {
+    await this.push.unsubscribe(userId, endpoint);
+    return { success: true };
   }
 }

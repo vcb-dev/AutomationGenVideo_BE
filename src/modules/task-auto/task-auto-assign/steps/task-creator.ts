@@ -3,6 +3,7 @@ import { Logger } from "@nestjs/common";
 import { BrandType, Prisma } from "@prisma/client";
 import { AssignmentPair, ScheduledAssignment } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
+import { PushService } from "@/common/push/push.service";
 
 const logger = new Logger("TaskCreator");
 
@@ -96,6 +97,7 @@ function notificationBody(deadline: Date): string {
  */
 async function createTasksSequentially(
   prisma: PrismaService,
+  pushService: PushService,
   prepared: PreparedTask[],
   runId: string,
   deadline: Date,
@@ -121,6 +123,13 @@ async function createTasksSequentially(
         ]);
       });
       created++;
+      pushService
+        .sendToUser(editorId, {
+          title: "Task mới được phân công tự động",
+          body: notificationBody(deadline),
+          url: "/dashboard/task-auto/tasks",
+        })
+        .catch(() => {});
     } catch (err) {
       logger.warn(
         `Failed to create task for editor=${editorId} (id=${id})`,
@@ -133,6 +142,7 @@ async function createTasksSequentially(
 
 export async function createTasksFromAssignments(
   prisma: PrismaService,
+  pushService: PushService,
   teamId: string,
   brandType: BrandType,
   runId: string,
@@ -326,11 +336,21 @@ export async function createTasksFromAssignments(
         }),
       ]);
     });
+    // Fire-and-forget: 1 push / editor duy nhất (không lặp theo từng task trong batch).
+    for (const editorId of editorIds) {
+      pushService
+        .sendToUser(editorId, {
+          title: "Task mới được phân công tự động",
+          body: notificationBody(deadline),
+          url: "/dashboard/task-auto/tasks",
+        })
+        .catch(() => {});
+    }
     return prepared.length;
   } catch (err) {
     logger.warn(
       `Batch create failed for ${prepared.length} assignments in team=${teamId}, falling back to per-item creation: ${(err as Error).message}`,
     );
-    return createTasksSequentially(prisma, prepared, runId, deadline);
+    return createTasksSequentially(prisma, pushService, prepared, runId, deadline);
   }
 }
