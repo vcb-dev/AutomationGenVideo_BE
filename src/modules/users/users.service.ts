@@ -566,27 +566,14 @@ export class UsersService {
     }
 
     if (callerRoles.includes(UserRole.LEADER)) {
-      // Find all teams led by this leader
-      const ledTeams = await this.prisma.team.findMany({
-        where: { leader_id: callerId },
-        select: { name: true },
-      });
-      const ledTeamNames = ledTeams.map((t) => t.name.trim());
-      if (ledTeamNames.length === 0) return [];
-
-      // Construct a query to match any user whose 'team' string contains or equals any of the ledTeamNames
-      const OR = ledTeamNames.flatMap((name) => [
-        { team: { equals: name, mode: 'insensitive' as any } },
-        { team: { startsWith: `${name},`, mode: 'insensitive' as any } },
-        { team: { endsWith: `,${name}`, mode: 'insensitive' as any } },
-        { team: { contains: `,${name},`, mode: 'insensitive' as any } },
-      ]);
-
+      // Nguồn sự thật là bảng team_members (join qua Team.leader_id) — KHÔNG match chuỗi
+      // User.team (derived-only, có thể lệch với user cũ gán tay trước migration team_members,
+      // xem team-derived-sync.service.ts). Cùng pattern với assertCanViewEditorCatalog().
       return this.prisma.user.findMany({
         where: {
           id: { not: callerId },
-          OR,
           deleted_at: null,
+          team_memberships: { some: { team: { leader_id: callerId } } },
         },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },

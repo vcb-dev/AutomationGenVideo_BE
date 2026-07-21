@@ -3659,7 +3659,7 @@ model Character {
 /// Lịch sử mỗi lần chuyển đổi content
 model ContentTransformHistory {
   id             String          @id @default(uuid())
-  user_id        String          // User thực hiện
+  user_id        String          @db.Uuid   // User thực hiện — FK sang users.id (uuid)
   character_id   String          // Nhân vật được chọn
   input_text     String          @db.Text   // Kịch bản gốc user nhập
   output_text    String?         @db.Text   // Kết quả AI trả về (null khi lỗi)
