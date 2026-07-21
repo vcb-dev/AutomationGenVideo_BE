@@ -349,7 +349,7 @@ export class ContentTransformService {
     return history;
   }
 
-  async transcribeUpload(file: Express.Multer.File): Promise<any> {
+  async transcribeUpload(file: Express.Multer.File, authorization?: string): Promise<any> {
     const FormData = require('form-data');
     const aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
     const url = `${aiServiceUrl}/api/content/transcribe-upload/`;
@@ -363,7 +363,9 @@ export class ContentTransformService {
     try {
       const response = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          // AI endpoint yêu cầu IsAuthenticated — forward nguyên Bearer JWT của FE,
+          // AI validate bằng chung JWT_SECRET (core.authentication.NestJWTAuthentication).
+          headers: { ...formData.getHeaders(), ...(authorization ? { Authorization: authorization } : {}) },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
           timeout: 60000, // 60s timeout

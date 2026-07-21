@@ -46,7 +46,7 @@ export class ContentTransformController {
     }),
   )
   @ApiOperation({ summary: 'Chuyển đổi file video/audio thành văn bản' })
-  async transcribeUpload(@UploadedFile() file: Express.Multer.File) {
+  async transcribeUpload(@Request() req: any, @UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('Không tìm thấy file upload');
     }
@@ -62,7 +62,9 @@ export class ContentTransformController {
       throw new BadRequestException('Mimetype của file không hợp lệ.');
     }
 
-    return this.service.transcribeUpload(file);
+    // AI transcribe-upload giờ yêu cầu IsAuthenticated (NestJWTAuthentication) — forward
+    // nguyên JWT của FE để AI validate bằng chung JWT_SECRET với BE.
+    return this.service.transcribeUpload(file, req.headers?.authorization);
   }
 
   @Get('history')
