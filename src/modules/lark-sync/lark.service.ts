@@ -967,6 +967,7 @@ export class LarkService implements OnModuleInit {
                 const allUsersForTeam = await this.prisma.user.findMany({
                     where: { is_active: true },
                     select: {
+                        id: true,
                         email: true,
                         full_name: true,
                         team: true,
@@ -1046,6 +1047,7 @@ export class LarkService implements OnModuleInit {
                         else if (userRoles.includes('LEADER')) resolvedRole = 'leader';
 
                         employeesMap.set(key, {
+                            id: (u as any).id || null,
                             employee_id: u.employee_id || null,
                             full_name: name,
                             email: email || null,
@@ -1276,6 +1278,75 @@ export class LarkService implements OnModuleInit {
                     }) as Promise<any[]>,
                 ]);
 
+                // ─── MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi + Task), thay cho lark_kpi ───
+                // MT Tháng lấy từ EditorKpi.total_target (số video mục tiêu trong tháng) của đúng tháng đang xem.
+                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc.
+                // Đã Xong = trong số đó, bao nhiêu task đã được duyệt (status = APPROVED).
+                const nowVnForGoal = getVietnamParts();
+                const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
+                const goalMonthStr = `${goalMonthInfo.year}-${String(goalMonthInfo.monthNum).padStart(2, '0')}`;
+                const goalMonthBounds = getVietnamMonthBounds(goalMonthInfo.year, goalMonthInfo.monthNum);
+
+                const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts] = await Promise.all([
+                    this.prisma.editorKpi.findMany({
+                        where: { month: goalMonthStr },
+                        select: { user_id: true, team_id: true, total_target: true },
+                    }),
+                    this.prisma.teamMember.findMany({
+                        select: { user_id: true, team: { select: { id: true, name: true } } },
+                    }),
+                    this.prisma.task.groupBy({
+                        by: ['assignee_id', 'status'],
+                        where: {
+                            assignee_id: { not: null },
+                            status: { not: 'CANCELLED' },
+                            deadline: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay },
+                        },
+                        _count: { id: true },
+                    }),
+                    this.prisma.task.groupBy({
+                        by: ['assignee_id'],
+                        where: {
+                            assignee_id: { not: null },
+                            status: 'APPROVED',
+                            deadline: { gte: goalMonthBounds.start, lte: goalMonthBounds.end },
+                        },
+                        _count: { id: true },
+                    }),
+                ]);
+
+                /** `${user_id}_${team_id}` → total_target (EditorKpi) cho đúng tháng đang xem */
+                const editorKpiTeamMap = new Map<string, number>();
+                for (const ek of editorKpiRows) {
+                    if (!ek.team_id) continue;
+                    editorKpiTeamMap.set(`${ek.user_id}_${ek.team_id}`, ek.total_target || 0);
+                }
+
+                /** user_id → danh sách team (task-auto) đang là thành viên, dùng khi không lọc theo 1 team cụ thể */
+                const teamsByUserId = new Map<string, { id: string; name: string }[]>();
+                for (const tm of teamMemberships) {
+                    if (!tm.team) continue;
+                    const list = teamsByUserId.get(tm.user_id) || [];
+                    list.push({ id: tm.team.id, name: tm.team.name });
+                    teamsByUserId.set(tm.user_id, list);
+                }
+
+                const taskGoalByUser = new Map<string, number>();
+                const taskDoneByUser = new Map<string, number>();
+                for (const row of taskDayCounts as any[]) {
+                    if (!row.assignee_id) continue;
+                    taskGoalByUser.set(row.assignee_id, (taskGoalByUser.get(row.assignee_id) || 0) + row._count.id);
+                    if (row.status === 'APPROVED') {
+                        taskDoneByUser.set(row.assignee_id, (taskDoneByUser.get(row.assignee_id) || 0) + row._count.id);
+                    }
+                }
+
+                const taskApprovedMonthByUser = new Map<string, number>();
+                for (const row of taskMonthApprovedCounts as any[]) {
+                    if (!row.assignee_id) continue;
+                    taskApprovedMonthByUser.set(row.assignee_id, row._count.id);
+                }
+
                 const dodaKpis = (dodaKpisRaw as any[]).map((r: any) => {
                     const normEditorName = normName(r.editor_name || '');
                     const authUser = nameKeyMatchMap.get(normEditorName);
@@ -1444,6 +1515,7 @@ export class LarkService implements OnModuleInit {
                     else if (empRoles.includes('LEADER')) empRole = 'leader';
 
                     const row = {
+                        id: emp.id || null,
                         employee_id: emp.employee_id,
                         name: emp.full_name,
                         email: emp.email,
@@ -2294,6 +2366,25 @@ export class LarkService implements OnModuleInit {
                         this.convertDriveUrl(kpi.image_url) ||
                         null;
 
+                    // MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi.total_target + Task),
+                    // thay cho lark_kpi.kpi_day/kpi_month/completed_day/completed_month.
+                    const resolvedUserId: string | null = employee?.id || personEmp?.id || null;
+                    let taskAutoTeamId: string | null = null;
+                    if (resolvedUserId) {
+                        const myTeams = teamsByUserId.get(resolvedUserId) || [];
+                        // Có filter team cụ thể trên UI → dùng đúng team đó; không thì dùng team
+                        // đang hiển thị trên thẻ của chính người này (effectiveTeam).
+                        const wantedTeamNorm = teamFilterNormalized || normalizeTeamKey(effectiveTeam);
+                        const matchedTeam = myTeams.find(t => normalizeTeamKey(t.name) === wantedTeamNorm) || myTeams[0] || null;
+                        taskAutoTeamId = matchedTeam?.id || null;
+                    }
+                    const monthlyVideoTarget = (resolvedUserId && taskAutoTeamId)
+                        ? (editorKpiTeamMap.get(`${resolvedUserId}_${taskAutoTeamId}`) || 0)
+                        : 0;
+                    const dailyTaskGoal = resolvedUserId ? (taskGoalByUser.get(resolvedUserId) || 0) : 0;
+                    const dailyTaskDone = resolvedUserId ? (taskDoneByUser.get(resolvedUserId) || 0) : 0;
+                    const monthlyTaskDone = resolvedUserId ? (taskApprovedMonthByUser.get(resolvedUserId) || 0) : 0;
+
                     return {
                         id: kpi.id,
                         employee_id: trimmedEmpId,
@@ -2315,15 +2406,14 @@ export class LarkService implements OnModuleInit {
                         checklist,
                         answers: answersData,
                         videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
-                        // Use larkKPI (leader-entered Lark data) as source of truth for daily KPI.
-                        // Do NOT override with larkReportKPI (completed_day there = 0 for checklist
-                        // submissions and would incorrectly mask the leader-entered completion value).
-                        dailyGoal: Number(kpi.kpi_day || 0),
-                        done: Number(kpi.completed_day || 0),
-                        kpi_day: Number(kpi.kpi_day || 0),
-                        kpi_month: kpi.kpi_month || monthlyReportKpi?.kpi_month || 0,
-                        completed_day: Number(kpi.completed_day || 0),
-                        completed_month: (monthlyReportKpi ? Number(monthlyReportKpi.completed_month) : (kpi.completed_month || 0)),
+                        // MT Ngày/Đã Xong: đếm task-auto (Task.deadline trong ngày/khoảng đang lọc, status APPROVED = đã xong).
+                        // MT Tháng: EditorKpi.total_target (số video mục tiêu) của đúng team + tháng đang xem.
+                        dailyGoal: dailyTaskGoal,
+                        done: dailyTaskDone,
+                        kpi_day: dailyTaskGoal,
+                        kpi_month: monthlyVideoTarget,
+                        completed_day: dailyTaskDone,
+                        completed_month: monthlyTaskDone,
                         // Stable monthly traffic/revenue for the Summary Cards:
                         traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
                         revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
@@ -2343,7 +2433,7 @@ export class LarkService implements OnModuleInit {
                         revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
                         trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
                         revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
-                        monthlyProgress: kpi.kpi_progress_month !== null ? Math.round(Number(kpi.kpi_progress_month) * 100) : ((kpi.kpi_month || 0) > 0 ? Math.round((kpi.completed_month || 0) / kpi.kpi_month * 100) : 0),
+                        monthlyProgress: monthlyVideoTarget > 0 ? Math.round((monthlyTaskDone / monthlyVideoTarget) * 100) : 0,
                         channelCount: channelsOwnedCount,
                         isAuthorizedForReport: isAuthorized as boolean,
                         isMatchForRanking,
