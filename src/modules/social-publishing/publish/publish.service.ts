@@ -4,10 +4,8 @@ import { AccountsService } from '../accounts/accounts.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { FacebookPublisher } from './platforms/facebook.platform';
 import { InstagramPublisher } from './platforms/instagram.platform';
-import { TiktokPublisher } from './platforms/tiktok.platform';
 import { ThreadsPublisher } from './platforms/threads.platform';
 import { YoutubePublisher } from './platforms/youtube.platform';
-import { ZaloPublisher } from './platforms/zalo.platform';
 import { GoogleDriveStorageService } from '../upload/google-drive-storage.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
@@ -94,10 +92,8 @@ export class PublishService {
     private readonly crypto: CryptoService,
     private readonly fb: FacebookPublisher,
     private readonly ig: InstagramPublisher,
-    private readonly tt: TiktokPublisher,
     private readonly threads: ThreadsPublisher,
     private readonly yt: YoutubePublisher,
-    private readonly zalo: ZaloPublisher,
     private readonly googleDrive: GoogleDriveStorageService,
   ) { }
 
@@ -136,8 +132,7 @@ export class PublishService {
     for (const post of posts) {
       if (!post.media_urls?.length) continue;
       const platform = post.platform as SocialPlatform;
-      const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE
-        || platform === SocialPlatform.ZALO;
+      const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE;
       if (useDirectDriveUrl) continue;
       this.prepareMediaUrlsForPublishing(post.media_urls, platform)
         .catch((err: any) => this.logger.warn(`[PreWarm] ${post.platform}: ${err.message}`));
@@ -152,15 +147,14 @@ export class PublishService {
 
     const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
-    // YouTube và Zalo tự stream từ Drive URL (server BE download, không qua server của platform)
+    // YouTube tự stream từ Drive URL (server BE download, không qua server của platform)
     // → dùng direct URL để tiết kiệm disk + giữ nguyên chất lượng gốc.
     //
     // Facebook, Instagram, Threads: server của platform tải từ Drive URL
     // → Drive có thể chặn hoặc redirect IP lạ → download về /tmp/ trước.
     // Threads đặc biệt còn cần transcode (needsTranscode=true) — transcode chỉ hoạt động
     // khi URL là /api/social/media/ (local), nếu dùng Drive URL trực tiếp thì transcode bị bỏ qua.
-    const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE
-      || platform === SocialPlatform.ZALO;
+    const useDirectDriveUrl = platform === SocialPlatform.YOUTUBE;
 
     this.logger.log(`[PrepareMedia] platform=${platform} useDirectDriveUrl=${useDirectDriveUrl} driveAvailable=${this.googleDrive.isAvailable()} urls=${JSON.stringify(mediaUrls)}`);
 
@@ -589,9 +583,6 @@ export class PublishService {
         });
       }
 
-      case SocialPlatform.TIKTOK:
-        return this.tt.publish(token, { caption: opts.message, mediaUrls: opts.mediaUrls });
-
       case SocialPlatform.THREADS: {
         // Thứ tự ưu tiên: extraData.platformId → account.platform_id → throw
         const userId = extra.platformId || extra.userId || opts.platformId;
@@ -628,13 +619,6 @@ export class PublishService {
           } : undefined,
         });
       }
-
-      case SocialPlatform.ZALO:
-        return this.zalo.publish(token, {
-          title: opts.message.substring(0, 100),
-          description: opts.message,
-          mediaUrls: opts.mediaUrls,
-        });
 
       default:
         throw new BadRequestException(`Platform chưa hỗ trợ: ${platform}`);

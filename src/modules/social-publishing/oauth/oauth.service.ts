@@ -9,10 +9,8 @@ function tokenHash(token: string): string {
 import { AccountsService } from '../accounts/accounts.service';
 import { FacebookOAuthStrategy } from './strategies/facebook.strategy';
 import { InstagramOAuthStrategy } from './strategies/instagram.strategy';
-import { TiktokOAuthStrategy } from './strategies/tiktok.strategy';
 import { ThreadsOAuthStrategy } from './strategies/threads.strategy';
 import { YoutubeOAuthStrategy } from './strategies/youtube.strategy';
-import { ZaloOAuthStrategy } from './strategies/zalo.strategy';
 import { SocialPlatform } from '@prisma/client';
 
 const STATE_TTL_MS = 15 * 60 * 1000; // 15 phút
@@ -59,10 +57,8 @@ export class OAuthService {
     private readonly accounts: AccountsService,
     private readonly facebook: FacebookOAuthStrategy,
     private readonly instagram: InstagramOAuthStrategy,
-    private readonly tiktok: TiktokOAuthStrategy,
     private readonly threads: ThreadsOAuthStrategy,
     private readonly youtube: YoutubeOAuthStrategy,
-    private readonly zalo: ZaloOAuthStrategy,
   ) {}
 
   async getAuthUrl(platform: string, userId: string, extra?: { igMode?: string }): Promise<{ url: string }> {
@@ -81,15 +77,6 @@ export class OAuthService {
         url = this.instagram.getAuthUrl(state, igMode);
         break;
       }
-      case 'TIKTOK': {
-        // TikTok cần PKCE verifier → encode vào state
-        const { codeVerifier } = this.tiktok.getAuthUrl('');
-        const state = encodeState({ userId, platform, codeVerifier });
-        // Rebuild URL với state mới (tiktok strategy đã tạo challenge từ verifier)
-        const { url: finalUrl } = this.tiktok.getAuthUrlWithState(state, codeVerifier);
-        url = finalUrl;
-        break;
-      }
       case 'THREADS': {
         const state = encodeState({ userId, platform });
         url = this.threads.getAuthUrl(state);
@@ -98,13 +85,6 @@ export class OAuthService {
       case 'YOUTUBE': {
         const state = encodeState({ userId, platform });
         url = this.youtube.getAuthUrl(state);
-        break;
-      }
-      case 'ZALO': {
-        // Zalo PKCE: encode verifier vào state
-        const { url: authUrl, codeVerifier } = this.zalo.getAuthUrlWithVerifier();
-        const state = encodeState({ userId, platform, codeVerifier });
-        url = this.zalo.buildAuthUrl(state, codeVerifier);
         break;
       }
       default:
@@ -128,7 +108,7 @@ export class OAuthService {
       throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
     }
 
-    const { userId, codeVerifier } = decoded;
+    const { userId } = decoded;
     let result: any;
 
     switch (platform) {
@@ -139,18 +119,8 @@ export class OAuthService {
         result = await this.instagram.exchangeCode(code, igMode);
         break;
       }
-      case 'TIKTOK': {
-        if (!codeVerifier) throw new BadRequestException('TikTok PKCE verifier thiếu trong state');
-        result = await this.tiktok.exchangeCode(code, state, codeVerifier);
-        break;
-      }
       case 'THREADS': result = await this.threads.exchangeCode(code); break;
       case 'YOUTUBE': result = await this.youtube.exchangeCode(code); break;
-      case 'ZALO': {
-        if (!codeVerifier) throw new BadRequestException('Zalo PKCE verifier thiếu trong state');
-        result = await this.zalo.exchangeCode(code, codeVerifier);
-        break;
-      }
       default:
         throw new BadRequestException(`Platform không hỗ trợ: ${platform}`);
     }
