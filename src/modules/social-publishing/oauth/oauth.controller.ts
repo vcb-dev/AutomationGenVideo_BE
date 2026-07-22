@@ -87,7 +87,8 @@ export class OAuthController {
       res.redirect(`${feUrl}/auth/oauth-close?${params}`);
     } catch (err: any) {
       // Log chi tiết server-side, KHÔNG nhúng err.message vào URL (tránh lộ thông tin nhạy cảm)
-      this.logger.error(`OAuth callback error [${platform}]: ${err.message}`);
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      this.logger.error(`OAuth callback error [${platform}]: ${detail}`);
       const params = new URLSearchParams({
         type: `${platform.toLowerCase()}-oauth-error`,
         platform: platform.toLowerCase(),
