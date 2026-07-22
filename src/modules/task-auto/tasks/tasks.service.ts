@@ -15,6 +15,7 @@ import {
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
+  UpdatePublishedLinksDto,
 } from "./task.dto";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
@@ -991,16 +992,74 @@ export class TaskAutoTasksService {
     return updated;
   }
 
-  async getDashboard(userId: string, roles: string[]) {
+  async updatePublishedLinks(
+    id: string,
+    dto: UpdatePublishedLinksDto,
+    userId: string,
+    roles: string[],
+  ) {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { status: true, assignee_id: true },
+    });
+    if (!task) throw new NotFoundException("Task not found");
+    if (task.status !== "APPROVED") {
+      throw new BadRequestException("Task chưa được duyệt");
+    }
+
+    const isPrivileged = roles.some((r) =>
+      ["ADMIN", "MANAGER", "LEADER"].includes(r),
+    );
+    if (task.assignee_id !== userId && !isPrivileged) {
+      throw new ForbiddenException("Không có quyền nộp link cho task này");
+    }
+
+    const links = dto.links
+      .map((l) => ({
+        id: l.id,
+        platform: l.platform.trim(),
+        url: l.url.trim(),
+      }))
+      .filter((l) => l.platform && l.url);
+
+    return this.prisma.task.update({
+      where: { id },
+      data: { published_links: links },
+      include: this.taskDetailInclude,
+    });
+  }
+
+  /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
+  private parseDateRange(
+    dateFrom?: string,
+    dateTo?: string,
+  ): { gte: Date; lt: Date } | null {
+    if (!dateFrom || !dateTo) return null;
+    const [fy, fm, fd] = dateFrom.split("-").map(Number);
+    const [ty, tm, td] = dateTo.split("-").map(Number);
+    if (!fy || !fm || !fd || !ty || !tm || !td) return null;
+    const gte = new Date(fy, fm - 1, fd);
+    const lt = new Date(ty, tm - 1, td + 1);
+    if (isNaN(gte.getTime()) || isNaN(lt.getTime()) || gte >= lt) return null;
+    return { gte, lt };
+  }
+
+  async getDashboard(
+    userId: string,
+    roles: string[],
+    dateFrom?: string,
+    dateTo?: string,
+  ) {
+    const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
-    if (isAdminOrManager) return this.getGlobalDashboard();
-    if (isLeaderOnly) return this.getLeaderDashboard(userId);
+    if (isAdminOrManager) return this.getGlobalDashboard(range);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range);
     return this.getPersonalDashboard(userId);
   }
 
-  private async getGlobalDashboard() {
+  private async getGlobalDashboard(range: { gte: Date; lt: Date } | null) {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -1011,17 +1070,27 @@ export class TaskAutoTasksService {
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
+    const monthlyCompletedWhere = range
+      ? { status: "APPROVED" as const, reviewed_at: range }
+      : {
+          status: "APPROVED" as const,
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        };
+
     const [
       tasksByStatus,
       todayDeadline,
       overdue,
       monthlyCompleted,
-      contentCounts,
       totalEditors,
       approvedEditors,
       pendingApprovals,
     ] = await Promise.all([
-      this.prisma.task.groupBy({ by: ["status"], _count: { id: true } }),
+      this.prisma.task.groupBy({
+        by: ["status"],
+        where: range ? { created_at: range } : undefined,
+        _count: { id: true },
+      }),
       this.prisma.task.count({
         where: {
           deadline: { gte: todayStart, lt: todayEnd },
@@ -1034,13 +1103,7 @@ export class TaskAutoTasksService {
           status: { notIn: ["APPROVED", "CANCELLED"] },
         },
       }),
-      this.prisma.task.count({
-        where: {
-          status: "APPROVED",
-          reviewed_at: { gte: monthStart, lt: monthEnd },
-        },
-      }),
-      this.prisma.content.groupBy({ by: ["status"], _count: { id: true } }),
+      this.prisma.task.count({ where: monthlyCompletedWhere }),
       this.prisma.user.count({ where: { is_active: true } }),
       this.prisma.editorApproval.count({ where: { status: "APPROVED" } }),
       this.prisma.editorApproval.count({ where: { status: "PENDING" } }),
@@ -1048,9 +1111,6 @@ export class TaskAutoTasksService {
 
     const taskMap = Object.fromEntries(
       tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
-    );
-    const contentMap = Object.fromEntries(
-      contentCounts.map((r) => [r.status.toLowerCase(), r._count.id]),
     );
 
     return {
@@ -1062,12 +1122,6 @@ export class TaskAutoTasksService {
       today_deadline: todayDeadline,
       overdue,
       monthly_completed: monthlyCompleted,
-      contents: {
-        available: contentMap["available"] ?? 0,
-        in_task: contentMap["in_task"] ?? 0,
-        used: contentMap["used"] ?? 0,
-        archived: contentMap["archived"] ?? 0,
-      },
       editors: {
         total: totalEditors,
         approved: approvedEditors,
@@ -1076,9 +1130,14 @@ export class TaskAutoTasksService {
     };
   }
 
-  private async getLeaderDashboard(leaderId: string) {
+  private async getLeaderDashboard(
+    leaderId: string,
+    range: { gte: Date; lt: Date } | null,
+  ) {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
     const team = await this.prisma.team.findFirst({
       where: { leader_id: leaderId },
@@ -1103,10 +1162,19 @@ export class TaskAutoTasksService {
 
     const memberIds = team.members.map((m) => m.user_id);
 
-    const [tasksByStatus, memberTaskRows, editorKpis] = await Promise.all([
+    const [
+      tasksByStatus,
+      memberTaskRows,
+      editorKpis,
+      monthlyTeamApproved,
+      monthlyMemberApproved,
+    ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
-        where: { team_id: team.id },
+        where: {
+          team_id: team.id,
+          ...(range ? { created_at: range } : {}),
+        },
         _count: { id: true },
       }),
       this.prisma.task.groupBy({
@@ -1114,11 +1182,28 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
+          ...(range ? { created_at: range } : {}),
         },
         _count: { id: true },
       }),
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: currentMonth },
+      }),
+      this.prisma.task.count({
+        where: {
+          team_id: team.id,
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+        _count: { id: true },
       }),
     ]);
 
@@ -1131,6 +1216,9 @@ export class TaskAutoTasksService {
       if (!memberStats[uid]) memberStats[uid] = {};
       memberStats[uid][r.status.toLowerCase()] = r._count.id;
     }
+    const kpiApprovedByUser = Object.fromEntries(
+      monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
+    );
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
     const members = team.members.map((m) => {
@@ -1143,6 +1231,7 @@ export class TaskAutoTasksService {
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
         approved: memberStats[m.user_id]?.["approved"] ?? 0,
+        kpi_completed: kpiApprovedByUser[m.user_id] ?? 0,
         kpi_target: kpi?.total_target ?? 0,
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
@@ -1160,7 +1249,6 @@ export class TaskAutoTasksService {
       (s, k) => s + (k.product_planned ?? 0),
       0,
     );
-    const kpiCompleted = taskMap["approved"] ?? 0;
 
     return {
       scope: "team" as const,
@@ -1173,7 +1261,7 @@ export class TaskAutoTasksService {
       kpi: {
         month: currentMonth,
         total_target: kpiTotal,
-        completed: kpiCompleted,
+        completed: monthlyTeamApproved,
         video_win: kpiVideoWin,
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
@@ -1189,9 +1277,11 @@ export class TaskAutoTasksService {
       now.getDate(),
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, myKpiRows] =
+    const [tasksByStatus, todayDeadline, overdue, monthlyApproved, myKpiRows] =
       await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
@@ -1212,6 +1302,13 @@ export class TaskAutoTasksService {
             status: { notIn: ["APPROVED", "CANCELLED"] },
           },
         }),
+        this.prisma.task.count({
+          where: {
+            assignee_id: userId,
+            status: "APPROVED",
+            reviewed_at: { gte: monthStart, lt: monthEnd },
+          },
+        }),
         this.prisma.editorKpi.findMany({
           where: { user_id: userId, month: currentMonth },
           include: {
@@ -1228,7 +1325,7 @@ export class TaskAutoTasksService {
     const taskMap = Object.fromEntries(
       tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
     );
-    const completed = taskMap["approved"] ?? 0;
+    const completed = monthlyApproved;
 
     // Gộp tất cả KPI các team trong tháng (editor thuộc nhiều team)
     const sum = <K extends keyof (typeof myKpiRows)[0]>(field: K) =>
