@@ -10,6 +10,25 @@ import { GoogleDriveStorageService } from '../social-publishing/upload/google-dr
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
+  /**
+   * URL riêng cho các endpoint /api/voice/* (TTS + clone giọng Minimax). Các
+   * endpoint này chỉ gọi API cloud Minimax, không cần torch/GPU/NAS như
+   * smart-mix video — nên deploy được thẳng trên Railway (build tự động qua
+   * push, xem AutomationGenVideo_AI/.github/workflows/deploy-railway.yml),
+   * khác với AI_SERVICE_URL chung (trỏ máy local qua Cloudflare Tunnel, dùng
+   * cho các tính năng cần torch/NAS).
+   *
+   * Không cần cấu hình gì thêm trên Railway: khi BE tự chạy trên Railway
+   * (nhận biết qua RAILWAY_ENVIRONMENT_NAME — biến Railway tự bơm vào mọi
+   * service, không cần khai báo tay), mặc định gọi thẳng service
+   * automationgenvideo-ai qua Private Networking (<service>.railway.internal
+   * — hostname cố định theo tên service, tự có sẵn, không cần bấm "Generate
+   * Domain"). Chạy local dev (không có RAILWAY_ENVIRONMENT_NAME) → fallback
+   * về AI_SERVICE_URL như cũ. Set tay AI_SERVICE_URL_VOICE nếu cần override.
+   */
+  private readonly voiceAiServiceUrl: string;
+  private static readonly RAILWAY_VOICE_AI_INTERNAL_URL =
+    'http://automationgenvideo-ai.railway.internal:8000';
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
@@ -24,9 +43,15 @@ export class AiIntegrationService {
     private readonly driveStorage: GoogleDriveStorageService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
+    this.voiceAiServiceUrl = this.configService.get<string>(
+      'AI_SERVICE_URL_VOICE',
+      runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
+    );
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
     this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
+    this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
     if (!this.minimaxApiKey) {
       this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
     }
@@ -1657,7 +1682,7 @@ export class AiIntegrationService {
    * Get available voices, including custom cloned ones and system ones.
    */
   async listVoices(): Promise<any> {
-    const url = `${this.aiServiceUrl}/api/voice/list/`;
+    const url = `${this.voiceAiServiceUrl}/api/voice/list/`;
     this.logger.log(`Calling AI Service: GET ${url}`);
     try {
       const { data } = await firstValueFrom(
@@ -1687,7 +1712,7 @@ export class AiIntegrationService {
    */
   async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
     const FormData = require('form-data');
-    const url = `${this.aiServiceUrl}/api/voice/clone/`;
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
 
     try {
@@ -1732,7 +1757,7 @@ export class AiIntegrationService {
    */
   async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
     const FormData = require('form-data');
-    const url = `${this.aiServiceUrl}/api/voice/clone/start/`;
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/start/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
 
     try {
@@ -1771,7 +1796,7 @@ export class AiIntegrationService {
 
   /** Poll status of a background voice-clone job started via cloneVoiceStart(). */
   async cloneVoiceStatus(jobId: string, userId?: string): Promise<any> {
-    const url = `${this.aiServiceUrl}/api/voice/clone/status/${jobId}/`;
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/status/${jobId}/`;
 
     try {
       const { data } = await firstValueFrom(
@@ -1914,7 +1939,7 @@ export class AiIntegrationService {
       // động cả khi DEBUG=False.
       const mediaMatch = /^\/media\/minimax_tts\/(tts_[0-9a-f]{32}\.mp3)$/i.exec(parsed.pathname);
       if (mediaMatch) {
-        sourceUrl = `${this.aiServiceUrl.replace(/\/$/, '')}/api/voice/tts/file/${mediaMatch[1]}`;
+        sourceUrl = `${this.voiceAiServiceUrl.replace(/\/$/, '')}/api/voice/tts/file/${mediaMatch[1]}`;
       }
     } catch {
       return { url: aiAudioUrl, fileId: null };
@@ -2030,7 +2055,7 @@ export class AiIntegrationService {
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
-    const url = `${this.aiServiceUrl}/api/voice/tts/`;
+    const url = `${this.voiceAiServiceUrl}/api/voice/tts/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
 
     try {
@@ -2187,7 +2212,7 @@ export class AiIntegrationService {
     let response: any;
     try {
       response = await this.httpService.axiosRef.get(
-        `${this.aiServiceUrl}/api/voice/tts/file/${filename}`,
+        `${this.voiceAiServiceUrl}/api/voice/tts/file/${filename}`,
         {
           responseType: 'stream',
           timeout: 0,
