@@ -94,6 +94,18 @@ export class ReviewTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
 }
 
+export class PublishedLinkItemDto {
+  @ApiProperty() @IsString() id: string
+  @ApiProperty() @IsString() platform: string
+  @ApiProperty() @IsString() url: string
+}
+
+export class UpdatePublishedLinksDto {
+  @ApiProperty({ type: [PublishedLinkItemDto] })
+  @IsArray() @ValidateNested({ each: true }) @Type(() => PublishedLinkItemDto)
+  links: PublishedLinkItemDto[]
+}
+
 export class GenerateVideoScriptDto {
   @ApiPropertyOptional() @IsString() @IsOptional() fileUrl?: string | null
   @ApiPropertyOptional() @IsString() @IsOptional() scriptText?: string | null

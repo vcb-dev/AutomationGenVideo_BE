@@ -343,7 +343,16 @@ export class TaskAutoTeamsController {
 
   @Get("dashboard")
   @ApiOperation({ summary: "Dashboard summary stats" })
-  getDashboard(@Request() req: any) {
-    return this.tasks.getDashboard(req.user.id, req.user.roles ?? []);
+  getDashboard(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+  ) {
+    return this.tasks.getDashboard(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+    );
   }
 }

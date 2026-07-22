@@ -2904,6 +2904,8 @@ model Task {
   deadline                  DateTime?
   run_id                    String?
   result_url                String?    @db.Text
+  /// Array<{ id: string; platform: string; url: string }> — link bài đăng editor tự đăng tay
+  published_links           Json?
   submitted_at              DateTime?
   reviewed_by_id            String?
   reviewed_at               DateTime?
