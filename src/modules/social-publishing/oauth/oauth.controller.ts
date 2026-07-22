@@ -38,13 +38,6 @@ export class OAuthController {
     return this.handleCallback('INSTAGRAM', code, state, null, res);
   }
 
-  /** Callback từ TikTok */
-  @Get('tiktok/callback')
-  @ApiOperation({ summary: 'TikTok OAuth callback' })
-  async tiktokCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
-    return this.handleCallback('TIKTOK', code, state, null, res);
-  }
-
   /** Callback từ Threads */
   @Get('threads/callback')
   @ApiOperation({ summary: 'Threads OAuth callback' })
@@ -57,13 +50,6 @@ export class OAuthController {
   @ApiOperation({ summary: 'YouTube OAuth callback' })
   async youtubeCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     return this.handleCallback('YOUTUBE', code, state, null, res);
-  }
-
-  /** Callback từ Zalo */
-  @Get('zalo/callback')
-  @ApiOperation({ summary: 'Zalo OAuth callback' })
-  async zaloCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
-    return this.handleCallback('ZALO', code, state, null, res);
   }
 
   /** Kết nối trực tiếp bằng access token (không cần popup) */
