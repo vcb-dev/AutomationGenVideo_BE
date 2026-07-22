@@ -38,13 +38,6 @@ export class OAuthController {
     return this.handleCallback('INSTAGRAM', code, state, null, res);
   }
 
-  /** Callback từ TikTok */
-  @Get('tiktok/callback')
-  @ApiOperation({ summary: 'TikTok OAuth callback' })
-  async tiktokCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
-    return this.handleCallback('TIKTOK', code, state, null, res);
-  }
-
   /** Callback từ Threads */
   @Get('threads/callback')
   @ApiOperation({ summary: 'Threads OAuth callback' })
@@ -57,13 +50,6 @@ export class OAuthController {
   @ApiOperation({ summary: 'YouTube OAuth callback' })
   async youtubeCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     return this.handleCallback('YOUTUBE', code, state, null, res);
-  }
-
-  /** Callback từ Zalo */
-  @Get('zalo/callback')
-  @ApiOperation({ summary: 'Zalo OAuth callback' })
-  async zaloCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
-    return this.handleCallback('ZALO', code, state, null, res);
   }
 
   /** Kết nối trực tiếp bằng access token (không cần popup) */
@@ -87,7 +73,8 @@ export class OAuthController {
       res.redirect(`${feUrl}/auth/oauth-close?${params}`);
     } catch (err: any) {
       // Log chi tiết server-side, KHÔNG nhúng err.message vào URL (tránh lộ thông tin nhạy cảm)
-      this.logger.error(`OAuth callback error [${platform}]: ${err.message}`);
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      this.logger.error(`OAuth callback error [${platform}]: ${detail}`);
       const params = new URLSearchParams({
         type: `${platform.toLowerCase()}-oauth-error`,
         platform: platform.toLowerCase(),
