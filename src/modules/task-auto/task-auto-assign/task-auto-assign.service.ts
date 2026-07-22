@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
-import { AssignmentRunStatus, BrandType } from "@prisma/client";
+import { AssignmentRunStatus, BrandType, Prisma } from "@prisma/client";
 
 import {
   isWeekend,
@@ -19,6 +19,10 @@ import {
   consumeProductQuota,
 } from "./steps/product-quota";
 import { createTasksFromAssignments } from "./steps/task-creator";
+import {
+  buildEmptyWarehouseNotice,
+  EmptyWarehouseNotice,
+} from "./steps/warehouse-empty-notice";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { PushService } from "@/common/push/push.service";
 import { UpdateAutoAssignSettingDto } from "../settings/settings.dto";
@@ -33,6 +37,7 @@ import {
   ContentPoolItem,
   ProductPoolItem,
   WeightedAllocation,
+  EditorCapacity,
   TeamResult,
 } from "./types";
 import {
@@ -248,6 +253,12 @@ export class TaskAutoAssignService {
 
     const editorIds = editors.map((e) => e.userId);
 
+    // loadContentLineNames chỉ dùng để hiển thị (thông báo kho tháng rỗng) — chạy song song
+    // với loadAssignmentPools thay vì chờ tuần tự.
+    const [assignmentPools, contentLineNames] = await Promise.all([
+      this.loadAssignmentPools(teamBrandType, teamId, editorIds, month),
+      this.loadContentLineNames(editors, contentWeights),
+    ]);
     const {
       teamContentPool,
       globalContentPool,
@@ -255,7 +266,7 @@ export class TaskAutoAssignService {
       globalProductPool,
       personalContentsByEditor,
       personalProductsByEditor,
-    } = await this.loadAssignmentPools(teamBrandType, teamId, editorIds, month);
+    } = assignmentPools;
 
     this.logger.log(
       `Team ${teamId} [${teamBrandType}]: ` +
@@ -306,6 +317,7 @@ export class TaskAutoAssignService {
 
     // ── Per-editor selection ──────────────────────────────────────────────
     const allAssignments: ScheduledAssignment[] = [];
+    const emptyWarehouseNotices: EmptyWarehouseNotice[] = [];
 
     for (const editor of editors) {
       if (editor.remainingDaily <= 0) continue;
@@ -537,8 +549,22 @@ export class TaskAutoAssignService {
       // dụng cho extraSelected vì các cap đó không được đọc lại sau đó.
       consumeProductQuota(productQuotaState, editor.userId, selected);
       if (!selected.length) {
+        // Kho tháng rỗng cho editor này (cả 3 lane đều không bắt được cặp nào) — không tạo
+        // task được, nhưng vẫn tính đúng số liệu hiện tại (remainingDaily/contentQuota/KPI đẩy SP)
+        // để báo cho editor biết hôm nay cần làm gì.
+        const notice = buildEmptyWarehouseNotice({
+          editorId: editor.userId,
+          remainingDaily: editor.remainingDaily,
+          productPlanned: editor.productPlanned,
+          pushedProductIds: history.pushedProductIds,
+          pushProducts,
+          contentQuota: quotaFor(editor.remainingDaily).contentQuota,
+          contentLineNames,
+        });
+        if (notice) emptyWarehouseNotices.push(notice);
         this.logger.log(
-          `Team ${teamId} editor ${editor.userId}: no candidates available`,
+          `Team ${teamId} editor ${editor.userId}: no candidates available` +
+            (notice ? " — kho tháng rỗng, đã tạo thông báo" : ""),
         );
         continue;
       }
@@ -555,16 +581,66 @@ export class TaskAutoAssignService {
       }
     }
 
-    const assigned = await createTasksFromAssignments(
-      this.prisma,
-      this.pushService,
-      teamId,
-      teamBrandType,
-      runId,
-      deadline,
-      allAssignments,
-    );
+    const [assigned] = await Promise.all([
+      createTasksFromAssignments(
+        this.prisma,
+        this.pushService,
+        teamId,
+        teamBrandType,
+        runId,
+        deadline,
+        allAssignments,
+      ),
+      emptyWarehouseNotices.length
+        ? this.createEmptyWarehouseNotifications(emptyWarehouseNotices)
+        : Promise.resolve(),
+    ]);
     return { assigned, skipped: 0 };
+  }
+
+  // ── Thông báo kho tháng rỗng: batch insert + push, tương tự createTasksFromAssignments ────
+
+  private async createEmptyWarehouseNotifications(
+    notices: EmptyWarehouseNotice[],
+  ): Promise<void> {
+    await this.prisma.notification.createMany({
+      data: notices.map((n) => ({
+        user_id: n.editorId,
+        type: "AUTO_ASSIGN_EMPTY_WAREHOUSE",
+        title: n.title,
+        body: n.body,
+        meta: n.meta as Prisma.InputJsonValue,
+      })),
+    });
+    for (const n of notices) {
+      this.pushService
+        .sendToUser(n.editorId, {
+          title: n.title,
+          body: n.body,
+          url: "/dashboard/task-auto/tasks",
+        })
+        .catch(() => {});
+    }
+  }
+
+  // ── Load tên tuyến nội dung để hiển thị trong thông báo kho tháng rỗng ─────
+
+  private async loadContentLineNames(
+    editors: EditorCapacity[],
+    contentWeights: WeightedAllocation[],
+  ): Promise<Map<string, string>> {
+    const ids = new Set<string>();
+    for (const w of contentWeights) ids.add(w.key);
+    for (const e of editors) {
+      for (const w of e.contentTypeWeights) ids.add(w.key);
+    }
+    if (!ids.size) return new Map();
+
+    const lines = await this.prisma.contentLine.findMany({
+      where: { id: { in: [...ids] } },
+      select: { id: true, name: true },
+    });
+    return new Map(lines.map((l) => [l.id, l.name]));
   }
 
   // ── Load content & product pools: lọc theo brand type + kho tháng ─────────
@@ -614,13 +690,14 @@ export class TaskAutoAssignService {
           },
           select: {
             id: true,
+            name: true,
             product_line_id: true,
             priority_score: true,
             cooldown_days: true,
             source_product_id: true,
             source_editor_product_id: true,
             source_editor_product: {
-              select: { product_line_id: true, source_product_id: true },
+              select: { name: true, product_line_id: true, source_product_id: true },
             },
           },
           orderBy: { priority_score: "desc" },
@@ -677,6 +754,7 @@ export class TaskAutoAssignService {
 
     const teamProductPool: ProductPoolItem[] = teamProductsRaw.map((tp) => ({
       id: tp.id,
+      name: tp.name ?? tp.source_editor_product?.name ?? null,
       product_line_id:
         tp.product_line_id ?? tp.source_editor_product?.product_line_id ?? null,
       priority_score: tp.priority_score,
