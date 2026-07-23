@@ -100,3 +100,129 @@ describe('LarkService.getDashboard5AForTeams', () => {
     expect(result.kpi.progressPct).toBeNull();
   });
 });
+
+/**
+ * _buildDashboardAnalytics (dùng chung bởi getDashboardAnalytics + getDashboard5A) — Tổng
+ * Traffic/Doanh Thu trên trang admin từng lấy từ `kpi.traffic_month`/`revenue_month` (job sync
+ * Lark ngoài) nên hay hiện "Chưa có dữ liệu" vì phần lớn team không được job đó điền, và job đã
+ * tạm dừng từ 2026-07-11 (xem AdminOverviewFiltersContext.tsx phía FE). Sửa: traffic/doanh thu
+ * giờ tính từ dữ liệu TỰ BÁO CÁO hàng ngày (trafficReport.total_traffic + đáp án doanh thu trong
+ * checklistReport.answers), độc lập với job sync Lark. Test qua `getDashboardAnalytics` (entry
+ * point public) với cacheService mock bỏ qua cache để gọi thẳng logic bên trong.
+ */
+describe('LarkService._buildDashboardAnalytics — traffic/doanh thu tự báo cáo', () => {
+  function buildWithPrisma(prismaOverrides: {
+    users?: any[];
+    kpis?: any[];
+    trafficReports?: any[];
+    checklistReports?: any[];
+  }) {
+    const prisma: any = {
+      reportedTask: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+      },
+      kpi: { findMany: jest.fn().mockResolvedValue(prismaOverrides.kpis ?? []) },
+      user: { findMany: jest.fn().mockResolvedValue(prismaOverrides.users ?? []) },
+      channel: { findMany: jest.fn().mockResolvedValue([]) },
+      trafficReport: { findMany: jest.fn().mockResolvedValue(prismaOverrides.trafficReports ?? []) },
+      checklistReport: { findMany: jest.fn().mockResolvedValue(prismaOverrides.checklistReports ?? []) },
+    };
+    const httpService: any = {};
+    const configService: any = { get: jest.fn(() => undefined) };
+    // Bỏ qua cache: gọi thẳng factory để test logic tính toán, không phải cơ chế cache.
+    const cacheService: any = { get: jest.fn((_key: string, _ttl: number, fn: () => any) => fn()) };
+    const service = new LarkService(httpService, configService, prisma, cacheService);
+    return service;
+  }
+
+  const REVENUE_KEY = 'Bạn đã đạt doanh thu của bao nhiêu video?';
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('lấy traffic/doanh thu từ tự báo cáo, KHÔNG dùng kpi.traffic_month/revenue_month (dù kpi có giá trị)', async () => {
+    const service = buildWithPrisma({
+      users: [
+        { email: 'alice@x.com', full_name: 'Alice A', team: 'Team K1', roles: [], _count: { tracked_channels: 0 } },
+      ],
+      // kpi.traffic_month/revenue_month cố tình để giá trị rất lớn — nếu code còn dùng nguồn này,
+      // assertion bên dưới sẽ fail vì tổng sẽ ra 999999999 thay vì số tự báo cáo nhỏ hơn nhiều.
+      kpis: [
+        {
+          name: 'Alice A', team: 'Team K1', month: 'T7', report_date: new Date('2026-07-15T05:00:00Z'),
+          state: null, kpi_day: 0, kpi_month: 50, completed_day: 0, completed_month: 5,
+          traffic_month: 999999999, revenue_month: 888888888,
+        },
+      ],
+      trafficReports: [
+        { email: 'alice@x.com', name: 'Alice A', team: 'Team K1', total_traffic: 12345 },
+      ],
+      checklistReports: [
+        { email: 'alice@x.com', name: 'Alice A', team: 'Team K1', answers: { [REVENUE_KEY]: 7777 } },
+      ],
+    });
+
+    const result = await service.getDashboardAnalytics({ startDate: '2026-07-01', endDate: '2026-07-31' });
+
+    expect(result.summary.totalTraffic).toBe(12345);
+    expect(result.summary.totalRevenue).toBe(7777);
+    expect(result.summary.totalVideos).toBe(5); // completed_month vẫn từ kpi — không đổi
+  });
+
+  it('người CHỈ có tự báo cáo (không có dòng kpi/task nào trong kỳ) vẫn được cộng vào tổng', async () => {
+    const service = buildWithPrisma({
+      users: [
+        { email: 'bob@x.com', full_name: 'Bob B', team: 'Team K2', roles: [], _count: { tracked_channels: 0 } },
+      ],
+      kpis: [], // job sync Lark không có dòng nào cho Bob (đã dừng từ 2026-07-11)
+      trafficReports: [
+        { email: 'bob@x.com', name: 'Bob B', team: 'Team K2', total_traffic: 500 },
+      ],
+      checklistReports: [],
+    });
+
+    const result = await service.getDashboardAnalytics({ startDate: '2026-07-01', endDate: '2026-07-31' });
+
+    expect(result.summary.totalTraffic).toBe(500);
+    expect(result.summary.totalRevenue).toBe(0);
+  });
+
+  it('lọc theo team: người tự báo cáo KHÁC team đang lọc không được cộng vào tổng', async () => {
+    const service = buildWithPrisma({
+      users: [
+        { email: 'alice@x.com', full_name: 'Alice A', team: 'Team K1', roles: [], _count: { tracked_channels: 0 } },
+        { email: 'bob@x.com', full_name: 'Bob B', team: 'Team K2', roles: [], _count: { tracked_channels: 0 } },
+      ],
+      kpis: [],
+      trafficReports: [
+        { email: 'alice@x.com', name: 'Alice A', team: 'Team K1', total_traffic: 111 },
+        { email: 'bob@x.com', name: 'Bob B', team: 'Team K2', total_traffic: 999 },
+      ],
+      checklistReports: [],
+    });
+
+    const result = await service.getDashboardAnalytics({
+      startDate: '2026-07-01', endDate: '2026-07-31', team: 'Team K1',
+    });
+
+    expect(result.summary.totalTraffic).toBe(111); // Bob (Team K2) bị loại khỏi tổng
+  });
+
+  it('đáp án doanh thu null/rỗng trong checklist không cộng dồn thành NaN hay lỗi', async () => {
+    const service = buildWithPrisma({
+      users: [
+        { email: 'alice@x.com', full_name: 'Alice A', team: 'Team K1', roles: [], _count: { tracked_channels: 0 } },
+      ],
+      kpis: [],
+      trafficReports: [],
+      checklistReports: [
+        { email: 'alice@x.com', name: 'Alice A', team: 'Team K1', answers: { [REVENUE_KEY]: null } },
+      ],
+    });
+
+    const result = await service.getDashboardAnalytics({ startDate: '2026-07-01', endDate: '2026-07-31' });
+
+    expect(result.summary.totalRevenue).toBe(0);
+    expect(Number.isNaN(result.summary.totalRevenue)).toBe(false);
+  });
+});

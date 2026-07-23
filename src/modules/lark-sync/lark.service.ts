@@ -4222,7 +4222,7 @@ export class LarkService implements OnModuleInit {
         }
 
         // Fetch everything
-        const [tasks, allKpisInDb, usersWithChannels, allChannels] = await Promise.all([
+        const [tasks, allKpisInDb, usersWithChannels, allChannels, trafficReportsInRange, checklistReportsForRevenue] = await Promise.all([
             this.prisma.reportedTask.findMany({
                 where: {
                     date: { gte: start, lte: end },
@@ -4270,7 +4270,18 @@ export class LarkService implements OnModuleInit {
                     status: { equals: 'Đang hoạt động', mode: 'insensitive' },
                     ...(teamFilter ? { team_traffic: { contains: teamFilter, mode: 'insensitive' } } : {})
                 }
-            })
+            }),
+            // Traffic/doanh thu tự báo cáo hàng ngày (checklist + traffic report) — nguồn thay thế cho
+            // kpi.traffic_month/revenue_month (job sync Lark ngoài, thường trống cho phần lớn team và
+            // đã tạm dừng từ 2026-07-11 — xem AdminOverviewFiltersContext.tsx phía FE).
+            this.prisma.trafficReport.findMany({
+                where: { date: { gte: start, lte: end } },
+                select: { email: true, name: true, team: true, total_traffic: true },
+            }),
+            this.prisma.checklistReport.findMany({
+                where: { date: { gte: start, lte: end } },
+                select: { email: true, name: true, team: true, answers: true },
+            }),
         ]);
 
         // Filter KPIs matching the selected period
@@ -4309,6 +4320,39 @@ export class LarkService implements OnModuleInit {
                     activeTeamMembers.push(u);
                 }
             }
+        });
+
+        // Traffic/doanh thu tự báo cáo: quy về 1 "canonical key" (ưu tiên email thật từ bảng users,
+        // fallback nameKey) để khớp đúng người dù nguồn (kpi/task/trafficReport/checklistReport) có
+        // email hay không — kpi.employee_data thường rỗng nên nhiều dòng kpi chỉ định danh được qua tên.
+        const resolveCanonicalKey = (rawEmail: string | null | undefined, rawName: string | null | undefined): string | null => {
+            const email = (rawEmail || '').toLowerCase().trim();
+            if (email) return email;
+            const nameKey = rawName ? rawName.toLowerCase().trim().replace(/\s+/g, ' ') : '';
+            if (!nameKey) return null;
+            const byName = employeeMapByName.get(nameKey);
+            return byName?.email?.toLowerCase().trim() || nameKey;
+        };
+
+        const REVENUE_ANSWER_KEY = 'Bạn đã đạt doanh thu của bao nhiêu video?';
+
+        const selfReportedTraffic = new Map<string, number>();
+        trafficReportsInRange.forEach((tr: any) => {
+            const key = resolveCanonicalKey(tr.email, tr.name);
+            if (!key) return;
+            selfReportedTraffic.set(key, (selfReportedTraffic.get(key) || 0) + Number(tr.total_traffic || 0));
+        });
+
+        const selfReportedRevenue = new Map<string, number>();
+        checklistReportsForRevenue.forEach((cr: any) => {
+            const key = resolveCanonicalKey(cr.email, cr.name);
+            if (!key) return;
+            let answers: any = cr.answers;
+            if (typeof answers === 'string') {
+                try { answers = JSON.parse(answers); } catch { answers = null; }
+            }
+            const val = answers && typeof answers === 'object' ? Number(answers[REVENUE_ANSWER_KEY]) || 0 : 0;
+            if (val > 0) selfReportedRevenue.set(key, (selfReportedRevenue.get(key) || 0) + val);
         });
 
         // 2. Build name -> team map from KPI data
@@ -4513,6 +4557,43 @@ export class LarkService implements OnModuleInit {
                 channels: channelsByOwnerMap.get((stub.name || '').toLowerCase().trim().replace(/\s+/g, ' ')) || user?._count?.tracked_channels || 0,
                 isLeader: user?.roles?.includes(UserRole.MANAGER) || user?.roles?.includes(UserRole.ADMIN) || false
             });
+        });
+
+        // 3b. Traffic/doanh thu: thay nguồn kpi.traffic_month/revenue_month bằng tổng tự báo cáo hàng
+        // ngày (traffic report + đáp án doanh thu trong checklist). Ghi đè mọi entry đã có (kể cả người
+        // có dòng kpi/task nhưng traffic/revenue Lark trống), và thêm entry cho người CHỈ có tự báo cáo
+        // mà chưa từng có dòng kpi/task nào trong kỳ — phổ biến từ khi job sync Lark dừng 2026-07-11.
+        const selfReportedKeys = new Set<string>([...selfReportedTraffic.keys(), ...selfReportedRevenue.keys()]);
+        const existingCanonicalKeys = new Set(
+            Array.from(empStats.values()).map((s) => resolveCanonicalKey(s.email, s.name)),
+        );
+
+        selfReportedKeys.forEach((canonicalKey) => {
+            if (existingCanonicalKeys.has(canonicalKey)) return; // đã có entry, ghi đè traffic/revenue ở vòng dưới
+            const user = employeeMapByEmail.get(canonicalKey) || employeeMapByName.get(canonicalKey);
+            const resolvedTeam = user?.team || 'Khác';
+            if (teamFilter && !resolvedTeam.toLowerCase().includes(teamFilter) && !teamFilter.includes(resolvedTeam.toLowerCase())) {
+                return;
+            }
+            empStats.set(canonicalKey, {
+                name: user?.full_name || canonicalKey,
+                email: user?.email || (canonicalKey.includes('@') ? canonicalKey : ''),
+                empId: 'unknown',
+                team: resolvedTeam,
+                videoCount: 0,
+                kpiTarget: 0,
+                lineCounts: {},
+                traffic: 0,
+                revenue: 0,
+                channels: user?._count?.tracked_channels || 0,
+                isLeader: user?.roles?.includes(UserRole.MANAGER) || user?.roles?.includes(UserRole.ADMIN) || false,
+            });
+        });
+
+        empStats.forEach((stats) => {
+            const canonicalKey = resolveCanonicalKey(stats.email, stats.name);
+            stats.traffic = (canonicalKey && selfReportedTraffic.get(canonicalKey)) || 0;
+            stats.revenue = (canonicalKey && selfReportedRevenue.get(canonicalKey)) || 0;
         });
 
         // 4. Chart Data (Aggregate by Line)
