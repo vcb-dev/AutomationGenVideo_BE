@@ -2904,6 +2904,8 @@ model Task {
   deadline                  DateTime?
   run_id                    String?
   result_url                String?    @db.Text
+  /// Array<{ id: string; platform: string; url: string }> — link bài đăng editor tự đăng tay
+  published_links           Json?
   submitted_at              DateTime?
   reviewed_by_id            String?
   reviewed_at               DateTime?
@@ -3052,6 +3054,8 @@ model Notification {
   type       String
   title      String
   body       String?
+  /// Payload có cấu trúc cho các loại thông báo cần render chi tiết (vd AUTO_ASSIGN_EMPTY_WAREHOUSE)
+  meta       Json?
   task_id    String?
   is_read    Boolean   @default(false)
   /// Dùng cho cron cleanup — NULL = không tự xóa, có giá trị = xóa sau ngày này

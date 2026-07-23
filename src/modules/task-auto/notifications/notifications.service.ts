@@ -13,6 +13,7 @@ export class NotificationsService {
   async findAll(userId: string, q: QueryNotificationDto) {
     const where: any = { user_id: userId };
     if (q.unread_only) where.is_read = false;
+    if (q.type) where.type = q.type;
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 20;

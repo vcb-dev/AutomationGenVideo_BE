@@ -18,6 +18,11 @@ export class QueryNotificationDto {
   @IsOptional()
   unread_only?: boolean;
 
+  @ApiPropertyOptional({ description: "Lọc theo type, vd AUTO_ASSIGN_EMPTY_WAREHOUSE" })
+  @IsString()
+  @IsOptional()
+  type?: string;
+
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()

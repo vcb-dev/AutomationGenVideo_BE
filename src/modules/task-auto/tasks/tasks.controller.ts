@@ -31,6 +31,7 @@ import {
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
+  UpdatePublishedLinksDto,
   GenerateVideoScriptDto,
   UpdateVideoScriptDto,
   TranslateVideoScriptDto,
@@ -100,6 +101,24 @@ export class TaskAutoTasksController {
     @Request() req: any,
   ) {
     return this.tasks.review(id, dto, req.user.id);
+  }
+
+  @Patch("tasks/:id/published-links")
+  @ApiOperation({
+    summary:
+      "Nộp/sửa/xoá danh sách link bài đăng đã đăng tay (nền tảng tự do, chỉ khi task APPROVED)",
+  })
+  updatePublishedLinks(
+    @Param("id") id: string,
+    @Body() dto: UpdatePublishedLinksDto,
+    @Request() req: any,
+  ) {
+    return this.tasks.updatePublishedLinks(
+      id,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Delete("tasks/:id")
