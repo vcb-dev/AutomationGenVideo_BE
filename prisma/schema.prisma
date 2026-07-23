@@ -3060,6 +3060,8 @@ model Notification {
   type       String
   title      String
   body       String?
+  /// Payload có cấu trúc cho các loại thông báo cần render chi tiết (vd AUTO_ASSIGN_EMPTY_WAREHOUSE)
+  meta       Json?
   task_id    String?
   is_read    Boolean   @default(false)
   /// Dùng cho cron cleanup — NULL = không tự xóa, có giá trị = xóa sau ngày này
