@@ -4014,6 +4014,157 @@ export class LarkService implements OnModuleInit {
         return this.cacheService.get(cacheKey, 3 * 60 * 1000, () => this.dashboardReadSemaphore.run(() => this._buildDashboardAnalytics(filters)));
     }
 
+    /**
+     * Dashboard "5A" (Admin xem toàn công ty / Leader xem team mình) — gộp KPI thật từ Lark
+     * (getDashboardAnalytics) với roster thật từ bảng Team/TeamMember (task-auto), và danh sách
+     * kênh thật từ Channel. `team` filter đã được controller khoá cứng theo quyền trước khi gọi vào đây.
+     *
+     * KHÔNG trả breakdown theo A1-A5 (phễu 5A): hệ thống hiện chưa phân loại video theo tier này ở
+     * bất kỳ bảng nào (ContentLine chỉ có 5 dòng tên A1..A5 nhưng gần như không có task nào gắn vào
+     * — đã verify trực tiếp trên DB thật). FE phải tự hiển thị "chưa có dữ liệu" cho phần này thay vì
+     * suy diễn/áng chừng số liệu.
+     */
+    async getDashboard5A(filters: { startDate?: string; endDate?: string; team?: string }) {
+        const teamFilter = filters.team && filters.team !== 'All' ? filters.team : undefined;
+
+        const [analytics, teams, channels, kpiFreshness] = await Promise.all([
+            this.getDashboardAnalytics({ startDate: filters.startDate, endDate: filters.endDate, team: teamFilter }),
+            this.prisma.team.findMany({
+                where: teamFilter
+                    ? { name: { equals: teamFilter, mode: 'insensitive' } }
+                    : { is_active: true },
+                select: {
+                    id: true,
+                    name: true,
+                    market: true,
+                    leader: { select: { id: true, full_name: true } },
+                    members: { select: { user_id: true } },
+                },
+                orderBy: { name: 'asc' },
+            }),
+            this.prisma.channel.findMany({
+                where: teamFilter
+                    ? { channel_team: { name: { equals: teamFilter, mode: 'insensitive' } } }
+                    : undefined,
+                select: {
+                    id: true,
+                    name: true,
+                    platform: true,
+                    status: true,
+                    channel_team: { select: { name: true } },
+                },
+                orderBy: [{ platform: 'asc' }, { name: 'asc' }],
+            }),
+            // Mốc đồng bộ Lark thật gần nhất — KHÔNG lọc theo startDate/endDate (đây là watermark
+            // toàn cục, không phải số liệu trong kỳ). Dùng để cảnh báo FE khi job sync KPI đã dừng/trễ
+            // (đã từng xảy ra: container video_production_app tắt 2026-07-11 khiến KPI ngừng tự sync).
+            this.prisma.kpi.aggregate({
+                _max: { report_date: true },
+                where: teamFilter ? { team: { equals: teamFilter, mode: 'insensitive' } } : undefined,
+            }),
+        ]);
+
+        // Team KPI (Lark) đang key theo tên team dạng free-text — khớp với teams.name theo tên (đã
+        // verify trên DB thật: "Team K1", "Global - JP1"... trùng nhau giữa 2 bảng).
+        const kpiTeamsByName = new Map<string, { stats: { videos: number; traffic: number; revenue: number; kpiTarget: number } }>();
+        for (const t of [...analytics.regionalStats.vn.teams, ...analytics.regionalStats.global.teams]) {
+            kpiTeamsByName.set((t.name || '').toLowerCase().trim(), t as any);
+        }
+
+        const teamRows = teams.map((t) => {
+            const kpiTeam = kpiTeamsByName.get(t.name.toLowerCase().trim());
+            const videos = kpiTeam?.stats.videos ?? 0;
+            const target = kpiTeam?.stats.kpiTarget ?? 0;
+            return {
+                id: t.id,
+                name: t.name,
+                market: t.market,
+                leaderName: t.leader?.full_name ?? null,
+                staffCount: t.members.length,
+                videoCount: videos,
+                traffic: Math.round(kpiTeam?.stats.traffic ?? 0),
+                revenue: Math.round(kpiTeam?.stats.revenue ?? 0),
+                kpiTarget: target,
+                progressPct: target > 0 ? Math.round((videos / target) * 100) : null,
+            };
+        });
+
+        return {
+            kpi: {
+                totalVideos: analytics.summary.totalVideos,
+                prevVideos: analytics.summary.prevVideos,
+                totalTraffic: analytics.summary.totalTraffic,
+                totalRevenue: analytics.summary.totalRevenue,
+                totalKpiTarget: analytics.summary.totalKpiTarget,
+                progressPct: analytics.summary.progressPct,
+                /** Ngày report_date mới nhất có trong lark_kpi (không lọc theo startDate/endDate) —
+                 * null nếu chưa từng có dòng nào khớp team filter. FE dùng để cảnh báo dữ liệu cũ. */
+                lastSyncedAt: kpiFreshness._max.report_date,
+            },
+            teams: teamRows,
+            channels: channels.map((c) => ({
+                id: c.id,
+                name: c.name,
+                platform: c.platform,
+                team: c.channel_team?.name ?? null,
+                status: c.status,
+            })),
+            a5: {
+                available: false,
+                note: 'Hệ thống chưa phân loại video theo mô hình 5A (A1-A5) — chưa có dữ liệu thật để hiển thị.',
+            },
+        };
+    }
+
+    /**
+     * Bản gộp nhiều team cho leader đang lead CÙNG LÚC >1 team (có thật trên DB — vd 1 leader lead cả
+     * "Scale Data" + "Team K1" + "MEDIA"). `getDashboardAnalytics()` gốc chỉ nhận 1 team filter dạng
+     * string nên KHÔNG sửa trực tiếp hàm đó (rủi ro động vào logic ngày-giờ đã được tune kỹ) — thay vào
+     * đó gọi getDashboard5A() riêng cho từng team rồi gộp kết quả ở đây.
+     */
+    async getDashboard5AForTeams(filters: { startDate?: string; endDate?: string }, teamNames: string[]) {
+        if (teamNames.length === 0) {
+            // KHÔNG được gọi getDashboard5A({team: undefined}) ở đây — undefined nghĩa là "không lọc,
+            // xem hết công ty" (đúng cho admin), nếu lỡ gọi với danh sách team rỗng sẽ vô tình trả về
+            // dữ liệu TOÀN CÔNG TY thay vì rỗng — lộ dữ liệu cho người không thuộc team nào.
+            return {
+                kpi: null,
+                teams: [],
+                channels: [],
+                a5: { available: false as const, note: 'Không có team nào để hiển thị.' },
+            };
+        }
+        if (teamNames.length === 1) {
+            return this.getDashboard5A({ ...filters, team: teamNames[0] });
+        }
+
+        const results = await Promise.all(
+            teamNames.map((name) => this.getDashboard5A({ ...filters, team: name })),
+        );
+
+        const totalKpiTarget = results.reduce((s, r) => s + (r.kpi?.totalKpiTarget ?? 0), 0);
+        const totalVideos = results.reduce((s, r) => s + (r.kpi?.totalVideos ?? 0), 0);
+        const lastSyncedAt = results
+            .map((r) => r.kpi?.lastSyncedAt ?? null)
+            .filter((d): d is Date => d != null)
+            .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+        return {
+            kpi: {
+                totalVideos,
+                prevVideos: results.reduce((s, r) => s + (r.kpi?.prevVideos ?? 0), 0),
+                totalTraffic: results.reduce((s, r) => s + (r.kpi?.totalTraffic ?? 0), 0),
+                totalRevenue: results.reduce((s, r) => s + (r.kpi?.totalRevenue ?? 0), 0),
+                totalKpiTarget,
+                progressPct: totalKpiTarget > 0 ? Math.round((totalVideos / totalKpiTarget) * 100) : null,
+                lastSyncedAt,
+            },
+            teams: results.flatMap((r) => r.teams),
+            channels: results.flatMap((r) => r.channels),
+            a5: results[0].a5,
+        };
+    }
+
     private async _buildDashboardAnalytics(filters?: { startDate?: string; endDate?: string; team?: string }) {
         // `kpi.report_date` (và các cột `date`/`report_date` VN-normalized khác trong file này) lưu ở
         // 05:00 UTC (= 12:00 VN), KHÔNG phải UTC midnight. Trước đây `start`/`end` dùng `new Date('YYYY-MM-DD')`
@@ -4231,6 +4382,8 @@ export class LarkService implements OnModuleInit {
             empId: string,
             team: string,
             videoCount: number,
+            /** Tổng chỉ tiêu kpi_month (Lark) — dùng tính progress% thật, KHÔNG liên quan phễu A1-A5 */
+            kpiTarget: number,
             lineCounts: { [line: string]: number },
             traffic: number,
             revenue: number,
@@ -4249,6 +4402,7 @@ export class LarkService implements OnModuleInit {
             const trafficVal = Number(kpi.traffic_month || 0);
             const revenueVal = Number(kpi.revenue_month || 0);
             const videosVal = Number(kpi.completed_month || 0);
+            const kpiTargetVal = Number(kpi.kpi_month || 0);
             const teamName = kpi.team || 'Khác';
 
             // Filter by team if requested
@@ -4263,6 +4417,7 @@ export class LarkService implements OnModuleInit {
                 existing.videoCount = Math.max(existing.videoCount, videosVal);
                 existing.traffic = Math.max(existing.traffic, trafficVal);
                 existing.revenue = Math.max(existing.revenue, revenueVal);
+                existing.kpiTarget = Math.max(existing.kpiTarget, kpiTargetVal);
 
                 // If the selected range is just one day, we prefer that day's completed_day.
                 // So sánh theo ngày lịch VN (không dùng .toDateString() — chạy giờ local server,
@@ -4287,6 +4442,7 @@ export class LarkService implements OnModuleInit {
                     empId: kpi.employee_id || 'unknown',
                     team: teamName,
                     videoCount: effectiveVideoCount,
+                    kpiTarget: kpiTargetVal,
                     lineCounts: {},
                     traffic: trafficVal,
                     revenue: revenueVal,
@@ -4327,6 +4483,7 @@ export class LarkService implements OnModuleInit {
                     empId: task.employee_id || 'unknown',
                     team: resolvedTeam,
                     videoCount: 1,
+                    kpiTarget: 0,
                     lineCounts: { [task.content_type || 'Khác']: 1 },
                     traffic: 0,
                     revenue: 0,
@@ -4349,6 +4506,7 @@ export class LarkService implements OnModuleInit {
                 empId: stub.employee_id || 'unknown',
                 team: stub.team || 'Khác',
                 videoCount: 0,
+                kpiTarget: 0,
                 lineCounts: {},
                 traffic: 0,
                 revenue: 0,
@@ -4391,13 +4549,14 @@ export class LarkService implements OnModuleInit {
             // regional summary channel count is already set from Channel table direct count
 
             if (!target.teamsBySlug[teamSlug]) {
-                target.teamsBySlug[teamSlug] = { name: teamSlug, members: [], stats: { videos: 0, traffic: 0, revenue: 0, channels: 0 } };
+                target.teamsBySlug[teamSlug] = { name: teamSlug, members: [], stats: { videos: 0, traffic: 0, revenue: 0, channels: 0, kpiTarget: 0 } };
             }
             target.teamsBySlug[teamSlug].members.push(stats);
             target.teamsBySlug[teamSlug].stats.videos += stats.videoCount;
             target.teamsBySlug[teamSlug].stats.traffic += stats.traffic;
             target.teamsBySlug[teamSlug].stats.revenue += stats.revenue;
             target.teamsBySlug[teamSlug].stats.channels += stats.channels;
+            target.teamsBySlug[teamSlug].stats.kpiTarget += stats.kpiTarget;
         });
 
         const formatRegion = (region: any) => {
@@ -4428,6 +4587,7 @@ export class LarkService implements OnModuleInit {
         const totalVideosInRange = Array.from(empStats.values()).reduce((a, b) => a + Number(b.videoCount), 0);
         const totalTrafficInRange = Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.traffic, 0));
         const totalRevenueInRange = Math.round(Array.from(empStats.values()).reduce((a, b) => a + b.revenue, 0));
+        const totalKpiTargetInRange = Array.from(empStats.values()).reduce((a, b) => a + Number(b.kpiTarget), 0);
 
         return {
             chartData,
@@ -4435,7 +4595,9 @@ export class LarkService implements OnModuleInit {
                 totalVideos: totalVideosInRange,
                 prevVideos: prevTasksCount, // Note: Previous period comparison still uses tasks for now
                 totalTraffic: totalTrafficInRange,
-                totalRevenue: totalRevenueInRange
+                totalRevenue: totalRevenueInRange,
+                totalKpiTarget: totalKpiTargetInRange,
+                progressPct: totalKpiTargetInRange > 0 ? Math.round((totalVideosInRange / totalKpiTargetInRange) * 100) : null
             },
             regionalStats: {
                 vn: formatRegion(regionalStats.vn),

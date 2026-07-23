@@ -1139,7 +1139,10 @@ export class TaskAutoTasksService {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
-    const team = await this.prisma.team.findFirst({
+    // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
+    // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
+    // liệu các team còn lại của leader đó.
+    const teamsLed = await this.prisma.team.findMany({
       where: { leader_id: leaderId },
       include: {
         members: {
@@ -1151,7 +1154,7 @@ export class TaskAutoTasksService {
       },
     });
 
-    if (!team)
+    if (teamsLed.length === 0)
       return {
         scope: "team" as const,
         team: null,
@@ -1160,7 +1163,14 @@ export class TaskAutoTasksService {
         kpi: null,
       };
 
-    const memberIds = team.members.map((m) => m.user_id);
+    const teamIds = teamsLed.map((t) => t.id);
+    // Dedupe: về lý thuyết 1 user có thể là member của >1 team mà cùng 1 leader đang lead.
+    const memberByUserId = new Map<string, (typeof teamsLed)[number]["members"][number]>();
+    for (const t of teamsLed) {
+      for (const m of t.members) memberByUserId.set(m.user_id, m);
+    }
+    const memberRows = Array.from(memberByUserId.values());
+    const memberIds = memberRows.map((m) => m.user_id);
 
     const [
       tasksByStatus,
@@ -1172,7 +1182,7 @@ export class TaskAutoTasksService {
       this.prisma.task.groupBy({
         by: ["status"],
         where: {
-          team_id: team.id,
+          team_id: { in: teamIds },
           ...(range ? { created_at: range } : {}),
         },
         _count: { id: true },
@@ -1191,7 +1201,7 @@ export class TaskAutoTasksService {
       }),
       this.prisma.task.count({
         where: {
-          team_id: team.id,
+          team_id: { in: teamIds },
           status: "APPROVED",
           reviewed_at: { gte: monthStart, lt: monthEnd },
         },
@@ -1221,7 +1231,7 @@ export class TaskAutoTasksService {
     );
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
-    const members = team.members.map((m) => {
+    const members = memberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
       return {
         user_id: m.user_id,
@@ -1252,7 +1262,11 @@ export class TaskAutoTasksService {
 
     return {
       scope: "team" as const,
-      team: { id: team.id, name: team.name, member_count: team.members.length },
+      team: {
+        id: teamsLed[0].id,
+        name: teamsLed.map((t) => t.name).join(", "),
+        member_count: memberRows.length,
+      },
       tasks: {
         total: Object.values(taskMap).reduce((s, v) => s + v, 0),
         ...taskMap,
