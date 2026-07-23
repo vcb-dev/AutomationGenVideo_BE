@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger, OnModuleDestroy, OnModuleInit } 
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
+import { InstagramScraperService } from '../../instagram-scraper/instagram-scraper.service';
 import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
 
@@ -19,6 +20,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
+    private readonly instagramScraper: InstagramScraperService,
   ) { }
 
   async onModuleInit() {
@@ -299,6 +301,16 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
 
     // Nếu có Instagram Business Account liên kết → lưu luôn
     if (opts.igId) {
+      // Check TRƯỚC khi saveAccount (upsert) — cần biết đây là lần lưu ĐẦU TIÊN hay
+      // chỉ resync token, để không cào lại toàn bộ profile mỗi lần user bấm "Đồng bộ"
+      // hoặc mỗi lần reconnect Facebook (autoSaveFacebookPages lặp qua TẤT CẢ page mỗi
+      // lần chạy, kể cả page đã lưu từ trước — không guard ở đây thì user có nhiều IG
+      // Business account sẽ bị bắn hàng loạt request cào đồng thời mỗi lần resync).
+      const existingIgAccount = await this.prisma.socialAccount.findFirst({
+        where: { user_id: userId, platform: SocialPlatform.INSTAGRAM, platform_id: opts.igId },
+        select: { id: true },
+      });
+
       await this.saveAccount(userId, {
         platform: SocialPlatform.INSTAGRAM,
         platformId: opts.igId,
@@ -315,6 +327,16 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
           // pageToken KHÔNG lưu vào extra_data — đã mã hoá trong access_token_enc
         },
       });
+
+      // Tự động cào profile Instagram vừa kết nối qua Facebook Page — hiện luôn
+      // trong internalChannels/instagram (is_owned=true) mà không cần user nhập tay
+      // username. Chỉ cào cho account MỚI (fire-and-forget); account đã tồn tại thì
+      // để cron periodicRefresh lo, tránh cào trùng hàng loạt mỗi lần resync.
+      if (opts.igUsername && !existingIgAccount) {
+        this.instagramScraper.scrapeProfile(opts.igUsername, true).catch((err: any) => {
+          this.logger.warn(`[AutoScrape] Cào @${opts.igUsername} thất bại: ${err.message}`);
+        });
+      }
     }
 
     return { success: true, pageAccount: this.sanitize(pageAccount) };
@@ -416,86 +438,6 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       ...a,
       days_until_expiry: Math.ceil((a.token_expires_at!.getTime() - now.getTime()) / 86400000),
     }));
-  }
-
-  /**
-   * Xác thực token Instagram có hiệu lực không
-   * Sử dụng cho cả instagram_business (token của page) và instagram_direct (token của user)
-   */
-  async validateInstagramToken(token: string): Promise<{ userId: string; username?: string }> {
-    try {
-      // Thử lấy thông tin user từ Instagram API
-      const res = await axios.get('https://graph.instagram.com/v21.0/me', {
-        params: { fields: 'id,username', access_token: token },
-        timeout: 10000,
-      });
-      return { userId: res.data.id, username: res.data.username };
-    } catch (err: any) {
-      const detail = err.response?.data?.error?.message || err.message;
-      this.logger.error(`validateInstagramToken failed: ${detail}`);
-      throw new Error(`Token Instagram không hợp lệ: ${detail}`);
-    }
-  }
-
-  /**
-   * Thêm tài khoản Instagram thủ công (không liên kết qua Facebook)
-   * Loại: instagram_direct
-   */
-  async addManualInstagramAccount(userId: string, data: {
-    name: string;
-    username: string;
-    access_token: string;
-    parent_id?: string;
-    avatar_url?: string;
-  }): Promise<any> {
-    this.logger.log(`[ManualIG] Thêm tài khoản Instagram thủ công: ${data.username}`);
-
-    // Xác thực token
-    const tokenInfo = await this.validateInstagramToken(data.access_token);
-
-    // Nếu có parent_id, kiểm tra parent account tồn tại và user là owner
-    if (data.parent_id) {
-      await this.findOneOwned(data.parent_id, userId);
-    }
-
-    // Lưu tài khoản Instagram
-    const account = await this.saveAccount(userId, {
-      platform: SocialPlatform.INSTAGRAM,
-      platformId: tokenInfo.userId,
-      name: data.name,
-      username: data.username,
-      avatarUrl: data.avatar_url,
-      accessToken: data.access_token,
-      parentId: data.parent_id || null,
-      extraData: {
-        type: 'instagram_direct', // Loại: direct, không qua Facebook API
-        igUserId: tokenInfo.userId,
-        isManual: true, // Đánh dấu là thêm thủ công
-        addedAt: new Date().toISOString(),
-      },
-    });
-
-    this.logger.log(`[ManualIG] ✅ Đã thêm tài khoản Instagram: ${account.name} (${account.username})`);
-    return { success: true, account: this.sanitize(account) };
-  }
-
-  /**
-   * Lấy danh sách tài khoản Instagram thủ công (instagram_direct) của user
-   */
-  async getManualInstagramAccounts(userId: string): Promise<any[]> {
-    const accounts = await this.prisma.socialAccount.findMany({
-      where: {
-        user_id: userId,
-        platform: SocialPlatform.INSTAGRAM,
-        is_active: true,
-        extra_data: {
-          path: ['type'],
-          equals: 'instagram_direct',
-        },
-      },
-      orderBy: { created_at: 'desc' },
-    });
-    return accounts.map(a => this.sanitize(a));
   }
 
   /**

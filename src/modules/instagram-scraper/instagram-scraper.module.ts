@@ -23,5 +23,6 @@ import { InstagramScraperCronService } from './instagram-scraper-cron.service';
   ],
   controllers: [InstagramScraperController],
   providers: [InstagramScraperService, InstagramScraperReadService, InstagramAiClientService, InstagramScraperCronService],
+  exports: [InstagramScraperService],
 })
 export class InstagramScraperModule {}
