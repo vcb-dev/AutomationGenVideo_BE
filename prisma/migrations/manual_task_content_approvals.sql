@@ -1,7 +1,10 @@
+-- DEPRECATED cho CI/CD: dùng migration chuẩn thay thế:
+--   prisma/migrations/20260724120000_add_task_content_approvals/migration.sql
+-- File manual_* không được `prisma migrate deploy` chạy.
+--
 -- TaskContentApproval: hàng đợi duyệt content mới do editor viết trong task detail
 -- (task_video_scripts.content) trước khi bắt đầu làm task. Leader/Admin/Manager duyệt.
 -- Partial unique index chặn trùng request PENDING cho cùng task (bị từ chối vẫn gửi lại được).
--- Applied via `prisma db execute` (không dùng `prisma migrate dev` — xem các file manual_*.sql khác).
 
 CREATE TABLE "task_content_approvals" (
     "id" TEXT NOT NULL,
