@@ -1,18 +1,10 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
-import axios from 'axios';
-
-/** Tạo platformId ổn định từ access_token để tránh tạo duplicate accounts */
-function tokenHash(token: string): string {
-  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
-}
 import { AccountsService } from '../accounts/accounts.service';
 import { FacebookOAuthStrategy } from './strategies/facebook.strategy';
 import { InstagramOAuthStrategy } from './strategies/instagram.strategy';
-import { TiktokOAuthStrategy } from './strategies/tiktok.strategy';
 import { ThreadsOAuthStrategy } from './strategies/threads.strategy';
 import { YoutubeOAuthStrategy } from './strategies/youtube.strategy';
-import { ZaloOAuthStrategy } from './strategies/zalo.strategy';
 import { SocialPlatform } from '@prisma/client';
 
 const STATE_TTL_MS = 15 * 60 * 1000; // 15 phút
@@ -59,10 +51,8 @@ export class OAuthService {
     private readonly accounts: AccountsService,
     private readonly facebook: FacebookOAuthStrategy,
     private readonly instagram: InstagramOAuthStrategy,
-    private readonly tiktok: TiktokOAuthStrategy,
     private readonly threads: ThreadsOAuthStrategy,
     private readonly youtube: YoutubeOAuthStrategy,
-    private readonly zalo: ZaloOAuthStrategy,
   ) {}
 
   async getAuthUrl(platform: string, userId: string, extra?: { igMode?: string }): Promise<{ url: string }> {
@@ -81,15 +71,6 @@ export class OAuthService {
         url = this.instagram.getAuthUrl(state, igMode);
         break;
       }
-      case 'TIKTOK': {
-        // TikTok cần PKCE verifier → encode vào state
-        const { codeVerifier } = this.tiktok.getAuthUrl('');
-        const state = encodeState({ userId, platform, codeVerifier });
-        // Rebuild URL với state mới (tiktok strategy đã tạo challenge từ verifier)
-        const { url: finalUrl } = this.tiktok.getAuthUrlWithState(state, codeVerifier);
-        url = finalUrl;
-        break;
-      }
       case 'THREADS': {
         const state = encodeState({ userId, platform });
         url = this.threads.getAuthUrl(state);
@@ -98,13 +79,6 @@ export class OAuthService {
       case 'YOUTUBE': {
         const state = encodeState({ userId, platform });
         url = this.youtube.getAuthUrl(state);
-        break;
-      }
-      case 'ZALO': {
-        // Zalo PKCE: encode verifier vào state
-        const { url: authUrl, codeVerifier } = this.zalo.getAuthUrlWithVerifier();
-        const state = encodeState({ userId, platform, codeVerifier });
-        url = this.zalo.buildAuthUrl(state, codeVerifier);
         break;
       }
       default:
@@ -128,7 +102,7 @@ export class OAuthService {
       throw new BadRequestException('OAuth state không hợp lệ. Vui lòng thử lại.');
     }
 
-    const { userId, codeVerifier } = decoded;
+    const { userId } = decoded;
     let result: any;
 
     switch (platform) {
@@ -139,18 +113,8 @@ export class OAuthService {
         result = await this.instagram.exchangeCode(code, igMode);
         break;
       }
-      case 'TIKTOK': {
-        if (!codeVerifier) throw new BadRequestException('TikTok PKCE verifier thiếu trong state');
-        result = await this.tiktok.exchangeCode(code, state, codeVerifier);
-        break;
-      }
       case 'THREADS': result = await this.threads.exchangeCode(code); break;
       case 'YOUTUBE': result = await this.youtube.exchangeCode(code); break;
-      case 'ZALO': {
-        if (!codeVerifier) throw new BadRequestException('Zalo PKCE verifier thiếu trong state');
-        result = await this.zalo.exchangeCode(code, codeVerifier);
-        break;
-      }
       default:
         throw new BadRequestException(`Platform không hỗ trợ: ${platform}`);
     }
@@ -177,49 +141,5 @@ export class OAuthService {
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);
     return { success: true };
-  }
-
-  async connectViaToken(
-    platform: string,
-    userId: string,
-    body: { access_token: string; refresh_token?: string; page_id?: string },
-  ) {
-    const validPlatforms = Object.values(SocialPlatform) as string[];
-    if (!validPlatforms.includes(platform)) {
-      throw new BadRequestException(`Platform không hợp lệ: ${platform}`);
-    }
-
-    // Dùng hash của token làm platformId fallback — đảm bảo idempotent (cùng token → cùng account)
-    let platformId = `manual_${tokenHash(body.access_token)}`;
-    let name = `${platform} Account`;
-    let username = '';
-
-    try {
-      if (platform === 'FACEBOOK') {
-        const r = await axios.get('https://graph.facebook.com/v21.0/me', {
-          params: { access_token: body.access_token, fields: 'id,name' },
-          timeout: 10000,
-        });
-        platformId = r.data.id; name = r.data.name; username = r.data.id;
-      } else if (platform === 'THREADS') {
-        const r = await axios.get('https://graph.threads.net/v1.0/me', {
-          params: { access_token: body.access_token, fields: 'id,username,name' },
-          timeout: 10000,
-        });
-        platformId = r.data.id; name = r.data.name || r.data.username; username = r.data.username;
-      }
-    } catch (e: any) {
-      this.logger.warn(`[connectViaToken] profile fetch failed: ${e.message}`);
-    }
-
-    await this.accounts.saveAccount(userId, {
-      platform: platform as SocialPlatform,
-      platformId, name, username,
-      accessToken: body.access_token,
-      refreshToken: body.refresh_token,
-      extraData: body.page_id ? { pageId: body.page_id } : undefined,
-    });
-
-    return { success: true, platform, name };
   }
 }

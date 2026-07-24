@@ -25,6 +25,8 @@ export type ProductPoolItem = {
   source_product_id?: string | null;
   // Override cooldown riêng của sản phẩm; null = dùng default_cooldown_days toàn cục
   cooldown_days: number | null;
+  // Chỉ có giá trị cho SP kho team — dùng để nêu tên cụ thể trong thông báo kho tháng rỗng
+  name?: string | null;
 };
 
 // ── Editor ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+import { InstagramScraperModule } from '../instagram-scraper/instagram-scraper.module';
 
 // Upload
 import { UploadController } from './upload/upload.controller';
@@ -24,20 +25,16 @@ import { OAuthController } from './oauth/oauth.controller';
 import { OAuthService } from './oauth/oauth.service';
 import { FacebookOAuthStrategy } from './oauth/strategies/facebook.strategy';
 import { InstagramOAuthStrategy } from './oauth/strategies/instagram.strategy';
-import { TiktokOAuthStrategy } from './oauth/strategies/tiktok.strategy';
 import { ThreadsOAuthStrategy } from './oauth/strategies/threads.strategy';
 import { YoutubeOAuthStrategy } from './oauth/strategies/youtube.strategy';
-import { ZaloOAuthStrategy } from './oauth/strategies/zalo.strategy';
 
 // Publish
 import { PublishController } from './publish/publish.controller';
 import { PublishService } from './publish/publish.service';
 import { FacebookPublisher } from './publish/platforms/facebook.platform';
 import { InstagramPublisher } from './publish/platforms/instagram.platform';
-import { TiktokPublisher } from './publish/platforms/tiktok.platform';
 import { ThreadsPublisher } from './publish/platforms/threads.platform';
 import { YoutubePublisher } from './publish/platforms/youtube.platform';
-import { ZaloPublisher } from './publish/platforms/zalo.platform';
 
 // Schedule
 import { ScheduleController } from './schedule/schedule.controller';
@@ -58,12 +55,8 @@ import { DraftsService } from './drafts/drafts.service';
 // Hashtag
 import { HashtagController } from './hashtag/hashtag.controller';
 
-// TikTok Clone
-import { TiktokCloneController } from './tiktok-clone/tiktok-clone.controller';
-import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
-
 @Module({
-  imports: [PrismaModule, MulterModule.register()],
+  imports: [PrismaModule, MulterModule.register(), InstagramScraperModule],
   controllers: [
     UploadController,
     MediaController,
@@ -77,7 +70,6 @@ import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
     HistoryController,
     DraftsController,
     HashtagController,
-    TiktokCloneController,
   ],
   providers: [
     // Core
@@ -92,18 +84,14 @@ import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
     OAuthService,
     FacebookOAuthStrategy,
     InstagramOAuthStrategy,
-    TiktokOAuthStrategy,
     ThreadsOAuthStrategy,
     YoutubeOAuthStrategy,
-    ZaloOAuthStrategy,
     // Publish
     PublishService,
     FacebookPublisher,
     InstagramPublisher,
-    TiktokPublisher,
     ThreadsPublisher,
     YoutubePublisher,
-    ZaloPublisher,
     // Schedule
     ScheduleService,
     // Queue
@@ -112,8 +100,6 @@ import { TiktokCloneService } from './tiktok-clone/tiktok-clone.service';
     HistoryService,
     // Drafts
     DraftsService,
-    // TikTok Clone
-    TiktokCloneService,
   ],
   exports: [AccountsService, PublishService, GoogleDriveStorageService],
 })

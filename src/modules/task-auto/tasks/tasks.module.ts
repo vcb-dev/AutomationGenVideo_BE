@@ -6,6 +6,7 @@ import { VideoModule } from '../video/video.module'
 import { TaskAutoTasksService } from './tasks.service'
 import { TaskAutoTasksController } from './tasks.controller'
 import { VideoScriptService } from './video-script.service'
+import { ContentApprovalService } from './content-approval.service'
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { VideoScriptService } from './video-script.service'
     MulterModule.register({ storage: memoryStorage() }),
   ],
   controllers: [TaskAutoTasksController],
-  providers: [TaskAutoTasksService, VideoScriptService],
+  providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService],
   exports: [TaskAutoTasksService],
 })
 export class TasksModule {}

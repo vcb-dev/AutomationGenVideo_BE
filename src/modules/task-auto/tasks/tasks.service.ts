@@ -5,7 +5,6 @@ import {
   BadRequestException,
   Logger,
 } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -15,6 +14,7 @@ import {
   QueryTaskDto,
   SubmitTaskDto,
   ReviewTaskDto,
+  UpdatePublishedLinksDto,
 } from "./task.dto";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
@@ -702,80 +702,68 @@ export class TaskAutoTasksService {
     const hasProduct =
       dto.product_id || dto.editor_product_id || dto.team_product_id;
 
-    const task = await this.prisma
-      .$transaction(
-        async (tx) => {
-          if (dto.assignee_id && hasProduct) {
-            const duplicate = await tx.task.findFirst({
-              where: {
-                assignee_id: dto.assignee_id,
-                ...(dto.content_id ? { content_id: dto.content_id } : {}),
-                ...(dto.editor_content_id
-                  ? { editor_content_id: dto.editor_content_id }
-                  : {}),
-                ...(dto.team_content_id
-                  ? { team_content_id: dto.team_content_id }
-                  : {}),
-                ...(dto.product_id ? { product_id: dto.product_id } : {}),
-                ...(dto.editor_product_id
-                  ? { editor_product_id: dto.editor_product_id }
-                  : {}),
-                ...(dto.team_product_id
-                  ? { team_product_id: dto.team_product_id }
-                  : {}),
-              },
-              select: { id: true },
-            });
-            if (duplicate) {
-              throw new BadRequestException(
-                "Editor này đã có task với cặp content + sản phẩm này",
-              );
-            }
-          }
-
-          return tx.task.create({
-            data: {
-              team_id: dto.team_id,
-              content_id: dto.content_id ?? null,
-              editor_content_id: dto.editor_content_id ?? null,
-              team_content_id: dto.team_content_id ?? null,
-              product_id: dto.product_id ?? null,
-              editor_product_id: dto.editor_product_id ?? null,
-              team_product_id: dto.team_product_id ?? null,
-              content_line_id: dto.content_line_id ?? resolvedContentLineId,
-              source_outro_id: dto.source_outro_id ?? null,
-              source_extra_id: dto.source_extra_id ?? null,
-              source_workshop_id: dto.source_workshop_id ?? null,
-              source_huyk_id: dto.source_huyk_id ?? null,
-              editor_source_outro_id: dto.editor_source_outro_id ?? null,
-              editor_source_extra_id: dto.editor_source_extra_id ?? null,
-              editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
-              editor_source_huyk_id: dto.editor_source_huyk_id ?? null,
-              team_source_outro_id: dto.team_source_outro_id ?? null,
-              team_source_extra_id: dto.team_source_extra_id ?? null,
-              team_source_workshop_id: dto.team_source_workshop_id ?? null,
-              team_source_huyk_id: dto.team_source_huyk_id ?? null,
-              assignee_id: dto.assignee_id,
-              deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
-              status: dto.assignee_id ? "ASSIGNED" : "PENDING",
-              assigned_at: dto.assignee_id ? new Date() : undefined,
-            },
-            include: this.taskDetailInclude,
-          });
+    // Không dùng interactive transaction ($transaction(async tx => ...)) ở đây:
+    // DATABASE_URL chạy qua Supabase pgbouncer (transaction-pooling mode, port 6543),
+    // pooler có thể thu hồi connection giữa 2 lệnh trong 1 transaction đang mở, khiến
+    // Prisma báo "Transaction API error: Transaction not found...". Tách thành 2 lệnh
+    // độc lập để mỗi lệnh tự đóng gói trong 1 statement, tương thích với pgbouncer.
+    if (dto.assignee_id && hasProduct) {
+      const duplicate = await this.prisma.task.findFirst({
+        where: {
+          assignee_id: dto.assignee_id,
+          ...(dto.content_id ? { content_id: dto.content_id } : {}),
+          ...(dto.editor_content_id
+            ? { editor_content_id: dto.editor_content_id }
+            : {}),
+          ...(dto.team_content_id
+            ? { team_content_id: dto.team_content_id }
+            : {}),
+          ...(dto.product_id ? { product_id: dto.product_id } : {}),
+          ...(dto.editor_product_id
+            ? { editor_product_id: dto.editor_product_id }
+            : {}),
+          ...(dto.team_product_id
+            ? { team_product_id: dto.team_product_id }
+            : {}),
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      )
-      .catch((err) => {
-        if (
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2034"
-        ) {
-          throw new BadRequestException(
-            "Editor này đã có task với cặp content + sản phẩm này",
-          );
-        }
-        throw err;
+        select: { id: true },
       });
+      if (duplicate) {
+        throw new BadRequestException(
+          "Editor này đã có task với cặp content + sản phẩm này",
+        );
+      }
+    }
+
+    const task = await this.prisma.task.create({
+      data: {
+        team_id: dto.team_id,
+        content_id: dto.content_id ?? null,
+        editor_content_id: dto.editor_content_id ?? null,
+        team_content_id: dto.team_content_id ?? null,
+        product_id: dto.product_id ?? null,
+        editor_product_id: dto.editor_product_id ?? null,
+        team_product_id: dto.team_product_id ?? null,
+        content_line_id: dto.content_line_id ?? resolvedContentLineId,
+        source_outro_id: dto.source_outro_id ?? null,
+        source_extra_id: dto.source_extra_id ?? null,
+        source_workshop_id: dto.source_workshop_id ?? null,
+        source_huyk_id: dto.source_huyk_id ?? null,
+        editor_source_outro_id: dto.editor_source_outro_id ?? null,
+        editor_source_extra_id: dto.editor_source_extra_id ?? null,
+        editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
+        editor_source_huyk_id: dto.editor_source_huyk_id ?? null,
+        team_source_outro_id: dto.team_source_outro_id ?? null,
+        team_source_extra_id: dto.team_source_extra_id ?? null,
+        team_source_workshop_id: dto.team_source_workshop_id ?? null,
+        team_source_huyk_id: dto.team_source_huyk_id ?? null,
+        assignee_id: dto.assignee_id,
+        deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
+        status: dto.assignee_id ? "ASSIGNED" : "PENDING",
+        assigned_at: dto.assignee_id ? new Date() : undefined,
+      },
+      include: this.taskDetailInclude,
+    });
 
     if (dto.assignee_id) {
       await this.notify(
@@ -991,16 +979,74 @@ export class TaskAutoTasksService {
     return updated;
   }
 
-  async getDashboard(userId: string, roles: string[]) {
+  async updatePublishedLinks(
+    id: string,
+    dto: UpdatePublishedLinksDto,
+    userId: string,
+    roles: string[],
+  ) {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { status: true, assignee_id: true },
+    });
+    if (!task) throw new NotFoundException("Task not found");
+    if (task.status !== "APPROVED") {
+      throw new BadRequestException("Task chưa được duyệt");
+    }
+
+    const isPrivileged = roles.some((r) =>
+      ["ADMIN", "MANAGER", "LEADER"].includes(r),
+    );
+    if (task.assignee_id !== userId && !isPrivileged) {
+      throw new ForbiddenException("Không có quyền nộp link cho task này");
+    }
+
+    const links = dto.links
+      .map((l) => ({
+        id: l.id,
+        platform: l.platform.trim(),
+        url: l.url.trim(),
+      }))
+      .filter((l) => l.platform && l.url);
+
+    return this.prisma.task.update({
+      where: { id },
+      data: { published_links: links },
+      include: this.taskDetailInclude,
+    });
+  }
+
+  /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
+  private parseDateRange(
+    dateFrom?: string,
+    dateTo?: string,
+  ): { gte: Date; lt: Date } | null {
+    if (!dateFrom || !dateTo) return null;
+    const [fy, fm, fd] = dateFrom.split("-").map(Number);
+    const [ty, tm, td] = dateTo.split("-").map(Number);
+    if (!fy || !fm || !fd || !ty || !tm || !td) return null;
+    const gte = new Date(fy, fm - 1, fd);
+    const lt = new Date(ty, tm - 1, td + 1);
+    if (isNaN(gte.getTime()) || isNaN(lt.getTime()) || gte >= lt) return null;
+    return { gte, lt };
+  }
+
+  async getDashboard(
+    userId: string,
+    roles: string[],
+    dateFrom?: string,
+    dateTo?: string,
+  ) {
+    const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
-    if (isAdminOrManager) return this.getGlobalDashboard();
-    if (isLeaderOnly) return this.getLeaderDashboard(userId);
+    if (isAdminOrManager) return this.getGlobalDashboard(range);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range);
     return this.getPersonalDashboard(userId);
   }
 
-  private async getGlobalDashboard() {
+  private async getGlobalDashboard(range: { gte: Date; lt: Date } | null) {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -1011,17 +1057,27 @@ export class TaskAutoTasksService {
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
+    const monthlyCompletedWhere = range
+      ? { status: "APPROVED" as const, reviewed_at: range }
+      : {
+          status: "APPROVED" as const,
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        };
+
     const [
       tasksByStatus,
       todayDeadline,
       overdue,
       monthlyCompleted,
-      contentCounts,
       totalEditors,
       approvedEditors,
       pendingApprovals,
     ] = await Promise.all([
-      this.prisma.task.groupBy({ by: ["status"], _count: { id: true } }),
+      this.prisma.task.groupBy({
+        by: ["status"],
+        where: range ? { created_at: range } : undefined,
+        _count: { id: true },
+      }),
       this.prisma.task.count({
         where: {
           deadline: { gte: todayStart, lt: todayEnd },
@@ -1034,13 +1090,7 @@ export class TaskAutoTasksService {
           status: { notIn: ["APPROVED", "CANCELLED"] },
         },
       }),
-      this.prisma.task.count({
-        where: {
-          status: "APPROVED",
-          reviewed_at: { gte: monthStart, lt: monthEnd },
-        },
-      }),
-      this.prisma.content.groupBy({ by: ["status"], _count: { id: true } }),
+      this.prisma.task.count({ where: monthlyCompletedWhere }),
       this.prisma.user.count({ where: { is_active: true } }),
       this.prisma.editorApproval.count({ where: { status: "APPROVED" } }),
       this.prisma.editorApproval.count({ where: { status: "PENDING" } }),
@@ -1048,9 +1098,6 @@ export class TaskAutoTasksService {
 
     const taskMap = Object.fromEntries(
       tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
-    );
-    const contentMap = Object.fromEntries(
-      contentCounts.map((r) => [r.status.toLowerCase(), r._count.id]),
     );
 
     return {
@@ -1062,12 +1109,6 @@ export class TaskAutoTasksService {
       today_deadline: todayDeadline,
       overdue,
       monthly_completed: monthlyCompleted,
-      contents: {
-        available: contentMap["available"] ?? 0,
-        in_task: contentMap["in_task"] ?? 0,
-        used: contentMap["used"] ?? 0,
-        archived: contentMap["archived"] ?? 0,
-      },
       editors: {
         total: totalEditors,
         approved: approvedEditors,
@@ -1076,11 +1117,19 @@ export class TaskAutoTasksService {
     };
   }
 
-  private async getLeaderDashboard(leaderId: string) {
+  private async getLeaderDashboard(
+    leaderId: string,
+    range: { gte: Date; lt: Date } | null,
+  ) {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
-    const team = await this.prisma.team.findFirst({
+    // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
+    // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
+    // liệu các team còn lại của leader đó.
+    const teamsLed = await this.prisma.team.findMany({
       where: { leader_id: leaderId },
       include: {
         members: {
@@ -1092,7 +1141,7 @@ export class TaskAutoTasksService {
       },
     });
 
-    if (!team)
+    if (teamsLed.length === 0)
       return {
         scope: "team" as const,
         team: null,
@@ -1101,12 +1150,28 @@ export class TaskAutoTasksService {
         kpi: null,
       };
 
-    const memberIds = team.members.map((m) => m.user_id);
+    const teamIds = teamsLed.map((t) => t.id);
+    // Dedupe: về lý thuyết 1 user có thể là member của >1 team mà cùng 1 leader đang lead.
+    const memberByUserId = new Map<string, (typeof teamsLed)[number]["members"][number]>();
+    for (const t of teamsLed) {
+      for (const m of t.members) memberByUserId.set(m.user_id, m);
+    }
+    const memberRows = Array.from(memberByUserId.values());
+    const memberIds = memberRows.map((m) => m.user_id);
 
-    const [tasksByStatus, memberTaskRows, editorKpis] = await Promise.all([
+    const [
+      tasksByStatus,
+      memberTaskRows,
+      editorKpis,
+      monthlyTeamApproved,
+      monthlyMemberApproved,
+    ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
-        where: { team_id: team.id },
+        where: {
+          team_id: { in: teamIds },
+          ...(range ? { created_at: range } : {}),
+        },
         _count: { id: true },
       }),
       this.prisma.task.groupBy({
@@ -1114,11 +1179,28 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
+          ...(range ? { created_at: range } : {}),
         },
         _count: { id: true },
       }),
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: currentMonth },
+      }),
+      this.prisma.task.count({
+        where: {
+          team_id: { in: teamIds },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+        _count: { id: true },
       }),
     ]);
 
@@ -1131,9 +1213,12 @@ export class TaskAutoTasksService {
       if (!memberStats[uid]) memberStats[uid] = {};
       memberStats[uid][r.status.toLowerCase()] = r._count.id;
     }
+    const kpiApprovedByUser = Object.fromEntries(
+      monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
+    );
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
-    const members = team.members.map((m) => {
+    const members = memberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
       return {
         user_id: m.user_id,
@@ -1143,6 +1228,7 @@ export class TaskAutoTasksService {
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
         approved: memberStats[m.user_id]?.["approved"] ?? 0,
+        kpi_completed: kpiApprovedByUser[m.user_id] ?? 0,
         kpi_target: kpi?.total_target ?? 0,
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
@@ -1160,11 +1246,14 @@ export class TaskAutoTasksService {
       (s, k) => s + (k.product_planned ?? 0),
       0,
     );
-    const kpiCompleted = taskMap["approved"] ?? 0;
 
     return {
       scope: "team" as const,
-      team: { id: team.id, name: team.name, member_count: team.members.length },
+      team: {
+        id: teamsLed[0].id,
+        name: teamsLed.map((t) => t.name).join(", "),
+        member_count: memberRows.length,
+      },
       tasks: {
         total: Object.values(taskMap).reduce((s, v) => s + v, 0),
         ...taskMap,
@@ -1173,7 +1262,7 @@ export class TaskAutoTasksService {
       kpi: {
         month: currentMonth,
         total_target: kpiTotal,
-        completed: kpiCompleted,
+        completed: monthlyTeamApproved,
         video_win: kpiVideoWin,
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
@@ -1189,9 +1278,11 @@ export class TaskAutoTasksService {
       now.getDate(),
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, myKpiRows] =
+    const [tasksByStatus, todayDeadline, overdue, monthlyApproved, myKpiRows] =
       await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
@@ -1212,6 +1303,13 @@ export class TaskAutoTasksService {
             status: { notIn: ["APPROVED", "CANCELLED"] },
           },
         }),
+        this.prisma.task.count({
+          where: {
+            assignee_id: userId,
+            status: "APPROVED",
+            reviewed_at: { gte: monthStart, lt: monthEnd },
+          },
+        }),
         this.prisma.editorKpi.findMany({
           where: { user_id: userId, month: currentMonth },
           include: {
@@ -1228,7 +1326,7 @@ export class TaskAutoTasksService {
     const taskMap = Object.fromEntries(
       tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
     );
-    const completed = taskMap["approved"] ?? 0;
+    const completed = monthlyApproved;
 
     // Gộp tất cả KPI các team trong tháng (editor thuộc nhiều team)
     const sum = <K extends keyof (typeof myKpiRows)[0]>(field: K) =>

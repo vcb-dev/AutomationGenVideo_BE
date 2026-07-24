@@ -16,10 +16,8 @@ function extractDriveFileId(url: string): string | null {
 export const PLATFORM_CONCURRENCY: Record<string, number> = {
   FACEBOOK:  6,
   INSTAGRAM: 3,
-  TIKTOK:    2,
   YOUTUBE:   2,
   THREADS:   4,
-  ZALO:      5,
 };
 
 /** Tổng số job tối đa chạy đồng thời toàn hệ thống */

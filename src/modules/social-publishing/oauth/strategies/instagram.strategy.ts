@@ -51,7 +51,11 @@ export class InstagramOAuthStrategy {
         response_type: 'code',
         state,
       });
-      return `https://api.instagram.com/oauth/authorize?${params}`;
+      // Lưu ý: authorize endpoint của "Instagram API with Instagram Login" là
+      // www.instagram.com — KHÔNG phải api.instagram.com (đó là endpoint của
+      // Instagram Basic Display API đã bị Meta khai tử). Redirect URI được khai
+      // trong Meta dashboard chỉ được product mới (www.instagram.com) nhận diện.
+      return `https://www.instagram.com/oauth/authorize?${params}`;
     }
 
     // Flow 1: Via Facebook OAuth (default) — cho Business/Creator có FB Page
@@ -203,7 +207,14 @@ export class InstagramOAuthStrategy {
       form.toString(),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
     );
-    const { access_token: shortToken, user_id } = shortRes.data;
+    // Meta docs (Business Login for Instagram) mô tả response bọc trong mảng
+    // "data" ({data:[{access_token,...}]}), nhưng thực tế quan sát được là dạng
+    // phẳng — chấp nhận cả hai để không vỡ nếu Meta đổi format.
+    const shortData = Array.isArray(shortRes.data?.data) ? shortRes.data.data[0] : shortRes.data;
+    const shortToken: string = shortData?.access_token;
+    if (!shortToken) {
+      throw new Error(`Instagram token exchange không trả access_token: ${JSON.stringify(shortRes.data).slice(0, 300)}`);
+    }
 
     // Bước 2: Đổi sang long-lived token (~60 ngày)
     const longRes = await axios.get('https://graph.instagram.com/access_token', {
@@ -218,21 +229,25 @@ export class InstagramOAuthStrategy {
     const expiresIn: number = longRes.data.expires_in || 5184000;
 
     // Bước 3: Lấy thông tin profile người dùng
-    const profileRes = await axios.get(`https://graph.instagram.com/v21.0/${user_id}`, {
+    // Dùng "/me" thay vì "/{user_id}" — user_id trả về ở bước 1 (api.instagram.com)
+    // là ID kiểu cũ, không khớp scoped-ID mà graph.instagram.com dùng để định danh
+    // object. Gọi thẳng ID đó ngay sau khi đổi token báo lỗi giả
+    // "Object with ID ... does not exist" (code 100, subcode 33) dù token hợp lệ.
+    const profileRes = await axios.get('https://graph.instagram.com/v21.0/me', {
       params: { access_token: accessToken, fields: 'id,username,name,profile_picture_url' },
       timeout: 15000,
     });
     const p = profileRes.data;
 
     return {
-      platformId: String(user_id),
+      platformId: String(p.id),
       name: p.name || p.username,
       username: p.username,
       avatarUrl: p.profile_picture_url || '',
       accessToken,
       tokenExpiresAt: new Date(Date.now() + expiresIn * 1000),
       extraData: {
-        igUserId: String(user_id),
+        igUserId: String(p.id),
         type: 'instagram_direct',
       },
     };
