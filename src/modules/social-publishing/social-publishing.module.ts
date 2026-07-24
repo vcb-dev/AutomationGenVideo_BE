@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+import { InstagramScraperModule } from '../instagram-scraper/instagram-scraper.module';
 
 // Upload
 import { UploadController } from './upload/upload.controller';
@@ -55,7 +56,7 @@ import { DraftsService } from './drafts/drafts.service';
 import { HashtagController } from './hashtag/hashtag.controller';
 
 @Module({
-  imports: [PrismaModule, MulterModule.register()],
+  imports: [PrismaModule, MulterModule.register(), InstagramScraperModule],
   controllers: [
     UploadController,
     MediaController,

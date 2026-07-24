@@ -632,7 +632,13 @@ model Kpi {
   @@index([name])
   @@index([employee_id])
   @@index([report_date(sort: Desc)])
-  @@map("kpi")
+  // Bảng thật chứa dữ liệu Lark KPI sync là "lark_kpi" (3957 dòng) — "kpi" là bảng khác, rỗng
+  // (0 dòng). Trước đây model trỏ nhầm vào "kpi" nên mọi query qua Prisma (this.prisma.kpi.*, 12 chỗ
+  // trong lark.service.ts) luôn đọc ra rỗng — đây là nguyên nhân banner "Chưa có dữ liệu bảng
+  // larkKPI" và toàn bộ traffic/doanh thu/video trên các dashboard KPI hiện ra trống dù dữ liệu thật
+  // vẫn còn nguyên trong lark_kpi. KHÔNG chạy `prisma migrate`/`db push` cho việc này — chỉ sửa map
+  // rồi `prisma generate` (không đụng DB thật).
+  @@map("lark_kpi")
 }
 
 /// KPI Bitable Đồ Da (wiki metatops — bảng riêng, cấu trúc tương thích mapRecordToKPI)
