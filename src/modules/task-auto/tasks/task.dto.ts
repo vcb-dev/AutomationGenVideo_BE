@@ -135,6 +135,13 @@ export class UpdateVideoScriptDto {
   translation?: UpdateVideoScriptTranslationDto
 }
 
+export class ReviewContentApprovalDto {
+  @ApiProperty({ enum: ['APPROVED', 'REJECTED'] })
+  @IsEnum(['APPROVED', 'REJECTED']) action: 'APPROVED' | 'REJECTED'
+
+  @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
+}
+
 export class TranslateVideoScriptDto {
   @ApiPropertyOptional({
     description: "Thị trường mục tiêu (vd 'Indonesia') — dùng để AI tự xác định ngôn ngữ khi task chưa từng có bản dịch nào",
