@@ -25,6 +25,7 @@ import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoTasksService } from "./tasks.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import { VideoScriptService } from "./video-script.service";
+import { ContentApprovalService } from "./content-approval.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -35,6 +36,7 @@ import {
   GenerateVideoScriptDto,
   UpdateVideoScriptDto,
   TranslateVideoScriptDto,
+  ReviewContentApprovalDto,
 } from "./task.dto";
 
 @ApiTags("task-auto")
@@ -46,6 +48,7 @@ export class TaskAutoTasksController {
     private tasks: TaskAutoTasksService,
     private video: TaskAutoVideoService,
     private videoScript: VideoScriptService,
+    private contentApproval: ContentApprovalService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -245,5 +248,36 @@ export class TaskAutoTasksController {
   ) {
     const script = await this.videoScript.translate(id, dto.market);
     return { script };
+  }
+
+  // ── Content Approval ─────────────────────────────────────────────────────
+
+  @Get("tasks/:id/content-approval")
+  @ApiOperation({
+    summary: "Lấy yêu cầu duyệt content gần nhất của task (nếu có)",
+  })
+  getContentApproval(@Param("id") id: string) {
+    return this.contentApproval.getCurrent(id);
+  }
+
+  @Post("tasks/:id/content-approval")
+  @ApiOperation({
+    summary:
+      "Editor (assignee) gửi yêu cầu duyệt content mới trước khi bắt đầu làm task",
+  })
+  requestContentApproval(@Param("id") id: string, @Request() req: any) {
+    return this.contentApproval.request(id, req.user.id);
+  }
+
+  @Post("content-approvals/:id/review")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Duyệt hoặc từ chối yêu cầu duyệt content" })
+  reviewContentApproval(
+    @Param("id") id: string,
+    @Body() dto: ReviewContentApprovalDto,
+    @Request() req: any,
+  ) {
+    return this.contentApproval.review(id, dto, req.user.id);
   }
 }

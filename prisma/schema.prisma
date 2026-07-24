@@ -74,6 +74,8 @@ model User {
   editor_approvals_reviewed   EditorApproval[]    @relation("EditorApprovalBy")
   team_push_requests          TeamPushRequest[]   @relation("TeamPushRequestBy")
   team_push_requests_reviewed TeamPushRequest[]   @relation("TeamPushRequestReviewedBy")
+  task_content_approvals          TaskContentApproval[] @relation("TaskContentApprovalBy")
+  task_content_approvals_reviewed TaskContentApproval[] @relation("TaskContentApprovalReviewedBy")
   editor_kpis                 EditorKpi[]         @relation("EditorKpiOf")
   editor_kpis_set             EditorKpi[]         @relation("EditorKpiSetBy")
   team_kpis_created           TeamKpi[]           @relation("TeamKpiCreatedBy")
@@ -2948,6 +2950,7 @@ model Task {
   notifications          Notification[]
   pending_video          TaskPendingVideo?
   video_script           TaskVideoScript?
+  content_approvals      TaskContentApproval[]
   scheduled_posts        SocialPost[]
 
   @@index([run_id])
@@ -2982,6 +2985,28 @@ model TaskVideoScript {
   task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
 
   @@map("task_video_scripts")
+}
+
+/// Yêu cầu duyệt content mới do editor viết (task_video_scripts.content) trước khi bắt đầu làm task.
+/// Mỗi lần gửi duyệt tạo 1 row mới (giữ lịch sử qua các lần bị từ chối/sửa lại), giống TeamPushRequest.
+model TaskContentApproval {
+  id              String         @id @default(uuid())
+  task_id         String
+  status          ApprovalStatus @default(PENDING)
+  content         String         @db.Text
+  requested_by_id String         @db.Uuid
+  reviewed_by_id  String?        @db.Uuid
+  reviewed_at     DateTime?
+  reject_reason   String?        @db.Text
+  created_at      DateTime       @default(now())
+
+  task         Task  @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  requested_by User  @relation("TaskContentApprovalBy", fields: [requested_by_id], references: [id], onDelete: Cascade)
+  reviewed_by  User? @relation("TaskContentApprovalReviewedBy", fields: [reviewed_by_id], references: [id])
+
+  @@index([task_id, created_at(sort: Desc)])
+  @@index([requested_by_id])
+  @@map("task_content_approvals")
 }
 
 model TaskPendingVideo {
