@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, Logger } from "@nestjs/common";
 import * as webpush from "web-push";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationStreamService } from "./notification-stream.service";
 
 export interface PushSubscriptionInput {
   endpoint: string;
@@ -18,7 +19,10 @@ export class PushService {
   private readonly logger = new Logger(PushService.name);
   private readonly configured: boolean;
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    private prisma: PrismaService,
+    private stream: NotificationStreamService,
+  ) {
     const subject = process.env.VAPID_SUBJECT;
     const publicKey = process.env.VAPID_PUBLIC_KEY;
     const privateKey = process.env.VAPID_PRIVATE_KEY;
@@ -70,7 +74,13 @@ export class PushService {
 
   // Fire-and-forget: lỗi push không được chặn nghiệp vụ chính (giống triết lý
   // `.catch(() => null)` đã có ở catalog.service.ts notifyUser).
+  //
+  // Đây là điểm chốt duy nhất mà mọi luồng tạo Notification trong app đều gọi tới,
+  // nên cũng là nơi bắn sự kiện SSE cho tab đang mở — không phụ thuộc VAPID có cấu
+  // hình hay không (Web Push và SSE là 2 kênh độc lập).
   async sendToUser(userId: string, payload: PushPayload): Promise<void> {
+    this.stream.emit(userId, payload);
+
     if (!this.configured) return;
     const subs = await this.prisma.pushSubscription.findMany({ where: { user_id: userId } });
     if (subs.length === 0) return;
