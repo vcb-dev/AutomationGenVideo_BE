@@ -5,7 +5,6 @@ import {
   BadRequestException,
   Logger,
 } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -703,80 +702,68 @@ export class TaskAutoTasksService {
     const hasProduct =
       dto.product_id || dto.editor_product_id || dto.team_product_id;
 
-    const task = await this.prisma
-      .$transaction(
-        async (tx) => {
-          if (dto.assignee_id && hasProduct) {
-            const duplicate = await tx.task.findFirst({
-              where: {
-                assignee_id: dto.assignee_id,
-                ...(dto.content_id ? { content_id: dto.content_id } : {}),
-                ...(dto.editor_content_id
-                  ? { editor_content_id: dto.editor_content_id }
-                  : {}),
-                ...(dto.team_content_id
-                  ? { team_content_id: dto.team_content_id }
-                  : {}),
-                ...(dto.product_id ? { product_id: dto.product_id } : {}),
-                ...(dto.editor_product_id
-                  ? { editor_product_id: dto.editor_product_id }
-                  : {}),
-                ...(dto.team_product_id
-                  ? { team_product_id: dto.team_product_id }
-                  : {}),
-              },
-              select: { id: true },
-            });
-            if (duplicate) {
-              throw new BadRequestException(
-                "Editor này đã có task với cặp content + sản phẩm này",
-              );
-            }
-          }
-
-          return tx.task.create({
-            data: {
-              team_id: dto.team_id,
-              content_id: dto.content_id ?? null,
-              editor_content_id: dto.editor_content_id ?? null,
-              team_content_id: dto.team_content_id ?? null,
-              product_id: dto.product_id ?? null,
-              editor_product_id: dto.editor_product_id ?? null,
-              team_product_id: dto.team_product_id ?? null,
-              content_line_id: dto.content_line_id ?? resolvedContentLineId,
-              source_outro_id: dto.source_outro_id ?? null,
-              source_extra_id: dto.source_extra_id ?? null,
-              source_workshop_id: dto.source_workshop_id ?? null,
-              source_huyk_id: dto.source_huyk_id ?? null,
-              editor_source_outro_id: dto.editor_source_outro_id ?? null,
-              editor_source_extra_id: dto.editor_source_extra_id ?? null,
-              editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
-              editor_source_huyk_id: dto.editor_source_huyk_id ?? null,
-              team_source_outro_id: dto.team_source_outro_id ?? null,
-              team_source_extra_id: dto.team_source_extra_id ?? null,
-              team_source_workshop_id: dto.team_source_workshop_id ?? null,
-              team_source_huyk_id: dto.team_source_huyk_id ?? null,
-              assignee_id: dto.assignee_id,
-              deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
-              status: dto.assignee_id ? "ASSIGNED" : "PENDING",
-              assigned_at: dto.assignee_id ? new Date() : undefined,
-            },
-            include: this.taskDetailInclude,
-          });
+    // Không dùng interactive transaction ($transaction(async tx => ...)) ở đây:
+    // DATABASE_URL chạy qua Supabase pgbouncer (transaction-pooling mode, port 6543),
+    // pooler có thể thu hồi connection giữa 2 lệnh trong 1 transaction đang mở, khiến
+    // Prisma báo "Transaction API error: Transaction not found...". Tách thành 2 lệnh
+    // độc lập để mỗi lệnh tự đóng gói trong 1 statement, tương thích với pgbouncer.
+    if (dto.assignee_id && hasProduct) {
+      const duplicate = await this.prisma.task.findFirst({
+        where: {
+          assignee_id: dto.assignee_id,
+          ...(dto.content_id ? { content_id: dto.content_id } : {}),
+          ...(dto.editor_content_id
+            ? { editor_content_id: dto.editor_content_id }
+            : {}),
+          ...(dto.team_content_id
+            ? { team_content_id: dto.team_content_id }
+            : {}),
+          ...(dto.product_id ? { product_id: dto.product_id } : {}),
+          ...(dto.editor_product_id
+            ? { editor_product_id: dto.editor_product_id }
+            : {}),
+          ...(dto.team_product_id
+            ? { team_product_id: dto.team_product_id }
+            : {}),
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      )
-      .catch((err) => {
-        if (
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2034"
-        ) {
-          throw new BadRequestException(
-            "Editor này đã có task với cặp content + sản phẩm này",
-          );
-        }
-        throw err;
+        select: { id: true },
       });
+      if (duplicate) {
+        throw new BadRequestException(
+          "Editor này đã có task với cặp content + sản phẩm này",
+        );
+      }
+    }
+
+    const task = await this.prisma.task.create({
+      data: {
+        team_id: dto.team_id,
+        content_id: dto.content_id ?? null,
+        editor_content_id: dto.editor_content_id ?? null,
+        team_content_id: dto.team_content_id ?? null,
+        product_id: dto.product_id ?? null,
+        editor_product_id: dto.editor_product_id ?? null,
+        team_product_id: dto.team_product_id ?? null,
+        content_line_id: dto.content_line_id ?? resolvedContentLineId,
+        source_outro_id: dto.source_outro_id ?? null,
+        source_extra_id: dto.source_extra_id ?? null,
+        source_workshop_id: dto.source_workshop_id ?? null,
+        source_huyk_id: dto.source_huyk_id ?? null,
+        editor_source_outro_id: dto.editor_source_outro_id ?? null,
+        editor_source_extra_id: dto.editor_source_extra_id ?? null,
+        editor_source_workshop_id: dto.editor_source_workshop_id ?? null,
+        editor_source_huyk_id: dto.editor_source_huyk_id ?? null,
+        team_source_outro_id: dto.team_source_outro_id ?? null,
+        team_source_extra_id: dto.team_source_extra_id ?? null,
+        team_source_workshop_id: dto.team_source_workshop_id ?? null,
+        team_source_huyk_id: dto.team_source_huyk_id ?? null,
+        assignee_id: dto.assignee_id,
+        deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
+        status: dto.assignee_id ? "ASSIGNED" : "PENDING",
+        assigned_at: dto.assignee_id ? new Date() : undefined,
+      },
+      include: this.taskDetailInclude,
+    });
 
     if (dto.assignee_id) {
       await this.notify(
