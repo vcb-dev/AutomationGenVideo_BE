@@ -180,10 +180,36 @@ export class TaskAutoTeamsService {
     }, TEAM_TX_OPTIONS)
   }
 
+  /**
+   * Các bảng này khai báo quan hệ bắt buộc với Team trong schema.prisma (không set onDelete,
+   * lẽ ra Postgres nên Restrict) — nhưng DB thật đang KHÔNG có FK constraint tương ứng (schema
+   * lệch DB thật, xem ghi chú dự án). Vì vậy phải tự kiểm tra ở tầng ứng dụng trước khi xóa,
+   * nếu không team bị xóa sẽ để lại bản ghi mồ côi (team_id trỏ vào team không còn tồn tại) thay
+   * vì bị chặn — đã verify thực tế bằng cách tạo task test rồi xóa team, task mồ côi vẫn còn.
+   */
+  private readonly teamDeleteBlockers: { label: string; count: (tx: Prisma.TransactionClient, teamId: string) => Promise<number> }[] = [
+    { label: 'task', count: (tx, teamId) => tx.task.count({ where: { team_id: teamId } }) },
+    { label: 'video', count: (tx, teamId) => tx.contentVideo.count({ where: { team_id: teamId } }) },
+    { label: 'case study', count: (tx, teamId) => tx.caseStudy.count({ where: { team_id: teamId } }) },
+    { label: 'hiệu suất editor', count: (tx, teamId) => tx.editorPerformance.count({ where: { team_id: teamId } }) },
+    { label: 'clone video', count: (tx, teamId) => tx.cloneVideo.count({ where: { team_id: teamId } }) },
+    { label: 'action item', count: (tx, teamId) => tx.actionItem.count({ where: { team_id: teamId } }) },
+    { label: 'snapshot KPI', count: (tx, teamId) => tx.teamKpiSnapshot.count({ where: { team_id: teamId } }) },
+    { label: 'buổi họp', count: (tx, teamId) => tx.meetingSession.count({ where: { team_id: teamId } }) },
+  ]
+
   async remove(id: string) {
     const team = await this.findOneForAuth(id)
     const memberIds = (team as any).members?.map((m: any) => m.user_id) ?? []
     await this.prisma.$transaction(async (tx) => {
+      const counts = await Promise.all(this.teamDeleteBlockers.map(b => b.count(tx, id)))
+      const blocking = this.teamDeleteBlockers
+        .map((b, i) => ({ label: b.label, count: counts[i] }))
+        .filter(b => b.count > 0)
+      if (blocking.length > 0) {
+        const detail = blocking.map(b => `${b.count} ${b.label}`).join(', ')
+        throw new ConflictException(`Không thể xóa: team này vẫn còn ${detail}. Hãy chuyển hoặc xóa dữ liệu đó trước.`)
+      }
       await tx.team.delete({ where: { id } })
       await this.syncAffectedUsers(tx, memberIds)
     }, TEAM_TX_OPTIONS)

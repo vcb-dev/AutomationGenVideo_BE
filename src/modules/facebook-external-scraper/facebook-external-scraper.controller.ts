@@ -1,7 +1,20 @@
-import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { FacebookExternalScraperService } from './facebook-external-scraper.service';
 import { FacebookExternalScraperReadService } from './facebook-external-scraper-read.service';
+
+// Facebook không có is_tracked — field tương đương "kênh chú ý" ở đây là
+// is_periodic_crawl (không phải is_tracked như 6 platform kia).
+function assertCanManageChannels(req: any): void {
+  const roles: string[] = req.user?.roles ?? [];
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
+    throw new ForbiddenException('Chỉ leader/admin được quản lý kênh chú ý');
+  }
+}
 
 // Thay thế fanpage_toggle / trigger_scrape_reels / fanpage_scrape_by_url bên AI (đã xóa)
 // — route giữ nguyên path cũ để FE (scraperService.ts) không cần đổi gì.
@@ -33,24 +46,34 @@ export class FacebookExternalScraperController {
   async toggle(
     @Param('fanpage_id') fanpageId: string,
     @Body() body: { field?: 'is_bookmarked' | 'is_periodic_crawl' },
+    @Request() req: any,
   ) {
     const field = body?.field;
     if (field !== 'is_bookmarked' && field !== 'is_periodic_crawl') {
       throw new HttpException({ error: 'field must be is_bookmarked or is_periodic_crawl' }, HttpStatus.BAD_REQUEST);
     }
+    if (field === 'is_periodic_crawl') assertCanManageChannels(req);
     return this.service.toggleFanpage(BigInt(fanpageId), field);
   }
 
   @Post('scrape-reels')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeReels(@Body() body: { fanpage_id?: number }) {
     if (!body?.fanpage_id) throw new HttpException({ error: 'fanpage_id is required' }, HttpStatus.BAD_REQUEST);
     return this.service.triggerScrapeReels(BigInt(body.fanpage_id));
   }
 
   @Post('scrape-by-url')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeByUrl(@Body() body: { url?: string }) {
-    const url = (body?.url || '').trim();
-    if (!url) throw new HttpException({ error: 'url is required' }, HttpStatus.BAD_REQUEST);
+    const input = (body?.url || '').trim();
+    if (!input) throw new HttpException({ error: 'url is required' }, HttpStatus.BAD_REQUEST);
+
+    // Link rút gọn (fb.watch) không chứa tên page — resolve về URL thật trước.
+    const url = await resolveShortLink(input);
+
     if (!url.includes('facebook.com')) {
       throw new HttpException({ error: 'URL không hợp lệ. Ví dụ: https://www.facebook.com/pagename' }, HttpStatus.BAD_REQUEST);
     }

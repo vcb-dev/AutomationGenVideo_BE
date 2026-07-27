@@ -1,11 +1,14 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../task-auto/notifications/notifications.service';
+import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
 import {
   TiktokAiClientService,
   ParsedTikTokVideo,
   ParsedTikTokProfileVideo,
   ParsedTikTokAuthor,
 } from './tiktok-ai-client.service';
+import { TiktokScraperReadService } from './tiktok-scraper-read.service';
 
 function isDriveUrl(url?: string | null): boolean {
   return !!url && (url.includes('drive.google.com') || url.includes('googleusercontent.com'));
@@ -26,7 +29,43 @@ export class TiktokScraperService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClient: TiktokAiClientService,
+    private readonly notifications: NotificationsService,
+    private readonly readService: TiktokScraperReadService,
   ) {}
+
+  // ─── Growth Alert: snapshot followers + báo động nếu tăng đột biến ────────
+  // Chỉ gọi từ task đầy đủ (scrapeProfilePosts), KHÔNG gọi từ ingestProfilePostsSync
+  // (batch nhanh 20 đầu) — tránh 2 lần snapshot cho cùng 1 lần cào profile mới.
+  private static readonly GROWTH_ALERT_THRESHOLD_PCT = 0.2;
+
+  private async recordMetricsAndMaybeAlert(profileId: bigint, profileName: string): Promise<void> {
+    const fresh = await this.prisma.scraperTikTokProfile.findUniqueOrThrow({ where: { id: profileId } });
+    const previous = await this.prisma.scraperTikTokProfileMetrics.findFirst({
+      where: { profile_id: profileId },
+      orderBy: { captured_at: 'desc' },
+    });
+
+    await this.prisma.scraperTikTokProfileMetrics.create({
+      data: {
+        profile_id: profileId,
+        followers_count: fresh.followers_count,
+        following_count: fresh.following_count,
+        likes_count: fresh.likes_count,
+      },
+    });
+
+    if (!previous || previous.followers_count <= 0n) return;
+    const growth = Number(fresh.followers_count - previous.followers_count) / Number(previous.followers_count);
+    if (growth < TiktokScraperService.GROWTH_ALERT_THRESHOLD_PCT) return;
+
+    const pct = Math.round(growth * 100);
+    await this.notifications.broadcastToActiveUsers(
+      'GROWTH_ALERT',
+      `Kênh TikTok @${profileName} tăng trưởng đột biến`,
+      `Followers tăng ${pct}% (${previous.followers_count} → ${fresh.followers_count}) kể từ lần cào trước.`,
+      { platform: 'tiktok', profile_id: Number(profileId) },
+    );
+  }
 
   // ─── Keyword search ────────────────────────────────────────────────────────
 
@@ -79,12 +118,50 @@ export class TiktokScraperService {
   // (không lặp lại từ đầu) để bù phần bị trùng, tối đa MAX_ROUNDS lần.
   private static readonly MAX_SEARCH_ROUNDS = 5;
 
-  async searchKeyword(keyword: string, count = 30, region = 'VN'): Promise<{ created: number; updated: number }> {
+  // ─── Auto-discover kênh mới từ tác giả xuất hiện trong kết quả search ──────
+  // Chỉ xét top N tác giả theo followers (ranking signal duy nhất TikTok có sẵn
+  // trong search-video), lọc floor để tránh cào profile "rác" (tài khoản nhỏ,
+  // ít giá trị). is_tracked mặc định false (scrapeProfile() không set khi
+  // create) — giống hệt hành vi thêm profile thủ công, tránh cron phình to +
+  // tránh chi phí TikHub tăng dần không kiểm soát.
+  private static readonly MAX_AUTO_DISCOVER_PER_SEARCH = 5;
+  private static readonly MIN_AUTO_DISCOVER_FOLLOWERS = 5000;
+
+  private async autoDiscoverNewAuthors(candidates: Map<string, number>): Promise<string[]> {
+    const ranked = Array.from(candidates.entries())
+      .filter(([, followers]) => followers >= TiktokScraperService.MIN_AUTO_DISCOVER_FOLLOWERS)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TiktokScraperService.MAX_AUTO_DISCOVER_PER_SEARCH)
+      .map(([username]) => username);
+
+    if (ranked.length === 0) return [];
+
+    const existing = await this.prisma.scraperTikTokProfile.findMany({
+      where: { username: { in: ranked } },
+      select: { username: true },
+    });
+    const existingSet = new Set(existing.map((p) => p.username));
+    const newUsernames = ranked.filter((u) => !existingSet.has(u));
+
+    for (const username of newUsernames) {
+      this.scrapeProfile(username).catch((err) => {
+        this.logger.error(`[TT-AUTO-DISCOVER] @${username} thất bại: ${err.message}`);
+      });
+    }
+
+    if (newUsernames.length > 0) {
+      this.logger.log(`[TT-AUTO-DISCOVER] Phát hiện + dispatch cào ${newUsernames.length} kênh mới: ${newUsernames.join(', ')}`);
+    }
+    return newUsernames;
+  }
+
+  async searchKeyword(keyword: string, count = 30, region = 'VN'): Promise<{ created: number; updated: number; auto_discovered: string[] }> {
     let created = 0;
     let updated = 0;
     let cursor = 0;
     let hasMore = true;
     let round = 0;
+    const authorCandidates = new Map<string, number>();
 
     for (; round < TiktokScraperService.MAX_SEARCH_ROUNDS && created < count && hasMore; round++) {
       const remaining = count - created;
@@ -95,6 +172,11 @@ export class TiktokScraperService {
         const r = await this.upsertVideo(v);
         if (r.created) created++;
         else updated++;
+
+        if (v.author_username) {
+          const prevMax = authorCandidates.get(v.author_username) ?? 0;
+          authorCandidates.set(v.author_username, Math.max(prevMax, v.author_followers ?? 0));
+        }
       }
 
       cursor = nextCursor;
@@ -105,7 +187,9 @@ export class TiktokScraperService {
     // "chạm giới hạn an toàn MAX_SEARCH_ROUNDS trong khi vẫn còn trang" (hasMore=true).
     const stopReason = created >= count ? 'đủ count' : hasMore ? 'chạm MAX_SEARCH_ROUNDS' : 'TikHub hết kết quả (has_more=false)';
     this.logger.log(`[TIKTOK] Ingest '${keyword}': +${created}/${count} new, ~${updated} updated, ${round} round(s), dừng vì: ${stopReason}`);
-    return { created, updated };
+
+    const auto_discovered = await this.autoDiscoverNewAuthors(authorCandidates);
+    return { created, updated, auto_discovered };
   }
 
   // ─── Profile: helpers ──────────────────────────────────────────────────────
@@ -260,6 +344,10 @@ export class TiktokScraperService {
         data: { scraping_status: 'completed', scrape_error: null, last_scraped_at: new Date() },
       });
 
+      this.recordMetricsAndMaybeAlert(profileId, profile.username).catch((err) => {
+        this.logger.error(`[TT-GROWTH-ALERT] ${profile.username}: ${err.message}`);
+      });
+
       this.logger.log(`[TT-PROFILE] @${profile.username}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated, items_returned: videos.length };
     } catch (err: any) {
@@ -271,7 +359,7 @@ export class TiktokScraperService {
     }
   }
 
-  async scrapeProfile(username: string, isOwned?: boolean): Promise<any> {
+  async scrapeProfile(username: string, isOwned?: boolean, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
     let profile = await this.prisma.scraperTikTokProfile.findUnique({ where: { username } });
     const wasCreated = !profile;
     if (!profile) {
@@ -313,9 +401,10 @@ export class TiktokScraperService {
       };
     }
 
-    // Batch đầu SYNCHRONOUS (~20 posts, rất nhanh) — trả data ngay cho user
+    // Batch đầu SYNCHRONOUS (nhỏ, rất nhanh) — trả data ngay cho user, phần còn lại chạy nền
+    const firstBatch = Math.min(20, targetCount);
     const freshProfile = await this.prisma.scraperTikTokProfile.findUniqueOrThrow({ where: { id: profile.id } });
-    const result = await this.ingestProfilePostsSync(freshProfile, 20);
+    const result = await this.ingestProfilePostsSync(freshProfile, firstBatch);
 
     if (result.items_returned === 0) {
       if (wasCreated) {
@@ -329,16 +418,33 @@ export class TiktokScraperService {
       throw new HttpException({ error: 'Không tìm thấy posts cho username này' }, HttpStatus.NOT_FOUND);
     }
 
-    // Dispatch cào tiếp tới tổng 300 posts (fire-and-forget) — sẽ tự set scraping_status='completed'
-    this.scrapeProfilePosts(profile.id, { count: 300 }).catch((err) => {
-      this.logger.error(`[TT-PROFILE] ${username} continuation thất bại: ${err.message}`);
-    });
+    // Dispatch cào tiếp tới tổng targetCount posts (fire-and-forget) — tự set scraping_status='completed'
+    const continuationNeeded = targetCount > firstBatch;
+    if (continuationNeeded) {
+      this.scrapeProfilePosts(profile.id, { count: targetCount }).catch((err) => {
+        this.logger.error(`[TT-PROFILE] ${username} continuation thất bại: ${err.message}`);
+      });
+    } else {
+      // Không có phần chạy nền → tự chốt trạng thái, tránh kẹt 'processing'.
+      await this.prisma.scraperTikTokProfile.update({
+        where: { id: profile.id },
+        data: {
+          scraping_status: 'completed',
+          scrape_error: null,
+          is_initial_scraped: true,
+          last_scraped_at: new Date(),
+        },
+      });
+    }
 
     const updated = await this.prisma.scraperTikTokProfile.findUniqueOrThrow({ where: { id: profile.id } });
 
+    const batchInfo = `${result.items_returned} posts (${result.created} mới)`;
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} posts đầu cho @${username}. Đang tiếp tục cào thêm...`,
+      message: continuationNeeded
+        ? `Đã cào ${batchInfo} cho @${username}. Đang cào tiếp tới ${targetCount}...`
+        : `Đã cào ${batchInfo} cho @${username}.`,
       profile_id: Number(updated.id),
       newly_scraped: true,
       profile: {
@@ -386,6 +492,37 @@ export class TiktokScraperService {
   // profile đang cào dở (!= 'processing'), không so khớp cứng 1 giá trị cụ thể.
   // (Đã sửa so với code gốc: code gốc lọc scraping_status='idle' nhưng task lại set
   // 'completed' khi xong, khiến profile chỉ được cron chọn đúng 1 lần rồi thôi.)
+
+  // ─── Auto re-run từ khoá đã search nhiều nhất (cron riêng, khác giờ periodicRefresh) ──
+  // Tái dùng nguyên searchKeyword() thủ công đang dùng cho POST /search — tự động
+  // kế thừa MAX_SEARCH_ROUNDS + auto-discover kênh mới, không viết logic ingest mới.
+  // Floor MIN_HIT_COUNT tránh rerun từ khoá chỉ tìm 1 lần rồi bỏ; cap
+  // MAX_KEYWORDS_PER_CRON kiểm soát chi phí TikHub dồn từ auto-discover bên trong.
+  private static readonly MAX_AUTO_RERUN_KEYWORDS_PER_CRON = 3;
+  private static readonly MIN_HIT_COUNT_FOR_AUTO_RERUN = 3;
+
+  async autoRerunTopKeywords(): Promise<{ keywords: string[]; created: number; updated: number }> {
+    const { suggestions } = await this.readService.keywordSuggest('');
+    const keywords = suggestions
+      .filter((s) => s.count >= TiktokScraperService.MIN_HIT_COUNT_FOR_AUTO_RERUN)
+      .slice(0, TiktokScraperService.MAX_AUTO_RERUN_KEYWORDS_PER_CRON)
+      .map((s) => s.keyword);
+
+    let created = 0;
+    let updated = 0;
+    for (const keyword of keywords) {
+      try {
+        const r = await this.searchKeyword(keyword);
+        created += r.created;
+        updated += r.updated;
+      } catch (err: any) {
+        this.logger.error(`[TT-AUTO-RERUN] '${keyword}' thất bại: ${err.message}`);
+      }
+    }
+
+    this.logger.log(`[TT-AUTO-RERUN] Rerun ${keywords.length} từ khoá: ${keywords.join(', ') || '(không có)'}`);
+    return { keywords, created, updated };
+  }
 
   async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();

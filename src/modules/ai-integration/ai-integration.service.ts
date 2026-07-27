@@ -1,6 +1,7 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -28,7 +29,7 @@ export class AiIntegrationService {
    */
   private readonly voiceAiServiceUrl: string;
   private static readonly RAILWAY_VOICE_AI_INTERNAL_URL =
-    'http://automationgenvideo-ai.railway.internal:8000';
+    'http://automationgenvideo-ai.railway.internal:8080';
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
@@ -39,6 +40,7 @@ export class AiIntegrationService {
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
   ) {
@@ -1878,6 +1880,89 @@ export class AiIntegrationService {
   }
 
   /**
+   * Dịch caption/mô tả 1 video đã cào (scraper subsystem) sang tiếng Việt +
+   * phân tích ngắn cấu trúc video gốc — dùng cho luồng duyệt video vào
+   * VideoLibrary/ApprovedContent (xem VideoLibraryService.approveIntoLibrary()).
+   * KHÔNG dùng chung endpoint với generateVideoScript() — đó là adapt content
+   * đã win cho sản phẩm mới, không hợp với video cào về không gắn sản phẩm nào.
+   */
+  async analyzeScrapedVideo(params: {
+    platform: string;
+    title: string;
+    description: string;
+    hashtags?: string[];
+    viewsCount?: number;
+    likesCount?: number;
+    commentsCount?: number;
+  }): Promise<{ vietnamese_content: string; script_outline: string; hashtags: string[] }> {
+    const url = `${this.aiServiceUrl}/api/scraped-video/script/generate/`;
+    this.logger.log(`Calling AI Service: ${url} for platform=${params.platform}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, {
+          platform: params.platform,
+          title: params.title,
+          description: params.description,
+          hashtags: params.hashtags,
+          views_count: params.viewsCount,
+          likes_count: params.likesCount,
+          comments_count: params.commentsCount,
+        }, {
+          timeout: 120000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service scraped-video script error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to analyze scraped video',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to analyze scraped video', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Dịch từ khoá tìm kiếm (tiếng Việt/Anh) sang tiếng Trung giản thể — dùng cho các nền tảng
+   * Trung Quốc (Douyin/Xiaohongshu/Kuaishou/Bilibili) vốn chỉ ra kết quả tốt với query tiếng Trung.
+   *
+   * Endpoint AI đã tự bỏ qua khi text vốn đã là tiếng Trung (trả source='already_chinese'),
+   * nên caller cứ gọi thẳng không cần tự kiểm tra.
+   *
+   * KHÔNG ném lỗi ra ngoài: dịch chỉ là bước phụ trợ, nếu AI service chết thì trả lại text gốc
+   * để luồng tìm kiếm/cron vẫn chạy được thay vì vỡ nguyên request.
+   */
+  async translateSearchKeyword(
+    text: string,
+  ): Promise<{ original: string; translated: string; source: string }> {
+    const original = (text || '').trim();
+    if (!original) return { original: '', translated: '', source: 'empty' };
+
+    const url = `${this.aiServiceUrl}/api/search/translate/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, { text: original }, { timeout: 20000 }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.warn(`AI Service search/translate lỗi: ${error.message}`);
+            throw error;
+          }),
+        ),
+      );
+      const translated = (data?.translated || '').trim();
+      if (!translated) return { original, translated: original, source: 'fallback_empty' };
+      return { original, translated, source: data?.source || 'unknown' };
+    } catch {
+      // Fail-open: giữ nguyên text gốc, caller vẫn tìm được (chỉ là kết quả kém hơn).
+      return { original, translated: original, source: 'failed' };
+    }
+  }
+
+  /**
    * Dịch lại content/hashtags hiện có (vd sau khi user sửa tay) sang một ngôn ngữ đã biết trước —
    * không đọc lại file nguồn, không sinh script mới, chỉ dịch (xem VideoScriptService.translate()).
    */
@@ -2266,6 +2351,16 @@ export class AiIntegrationService {
     return `${this.aiServiceUrl}/api/tools/video-downloader/${path}`;
   }
 
+  /**
+   * Các endpoint video-downloader bên AI (video_management/views/video_downloader_views.py)
+   * yêu cầu IsAuthenticated qua NestJWTAuthentication — cùng cơ chế token nội bộ mà
+   * TiktokAiClientService/... đã dùng, chứ không forward JWT của user gọi request gốc.
+   */
+  private videoDownloaderAuthHeaders(): { Authorization: string } {
+    const token = this.jwtService.sign({ sub: 'be-system', email: 'be-system@internal.local' });
+    return { Authorization: `Bearer ${token}` };
+  }
+
   /** Lỗi từ AI trả nguyên body về FE (trang đọc data.error để hiện toast). */
   private rethrowVideoDownloaderError(error: any): never {
     throw new HttpException(
@@ -2277,7 +2372,7 @@ export class AiIntegrationService {
   async videoDownloaderInfo(body: { url: string }): Promise<any> {
     try {
       const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('info/'), body, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
         timeout: 120000, // yt-dlp extract info có thể chậm với link lạ
       });
       return response.data;
@@ -2289,7 +2384,7 @@ export class AiIntegrationService {
   async videoDownloaderStartJob(body: { url: string; type?: string; quality?: string }): Promise<any> {
     try {
       const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('jobs/'), body, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
         timeout: 30000,
       });
       return response.data;
@@ -2302,7 +2397,7 @@ export class AiIntegrationService {
     try {
       const response = await this.httpService.axiosRef.get(
         this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/`),
-        { timeout: 30000 },
+        { headers: this.videoDownloaderAuthHeaders(), timeout: 30000 },
       );
       return response.data;
     } catch (error: any) {
@@ -2315,7 +2410,7 @@ export class AiIntegrationService {
     try {
       const response = await this.httpService.axiosRef.get(
         this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/file/`),
-        { responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
+        { headers: this.videoDownloaderAuthHeaders(), responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
       );
       res.status(response.status);
       for (const h of ['content-type', 'content-length', 'content-disposition', 'accept-ranges']) {
