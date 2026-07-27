@@ -20,4 +20,13 @@ export class DouyinScraperCronService {
       this.logger.error(`❌ [DOUYIN-PERIODIC] Lỗi: ${err.message}`);
     }
   }
+
+  @Cron('0 30 13 * * *', VN_TZ)
+  async cronAutoRerunKeywords(): Promise<void> {
+    try {
+      await this.service.autoRerunTopKeywords();
+    } catch (err: any) {
+      this.logger.error(`❌ [DOUYIN-AUTO-RERUN] Lỗi: ${err.message}`);
+    }
+  }
 }

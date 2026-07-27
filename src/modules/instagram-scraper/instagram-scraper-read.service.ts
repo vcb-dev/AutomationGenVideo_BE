@@ -31,6 +31,55 @@ interface InstagramReelRow {
 export class InstagramScraperReadService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── Lookalike Creator: kênh khác trùng hashtag ────────────────────────────
+  private static readonly TOP_HASHTAGS_PER_PROFILE = 15;
+  private static readonly MIN_HASHTAG_OVERLAP = 2;
+  private static readonly MAX_LOOKALIKE_RESULTS = 10;
+
+  async lookalikes(profileId: bigint) {
+    const topTags = await this.prisma.$queryRaw<{ hashtag: string; cnt: bigint }[]>`
+      SELECT h AS hashtag, COUNT(*) AS cnt
+      FROM scraper_instagram_reels, unnest(hashtags) AS h
+      WHERE profile_id = ${profileId}
+      GROUP BY h ORDER BY cnt DESC LIMIT ${InstagramScraperReadService.TOP_HASHTAGS_PER_PROFILE}
+    `;
+    if (topTags.length === 0) return { lookalikes: [] };
+    const tagList = topTags.map((t) => t.hashtag);
+
+    const overlaps = await this.prisma.$queryRaw<{ profile_id: bigint; overlap_count: bigint }[]>`
+      SELECT r.profile_id AS profile_id, COUNT(DISTINCT h) AS overlap_count
+      FROM scraper_instagram_reels r, unnest(r.hashtags) AS h
+      WHERE h IN (${Prisma.join(tagList)}) AND r.profile_id <> ${profileId}
+      GROUP BY r.profile_id
+      HAVING COUNT(DISTINCT h) >= ${InstagramScraperReadService.MIN_HASHTAG_OVERLAP}
+      ORDER BY overlap_count DESC
+      LIMIT ${InstagramScraperReadService.MAX_LOOKALIKE_RESULTS}
+    `;
+    if (overlaps.length === 0) return { lookalikes: [] };
+
+    const profiles = await this.prisma.scraperInstagramProfile.findMany({
+      where: { id: { in: overlaps.map((o) => o.profile_id) } },
+    });
+    const profileMap = new Map(profiles.map((p) => [p.id.toString(), p]));
+
+    return {
+      lookalikes: overlaps
+        .map((o) => {
+          const p = profileMap.get(o.profile_id.toString());
+          if (!p) return null;
+          return {
+            id: Number(p.id),
+            username: p.username,
+            full_name: p.full_name,
+            avatar_url: p.avatar_drive_url || p.avatar_url || '',
+            followers_count: Number(p.followers_count),
+            overlap_count: Number(o.overlap_count),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null),
+    };
+  }
+
   async listProfiles(params: { page?: string; page_size?: string; search?: string; is_owned?: string }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));

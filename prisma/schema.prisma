@@ -74,6 +74,8 @@ model User {
   editor_approvals_reviewed   EditorApproval[]    @relation("EditorApprovalBy")
   team_push_requests          TeamPushRequest[]   @relation("TeamPushRequestBy")
   team_push_requests_reviewed TeamPushRequest[]   @relation("TeamPushRequestReviewedBy")
+  scraper_video_proposals          ScraperVideoProposal[] @relation("ScraperVideoProposalBy")
+  scraper_video_proposals_reviewed ScraperVideoProposal[] @relation("ScraperVideoProposalReviewedBy")
   task_content_approvals          TaskContentApproval[] @relation("TaskContentApprovalBy")
   task_content_approvals_reviewed TaskContentApproval[] @relation("TaskContentApprovalReviewedBy")
   editor_kpis                 EditorKpi[]         @relation("EditorKpiOf")
@@ -786,6 +788,41 @@ model TrafficReport {
   @@index([team])
   @@index([email])
   @@map("traffic_reports")
+}
+
+/// Báo cáo doanh thu nhập tay hằng ngày — cùng cơ chế với TrafficReport (submit theo team/ngày,
+/// nhiều dòng/lần nộp — 1 dòng/nền tảng có giá trị > 0), nhưng không có ảnh minh chứng.
+model RevenueReport {
+  id             String    @id
+  date           DateTime?
+  employee       Json?
+  team           String?
+  month          String?
+  revenue_fb     BigInt?
+  revenue_ig     BigInt?
+  revenue_thread BigInt?
+  revenue_tiktok BigInt?
+  revenue_yt     BigInt?
+  revenue_zalo   BigInt?
+  total_revenue  BigInt?
+  is_confirmed   String?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+  name           String?
+  email          String?
+  channel_fb     String?
+  channel_ig     String?
+  channel_tiktok String?
+  channel_yt     String?
+  channel_thread String?
+  channel_zalo   String?
+
+  @@index([date])
+  @@index([date, team])
+  @@index([month])
+  @@index([team])
+  @@index([email])
+  @@map("revenue_reports")
 }
 
 model ReportOutstanding {
@@ -1682,6 +1719,7 @@ model ScraperDouyinProfile {
   scrape_error       String?   @db.Text
   created_at         DateTime  @default(now()) @db.Timestamptz(6)
   updated_at         DateTime  @updatedAt @db.Timestamptz(6)
+  metrics_history    ScraperDouyinProfileMetrics[]
 
   @@index([uid])
   @@index([username])
@@ -1691,6 +1729,17 @@ model ScraperDouyinProfile {
   @@index([is_owned])
   @@index([followers_count(sort: Desc)])
   @@map("scraper_douyin_profiles")
+}
+
+model ScraperDouyinProfileMetrics {
+  id              BigInt              @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt              @default(0)
+  captured_at     DateTime            @default(now()) @db.Timestamptz(6)
+  profile         ScraperDouyinProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_douyin_profile_metrics")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1724,6 +1773,7 @@ model ScraperTikTokProfile {
   created_at         DateTime                    @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                    @updatedAt @db.Timestamptz(6)
   videos             ScraperTikTokProfileVideo[]
+  metrics_history    ScraperTikTokProfileMetrics[]
 
   @@index([sec_uid])
   @@index([username])
@@ -1732,6 +1782,19 @@ model ScraperTikTokProfile {
   @@index([is_owned])
   @@index([followers_count(sort: Desc)])
   @@map("scraper_tiktok_profiles")
+}
+
+model ScraperTikTokProfileMetrics {
+  id              BigInt              @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt              @default(0)
+  following_count BigInt              @default(0)
+  likes_count     BigInt              @default(0)
+  captured_at     DateTime            @default(now()) @db.Timestamptz(6)
+  profile         ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_tiktok_profile_metrics")
 }
 
 model ScraperTikTokProfileVideo {
@@ -1942,12 +2005,26 @@ model ScraperYoutubeProfile {
   created_at         DateTime              @default(now()) @db.Timestamptz(6)
   updated_at         DateTime              @updatedAt @db.Timestamptz(6)
   shorts             ScraperYoutubeShort[]
+  metrics_history    ScraperYoutubeProfileMetrics[]
 
   @@index([title])
   @@index([is_owned])
   @@index([is_bookmarked])
   @@index([subscriber_count(sort: Desc)])
   @@map("scraper_youtube_profiles")
+}
+
+model ScraperYoutubeProfileMetrics {
+  id                BigInt              @id @default(autoincrement())
+  profile_id        BigInt
+  subscriber_count  BigInt              @default(0)
+  video_count       Int                 @default(0)
+  view_count        BigInt              @default(0)
+  captured_at       DateTime            @default(now()) @db.Timestamptz(6)
+  profile           ScraperYoutubeProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_youtube_profile_metrics")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2009,12 +2086,26 @@ model ScraperKuaishouProfile {
   created_at         DateTime               @default(now()) @db.Timestamptz(6)
   updated_at         DateTime               @updatedAt @db.Timestamptz(6)
   videos             ScraperKuaishouVideo[]
+  metrics_history    ScraperKuaishouProfileMetrics[]
 
   @@index([username])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([followers_count(sort: Desc)])
   @@map("scraper_kuaishou_profiles")
+}
+
+model ScraperKuaishouProfileMetrics {
+  id              BigInt                @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt                @default(0)
+  following_count BigInt                @default(0)
+  likes_count     BigInt                @default(0)
+  captured_at     DateTime              @default(now()) @db.Timestamptz(6)
+  profile         ScraperKuaishouProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_kuaishou_profile_metrics")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2119,12 +2210,26 @@ model ScraperBilibiliProfile {
   created_at         DateTime               @default(now()) @db.Timestamptz(6)
   updated_at         DateTime               @updatedAt @db.Timestamptz(6)
   videos             ScraperBilibiliVideo[]
+  metrics_history    ScraperBilibiliProfileMetrics[]
 
   @@index([username])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([followers_count(sort: Desc)])
   @@map("scraper_bilibili_profiles")
+}
+
+model ScraperBilibiliProfileMetrics {
+  id              BigInt                @id @default(autoincrement())
+  profile_id      BigInt
+  followers_count BigInt                @default(0)
+  following_count BigInt                @default(0)
+  likes_count     BigInt                @default(0)
+  captured_at     DateTime              @default(now()) @db.Timestamptz(6)
+  profile         ScraperBilibiliProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, captured_at(sort: Desc)])
+  @@map("scraper_bilibili_profile_metrics")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2580,6 +2685,46 @@ model TeamPushRequest {
   @@index([team_id, status])
   @@index([requested_by_id])
   @@map("team_push_requests")
+}
+
+// Đề xuất video (từ video đã cào hoặc member tự dán URL) chờ leader/admin duyệt
+// trước khi vào VideoLibrary — mirror TeamPushRequest, dùng FK thật (không
+// denormalize như VideoLibrary/ApprovedContent) vì hàng chỉ tồn tại ngắn hạn
+// trong lúc chờ duyệt, cần include tên người đề xuất cho hàng chờ duyệt.
+model ScraperVideoProposal {
+  id                String         @id @default(uuid())
+  video_id          String         @db.VarChar(255)
+  platform          String         @db.VarChar(20)
+  title             String         @default("")
+  description       String         @default("")
+  video_url         String         @db.VarChar(2000)
+  author_username   String         @default("") @db.VarChar(255)
+  author_name       String         @default("") @db.VarChar(255)
+  thumbnail_url     String?        @db.VarChar(2000)
+  views_count       BigInt         @default(0)
+  likes_count       BigInt         @default(0)
+  comments_count    BigInt         @default(0)
+  shares_count      BigInt         @default(0)
+  source            ProposalSource @default(SCRAPED)
+  notes             String?
+  requested_by_id   String         @db.Uuid
+  status            ApprovalStatus @default(PENDING)
+  reviewed_by_id    String?        @db.Uuid
+  reviewed_at       DateTime?
+  note              String?
+  created_at        DateTime       @default(now())
+
+  requested_by User  @relation("ScraperVideoProposalBy", fields: [requested_by_id], references: [id], onDelete: Cascade)
+  reviewed_by  User? @relation("ScraperVideoProposalReviewedBy", fields: [reviewed_by_id], references: [id])
+
+  @@index([status, created_at(sort: Desc)])
+  @@index([requested_by_id])
+  @@map("scraper_video_proposals")
+}
+
+enum ProposalSource {
+  SCRAPED
+  MANUAL
 }
 
 model EditorApproval {

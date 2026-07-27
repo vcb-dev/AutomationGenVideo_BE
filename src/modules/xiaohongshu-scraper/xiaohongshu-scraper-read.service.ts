@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
@@ -20,6 +21,56 @@ const SORT_FIELDS: Record<string, any> = {
 @Injectable()
 export class XiaohongshuScraperReadService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // ─── Lookalike Creator: kênh khác trùng "keywords" (field tương đương hashtags
+  // ở Xiaohongshu). profile_id nullable trên bảng này (video search không gắn
+  // profile) — luôn lọc IS NOT NULL để không trả về rác.
+  private static readonly TOP_HASHTAGS_PER_PROFILE = 15;
+  private static readonly MIN_HASHTAG_OVERLAP = 2;
+  private static readonly MAX_LOOKALIKE_RESULTS = 10;
+
+  async lookalikes(profileId: bigint) {
+    const topTags = await this.prisma.$queryRaw<{ hashtag: string; cnt: bigint }[]>`
+      SELECT h AS hashtag, COUNT(*) AS cnt
+      FROM scraper_xiaohongshu_videos, unnest(keywords) AS h
+      WHERE profile_id = ${profileId}
+      GROUP BY h ORDER BY cnt DESC LIMIT ${XiaohongshuScraperReadService.TOP_HASHTAGS_PER_PROFILE}
+    `;
+    if (topTags.length === 0) return { lookalikes: [] };
+    const tagList = topTags.map((t) => t.hashtag);
+
+    const overlaps = await this.prisma.$queryRaw<{ profile_id: bigint; overlap_count: bigint }[]>`
+      SELECT v.profile_id AS profile_id, COUNT(DISTINCT h) AS overlap_count
+      FROM scraper_xiaohongshu_videos v, unnest(v.keywords) AS h
+      WHERE h IN (${Prisma.join(tagList)}) AND v.profile_id IS NOT NULL AND v.profile_id <> ${profileId}
+      GROUP BY v.profile_id
+      HAVING COUNT(DISTINCT h) >= ${XiaohongshuScraperReadService.MIN_HASHTAG_OVERLAP}
+      ORDER BY overlap_count DESC
+      LIMIT ${XiaohongshuScraperReadService.MAX_LOOKALIKE_RESULTS}
+    `;
+    if (overlaps.length === 0) return { lookalikes: [] };
+
+    const profiles = await this.prisma.scraperXiaohongshuProfile.findMany({
+      where: { id: { in: overlaps.map((o) => o.profile_id) } },
+    });
+    const profileMap = new Map(profiles.map((p) => [p.id.toString(), p]));
+
+    return {
+      lookalikes: overlaps
+        .map((o) => {
+          const p = profileMap.get(o.profile_id.toString());
+          if (!p) return null;
+          return {
+            id: Number(p.id),
+            user_id: p.user_id,
+            nickname: p.nickname,
+            avatar_url: p.avatar_url || '',
+            overlap_count: Number(o.overlap_count),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null),
+    };
+  }
 
   private serializeVideo(v: any) {
     return {

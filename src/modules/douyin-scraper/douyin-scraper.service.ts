@@ -1,6 +1,10 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../task-auto/notifications/notifications.service';
+import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { DouyinAiClientService, ParsedDouyinVideo } from './douyin-ai-client.service';
+import { DouyinScraperReadService } from './douyin-scraper-read.service';
 
 function isDriveUrl(url?: string | null): boolean {
   return !!url && (url.includes('drive.google.com') || url.includes('googleusercontent.com'));
@@ -20,7 +24,39 @@ export class DouyinScraperService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClient: DouyinAiClientService,
+    private readonly notifications: NotificationsService,
+    private readonly readService: DouyinScraperReadService,
+    private readonly aiIntegration: AiIntegrationService,
   ) {}
+
+  // ─── Growth Alert: snapshot followers + báo động nếu tăng đột biến ────────
+  // Douyin chỉ có followers_count cấp profile (không có following/likes), khớp
+  // đúng field sẵn có trên ScraperDouyinProfile.
+  private static readonly GROWTH_ALERT_THRESHOLD_PCT = 0.2;
+
+  private async recordMetricsAndMaybeAlert(profileId: bigint, profileName: string): Promise<void> {
+    const fresh = await this.prisma.scraperDouyinProfile.findUniqueOrThrow({ where: { id: profileId } });
+    const previous = await this.prisma.scraperDouyinProfileMetrics.findFirst({
+      where: { profile_id: profileId },
+      orderBy: { captured_at: 'desc' },
+    });
+
+    await this.prisma.scraperDouyinProfileMetrics.create({
+      data: { profile_id: profileId, followers_count: fresh.followers_count },
+    });
+
+    if (!previous || previous.followers_count <= 0n) return;
+    const growth = Number(fresh.followers_count - previous.followers_count) / Number(previous.followers_count);
+    if (growth < DouyinScraperService.GROWTH_ALERT_THRESHOLD_PCT) return;
+
+    const pct = Math.round(growth * 100);
+    await this.notifications.broadcastToActiveUsers(
+      'GROWTH_ALERT',
+      `Kênh Douyin @${profileName} tăng trưởng đột biến`,
+      `Followers tăng ${pct}% (${previous.followers_count} → ${fresh.followers_count}) kể từ lần cào trước.`,
+      { platform: 'douyin', profile_id: Number(profileId) },
+    );
+  }
 
   // ─── Upsert 1 video (giữ nguyên business rule preserve Drive URL / keyword cũ) ──
 
@@ -28,7 +64,10 @@ export class DouyinScraperService {
     const existing = await this.prisma.scraperDouyinVideo.findUnique({ where: { post_id: v.post_id } });
 
     const preview_image = existing && isDriveUrl(existing.preview_image) ? existing.preview_image : v.thumbnail_url;
-    const resolvedKeyword = v.search_keyword || keywordOverride || '';
+    // keywordOverride ưu tiên hơn v.search_keyword: khi user gõ tiếng Việt rồi dịch sang
+    // tiếng Trung để query, ta vẫn muốn LƯU tiếng Việt cho dễ đọc ở bộ lọc/gợi ý.
+    // (Nhánh cào profile truyền override='@label' và v.search_keyword rỗng nên không đổi.)
+    const resolvedKeyword = keywordOverride || v.search_keyword || '';
     const search_keyword = existing?.search_keyword || resolvedKeyword;
 
     const data = {
@@ -69,11 +108,20 @@ export class DouyinScraperService {
   // (không lặp lại từ đầu) để bù phần bị trùng, tối đa MAX_SEARCH_ROUNDS lần.
   private static readonly MAX_SEARCH_ROUNDS = 5;
 
-  async searchKeyword(keyword: string, count = 30): Promise<{ created: number; updated: number }> {
+  /**
+   * @param keyword       Từ khoá GỬI ĐI để query (tiếng Trung với nền tảng TQ).
+   * @param displayKeyword Từ khoá LƯU vào DB để hiển thị (tiếng Việt user gõ). Bỏ trống = dùng `keyword`.
+   */
+  async searchKeyword(
+    keyword: string,
+    count = 30,
+    displayKeyword?: string,
+  ): Promise<{ created: number; updated: number }> {
     let created = 0;
     let updated = 0;
     let cursor: unknown = undefined;
     let hasMore = true;
+    const storedKeyword = (displayKeyword || '').trim() || undefined;
 
     for (let round = 0; round < DouyinScraperService.MAX_SEARCH_ROUNDS && created < count && hasMore; round++) {
       const remaining = count - created;
@@ -81,7 +129,7 @@ export class DouyinScraperService {
       if (videos.length === 0) break;
 
       for (const v of videos) {
-        const r = await this.upsertVideo(v);
+        const r = await this.upsertVideo(v, storedKeyword);
         if (r.created) created++;
         else updated++;
       }
@@ -90,7 +138,7 @@ export class DouyinScraperService {
       hasMore = has_more;
     }
 
-    this.logger.log(`[DOUYIN] Ingest '${keyword}': +${created} new, ~${updated} updated`);
+    this.logger.log(`[DOUYIN] Ingest '${keyword}'${storedKeyword ? ` (lưu '${storedKeyword}')` : ''}: +${created} new, ~${updated} updated`);
     return { created, updated };
   }
 
@@ -152,6 +200,10 @@ export class DouyinScraperService {
 
       await this.prisma.scraperDouyinProfile.update({ where: { id: profileId }, data: profileUpdateData });
 
+      this.recordMetricsAndMaybeAlert(profileId, label).catch((err) => {
+        this.logger.error(`[DOUYIN-GROWTH-ALERT] ${label}: ${err.message}`);
+      });
+
       this.logger.log(`[DOUYIN-PROFILE] @${label}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated, videos_returned: videos.length };
     } catch (err: any) {
@@ -163,7 +215,7 @@ export class DouyinScraperService {
     }
   }
 
-  async scrapeProfile(secUserId: string, isOwned?: boolean): Promise<any> {
+  async scrapeProfile(secUserId: string, isOwned?: boolean, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
     let profile = await this.prisma.scraperDouyinProfile.findUnique({ where: { sec_user_id: secUserId } });
     const wasCreated = !profile;
     if (!profile) {
@@ -178,36 +230,43 @@ export class DouyinScraperService {
       if (isOwned && !profile.is_owned) data.is_owned = true;
       await this.prisma.scraperDouyinProfile.update({ where: { id: profile.id }, data });
 
-      this.scrapeProfileVideos(profile.id, 30).catch((err) => {
+      this.scrapeProfileVideos(profile.id, targetCount).catch((err) => {
         this.logger.error(`[DOUYIN-PROFILE] ${secUserId} thất bại: ${err.message}`);
       });
 
       return {
         status: 'ok',
-        message: 'Đang cập nhật profile Douyin...',
+        message: `Đang cập nhật tới ${targetCount} video mới nhất cho profile Douyin...`,
         profile_id: Number(profile.id),
         already_exists: true,
       };
     }
 
-    // Profile mới → cào đồng bộ 20 video đầu (await) để trả dữ liệu ngay
-    const result = await this.scrapeProfileVideos(profile.id, 20);
+    // Profile mới → cào đồng bộ lô đầu (await) để trả dữ liệu ngay, phần còn lại chạy nền
+    const firstBatch = Math.min(20, targetCount);
+    const result = await this.scrapeProfileVideos(profile.id, firstBatch);
     if (result.videos_returned === 0) {
       await this.prisma.scraperDouyinProfile.delete({ where: { id: profile.id } }).catch(() => {});
       throw new HttpException({ error: 'Không tìm thấy video cho sec_user_id này' }, HttpStatus.NOT_FOUND);
     }
 
-    // Dispatch cào tiếp tới tổng 300 video (fire-and-forget)
-    this.scrapeProfileVideos(profile.id, 300).catch((err) => {
-      this.logger.error(`[DOUYIN-PROFILE] ${secUserId} continuation thất bại: ${err.message}`);
-    });
+    // Dispatch cào tiếp tới tổng targetCount video (fire-and-forget)
+    const continuationNeeded = targetCount > firstBatch;
+    if (continuationNeeded) {
+      this.scrapeProfileVideos(profile.id, targetCount).catch((err) => {
+        this.logger.error(`[DOUYIN-PROFILE] ${secUserId} continuation thất bại: ${err.message}`);
+      });
+    }
 
     const updatedProfile = await this.prisma.scraperDouyinProfile.findUniqueOrThrow({ where: { id: profile.id } });
     const label = updatedProfile.username || secUserId.slice(0, 20);
 
+    const batchInfo = `${result.videos_returned} posts (${result.created} mới)`;
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} posts đầu cho @${label}. Đang tiếp tục cào thêm...`,
+      message: continuationNeeded
+        ? `Đã cào ${batchInfo} cho @${label}. Đang cào tiếp tới ${targetCount}...`
+        : `Đã cào ${batchInfo} cho @${label}.`,
       profile_id: Number(updatedProfile.id),
       newly_scraped: true,
       profile: {
@@ -251,6 +310,38 @@ export class DouyinScraperService {
   // ─── Periodic: cào video mới cho profile is_tracked=true (cron) ─────────
   // is_tracked là tiêu chí chọn lọc duy nhất; scraping_status chỉ dùng để loại trừ
   // profile đang cào dở (!= 'processing'), không so khớp cứng 1 giá trị cụ thể.
+
+  // ─── Auto re-run từ khoá đã search nhiều nhất (cron riêng, khác giờ periodicRefresh) ──
+  private static readonly MAX_AUTO_RERUN_KEYWORDS_PER_CRON = 3;
+  private static readonly MIN_HIT_COUNT_FOR_AUTO_RERUN = 3;
+
+  async autoRerunTopKeywords(): Promise<{ keywords: string[]; created: number; updated: number }> {
+    const { suggestions } = await this.readService.keywordSuggest('');
+    const keywords = suggestions
+      .filter((s) => s.count >= DouyinScraperService.MIN_HIT_COUNT_FOR_AUTO_RERUN)
+      .slice(0, DouyinScraperService.MAX_AUTO_RERUN_KEYWORDS_PER_CRON)
+      .map((s) => s.keyword);
+
+    let created = 0;
+    let updated = 0;
+    for (const keyword of keywords) {
+      try {
+        // Từ khoá lưu trong DB là TIẾNG VIỆT (user gõ) — Douyin chỉ ra kết quả tốt với
+        // tiếng Trung, nên phải dịch lại trước khi query. Hàm dịch tự bỏ qua nếu từ khoá
+        // vốn đã là tiếng Trung, và fail-open trả lại nguyên văn nếu AI service chết.
+        const { translated } = await this.aiIntegration.translateSearchKeyword(keyword);
+        // Giữ nguyên tiếng Việt khi lưu lại, để lần rerun sau vẫn đọc được.
+        const r = await this.searchKeyword(translated, 30, keyword);
+        created += r.created;
+        updated += r.updated;
+      } catch (err: any) {
+        this.logger.error(`[DOUYIN-AUTO-RERUN] '${keyword}' thất bại: ${err.message}`);
+      }
+    }
+
+    this.logger.log(`[DOUYIN-AUTO-RERUN] Rerun ${keywords.length} từ khoá: ${keywords.join(', ') || '(không có)'}`);
+    return { keywords, created, updated };
+  }
 
   async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();

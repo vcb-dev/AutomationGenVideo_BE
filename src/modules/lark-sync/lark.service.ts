@@ -396,6 +396,159 @@ export class LarkService implements OnModuleInit {
         }
     }
 
+    /**
+     * Báo cáo doanh thu nhập tay — mirror submitTrafficReport() (cùng cơ chế ngày/team/chặn trùng),
+     * nhưng không có ảnh minh chứng và không có nhánh fallback "legacy" (tính năng mới, không có
+     * dữ liệu cũ để tương thích ngược).
+     */
+    async submitRevenueReport(payload: any) {
+        const { email, name, revenue, channels, reportDate, team: payloadTeam } = payload;
+        const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
+        const getVietnamBounds = (dateInput?: string | Date) => {
+            let y = 0, m = 0, d = 0;
+            if (typeof dateInput === 'string' && dateInput.length === 10) {
+                const parts = dateInput.split('-');
+                y = parseInt(parts[0], 10);
+                m = parseInt(parts[1], 10) - 1;
+                d = parseInt(parts[2], 10);
+            } else {
+                const dateObj = typeof dateInput === 'string' ? new Date(dateInput) : (dateInput || new Date());
+                const vnKey = this.toVietnamDateKey(dateObj);
+                const parts = vnKey.split('-');
+                y = parseInt(parts[0], 10);
+                m = parseInt(parts[1], 10) - 1;
+                d = parseInt(parts[2], 10);
+            }
+            return {
+                start: new Date(Date.UTC(y, m, d - 1, 17, 0, 0, 0)),
+                end: new Date(Date.UTC(y, m, d, 16, 59, 59, 999))
+            };
+        };
+
+        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
+        const roles = userRec?.roles || [];
+        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
+
+        if (!isAdmin) {
+            const todayVN = this.toVietnamDateKey(new Date());
+            if (reportDate && reportDate > todayVN) {
+                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
+            }
+        }
+
+        const revenueDetails = (payload as any).revenueDetails;
+        const breakdown = revenueDetails?.breakdown || {};
+        // Nghiệp vụ giống traffic: nộp sáng ngày reportDate là báo cáo VỀ ngày reportDate-1.
+        const targetDateKey = this.previousVietnamDateKey(reportDate || undefined);
+        const now = this.vietnamNoonUtcFromKey(targetDateKey);
+        const monthString = 'T' + parseInt(targetDateKey.split('-')[1], 10).toString();
+        const bounds = getVietnamBounds(targetDateKey);
+
+        // Chặn nộp trùng — cùng logic ưu tiên email > tên như traffic.
+        const duplicateWhereIdentity: any = normalizedSubmitterEmail
+            ? { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } }
+            : (name && String(name).trim())
+                ? { name: { equals: String(name).trim(), mode: 'insensitive' as any } }
+                : null;
+        if (duplicateWhereIdentity) {
+            const existingRevenue = await this.prisma.revenueReport.findFirst({
+                where: {
+                    date: { gte: bounds.start, lte: bounds.end },
+                    ...duplicateWhereIdentity,
+                },
+                orderBy: { created_at: 'desc' },
+            });
+            if (existingRevenue) {
+                if (payloadTeam && String(payloadTeam).trim() && existingRevenue.team !== String(payloadTeam).trim()) {
+                    // Khác team — cho phép tiếp tục nộp
+                } else {
+                    return {
+                        message: 'Bạn đã báo cáo doanh thu cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
+                        alreadySubmitted: true,
+                        existingRecordDate: existingRevenue.created_at || existingRevenue.date,
+                        recordIds: [],
+                    };
+                }
+            }
+        }
+
+        let team = '';
+        if (payloadTeam && String(payloadTeam).trim()) {
+            team = String(payloadTeam).trim();
+        } else {
+            const userRecord = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
+            if (userRecord?.team) team = userRecord.team;
+            if (!team) {
+                const userPerm = await this.getPermissionByEmail(email);
+                if (userPerm?.team) team = userPerm.team;
+            }
+            if (!team && name) {
+                const emp = await this.prisma.user.findFirst({
+                    where: { full_name: { equals: name, mode: 'insensitive' }, lark_employee_record_id: { not: null } },
+                });
+                if (emp?.team) team = emp.team;
+            }
+        }
+
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+        const recordsToCreate = [];
+
+        platformKeys.forEach(pKey => {
+            const platformEntries = breakdown[pKey] || [];
+            platformEntries.forEach((entry: any) => {
+                const val = parseInt(entry.value || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_rev_${pKey}_${Math.random().toString(36).slice(2, 7)}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_revenue: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`revenue_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = entry.channel || null;
+                    recordsToCreate.push(data);
+                }
+            });
+        });
+
+        // Fallback nếu FE gửi object revenue phẳng thay vì breakdown (không có nhiều dòng/kênh).
+        if (recordsToCreate.length === 0 && revenue) {
+            platformKeys.forEach(pKey => {
+                const val = parseInt(revenue[pKey as keyof typeof revenue] || '0');
+                if (val > 0) {
+                    const data: any = {
+                        id: `local_rev_${pKey}_${Date.now()}`,
+                        email, name, date: now, employee: name, team, month: monthString,
+                        total_revenue: BigInt(val),
+                        is_confirmed: 'Pending',
+                    };
+                    data[`revenue_${pKey}`] = BigInt(val);
+                    data[`channel_${pKey}`] = (channels as any)?.[pKey] || null;
+                    recordsToCreate.push(data);
+                }
+            });
+        }
+
+        try {
+            if (recordsToCreate.length > 0) {
+                await this.prisma.revenueReport.createMany({
+                    data: recordsToCreate,
+                    skipDuplicates: true,
+                });
+            }
+
+            this.invalidateActivityCache();
+
+            return {
+                message: `Revenue report submitted successfully. Created ${recordsToCreate.length} records.`,
+                recordIds: recordsToCreate.map(r => r.id)
+            };
+        } catch (dbError) {
+            this.logger.error('Error saving multi-row revenue report:', dbError);
+            throw new Error(`Could not save revenue report: ${dbError.message}`);
+        }
+    }
+
     async submitChecklistReport(payload: any) {
         console.log('--- submitChecklistReport RAW PAYLOAD ---');
         console.log(JSON.stringify(payload, null, 2));
@@ -1242,6 +1395,7 @@ export class LarkService implements OnModuleInit {
 
                 const [
                     allTrafficInDb,
+                    allRevenueInDb,
                     reportOutstandings,
                     totalKpiCount,
                     reportsUnfilteredCount,
@@ -1250,6 +1404,10 @@ export class LarkService implements OnModuleInit {
                     // trafficReport: record đã lưu thẳng `date` = ngày nghiệp vụ D (submitTrafficReport tự
                     // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
                     this.prisma.trafficReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
+                    // revenueReport: cùng cơ chế lưu/đọc như trafficReport (submitRevenueReport cũng trừ
+                    // lùi 1 ngày). Đây là nguồn doanh thu MỚI (nhập tay theo nền tảng) — thay cho
+                    // reportKpi.revenue_day/câu hỏi checklist cũ (2 nguồn đó không liên quan tính năng này).
+                    this.prisma.revenueReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
                         WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%'
@@ -1642,6 +1800,32 @@ export class LarkService implements OnModuleInit {
                     if (inferredEmail) {
                         const mergedMail = trafficMapByEmail.has(inferredEmail) ? mergeTraffic(trafficMapByEmail.get(inferredEmail), t) : mergeTraffic({ total_traffic: BigInt(0) }, t);
                         trafficMapByEmail.set(inferredEmail, mergedMail);
+                    }
+                });
+
+                // Help track who reported revenue today — mirror trafficMapByEmail/trafficMapByName,
+                // hoàn toàn tách biệt khỏi traffic (không gộp 2 nguồn số liệu).
+                const revenueMapByEmail = new Map();
+                const revenueMapByName = new Map();
+                allRevenueInDb.forEach(rv => {
+                    const nameKey = rv.name ? rv.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') : null;
+                    if (!nameKey) return;
+
+                    const perm = employeeMap.get(nameKey);
+                    const inferredEmail = (rv.email ? String(rv.email).toLowerCase().trim() : null) || (perm?.email ? String(perm.email).toLowerCase().trim() : null);
+
+                    const mergeRevenue = (existing: any, current: any) => {
+                        const res = { ...existing };
+                        res.total_revenue = (res.total_revenue || BigInt(0)) + (current.total_revenue || BigInt(0));
+                        return res;
+                    };
+
+                    const mergedName = revenueMapByName.has(nameKey) ? mergeRevenue(revenueMapByName.get(nameKey), rv) : mergeRevenue({ total_revenue: BigInt(0) }, rv);
+                    revenueMapByName.set(nameKey, mergedName);
+
+                    if (inferredEmail) {
+                        const mergedMail = revenueMapByEmail.has(inferredEmail) ? mergeRevenue(revenueMapByEmail.get(inferredEmail), rv) : mergeRevenue({ total_revenue: BigInt(0) }, rv);
+                        revenueMapByEmail.set(inferredEmail, mergedMail);
                     }
                 });
 
@@ -2352,6 +2536,8 @@ export class LarkService implements OnModuleInit {
 
                     // Lookup daily traffic for this person
                     const personTraffic = (normalizedEmail ? trafficMapByEmail.get(normalizedEmail) : null) || trafficMapByName.get(nameKey) || null;
+                    // Lookup daily revenue for this person (bảng revenue_reports mới — tách biệt traffic)
+                    const personRevenue = (normalizedEmail ? revenueMapByEmail.get(normalizedEmail) : null) || revenueMapByName.get(nameKey) || null;
 
                     const resolvedAvatar =
                         this.convertDriveUrl(employee?.image_url) ||
@@ -2417,7 +2603,9 @@ export class LarkService implements OnModuleInit {
                         // Stable monthly traffic/revenue for the Summary Cards:
                         traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
                         revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
-                        revenueToday: (reportKpi ? Number(reportKpi.revenue_day || 0) : 0) + incrementalRevenue,
+                        // Nguồn MỚI: bảng revenue_reports (nhập tay theo nền tảng, giống trafficToday.total ở
+                        // dưới) — không còn dùng reportKpi.revenue_day/câu hỏi checklist (2 nguồn cũ, khác tính năng).
+                        revenueToday: personRevenue ? Number(personRevenue.total_revenue || 0) : 0,
                         task_progress: reportKpi ? {
                             task_auto: reportKpi.task_auto || 0,
                             task_new: reportKpi.task_new || 0,
@@ -2550,6 +2738,10 @@ export class LarkService implements OnModuleInit {
                             (rEmailKey ? trafficMapByEmail.get(rEmailKey) : null) ||
                             (rNameKey ? trafficMapByName.get(rNameKey) : null) ||
                             null;
+                        const personRevenue =
+                            (rEmailKey ? revenueMapByEmail.get(rEmailKey) : null) ||
+                            (rNameKey ? revenueMapByName.get(rNameKey) : null) ||
+                            null;
 
                         // Strong OFF filter for fallback rows (users/reports without KPI row)
                         const repStatusRaw = String(
@@ -2600,7 +2792,7 @@ export class LarkService implements OnModuleInit {
                             completed_month: 0,
                             traffic_range: 0,
                             revenue_range: 0,
-                            revenueToday: answersData ? Number(answersData['Bạn đã đạt doanh thu của bao nhiêu video?']) || 0 : 0,
+                            revenueToday: personRevenue ? Number(personRevenue.total_revenue || 0) : 0,
                             task_progress: { task_auto: 0, task_new: 0, kpi_status: 'N/A' },
                             traffic_month: 0,
                             revenue_month: 0,
@@ -2704,7 +2896,8 @@ export class LarkService implements OnModuleInit {
                         existing.completed_month += r.completed_month;
                         existing.traffic_month += r.traffic_month;
                         existing.revenue_month += r.revenue_month;
-                        existing.revenueToday = (existing.revenueToday || 0) + (r.revenueToday || 0);
+                        // revenueToday KHÔNG cộng dồn ở đây — giống hệt trafficToday (không bị đụng trong
+                        // merge này), vì cả 2 đều đã là tổng theo người từ personTraffic/personRevenue rồi.
 
                         // TARGETS: Use latest or max, DO NOT SUM
                         // If we have an exact day match in one of the records, prioritize its kpi_day
@@ -3097,7 +3290,7 @@ export class LarkService implements OnModuleInit {
             .replace(/\s+/g, ' ');
         const fullNameNorm = normalizeName(fullName);
 
-        const [reportCandidates, trafficCandidates] = await Promise.all([
+        const [reportCandidates, trafficCandidates, revenueCandidates] = await Promise.all([
             this.prisma.checklistReport.findMany({
                 where: {
                     date: { gte: startOfDay, lte: endOfDay }
@@ -3105,6 +3298,12 @@ export class LarkService implements OnModuleInit {
                 orderBy: { created_at: 'desc' }
             }),
             this.prisma.trafficReport.findMany({
+                where: {
+                    date: { gte: startOfDay, lte: endOfDay }
+                },
+                orderBy: { created_at: 'asc' }
+            }),
+            this.prisma.revenueReport.findMany({
                 where: {
                     date: { gte: startOfDay, lte: endOfDay }
                 },
@@ -3127,6 +3326,7 @@ export class LarkService implements OnModuleInit {
 
         const report = reportCandidates.find((r: any) => isMatchedPerson(r.email, r.name)) || null;
         const trafficRecords = trafficCandidates.filter((t: any) => isMatchedPerson(t.email, t.name));
+        const revenueRecords = revenueCandidates.filter((t: any) => isMatchedPerson(t.email, t.name));
 
         let traffic: any = null;
         let details: any[] = [];
@@ -3215,10 +3415,51 @@ export class LarkService implements OnModuleInit {
             });
         }
 
-        // Identify which teams have already been reported in traffic records
-        const reportedTeams = Array.from(new Set(trafficRecords.map(t => t.team).filter(Boolean)));
+        // Build combined `revenue` object — mirror traffic aggregation minus evidence.
+        let revenue: any = null;
+        let revenueDetails: any[] = [];
+        if (revenueRecords.length > 0) {
+            revenue = { ...revenueRecords[0] };
+            revenue.total_revenue = Number(revenue.total_revenue || 0);
+            platforms.forEach(p => {
+                const rk = `revenue_${p}`;
+                revenue[rk] = Number(revenue[rk] || 0);
+            });
 
-        return { report, traffic, trafficRecords, reportedTeams };
+            const buildRevenueDetails = (rec: any) => {
+                platforms.forEach(p => {
+                    const rk = `revenue_${p}`;
+                    const ck = `channel_${p}`;
+                    const val = Number(rec[rk] || 0);
+                    if (val > 0) {
+                        revenueDetails.push({ platform: p, channel: rec[ck] || '', value: val });
+                    }
+                });
+            };
+
+            buildRevenueDetails(revenueRecords[0]);
+
+            if (revenueRecords.length > 1) {
+                for (let i = 1; i < revenueRecords.length; i++) {
+                    const rec = revenueRecords[i];
+                    revenue.total_revenue += Number(rec.total_revenue || 0);
+                    platforms.forEach(p => {
+                        const rk = `revenue_${p}`;
+                        const ck = `channel_${p}`;
+                        revenue[rk] = (revenue[rk] || 0) + Number(rec[rk] || 0);
+                        if (rec[ck]) revenue[ck] = revenue[ck] ? `${revenue[ck]}, ${rec[ck]}` : rec[ck];
+                    });
+                    buildRevenueDetails(rec);
+                }
+            }
+            revenue.details = revenueDetails;
+        }
+
+        // Identify which teams have already been reported in traffic/revenue records
+        const reportedTeams = Array.from(new Set(trafficRecords.map(t => t.team).filter(Boolean)));
+        const reportedRevenueTeams = Array.from(new Set(revenueRecords.map(t => t.team).filter(Boolean)));
+
+        return { report, traffic, trafficRecords, reportedTeams, revenue, revenueRecords, reportedRevenueTeams };
 
     }
 

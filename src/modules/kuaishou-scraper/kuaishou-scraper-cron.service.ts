@@ -21,4 +21,13 @@ export class KuaishouScraperCronService {
       this.logger.error(`❌ [KUAISHOU-PERIODIC] Lỗi: ${err.message}`);
     }
   }
+
+  @Cron('0 0 14 * * *', VN_TZ)
+  async cronAutoRerunKeywords(): Promise<void> {
+    try {
+      await this.service.autoRerunTopKeywords();
+    } catch (err: any) {
+      this.logger.error(`❌ [KUAISHOU-AUTO-RERUN] Lỗi: ${err.message}`);
+    }
+  }
 }

@@ -73,8 +73,8 @@ export class TaskAutoTeamsController {
 
   @Delete("teams/:id")
   @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER")
-  @ApiOperation({ summary: "Delete a team" })
+  @Roles("ADMIN")
+  @ApiOperation({ summary: "Delete a team (ADMIN only)" })
   deleteTeam(@Param("id") id: string) {
     return this.teams.remove(id);
   }

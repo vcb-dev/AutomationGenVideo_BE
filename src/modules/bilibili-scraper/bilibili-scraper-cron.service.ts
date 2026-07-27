@@ -21,4 +21,13 @@ export class BilibiliScraperCronService {
       this.logger.error(`❌ [BILIBILI-PERIODIC] Lỗi: ${err.message}`);
     }
   }
+
+  @Cron('0 30 14 * * *', VN_TZ)
+  async cronAutoRerunKeywords(): Promise<void> {
+    try {
+      await this.service.autoRerunTopKeywords();
+    } catch (err: any) {
+      this.logger.error(`❌ [BILIBILI-AUTO-RERUN] Lỗi: ${err.message}`);
+    }
+  }
 }

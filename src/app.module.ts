@@ -44,6 +44,7 @@ import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scrap
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
+import { VideoLibraryModule } from './modules/video-library/video-library.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module
     ScraperAggregateModule,
     SearchKeywordsModule,
     ScraperProxyModule,
+    VideoLibraryModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
