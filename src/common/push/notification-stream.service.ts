@@ -18,6 +18,10 @@ export class NotificationStreamService {
     this.subject.next({ userId, event: { type: "notification", data } });
   }
 
+  emitMany(userIds: string[], data: object = {}): void {
+    Array.from(new Set(userIds)).forEach((id) => this.emit(id, data));
+  }
+
   stream(userId: string): Observable<MessageEvent> {
     const events$ = this.subject.asObservable().pipe(
       filter((e) => e.userId === userId),

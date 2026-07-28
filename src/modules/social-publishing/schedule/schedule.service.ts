@@ -2,6 +2,8 @@ import { Injectable, BadRequestException, NotFoundException, Logger } from '@nes
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { PublishService } from '../publish/publish.service';
+import { HistoryService } from '../history/history.service';
+import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 import * as fs from 'fs';
@@ -38,6 +40,8 @@ export class ScheduleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly publishService: PublishService,
+    private readonly history: HistoryService,
+    private readonly notifyStream: NotificationStreamService,
   ) { }
 
   // ─── CRUD API ────────────────────────────────────────────────────────────────
@@ -400,6 +404,9 @@ export class ScheduleService {
               next_retry_at: null,
             },
           });
+          this.history.getFailedPostAudience(post.user_id)
+            .then((audience) => this.notifyStream.emitMany(audience))
+            .catch(() => {});
           this.logger.warn(`[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`);
         } else {
           await this.prisma.socialPost.updateMany({

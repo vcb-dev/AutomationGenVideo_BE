@@ -1,6 +1,8 @@
-import { Controller, Get, Query, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Query, Sse, MessageEvent, UseGuards, Request } from '@nestjs/common';
+import { Observable } from 'rxjs';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { HistoryService } from './history.service';
 
 @ApiTags('Social History')
@@ -8,7 +10,18 @@ import { HistoryService } from './history.service';
 @UseGuards(JwtAuthGuard)
 @Controller('social/history')
 export class HistoryController {
-  constructor(private readonly historyService: HistoryService) {}
+  constructor(
+    private readonly historyService: HistoryService,
+    private readonly notifyStream: NotificationStreamService,
+  ) {}
+
+  // EventSource không set được header Authorization — token truyền qua `?access_token=`
+  // (JwtStrategy đã hỗ trợ sẵn, dùng chung cơ chế với task-auto/notifications/stream).
+  @Sse('notifications/stream')
+  @ApiOperation({ summary: 'Real-time (SSE) stream báo có post FAILED mới của user hiện tại' })
+  notificationsStream(@Request() req: any): Observable<MessageEvent> {
+    return this.notifyStream.stream(req.user.id);
+  }
 
   @Get()
   @ApiOperation({ summary: 'Lịch sử đăng bài. Admin/Manager/Leader có thể filter theo team hoặc nhân viên' })
