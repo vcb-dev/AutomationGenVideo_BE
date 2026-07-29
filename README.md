@@ -44,8 +44,7 @@ Hệ thống hỗ trợ 4 roles:
 ## 📝 API Endpoints
 
 ### Authentication (`/auth`)
-- `POST /auth/register` - Đăng ký user mới
-- `POST /auth/login` - Đăng nhập
+- `POST /auth/login` - Đăng nhập (không còn tự đăng ký — tài khoản do Admin/Leader tạo qua trang HR-management)
 - `GET /auth/profile` - Lấy thông tin profile (protected)
 
 ### Users (`/users`)
@@ -64,9 +63,9 @@ npx prisma studio
 
 ### Test API với curl:
 
-#### 1. Register Admin
+#### 1. Tạo Admin đầu tiên (tự đăng ký đã bị gỡ — dùng seed hoặc tạo trực tiếp trong DB, sau đó Admin tạo nhân sự qua trang HR-management)
 ```bash
-curl -X POST http://localhost:3000/auth/register -H "Content-Type: application/json" -d "{\"email\":\"admin@example.com\",\"password\":\"Admin123!\",\"full_name\":\"Admin User\",\"role\":\"ADMIN\"}"
+npx prisma studio  # tạo user ADMIN đầu tiên trực tiếp trong bảng users
 ```
 
 #### 2. Login

@@ -57,14 +57,14 @@ function extractText(field: any): string | null {
 }
 
 async function syncPermissionsToDb(dbUrl: string, label: string, records: any[]) {
-  console.log(`\n🚀 Đang đồng bộ lark_permissions tới ${label}...`);
+  console.log(`\n🚀 Đang đồng bộ report_permissions tới ${label}...`);
   const prisma = new PrismaClient({ datasources: { db: { url: dbUrl } } });
 
   try {
     let created = 0, updated = 0;
     
     // Clear existing to ensure "Ghi đè"
-    await prisma.larkPermission.deleteMany({});
+    await prisma.reportPermission.deleteMany({});
     
     for (const record of records) {
       const f = record.fields;
@@ -75,7 +75,7 @@ async function syncPermissionsToDb(dbUrl: string, label: string, records: any[])
       const status = extractText(f['Trạng thái'] || f['Status'] || f['Trang Thai']);
       const maPin = extractText(f['MaPin'] || f['Mã Pin'] || f['Mã pin']);
 
-      await prisma.larkPermission.create({
+      await prisma.reportPermission.create({
         data: {
           id: record.record_id,
           email,
@@ -89,7 +89,7 @@ async function syncPermissionsToDb(dbUrl: string, label: string, records: any[])
       });
       created++;
     }
-    console.log(`   ✅ Hoàn tất ${label}: Đã nạp ${created} bản ghi vào lark_permissions`);
+    console.log(`   ✅ Hoàn tất ${label}: Đã nạp ${created} bản ghi vào report_permissions`);
   } catch (err: any) {
     console.error(`   ❌ Lỗi khi đồng bộ ${label}:`, err.message);
   } finally {
@@ -108,7 +108,7 @@ async function main() {
     if (SERVER_DB_URL) {
       await syncPermissionsToDb(SERVER_DB_URL, 'SERVER DB', rawRecords);
     }
-    console.log('\n✨ Đã hoàn thành đồng bộ lark_permissions!');
+    console.log('\n✨ Đã hoàn thành đồng bộ report_permissions!');
   } catch (err: any) {
     console.error('❌ Thất bại:', err.message);
   }

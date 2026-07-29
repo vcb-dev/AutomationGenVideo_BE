@@ -12,6 +12,7 @@ class CreateScheduledPostDto {
   @IsOptional() @IsString() privacy?: string;
   @IsString() scheduledAt: string;
   @IsOptional() @IsString() thumbUrl?: string;
+  @IsOptional() @IsString() taskId?: string;
 }
 
 class UpdateScheduledPostDto {
@@ -37,6 +38,12 @@ export class ScheduleController {
   @ApiOperation({ summary: 'Lấy danh sách bài đã lên lịch' })
   findAll(@Request() req) {
     return this.scheduleService.findAll(req.user.id);
+  }
+
+  @Get('by-task/:taskId')
+  @ApiOperation({ summary: 'Danh sách bài đã lên lịch gắn với 1 task' })
+  findByTask(@Param('taskId') taskId: string) {
+    return this.scheduleService.findByTask(taskId);
   }
 
   @Put(':id')

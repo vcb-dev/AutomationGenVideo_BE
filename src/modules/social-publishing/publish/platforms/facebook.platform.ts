@@ -25,27 +25,27 @@ export class FacebookPublisher {
   }): Promise<{ postId: string; url: string }> {
     const extra = opts.extraData || {};
 
-    // Token đã được mã hoá và lưu trong access_token_enc — không còn dùng extra.pageToken
     const pageToken = token;
     const targetId = extra.pageId || opts.pageId || 'me';
     const isPagePost = extra.type === 'page' || !!extra.pageId || !!opts.pageId;
 
     this.logger.log(`[FB] Publish to targetId=${targetId}, isPage=${isPagePost}, hasMedia=${(opts.mediaUrls?.length || 0) > 0}`);
 
-    // Privacy: chỉ áp dụng cho personal feed, KHÔNG cho Page posts
     const privacyParam = (!isPagePost && opts.privacy)
       ? JSON.stringify({ value: opts.privacy })
       : undefined;
 
     // ── No media → text post ───────────────────────────────────────
     if (!opts.mediaUrls?.length) {
-      const body: any = {
-        message: opts.message,
-        access_token: pageToken,
-      };
+      const body: any = { message: opts.message, access_token: pageToken };
       if (privacyParam) body.privacy = privacyParam;
-
-      const res = await axios.post(`${this.BASE}/${targetId}/feed`, body);
+      let res: any;
+      try {
+        res = await axios.post(`${this.BASE}/${targetId}/feed`, body, { timeout: 60000 });
+      } catch (err: any) {
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        throw new Error(`Facebook text post failed: ${detail}`);
+      }
       const id = res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
@@ -59,163 +59,315 @@ export class FacebookPublisher {
       let videoId: string;
 
       if (localFilePath) {
-        // Multipart upload trực tiếp từ disk — không cần URL công khai, không phụ thuộc ngrok/catbox
-        this.logger.log(`[FB] Uploading video via multipart from disk: ${localFilePath}`);
-        const form = new FormData();
-        const videoReadStream = fs.createReadStream(localFilePath);
-        videoReadStream.on('error', (err) => this.logger.error(`[FB] Video stream error: ${err.message}`));
-        form.append('source', videoReadStream, { filename: 'video.mp4', contentType: 'video/mp4' });
-        form.append('description', opts.message);
-        form.append('access_token', pageToken);
-        if (privacyParam) form.append('privacy', privacyParam);
-
-        const res = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
-          headers: form.getHeaders(),
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          timeout: 600000,
-        });
-        videoId = res.data.id;
+        videoId = await this.uploadVideoResumable(localFilePath, targetId, pageToken, opts.message, privacyParam);
       } else {
-        // Fallback: file_url cho external URLs (catbox, CDN, ...)
         this.logger.log(`[FB] Uploading video via file_url: ${firstMedia}`);
-        const body: any = {
-          file_url: firstMedia,
-          description: opts.message,
-          access_token: pageToken,
-        };
+        const body: any = { file_url: firstMedia, description: opts.message, access_token: pageToken };
         if (privacyParam) body.privacy = privacyParam;
-        const res = await axios.post(`${this.BASE}/${targetId}/videos`, body);
+        let res: any;
+        try {
+          res = await axios.post(`${this.BASE}/${targetId}/videos`, body, { timeout: 60000 });
+        } catch (err: any) {
+          const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          throw new Error(`Facebook video upload (file_url) failed: ${detail}`);
+        }
         videoId = res.data.id;
       }
 
-      // ── TỰ ĐỘNG LẤY ẢNH BÌA TỪ DB HOẶC LOCAL FILE ──
-      try {
-        let buffer: Buffer | null = null;
-        
-        // 1. Cố gắng lấy thumbnail_url từ DB (vì local file thường đã bị xoá)
-        try {
-          const filename = firstMedia.split('/').pop()?.split('?')[0];
-          if (filename) {
-            let cleanId = filename;
-            if (cleanId.startsWith('gd_') && cleanId.includes('_')) {
-              cleanId = cleanId.split('_').slice(2).join('_').replace(/\.mp4$/i, '');
-            } else if (cleanId.includes('_')) {
-              cleanId = cleanId.split('_').slice(1).join('_').replace(/\.mp4$/i, '');
-            }
-            const uploadedFile = await this.prisma.socialUploadedFile.findFirst({
-              where: {
-                OR: [
-                  { filename },
-                  { drive_file_id: cleanId },
-                  { url: firstMedia }
-                ]
-              }
-            });
-            if (uploadedFile && uploadedFile.thumbnail_url) {
-              this.logger.log(`[FB] Tải thumbnail từ URL trong DB: ${uploadedFile.thumbnail_url}`);
-              const res = await axios.get(uploadedFile.thumbnail_url, { responseType: 'arraybuffer', timeout: 15000 });
-              buffer = Buffer.from(res.data);
-            }
-          }
-        } catch (e: any) {
-          this.logger.warn(`[FB] Lỗi khi lấy thumbnail từ DB: ${e.message}`);
-        }
-
-        // 2. Nếu DB không có, dùng FFmpeg cắt file local (nếu còn giữ trên disk)
-        if (!buffer && localFilePath) {
-          const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
-            ? process.env.FFMPEG_PATH
-            : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
-
-          if (ffmpegPath) {
-            this.logger.log(`[FB] Extracting first frame for thumbnail from: ${localFilePath}`);
-            const { stdout } = await execFileAsync(
-              ffmpegPath,
-              ['-ss', '00:00:00', '-i', localFilePath, '-vframes', '1', '-q:v', '2', '-f', 'image2', '-'],
-              { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any,
-            );
-            buffer = stdout as unknown as Buffer;
-          }
-        }
-
-        if (buffer && buffer.length > 0) {
-          const thumbForm = new FormData();
-          thumbForm.append('is_preferred', 'true');
-          thumbForm.append('source', buffer, { filename: 'cover.jpg', contentType: 'image/jpeg' });
-
-          this.logger.log(`[FB] Uploading extracted thumbnail to video ${videoId} (${buffer.length} bytes)`);
-          await axios.post(`${this.BASE}/${videoId}/thumbnails`, thumbForm, {
-            headers: thumbForm.getHeaders(),
-            params: { access_token: pageToken },
-          });
-          this.logger.log(`[FB] Successfully set custom thumbnail for video ${videoId}`);
-        } else {
-          this.logger.warn('[FB] Không có buffer thumbnail để upload (không có file local lẫn DB)');
-        }
-      } catch (err: any) {
-        this.logger.warn(`[FB] Failed to set custom thumbnail: ${err.message}`);
-      }
+      // Upload thumbnail bất đồng bộ — không block publish
+      setImmediate(() =>
+        this.uploadThumbnailAsync(videoId, firstMedia, localFilePath, pageToken)
+          .catch((e: any) => this.logger.warn(`[FB] uploadThumbnailAsync error: ${e.message}`)),
+      );
 
       return { postId: videoId, url: `https://facebook.com/${videoId}` };
     }
 
     // ── Single image ───────────────────────────────────────────────
     if (opts.mediaUrls.length === 1) {
-      const body: any = {
-        url: firstMedia,
-        caption: opts.message,
-        access_token: pageToken,
-      };
-      if (privacyParam) body.privacy = privacyParam;
-
-      const res = await axios.post(`${this.BASE}/${targetId}/photos`, body);
+      const extraFields: Record<string, string> = { caption: opts.message };
+      if (privacyParam) extraFields.privacy = privacyParam;
+      let res: any;
+      try {
+        res = await this.postPhoto(firstMedia, targetId, pageToken, extraFields);
+      } catch (err: any) {
+        const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        throw new Error(`Facebook single image post failed: ${detail}`);
+      }
       const id = res.data.post_id || res.data.id;
       return { postId: id, url: `https://facebook.com/${id}` };
     }
 
     // ── Multiple images → Carousel ─────────────────────────────────
-    // Bước 1: upload song song các ảnh dưới dạng unpublished
-    const photoResults = await Promise.allSettled(
-      opts.mediaUrls.map(url =>
-        axios.post(`${this.BASE}/${targetId}/photos`, { url, published: false, access_token: pageToken }),
-      ),
-    );
+    // Upload tuần tự (không bắn đồng thời) + retry từng ảnh. Khi file là local
+    // (/api/social/media/...) thì upload thẳng bytes lên Facebook thay vì đưa URL
+    // để Facebook tự tải — tránh lỗi code 100 "Invalid parameter" khi server fetch
+    // của Facebook không tải được URL Railway lúc nhiều bài đăng đồng thời.
     const photoIds: string[] = [];
-    photoResults.forEach((r, i) => {
-      if (r.status === 'fulfilled' && r.value.data?.id) {
-        photoIds.push(r.value.data.id);
-      } else {
-        const reason = r.status === 'rejected'
-          ? (r.reason?.response?.data?.error?.message || r.reason?.message)
-          : 'no id returned';
-        this.logger.warn(`[FB] Photo upload failed for url[${i}]: ${reason}`);
+    const failReasons: string[] = [];
+    for (let i = 0; i < opts.mediaUrls.length; i++) {
+      const url = opts.mediaUrls[i];
+      try {
+        const id = await this.uploadCarouselPhotoWithRetry(url, targetId, pageToken);
+        photoIds.push(id);
+      } catch (e: any) {
+        // Log FULL response data (kèm error_subcode, fbtrace_id) để chẩn đoán chính xác
+        const reason = e?.response?.data ? JSON.stringify(e.response.data) : e?.message;
+        failReasons.push(`url[${i}]: ${reason}`);
+        this.logger.warn(`[FB] Photo upload failed for url[${i}] sau khi retry: ${reason}`);
       }
-    });
-    if (photoIds.length === 0) throw new Error('Tất cả ảnh upload thất bại');
+      if (i < opts.mediaUrls.length - 1) await this.sleep(400);
+    }
+    if (photoIds.length === 0) throw new Error(`Tất cả ảnh upload thất bại — ${failReasons.join('; ')}`);
+    if (failReasons.length > 0) {
+      // Không đăng thiếu ảnh một cách âm thầm — ném lỗi để hệ thống retry cả bài,
+      // tránh trường hợp carousel hiển thị thiếu ảnh trên Facebook mà không ai biết.
+      throw new Error(
+        `Chỉ upload thành công ${photoIds.length}/${opts.mediaUrls.length} ảnh lên Facebook — ${failReasons.join('; ')}`,
+      );
+    }
 
-    // Bước 2: post carousel
     const feedBody: any = {
       message: opts.message,
       attached_media: JSON.stringify(photoIds.map((id) => ({ media_fbid: id }))),
       access_token: pageToken,
     };
     if (privacyParam) feedBody.privacy = privacyParam;
-
-    const res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody);
+    let res: any;
+    try {
+      res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody, { timeout: 60000 });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook carousel feed post failed: ${detail}`);
+    }
     const id = res.data.id;
     return { postId: id, url: `https://facebook.com/${id}` };
+  }
+
+  private async uploadThumbnailAsync(
+    videoId: string,
+    firstMedia: string,
+    localFilePath: string | null,
+    pageToken: string,
+  ): Promise<void> {
+    let buffer: Buffer | null = null;
+
+    // 1. Lấy thumbnail từ DB
+    try {
+      const filename = firstMedia.split('/').pop()?.split('?')[0];
+      if (filename) {
+        let cleanId = filename;
+        if (cleanId.startsWith('gd_') && cleanId.includes('_')) {
+          cleanId = cleanId.split('_').slice(2).join('_').replace(/\.mp4$/i, '');
+        } else if (cleanId.includes('_')) {
+          cleanId = cleanId.split('_').slice(1).join('_').replace(/\.mp4$/i, '');
+        }
+        const uploadedFile = await this.prisma.socialUploadedFile.findFirst({
+          where: { OR: [{ filename }, { drive_file_id: cleanId }, { url: firstMedia }] },
+        });
+        if (uploadedFile?.thumbnail_url) {
+          this.logger.log(`[FB] Tải thumbnail từ DB: ${uploadedFile.thumbnail_url}`);
+          const res = await axios.get(uploadedFile.thumbnail_url, { responseType: 'arraybuffer', timeout: 15000 });
+          buffer = Buffer.from(res.data);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[FB] Lỗi lấy thumbnail từ DB: ${e.message}`);
+    }
+
+    // 2. Fallback: FFmpeg cắt từ file local
+    if (!buffer && localFilePath) {
+      const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
+        ? process.env.FFMPEG_PATH
+        : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+
+      if (ffmpegPath) {
+        try {
+          const { stdout } = await execFileAsync(
+            ffmpegPath,
+            ['-ss', '00:00:00', '-i', localFilePath, '-vframes', '1', '-q:v', '2', '-f', 'image2', '-'],
+            { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' } as any,
+          );
+          buffer = stdout as unknown as Buffer;
+        } catch (e: any) {
+          this.logger.warn(`[FB] FFmpeg thumbnail error: ${e.message}`);
+        }
+      }
+    }
+
+    if (!buffer || buffer.length === 0) {
+      this.logger.warn('[FB] Không có thumbnail để upload');
+      return;
+    }
+
+    const thumbForm = new FormData();
+    thumbForm.append('is_preferred', 'true');
+    thumbForm.append('source', buffer, { filename: 'cover.jpg', contentType: 'image/jpeg' });
+
+    this.logger.log(`[FB] Uploading thumbnail cho video ${videoId} (${buffer.length} bytes)`);
+    try {
+      await axios.post(`${this.BASE}/${videoId}/thumbnails`, thumbForm, {
+        headers: thumbForm.getHeaders(),
+        params: { access_token: pageToken },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook thumbnail upload failed: ${detail}`);
+    }
+    this.logger.log(`[FB] ✅ Thumbnail set cho video ${videoId}`);
+  }
+
+  private async uploadVideoResumable(
+    localFilePath: string,
+    targetId: string,
+    pageToken: string,
+    description: string,
+    privacyParam?: string,
+  ): Promise<string> {
+    const fileSize = fs.statSync(localFilePath).size;
+    this.logger.log(`[FB] Resumable upload start: ${localFilePath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    let startRes: any;
+    try {
+      startRes = await axios.post(`${this.BASE}/${targetId}/videos`, null, {
+        params: { upload_phase: 'start', file_size: fileSize, access_token: pageToken },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook resumable upload (start) failed: ${detail}`);
+    }
+    const { upload_session_id, video_id } = startRes.data;
+    let currentStart: number = parseInt(startRes.data.start_offset, 10);
+    let currentEnd: number = parseInt(startRes.data.end_offset, 10);
+    this.logger.log(`[FB] Session=${upload_session_id}, videoId=${video_id}`);
+
+    const fd = fs.openSync(localFilePath, 'r');
+    let chunkBuf = Buffer.allocUnsafe(Math.max(currentEnd - currentStart, 4 * 1024 * 1024));
+    try {
+      while (currentStart < fileSize) {
+        const chunkSize = currentEnd - currentStart;
+        if (chunkSize > chunkBuf.length) chunkBuf = Buffer.allocUnsafe(chunkSize);
+        const buf = chunkBuf.subarray(0, chunkSize);
+        fs.readSync(fd, buf, 0, chunkSize, currentStart);
+
+        const form = new FormData();
+        form.append('upload_phase', 'transfer');
+        form.append('upload_session_id', upload_session_id);
+        form.append('start_offset', String(currentStart));
+        form.append('access_token', pageToken);
+        form.append('video_file_chunk', buf, { filename: 'chunk.mp4', contentType: 'video/mp4' });
+
+        const pct = ((currentStart / fileSize) * 100).toFixed(0);
+        this.logger.log(`[FB] Chunk ${pct}% (${(currentStart / 1024 / 1024).toFixed(1)}-${(currentEnd / 1024 / 1024).toFixed(1)} MB)`);
+        const t0 = Date.now();
+        let transferRes: any;
+        try {
+          transferRes = await axios.post(`${this.BASE}/${targetId}/videos`, form, {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            timeout: 180000,
+          });
+        } catch (err: any) {
+          const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          throw new Error(`Facebook resumable upload (chunk ${pct}%) failed: ${detail}`);
+        }
+        const mbps = (chunkSize / 1024 / 1024 / ((Date.now() - t0) / 1000)).toFixed(1);
+        this.logger.log(`[FB] Chunk done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${mbps} MB/s)`);
+        currentStart = parseInt(transferRes.data.start_offset, 10);
+        currentEnd = parseInt(transferRes.data.end_offset, 10);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const finishBody: any = { upload_phase: 'finish', upload_session_id, description, access_token: pageToken };
+    if (privacyParam) finishBody.privacy = privacyParam;
+    try {
+      await axios.post(`${this.BASE}/${targetId}/videos`, finishBody, { timeout: 60000 });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook resumable upload (finish) failed: ${detail}`);
+    }
+
+    this.logger.log(`[FB] Resumable upload complete: videoId=${video_id}`);
+    return video_id;
   }
 
   private resolveLocalFilePath(mediaUrl: string): string | null {
     if (!mediaUrl.includes('/api/social/media/')) return null;
     const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
     if (!raw) return null;
-    // path.basename() ngăn path traversal (e.g. ../../etc/passwd)
     const filename = path.basename(raw);
     if (!filename) return null;
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
     const filePath = path.join(uploadBase, filename);
     return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Đăng 1 ảnh lên /photos. Nếu file là local (/api/social/media/...) thì upload
+   * thẳng bytes (multipart `source`) để Facebook không phải tự tải URL của ta —
+   * loại bỏ lỗi "Invalid parameter" do server FB fetch URL Railway bị timeout.
+   * Nếu không phải local (vd: Drive direct URL) thì fallback về cách đưa `url`.
+   */
+  private async postPhoto(
+    mediaUrl: string,
+    targetId: string,
+    pageToken: string,
+    extraFields: Record<string, string>,
+    timeout = 120000,
+  ): Promise<any> {
+    const localPath = this.resolveLocalFilePath(mediaUrl);
+    if (localPath) {
+      const form = new FormData();
+      for (const [k, v] of Object.entries(extraFields)) form.append(k, v);
+      form.append('access_token', pageToken);
+      form.append('source', fs.createReadStream(localPath), { filename: path.basename(localPath) });
+      return axios.post(`${this.BASE}/${targetId}/photos`, form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout,
+      });
+    }
+    return axios.post(
+      `${this.BASE}/${targetId}/photos`,
+      { url: mediaUrl, ...extraFields, access_token: pageToken },
+      { timeout },
+    );
+  }
+
+  private async uploadCarouselPhotoWithRetry(
+    url: string,
+    targetId: string,
+    pageToken: string,
+    maxAttempts = 3,
+  ): Promise<string> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
+        if (res.data?.id) return res.data.id;
+        throw new Error('no id returned');
+      } catch (e: any) {
+        lastErr = e;
+        const status = e?.response?.status;
+        // Chỉ retry lỗi tạm thời: rate limit (429), lỗi server FB (5xx), hoặc không có status (timeout/network)
+        const retryable = !status || status === 429 || status >= 500;
+        if (attempt < maxAttempts && retryable) {
+          await this.sleep(attempt * 800);
+          continue;
+        }
+        break;
+      }
+    }
+    throw lastErr;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

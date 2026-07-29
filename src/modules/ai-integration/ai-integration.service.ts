@@ -1,21 +1,70 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 @Injectable()
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
+  /**
+   * URL riêng cho các endpoint /api/voice/* (TTS + clone giọng Minimax). Các
+   * endpoint này chỉ gọi API cloud Minimax, không cần torch/GPU/NAS như
+   * smart-mix video — nên deploy được thẳng trên Railway (build tự động qua
+   * push, xem AutomationGenVideo_AI/.github/workflows/deploy-railway.yml),
+   * khác với AI_SERVICE_URL chung (trỏ máy local qua Cloudflare Tunnel, dùng
+   * cho các tính năng cần torch/NAS).
+   *
+   * Không cần cấu hình gì thêm trên Railway: khi BE tự chạy trên Railway
+   * (nhận biết qua RAILWAY_ENVIRONMENT_NAME — biến Railway tự bơm vào mọi
+   * service, không cần khai báo tay), mặc định gọi thẳng service
+   * automationgenvideo-ai qua Private Networking (<service>.railway.internal
+   * — hostname cố định theo tên service, tự có sẵn, không cần bấm "Generate
+   * Domain"). Chạy local dev (không có RAILWAY_ENVIRONMENT_NAME) → fallback
+   * về AI_SERVICE_URL như cũ. Set tay AI_SERVICE_URL_VOICE nếu cần override.
+   */
+  private readonly voiceAiServiceUrl: string;
+  private static readonly RAILWAY_VOICE_AI_INTERNAL_URL =
+    'http://automationgenvideo-ai.railway.internal:8080';
+  private readonly minimaxApiKey?: string;
+  /**
+   * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
+   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   */
+  private readonly minimaxVndPer1kChars: number;
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly driveStorage: GoogleDriveStorageService,
   ) {
     this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
+    this.voiceAiServiceUrl = this.configService.get<string>(
+      'AI_SERVICE_URL_VOICE',
+      runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
+    );
+    this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
+    this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
+    if (!this.minimaxApiKey) {
+      this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
+    }
+  }
+
+  /**
+   * Key MiniMax giữ ở .env của BE và gửi kèm từng request voice sang AI service qua
+   * header X-Minimax-Key — AI không còn giữ key trong .env của nó.
+   */
+  private minimaxHeaders(): Record<string, string> {
+    return this.minimaxApiKey ? { 'X-Minimax-Key': this.minimaxApiKey } : {};
   }
 
 
@@ -1634,5 +1683,754 @@ export class AiIntegrationService {
     });
   }
 
-}
+  /**
+   * Get available voices, including custom cloned ones and system ones.
+   */
+  async listVoices(): Promise<any> {
+    const url = `${this.voiceAiServiceUrl}/api/voice/list/`;
+    this.logger.log(`Calling AI Service: GET ${url}`);
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error listing voices: ${error.message}`);
+            throw new HttpException(
+              error.response?.data || 'Failed to list voices',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
+      if (data && typeof data === 'object') {
+        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+      }
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to list voices', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
 
+  /**
+   * Clone a voice from uploaded sample audio
+   */
+  async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
+    const FormData = require('form-data');
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file.buffer, {
+        filename: file.originalname,
+        contentType: file.mimetype
+      });
+      formData.append('voice_name', voiceName);
+      formData.append('gender', gender || 'female');
+
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, formData, {
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          // AI service retries upload+clone up to 3x60s each on network blips to
+          // api.minimax.io (worst case ~360s) — keep this above that ceiling.
+          timeout: 480000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error cloning voice: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to clone voice',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Start voice cloning as a background job on the AI service (returns job_id
+   * immediately). Mạng tới api.minimax.io có thể chập chờn vài phút — clone
+   * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
+   * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
+   */
+  async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
+    const FormData = require('form-data');
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/start/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file.buffer, {
+        filename: file.originalname,
+        contentType: file.mimetype
+      });
+      formData.append('voice_name', voiceName);
+      formData.append('gender', gender || 'female');
+
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, formData, {
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          // Chỉ upload file + spawn job nền trên AI service, không chờ clone
+          // xong — nên không cần timeout dài như bản đồng bộ.
+          timeout: 60000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error starting voice clone: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to start voice clone',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to start voice clone', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /** Poll status of a background voice-clone job started via cloneVoiceStart(). */
+  async cloneVoiceStatus(jobId: string, userId?: string): Promise<any> {
+    const url = `${this.voiceAiServiceUrl}/api/voice/clone/status/${jobId}/`;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url, { timeout: 15000 }).pipe(
+          catchError((error: AxiosError) => {
+            throw new HttpException(
+              error.response?.data || 'Failed to get voice clone status',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      // Ghi log 1 lần khi job hoàn tất — job_id unique nên các lần poll sau bị
+      // bỏ qua (P2002). Lỗi ghi log không được làm hỏng response poll.
+      if (userId && data?.status === 'completed') {
+        try {
+          await this.prisma.aiVoiceUsage.create({
+            data: {
+              user_id: userId,
+              kind: 'clone',
+              voice_id: data.voice?.voice_id ?? null,
+              job_id: jobId,
+            },
+          });
+        } catch (logErr: any) {
+          if (logErr?.code !== 'P2002') {
+            this.logger.warn(`Failed to log clone usage for user ${userId}: ${logErr.message}`);
+          }
+        }
+      }
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to get voice clone status', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Generate task-auto video script (adapt content đã "win" cho sản phẩm mới).
+   * AI Service chịu trách nhiệm đọc file nguồn + build prompt + gọi DeepSeek;
+   * BE chỉ nhận kết quả về để cache/lưu (xem VideoScriptService).
+   */
+  async generateVideoScript(params: {
+    fileUrl?: string | null;
+    scriptText?: string | null;
+    contentTitle?: string | null;
+    contentLine?: string | null;
+    contentMarket?: string | null;
+    productName?: string | null;
+    productSku?: string | null;
+    productPrice?: string | null;
+    productMaterial?: string | null;
+    productPriceSegment?: string | null;
+    productLine?: string | null;
+    productMarket?: string | null;
+  }): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/task-auto/video-script/generate/`;
+    this.logger.log(`Calling AI Service: ${url} for productName=${params.productName}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, params, {
+          timeout: 120000, // DeepSeek generation can take a while
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service video-script error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to generate video script',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to generate video script', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Dịch caption/mô tả 1 video đã cào (scraper subsystem) sang tiếng Việt +
+   * phân tích ngắn cấu trúc video gốc — dùng cho luồng duyệt video vào
+   * VideoLibrary/ApprovedContent (xem VideoLibraryService.approveIntoLibrary()).
+   * KHÔNG dùng chung endpoint với generateVideoScript() — đó là adapt content
+   * đã win cho sản phẩm mới, không hợp với video cào về không gắn sản phẩm nào.
+   */
+  async analyzeScrapedVideo(params: {
+    platform: string;
+    title: string;
+    description: string;
+    hashtags?: string[];
+    viewsCount?: number;
+    likesCount?: number;
+    commentsCount?: number;
+  }): Promise<{ vietnamese_content: string; script_outline: string; hashtags: string[] }> {
+    const url = `${this.aiServiceUrl}/api/scraped-video/script/generate/`;
+    this.logger.log(`Calling AI Service: ${url} for platform=${params.platform}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, {
+          platform: params.platform,
+          title: params.title,
+          description: params.description,
+          hashtags: params.hashtags,
+          views_count: params.viewsCount,
+          likes_count: params.likesCount,
+          comments_count: params.commentsCount,
+        }, {
+          timeout: 120000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service scraped-video script error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to analyze scraped video',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to analyze scraped video', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Dịch từ khoá tìm kiếm (tiếng Việt/Anh) sang tiếng Trung giản thể — dùng cho các nền tảng
+   * Trung Quốc (Douyin/Xiaohongshu/Kuaishou/Bilibili) vốn chỉ ra kết quả tốt với query tiếng Trung.
+   *
+   * Endpoint AI đã tự bỏ qua khi text vốn đã là tiếng Trung (trả source='already_chinese'),
+   * nên caller cứ gọi thẳng không cần tự kiểm tra.
+   *
+   * KHÔNG ném lỗi ra ngoài: dịch chỉ là bước phụ trợ, nếu AI service chết thì trả lại text gốc
+   * để luồng tìm kiếm/cron vẫn chạy được thay vì vỡ nguyên request.
+   */
+  async translateSearchKeyword(
+    text: string,
+  ): Promise<{ original: string; translated: string; source: string }> {
+    const original = (text || '').trim();
+    if (!original) return { original: '', translated: '', source: 'empty' };
+
+    const url = `${this.aiServiceUrl}/api/search/translate/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, { text: original }, { timeout: 20000 }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.warn(`AI Service search/translate lỗi: ${error.message}`);
+            throw error;
+          }),
+        ),
+      );
+      const translated = (data?.translated || '').trim();
+      if (!translated) return { original, translated: original, source: 'fallback_empty' };
+      return { original, translated, source: data?.source || 'unknown' };
+    } catch {
+      // Fail-open: giữ nguyên text gốc, caller vẫn tìm được (chỉ là kết quả kém hơn).
+      return { original, translated: original, source: 'failed' };
+    }
+  }
+
+  /**
+   * Dịch lại content/hashtags hiện có (vd sau khi user sửa tay) sang một ngôn ngữ đã biết trước —
+   * không đọc lại file nguồn, không sinh script mới, chỉ dịch (xem VideoScriptService.translate()).
+   */
+  async translateVideoScript(params: {
+    content: string;
+    hashtags: string[];
+    language?: string;
+    market?: string;
+  }): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/task-auto/video-script/translate/`;
+    this.logger.log(
+      `Calling AI Service: ${url} for language=${params.language ?? "(auto từ market=" + params.market + ")"}`,
+    );
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, params, {
+          timeout: 120000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service video-script translate error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to translate video script',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to translate video script', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Đưa file audio TTS từ AI service về nơi công khai:
+   * 1. Rewrite host của audio_url về aiServiceUrl (AI có thể trả localhost nếu máy
+   *    chạy AI chưa set AI_SERVICE_URL trong .env của nó).
+   * 2. Upload lên Google Drive công ty → link vĩnh viễn, không phụ thuộc máy AI.
+   * Không bao giờ throw — TTS đã thành công thì tệ nhất người dùng vẫn nhận link qua tunnel.
+   *
+   * Trả kèm fileId (khi upload Drive thành công) để FE phát/tải audio qua proxy
+   * BE (streamTtsAudio) — link Drive uc?export=download KHÔNG stream chuẩn cho
+   * trình duyệt: <audio> không đọc được duration (hiện 00:00), <a download>
+   * cross-origin bị bỏ qua và điều hướng sang Drive hay lỗi.
+   */
+  private async publishTtsAudio(aiAudioUrl: string): Promise<{ url: string; fileId: string | null }> {
+    let sourceUrl = aiAudioUrl;
+    try {
+      const parsed = new URL(aiAudioUrl);
+      // Chỉ rewrite link media NỘI BỘ của AI (/media/...) — AI có nhánh fallback trả
+      // thẳng URL CDN của MiniMax (link ngoài, vẫn phát được); rewrite link đó sẽ tạo
+      // ra đường dẫn tunnel không tồn tại.
+      // KHÔNG dùng thẳng /media/minimax_tts/<file> — Django chỉ serve /media qua static()
+      // khi DEBUG=True, trên server thật (DEBUG=False) link này 404 nên uploadFromUrl()
+      // luôn fail âm thầm và Drive không bao giờ nhận được file dù đã cấu hình đúng.
+      // Dùng route whitelist /api/voice/tts/file/<file> (serve_minimax_tts_file) — hoạt
+      // động cả khi DEBUG=False.
+      const mediaMatch = /^\/media\/minimax_tts\/(tts_[0-9a-f]{32}\.mp3)$/i.exec(parsed.pathname);
+      if (mediaMatch) {
+        sourceUrl = `${this.voiceAiServiceUrl.replace(/\/$/, '')}/api/voice/tts/file/${mediaMatch[1]}`;
+      }
+    } catch {
+      return { url: aiAudioUrl, fileId: null };
+    }
+
+    try {
+      let filename =
+        (sourceUrl.split('/').pop() || '').split('?')[0] || `tts_${Date.now()}.mp3`;
+      // Proxy stream (streamTtsAudio) chỉ phục vụ file tên tts_*.mp3 — ép prefix
+      // cho cả nhánh fallback URL CDN MiniMax (tên file bất kỳ).
+      if (!/^tts_/i.test(filename)) filename = `tts_${Date.now()}.mp3`;
+      // Gom toàn bộ audio TTS về 1 nơi: Root/TTS Audio/{YYYY-MM-DD}/ (cùng kiểu
+      // với Scraper Cào Dữ Liệu) thay vì rải vào từng folder ngày dùng chung.
+      const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
+      const driveUrl = await this.driveStorage.uploadFromUrl(sourceUrl, filename, 'audio/mpeg', {
+        folderId,
+      });
+      if (driveUrl) {
+        this.logger.log(`TTS audio uploaded to Drive: ${driveUrl}`);
+        // uploadFromUrl trả URL dạng uc?...&id=<fileId> — lấy lại fileId từ đó
+        // để khỏi đổi chữ ký hàm dùng chung với các module scraper.
+        let fileId: string | null = null;
+        try {
+          fileId = new URL(driveUrl).searchParams.get('id');
+        } catch { /* giữ fileId null — FE fallback về link Drive */ }
+        return { url: driveUrl, fileId };
+      }
+    } catch (err: any) {
+      this.logger.warn(`TTS audio Drive upload failed, falling back to source URL: ${err.message}`);
+    }
+    return { url: sourceUrl, fileId: null };
+  }
+
+  /**
+   * Upload thẳng bytes TTS (base64 AI trả kèm response POST /voice/tts/) lên
+   * Drive — không GET ngược lại đĩa cục bộ của AI như publishTtsAudio() (fragile
+   * trên Railway multi-replica, xem generateTTS()). Drive lỗi/chưa cấu hình →
+   * nhúng bytes vào data: URL để FE phát/tải trực tiếp, không phụ thuộc AI hay
+   * Drive nữa. Không bao giờ throw, luôn trả được ít nhất data: URL.
+   */
+  private async publishTtsAudioFromBase64(base64: string): Promise<{ url: string; fileId: string | null }> {
+    const dataUrl = `data:audio/mpeg;base64,${base64}`;
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length) return { url: dataUrl, fileId: null };
+
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const tmpPath = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const folderId = await this.driveStorage.resolveDatedFolder('TTS Audio');
+      const uploaded = await this.driveStorage.uploadFromPath(tmpPath, path.basename(tmpPath), 'audio/mpeg', undefined, { folderId });
+      return { url: uploaded.url, fileId: uploaded.fileId };
+    } catch (err: any) {
+      this.logger.warn(`TTS audio Drive upload (base64) failed, falling back to data URL: ${err.message}`);
+      return { url: dataUrl, fileId: null };
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* tmp file có thể chưa từng tạo */ }
+    }
+  }
+
+  /**
+   * Stream file TTS audio từ Drive về trình duyệt (phát trực tiếp hoặc tải về).
+   * Route này công khai vì thẻ <audio> không gửi được JWT header — bù lại chỉ
+   * phục vụ đúng file TTS (tên tts_*.mp3, mimeType audio/*), không cho lấy file
+   * Drive tùy ý qua service account.
+   */
+  async streamTtsAudio(fileId: string, res: any, download = false, rangeHeader?: string, downloadName?: string): Promise<void> {
+    let file: Awaited<ReturnType<GoogleDriveStorageService['openReadStream']>>;
+    try {
+      file = await this.driveStorage.openReadStream(fileId, rangeHeader);
+    } catch (err: any) {
+      this.logger.warn(`streamTtsAudio: cannot open Drive file ${fileId}: ${err.message}`);
+      throw new HttpException('Audio file not found', HttpStatus.NOT_FOUND);
+    }
+
+    const isTtsAudio = /^tts_[\w.-]+\.mp3$/i.test(file.name) && (file.mimetype || '').startsWith('audio/');
+    if (!isTtsAudio) {
+      (file.stream as any).destroy?.();
+      throw new HttpException('Not a TTS audio file', HttpStatus.FORBIDDEN);
+    }
+
+    res.status(file.status);
+    res.setHeader('Content-Type', file.mimetype);
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (file.contentRange) res.setHeader('Content-Range', file.contentRange);
+    const length = file.contentLength ?? (file.status === 200 && file.size ? file.size : undefined);
+    if (length) res.setHeader('Content-Length', String(length));
+    // Tên file khi tải về: ưu tiên tên FE truyền qua ?filename= (vd "HuyK_2026-07-16_1435.mp3"
+    // — dễ đọc hơn tên tts_<hex>.mp3 trên Drive). Sanitize để chống header injection /
+    // ký tự cấm trên Windows; tên có dấu tiếng Việt gửi qua filename* (RFC 5987).
+    let outName = file.name;
+    if (download && downloadName) {
+      const cleaned = downloadName.replace(/[\r\n\/\\:*?"<>|]+/g, ' ').trim().slice(0, 150);
+      if (cleaned) outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+    }
+    const asciiName = outName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+    const utf8Name = encodeURIComponent(outName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    res.setHeader(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    );
+    // Drive đứt kết nối giữa chừng → kết thúc response thay vì để trình duyệt chờ treo
+    (file.stream as any).on?.('error', (err: any) => {
+      this.logger.warn(`streamTtsAudio: stream error for ${fileId}: ${err?.message}`);
+      try { res.end(); } catch { /* response có thể đã đóng */ }
+    });
+    file.stream.pipe(res);
+  }
+
+  /**
+   * Generate Text-to-Speech using Minimax
+   */
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
+    const url = `${this.voiceAiServiceUrl}/api/voice/tts/`;
+    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, {
+          text,
+          voice_id: voiceId,
+          speed,
+          pitch,
+          volume,
+          language
+        }, {
+          headers: this.minimaxHeaders(),
+          timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error in TTS: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to generate voice',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      // AI trả kèm audio_base64 (bytes thật của file vừa sinh) — dùng thẳng bytes
+      // đó để upload Drive thay vì GET ngược lại route local-disk của AI
+      // (publishTtsAudio/streamTtsAudioFromAi): route đó chỉ đọc được file nếu
+      // request rơi đúng instance/đĩa vừa ghi, trên Railway (nhiều replica, không
+      // volume dùng chung) gần như luôn 404 ngay cả khi gọi lại tức thì — xác
+      // minh thực tế 2026-07-20, audio_file_id luôn null và /tts/stream 404.
+      if (data?.success && data.audio_base64) {
+        const published = await this.publishTtsAudioFromBase64(String(data.audio_base64));
+        data.audio_url = published.url;
+        // Có audio_file_id → FE phát/tải qua GET ai/voice/tts/audio/:fileId (proxy
+        // BE stream chuẩn từ Drive). Drive lỗi/chưa cấu hình → audio_url là
+        // data: URL nhúng thẳng bytes — FE phát/tải trực tiếp, không phụ thuộc AI
+        // hay Drive nữa (audio_file_name bỏ hẳn, route đó không còn dùng).
+        data.audio_file_id = published.fileId;
+        delete data.audio_base64;
+      } else if (data?.success && data.audio_url) {
+        // Fallback cho AI chưa deploy bản trả audio_base64 (rollout lệch giữa 2
+        // service) — giữ nguyên đường đi cũ, vẫn còn nguy cơ 404 như trên.
+        const published = await this.publishTtsAudio(String(data.audio_url));
+        data.audio_url = published.url;
+        data.audio_file_id = published.fileId;
+        if (!published.fileId) {
+          const m = /(tts_[0-9a-f]{32}\.mp3)$/i.exec(published.url);
+          data.audio_file_name = m ? m[1] : null;
+        }
+      }
+      // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
+      // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
+      // được làm hỏng response TTS đã thành công.
+      if (userId && data?.success) {
+        try {
+          await this.prisma.aiVoiceUsage.create({
+            data: {
+              user_id: userId,
+              kind: 'tts',
+              voice_id: voiceId,
+              characters: Number(data.usage_characters) || 0,
+              duration_ms: Number(data.duration) || 0,
+            },
+          });
+        } catch (logErr: any) {
+          this.logger.warn(`Failed to log TTS usage for user ${userId}: ${logErr.message}`);
+        }
+      }
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to generate voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Tổng hợp tiêu dùng MiniMax voice (điểm ký tự TTS + số giọng đã clone),
+   * kèm phân rã theo từng user — nguồn dữ liệu cho trang Tổng quan Tiện ích AI.
+   */
+  async getVoiceUsageStats(dateFrom?: string, dateTo?: string): Promise<any> {
+    const where: any = {};
+    if (dateFrom || dateTo) {
+      where.created_at = {};
+      if (dateFrom) where.created_at.gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo) where.created_at.lte = new Date(`${dateTo}T23:59:59.999`);
+    }
+
+    const rows = await this.prisma.aiVoiceUsage.findMany({
+      where,
+      include: { user: { select: { id: true, full_name: true, email: true } } },
+      orderBy: { created_at: 'desc' },
+    });
+
+    const byUser = new Map<string, any>();
+    let totalCharacters = 0;
+    let totalTts = 0;
+    let totalClones = 0;
+
+    for (const row of rows) {
+      let entry = byUser.get(row.user_id);
+      if (!entry) {
+        entry = {
+          user_id: row.user_id,
+          full_name: row.user?.full_name ?? row.user_id,
+          email: row.user?.email ?? '',
+          characters: 0,
+          tts_count: 0,
+          clone_count: 0,
+          last_used_at: row.created_at,
+        };
+        byUser.set(row.user_id, entry);
+      }
+      if (row.kind === 'tts') {
+        entry.characters += row.characters;
+        entry.tts_count += 1;
+        totalCharacters += row.characters;
+        totalTts += 1;
+      } else if (row.kind === 'clone') {
+        entry.clone_count += 1;
+        totalClones += 1;
+      }
+      if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
+    }
+
+    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
+    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    const byUserList = [...byUser.values()]
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .sort((a, b) => b.characters - a.characters);
+
+    return {
+      success: true,
+      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
+      total: {
+        characters: totalCharacters,
+        tts_count: totalTts,
+        clone_count: totalClones,
+        cost_vnd: toVnd(totalCharacters),
+      },
+      by_user: byUserList,
+    };
+  }
+
+  /**
+   * Fallback không-Drive: stream file TTS thẳng từ AI service về trình duyệt.
+   * Dùng khi Drive chưa cấu hình/upload lỗi (generateTTS trả audio_file_name).
+   * AI serve file qua /api/voice/tts/file/<filename> — route thường, hoạt động
+   * cả khi DEBUG=False (link /media/... chỉ sống khi DEBUG=True).
+   */
+  async streamTtsAudioFromAi(filename: string, res: any, download = false, downloadName?: string, rangeHeader?: string): Promise<void> {
+    if (!/^tts_[0-9a-f]{32}\.mp3$/i.test(filename || '')) {
+      throw new HttpException('Invalid TTS filename', HttpStatus.BAD_REQUEST);
+    }
+    let response: any;
+    try {
+      response = await this.httpService.axiosRef.get(
+        `${this.voiceAiServiceUrl}/api/voice/tts/file/${filename}`,
+        {
+          responseType: 'stream',
+          timeout: 0,
+          headers: rangeHeader ? { Range: rangeHeader } : undefined,
+          validateStatus: (s) => s === 200 || s === 206,
+        },
+      );
+    } catch (error: any) {
+      throw new HttpException(
+        error.response?.status === 404 ? 'Audio file not found' : (error.message || 'Không kết nối được tới AI service.'),
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
+    // Forward nguyên trạng thái 200/206 + Content-Range của AI — <audio> của trình
+    // duyệt cần Accept-Ranges/206 để đọc được duration mp3 streamed, thiếu thì player
+    // kẹt ở 0:00/0:00 (cùng lỗi từng vá cho nhánh Drive, xem streamTtsAudio()).
+    res.status(response.status);
+    res.setHeader('Content-Type', response.headers['content-type'] || 'audio/mpeg');
+    res.setHeader('Accept-Ranges', 'bytes');
+    const contentRange = response.headers['content-range'];
+    if (contentRange) res.setHeader('Content-Range', contentRange);
+    const contentLength = response.headers['content-length'];
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    // Tên file tải về: cùng logic sanitize với streamTtsAudio (chống header injection,
+    // ký tự cấm Windows; tên có dấu tiếng Việt gửi qua filename* RFC 5987).
+    let outName = filename;
+    if (download && downloadName) {
+      const cleaned = downloadName.replace(/[\r\n\/\\:*?"<>|]+/g, ' ').trim().slice(0, 150);
+      if (cleaned) outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+    }
+    const asciiName = outName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+    const utf8Name = encodeURIComponent(outName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    res.setHeader(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    );
+    response.data.on('error', (err: any) => {
+      this.logger.warn(`streamTtsAudioFromAi: stream error for ${filename}: ${err?.message}`);
+      try { res.end(); } catch { /* response có thể đã đóng */ }
+    });
+    response.data.pipe(res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Tiện ích tải video (trang dashboard/tools/video-downloader + extension VCB)
+  // Quy tắc FE → BE → AI: Next route proxy same-origin của FE gọi vào đây,
+  // BE mới là bên gọi sang AI service (yt-dlp) — FE không nối thẳng AI.
+  // ═══════════════════════════════════════════════════════════════
+
+  private videoDownloaderUrl(path: string): string {
+    return `${this.aiServiceUrl}/api/tools/video-downloader/${path}`;
+  }
+
+  /**
+   * Các endpoint video-downloader bên AI (video_management/views/video_downloader_views.py)
+   * yêu cầu IsAuthenticated qua NestJWTAuthentication — cùng cơ chế token nội bộ mà
+   * TiktokAiClientService/... đã dùng, chứ không forward JWT của user gọi request gốc.
+   */
+  private videoDownloaderAuthHeaders(): { Authorization: string } {
+    const token = this.jwtService.sign({ sub: 'be-system', email: 'be-system@internal.local' });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  /** Lỗi từ AI trả nguyên body về FE (trang đọc data.error để hiện toast). */
+  private rethrowVideoDownloaderError(error: any): never {
+    throw new HttpException(
+      error.response?.data ?? { success: false, error: error.message || 'Không kết nối được tới AI service.' },
+      error.response?.status || HttpStatus.BAD_GATEWAY,
+    );
+  }
+
+  async videoDownloaderInfo(body: { url: string }): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('info/'), body, {
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
+        timeout: 120000, // yt-dlp extract info có thể chậm với link lạ
+      });
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  async videoDownloaderStartJob(body: { url: string; type?: string; quality?: string }): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('jobs/'), body, {
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
+        timeout: 30000,
+      });
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  async videoDownloaderJobStatus(jobId: string): Promise<any> {
+    try {
+      const response = await this.httpService.axiosRef.get(
+        this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/`),
+        { headers: this.videoDownloaderAuthHeaders(), timeout: 30000 },
+      );
+      return response.data;
+    } catch (error: any) {
+      this.rethrowVideoDownloaderError(error);
+    }
+  }
+
+  /** Stream file đã tải xong từ AI về FE, giữ Content-Disposition để FE lấy tên file. */
+  async videoDownloaderJobFile(jobId: string, res: any): Promise<void> {
+    try {
+      const response = await this.httpService.axiosRef.get(
+        this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/file/`),
+        { headers: this.videoDownloaderAuthHeaders(), responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
+      );
+      res.status(response.status);
+      for (const h of ['content-type', 'content-length', 'content-disposition', 'accept-ranges']) {
+        const v = response.headers[h];
+        if (v) res.setHeader(h, v);
+      }
+      response.data.on('error', (err: any) => {
+        this.logger.warn(`videoDownloaderJobFile: stream error for job ${jobId}: ${err?.message}`);
+        try { res.end(); } catch { /* response có thể đã đóng */ }
+      });
+      response.data.pipe(res);
+    } catch (error: any) {
+      // error.response.data lúc này là stream — không đưa vào body lỗi
+      throw new HttpException(
+        error.response?.status === 404 ? 'Không tìm thấy file của tiến trình tải.' : (error.message || 'Không kết nối được tới AI service.'),
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+}

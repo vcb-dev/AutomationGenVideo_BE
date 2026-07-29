@@ -2,15 +2,24 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
 
+function buildRedirectUri(envVar: string, platform: string): string {
+  if (process.env[envVar]) return process.env[envVar]!;
+  const base = (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000/api')
+    .replace(/\/api$/, '');
+  return `${base}/api/social/oauth/${platform}/callback`;
+}
+
 @Injectable()
 export class ThreadsOAuthStrategy {
   readonly platform = SocialPlatform.THREADS;
   private readonly logger = new Logger(ThreadsOAuthStrategy.name);
 
+  private get redirectUri() { return buildRedirectUri('THREADS_REDIRECT_URI', 'threads'); }
+
   getAuthUrl(state: string): string {
     const appId = process.env.THREADS_APP_ID;
     if (!appId) throw new Error('THREADS_APP_ID chưa được cấu hình trong .env');
-    const redirectUri = process.env.THREADS_REDIRECT_URI!;
+    const redirectUri = this.redirectUri;
     const params = new URLSearchParams({
       client_id: appId,
       redirect_uri: redirectUri,
@@ -28,7 +37,7 @@ export class ThreadsOAuthStrategy {
     const appId = process.env.THREADS_APP_ID;
     const appSecret = process.env.THREADS_APP_SECRET;
     if (!appId || !appSecret) throw new Error('THREADS_APP_ID hoặc THREADS_APP_SECRET chưa được cấu hình trong .env');
-    const redirectUri = process.env.THREADS_REDIRECT_URI!;
+    const redirectUri = this.redirectUri;
 
     const form = new URLSearchParams({
       client_id: appId, client_secret: appSecret,
@@ -37,17 +46,20 @@ export class ThreadsOAuthStrategy {
     try {
       const shortRes = await axios.post('https://graph.threads.net/oauth/access_token', form.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 15000,
       });
       const { access_token: shortToken } = shortRes.data;
 
       const longRes = await axios.get('https://graph.threads.net/access_token', {
         params: { grant_type: 'th_exchange_token', client_secret: appSecret, access_token: shortToken },
+        timeout: 15000,
       });
       const accessToken = longRes.data.access_token;
       const expiresIn = longRes.data.expires_in || 5184000;
 
       const profileRes = await axios.get('https://graph.threads.net/v1.0/me', {
         params: { access_token: accessToken, fields: 'id,username,threads_profile_picture_url' },
+        timeout: 15000,
       });
       const p = profileRes.data;
 

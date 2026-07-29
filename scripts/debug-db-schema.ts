@@ -18,7 +18,7 @@ async function main() {
   try {
     const reports = await prisma.$queryRawUnsafe(`
       SELECT id, name, date, created_at, email
-      FROM "lark_reports"
+      FROM "checklist_reports"
       ORDER BY date DESC NULLS LAST
       LIMIT 15;
     `);

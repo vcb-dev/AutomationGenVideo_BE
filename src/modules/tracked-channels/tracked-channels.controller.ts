@@ -18,7 +18,6 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { LarkService } from '../lark-sync/lark.service';
 
 @ApiTags('Tracked Channels')
 @ApiBearerAuth()
@@ -28,24 +27,7 @@ import { LarkService } from '../lark-sync/lark.service';
 export class TrackedChannelsController {
   constructor(
     private readonly trackedChannelsService: TrackedChannelsService,
-    private readonly larkService: LarkService,
   ) {}
-
-  @Post('sync-from-lark-assignment')
-  @ApiOperation({
-    summary:
-      'Đồng bộ kênh được gán trên Lark (bảng Channel trong DB) vào kênh theo dõi của tôi — không cần nhập tay',
-  })
-  async syncFromLarkAssignment(
-    @Request() req: { user: { id: string } },
-    @Body() body?: { prioritizePlatform?: string },
-  ) {
-    const r = await this.larkService.importTrackedChannelsForUser(
-      req.user.id,
-      body?.prioritizePlatform?.trim() || undefined,
-    );
-    return { success: true, ...r };
-  }
 
   @Post()
   @ApiOperation({ summary: 'Add a new tracked channel' })
@@ -139,7 +121,9 @@ export class TrackedChannelsController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update a tracked channel' })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiOperation({ summary: 'Update a tracked channel (ADMIN/MANAGER/LEADER only)' })
   update(
     @Param('id') id: string,
     @Request() req,
@@ -155,7 +139,9 @@ export class TrackedChannelsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Remove a tracked channel' })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+  @ApiOperation({ summary: 'Remove a tracked channel (ADMIN/MANAGER/LEADER only)' })
   remove(@Param('id') id: string, @Request() req) {
     return this.trackedChannelsService.remove(id, req.user.id);
   }

@@ -11,6 +11,10 @@ pnpm-debug.log*
 .env
 .env.test
 .env.production
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
 # prisma
 /prisma/*.db
@@ -20,6 +24,8 @@ pnpm-debug.log*
 .idea
 .vscode
 *.swp
+*.swo
+*~
 
 # OS
 .DS_Store
@@ -28,32 +34,15 @@ Thumbs.db
 # coverage
 coverage/
 test/coverage/
+.nyc_output/
+
 # Dependencies
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 
 # Build output
 dist/
 build/
 *.tsbuildinfo
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
 
 # Logs
 logs/
@@ -61,7 +50,6 @@ logs/
 
 # Testing
 coverage/
-.nyc_output/
 
 # Prisma
 prisma/migrations/*_migration.sql
@@ -77,6 +65,14 @@ temp/
 *.tar
 video-backend-*.tar
 
-# OS
-Thumbs.db
-.DS_Store
+# Local uploads — không commit lên git
+uploads/
+cloudflared.exe
+
+# Lark secrets (refresh tokens — never commit)
+.lark-global-indo-refresh.txt
+
+# Env files (except .env.example)
+.env.*
+!.env.example
+.gstack/

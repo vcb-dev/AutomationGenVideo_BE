@@ -2,15 +2,24 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
 
+function buildRedirectUri(envVar: string, platform: string): string {
+  if (process.env[envVar]) return process.env[envVar]!;
+  const base = (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000/api')
+    .replace(/\/api$/, '');
+  return `${base}/api/social/oauth/${platform}/callback`;
+}
+
 @Injectable()
 export class FacebookOAuthStrategy {
   private readonly logger = new Logger(FacebookOAuthStrategy.name);
   readonly platform = SocialPlatform.FACEBOOK;
 
+  private get redirectUri() { return buildRedirectUri('FB_REDIRECT_URI', 'facebook'); }
+
   getAuthUrl(state: string): string {
     const params = new URLSearchParams({
       client_id: process.env.FB_APP_ID!,
-      redirect_uri: process.env.FB_REDIRECT_URI!,
+      redirect_uri: this.redirectUri,
       scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish',
       response_type: 'code',
       state,
@@ -24,13 +33,15 @@ export class FacebookOAuthStrategy {
   }> {
     // 1. Short-lived token
     const shortRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
-      params: { client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, redirect_uri: process.env.FB_REDIRECT_URI, code },
+      params: { client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, redirect_uri: this.redirectUri, code },
+      timeout: 15000,
     });
     const shortToken = shortRes.data.access_token;
 
     // 2. Long-lived token (60 ngày)
     const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
       params: { grant_type: 'fb_exchange_token', client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, fb_exchange_token: shortToken },
+      timeout: 15000,
     });
     const accessToken = longRes.data.access_token;
     const expiresIn = longRes.data.expires_in || 5184000; // 60 days default
@@ -38,6 +49,7 @@ export class FacebookOAuthStrategy {
     // 3. Profile
     const profileRes = await axios.get('https://graph.facebook.com/v21.0/me', {
       params: { access_token: accessToken, fields: 'id,name,picture.type(large)' },
+      timeout: 15000,
     });
     const p = profileRes.data;
 

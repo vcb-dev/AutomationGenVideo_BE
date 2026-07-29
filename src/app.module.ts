@@ -1,12 +1,13 @@
 import { Module } from "@nestjs/common";
-import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { APP_GUARD } from "@nestjs/core";
 import { ScheduleModule } from "@nestjs/schedule";
 import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./common/prisma/prisma.module";
+import { PushModule } from "./common/push/push.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
@@ -21,10 +22,29 @@ import { SearchRecommendationModule } from './modules/search-recommendations/sea
 import { LarkModule } from './modules/lark-sync/lark.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
+import { ContentReportModule } from './modules/content-report/content-report.module';
+import { ChannelsModule } from "./modules/channels-team/channels.module";
+import { TaskAutoModule } from './modules/task-auto/task-auto.module';
 import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
-import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
+import { ContentTransformModule } from './modules/content-transform/content-transform.module';
+// TelegramReportModule: tạm tắt (nhánh khai) — bảng `telegram_report_config` chưa có migration/chưa
+// tồn tại trên DB, TelegramReportService.onModuleInit() query bảng này lúc khởi động làm BE crash.
+// import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
 import { BusinessConnectionsModule } from './modules/business-connections/business-connections.module';
 import { OAuthModule } from './modules/oauth/oauth.module';
+import { FacebookOwnedPagesModule } from './modules/facebook-owned-pages/facebook-owned-pages.module';
+import { DouyinScraperModule } from './modules/douyin-scraper/douyin-scraper.module';
+import { TiktokScraperModule } from './modules/tiktok-scraper/tiktok-scraper.module';
+import { InstagramScraperModule } from './modules/instagram-scraper/instagram-scraper.module';
+import { XiaohongshuScraperModule } from './modules/xiaohongshu-scraper/xiaohongshu-scraper.module';
+import { FacebookExternalScraperModule } from './modules/facebook-external-scraper/facebook-external-scraper.module';
+import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.module';
+import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
+import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
+import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
+import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
+import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
+import { VideoLibraryModule } from './modules/video-library/video-library.module';
 
 @Module({
   imports: [
@@ -49,6 +69,7 @@ import { OAuthModule } from './modules/oauth/oauth.module';
     ]),
     ScheduleModule.forRoot(),
     PrismaModule,
+    PushModule,
     AuthModule,
     UsersModule,
     AiIntegrationModule,
@@ -62,16 +83,30 @@ import { OAuthModule } from './modules/oauth/oauth.module';
     SearchRecommendationModule,
     LarkModule,
     ChatHistoryModule,
-    TelegramReportModule,
+    // TelegramReportModule, // tạm tắt — xem comment ở import phía trên
     RolePermissionsModule,
     SocialPublishingModule,
+    ContentReportModule,
+    ChannelsModule,
+    TaskAutoModule,
+    ContentTransformModule,
     BusinessConnectionsModule,
     OAuthModule,
+    FacebookOwnedPagesModule,
+    DouyinScraperModule,
+    TiktokScraperModule,
+    InstagramScraperModule,
+    XiaohongshuScraperModule,
+    FacebookExternalScraperModule,
+    YoutubeScraperModule,
+    KuaishouScraperModule,
+    BilibiliScraperModule,
+    ScraperAggregateModule,
+    SearchKeywordsModule,
+    ScraperProxyModule,
+    VideoLibraryModule,
   ],
   controllers: [AppController],
-  providers: [
-    AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-  ],
+  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule { }

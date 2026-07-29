@@ -42,24 +42,59 @@ export class YoutubePublisher {
       status: { privacyStatus },
     };
 
-    // HEAD request để lấy file size
-    const headRes = await axios.head(videoUrl).catch(() => null);
-    const rawContentLength = headRes?.headers?.['content-length'];
-    const fileSize = rawContentLength ? parseInt(rawContentLength, 10) : 0;
+    // Lấy file size (thử HEAD trước, nếu không được thì fallback sang GET Range)
+    let fileSize = 0;
+    try {
+      const headRes = await axios.head(videoUrl, { timeout: 15000 });
+      const rawContentLength = headRes?.headers?.['content-length'];
+      fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
+    } catch (e: any) {
+      this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
+    }
+
+    if (fileSize === 0) {
+      try {
+        const getRangeRes = await axios.get(videoUrl, {
+          headers: { Range: 'bytes=0-0' },
+          timeout: 15000,
+        });
+        const contentRange = getRangeRes.headers['content-range'];
+        if (contentRange) {
+          fileSize = parseInt(contentRange.split('/').pop() || '0', 10);
+        }
+        if (fileSize === 0) {
+          const rawContentLength = getRangeRes.headers['content-length'];
+          fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
+        }
+      } catch (e: any) {
+        this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
+      }
+    }
+
+    if (fileSize === 0) {
+      throw new Error(`YouTube: không lấy được kích thước file từ URL ${videoUrl}`);
+    }
 
     // Initiate resumable upload session
-    const initRes = await axios.post(
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
-      metadata,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-Upload-Content-Type': 'video/mp4',
-          ...(fileSize > 0 && { 'X-Upload-Content-Length': fileSize }),
+    let initRes: any;
+    try {
+      initRes = await axios.post(
+        'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+        metadata,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-Upload-Content-Type': 'video/mp4',
+            'X-Upload-Content-Length': fileSize,
+          },
+          timeout: 30000,
         },
-      },
-    );
+      );
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube init upload session failed: ${detail}`);
+    }
     const uploadUrl = initRes.headers.location;
     if (!uploadUrl) throw new Error('YouTube: không nhận được upload URL');
 
@@ -78,6 +113,9 @@ export class YoutubePublisher {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`YouTube video upload failed: ${detail}`);
     } finally {
       try { videoStream?.data?.destroy(); } catch {}
     }
@@ -105,23 +143,32 @@ export class YoutubePublisher {
         );
         this.logger.log(`[YouTube] Thumbnail đã được upload cho video ${videoId}`);
       } catch (e: any) {
-        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${e.message}`);
+        const detail = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+        this.logger.warn(`[YouTube] Upload thumbnail thất bại (video vẫn OK): ${detail}`);
       }
     }
 
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
   }
 
+  private get clientId(): string {
+    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+  }
+
+  private get clientSecret(): string {
+    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+  }
+
   async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; tokenExpiresAt: Date }> {
     const res = await axios.post(
       'https://oauth2.googleapis.com/token',
       new URLSearchParams({
-        client_id: process.env.YT_CLIENT_ID!,
-        client_secret: process.env.YT_CLIENT_SECRET!,
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
     );
     return {
       accessToken: res.data.access_token,

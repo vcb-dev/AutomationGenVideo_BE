@@ -647,4 +647,214 @@ export class AiIntegrationController {
   async mixVideoUpload(@Req() req: any) {
     return this.aiService.mixVideoUpload(req);
   }
+
+  @Get('voice/list')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List available voices' })
+  async listVoices() {
+    return this.aiService.listVoices();
+  }
+
+  @Post('voice/clone')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB, matches what the FE UI advertises
+    fileFilter: (_req, file, cb) => {
+      const allowedMimeTypes = /^audio\//;
+      if (allowedMimeTypes.test(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new HttpException(`File type not supported: ${file.mimetype}. Only audio files allowed.`, HttpStatus.BAD_REQUEST), false);
+      }
+    },
+  }))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Clone a voice from an audio file' })
+  async cloneVoice(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('voice_name') voiceName: string,
+    @Body('gender') gender?: string,
+  ) {
+    if (!file) {
+      throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceName) {
+      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.cloneVoice(file, voiceName, gender);
+  }
+
+  @Post('voice/clone/start')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB, matches what the FE UI advertises
+    fileFilter: (_req, file, cb) => {
+      const allowedMimeTypes = /^audio\//;
+      if (allowedMimeTypes.test(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new HttpException(`File type not supported: ${file.mimetype}. Only audio files allowed.`, HttpStatus.BAD_REQUEST), false);
+      }
+    },
+  }))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Start voice cloning as a background job (poll via voice/clone/status/:jobId)' })
+  async cloneVoiceStart(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('voice_name') voiceName: string,
+    @Body('gender') gender?: string,
+  ) {
+    if (!file) {
+      throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceName) {
+      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.cloneVoiceStart(file, voiceName, gender);
+  }
+
+  @Get('voice/clone/status/:jobId')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Poll status of a background voice-clone job' })
+  async cloneVoiceStatus(@Param('jobId') jobId: string, @Req() req: any) {
+    return this.aiService.cloneVoiceStatus(jobId, req.user?.id);
+  }
+
+  @Get('voice/usage/stats')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Voice usage stats (điểm TTS + số clone), tổng và theo từng user' })
+  @ApiQuery({ name: 'date_from', required: false, description: 'YYYY-MM-DD' })
+  @ApiQuery({ name: 'date_to', required: false, description: 'YYYY-MM-DD' })
+  async voiceUsageStats(
+    @Query('date_from') dateFrom?: string,
+    @Query('date_to') dateTo?: string,
+  ) {
+    return this.aiService.getVoiceUsageStats(dateFrom, dateTo);
+  }
+
+  // KHÔNG gắn JwtAuthGuard: thẻ <audio src> của trình duyệt không gửi được JWT
+  // header. Service tự giới hạn chỉ stream file TTS (tts_*.mp3, mimeType audio/*).
+  @Get('voice/tts/audio/:fileId')
+  @ApiOperation({ summary: 'Stream/tải file TTS audio từ Drive qua BE (?download=1 để tải về, ?filename= đặt tên file tải)' })
+  async streamTtsAudio(
+    @Param('fileId') fileId: string,
+    @Req() req: any,
+    @Res() res: Response,
+    @Query('download') download?: string,
+    @Query('filename') filename?: string,
+  ) {
+    return this.aiService.streamTtsAudio(
+      fileId,
+      res,
+      download === '1' || download === 'true',
+      req.headers?.['range'],
+      filename,
+    );
+  }
+
+  // KHÔNG gắn JwtAuthGuard: thẻ <audio src> không gửi được JWT header (giống
+  // voice/tts/audio/:fileId). Service whitelist tên file tts_<hex32>.mp3.
+  // Fallback khi Drive chưa cấu hình — stream file TTS thẳng từ AI service.
+  @Get('voice/tts/stream/:filename')
+  @ApiOperation({ summary: 'Stream/tải file TTS từ AI service khi chưa có Drive (?download=1, ?filename= đặt tên file tải)' })
+  async streamTtsAudioFromAi(
+    @Param('filename') filename: string,
+    @Req() req: any,
+    @Res() res: Response,
+    @Query('download') download?: string,
+    @Query('filename') downloadName?: string,
+  ) {
+    return this.aiService.streamTtsAudioFromAi(
+      filename,
+      res,
+      download === '1' || download === 'true',
+      downloadName,
+      req.headers?.['range'],
+    );
+  }
+
+  @Post('voice/tts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Convert text to speech using Minimax' })
+  async generateTTS(
+    @Body('text') text: string,
+    @Body('voice_id') voiceId: string,
+    @Req() req: any,
+    @Body('speed') speed?: number,
+    @Body('pitch') pitch?: number,
+    @Body('volume') volume?: number,
+    @Body('language') language?: string,
+  ) {
+    if (!text) {
+      throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!voiceId) {
+      throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
+  }
+
+  @Post('voice/translate-text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Dịch văn bản (trang Clone Voice) sang một ngôn ngữ đã chọn, dùng lại AI dịch kịch bản video' })
+  async translateVoiceText(
+    @Body('text') text: string,
+    @Body('language') language: string,
+  ) {
+    if (!text) {
+      throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
+    }
+    if (!language) {
+      throw new HttpException('language is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Tiện ích tải video (trang dashboard/tools/video-downloader + extension VCB)
+  // Quy tắc FE → BE → AI: Next route proxy của FE gọi vào đây thay vì nối
+  // thẳng AI service. FE luôn gửi kèm Bearer token nên gắn JwtAuthGuard.
+  // ═══════════════════════════════════════════════════════════════
+
+  @Post('tools/video-downloader/info')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: đọc thông tin video qua yt-dlp (proxy AI)' })
+  async videoDownloaderInfo(@Body() body: { url: string }) {
+    if (!body?.url?.trim()) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.videoDownloaderInfo({ url: body.url.trim() });
+  }
+
+  @Post('tools/video-downloader/jobs')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: khởi tạo tiến trình tải (proxy AI)' })
+  async videoDownloaderStartJob(@Body() body: { url: string; type?: string; quality?: string }) {
+    if (!body?.url?.trim()) {
+      throw new HttpException('url is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.videoDownloaderStartJob(body);
+  }
+
+  @Get('tools/video-downloader/jobs/:jobId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: trạng thái tiến trình tải (proxy AI)' })
+  async videoDownloaderJobStatus(@Param('jobId') jobId: string) {
+    return this.aiService.videoDownloaderJobStatus(jobId);
+  }
+
+  @Get('tools/video-downloader/jobs/:jobId/file')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tiện ích tải video: stream file đã tải xong (proxy AI)' })
+  async videoDownloaderJobFile(@Param('jobId') jobId: string, @Res() res: Response) {
+    return this.aiService.videoDownloaderJobFile(jobId, res);
+  }
 }

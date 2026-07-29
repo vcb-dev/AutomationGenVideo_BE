@@ -1,0 +1,12 @@
+# Cấu hình build/deploy mặc định cho service API trên Railway.
+# BE này chỉ có 1 service API (không có worker như CQA).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Healthcheck bật trên service API trong Railway Dashboard:
+#   Path = /api
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

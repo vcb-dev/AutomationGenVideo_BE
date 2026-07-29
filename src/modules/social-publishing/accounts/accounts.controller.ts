@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Param, Query, Body, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Query, Body, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AccountsService } from './accounts.service';
@@ -62,9 +62,20 @@ export class AccountsController {
     return { success: true, message: 'Đã đồng bộ token cho tất cả Pages/Instagram liên kết' };
   }
 
+  @Patch(':id/shared')
+  @ApiOperation({ summary: 'Bật/tắt chia sẻ account cho toàn bộ hệ thống (chỉ chủ sở hữu)' })
+  setShared(
+    @Param('id') id: string,
+    @Body() body: { is_shared: boolean },
+    @Request() req,
+  ) {
+    return this.accountsService.setShared(id, req.user.id, body.is_shared);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Ngắt kết nối tài khoản' })
   disconnect(@Param('id') id: string, @Request() req) {
-    return this.accountsService.disconnect(id, req.user.id);
+    const isAdmin = (req.user.roles ?? []).includes('ADMIN');
+    return this.accountsService.disconnect(id, req.user.id, isAdmin);
   }
 }

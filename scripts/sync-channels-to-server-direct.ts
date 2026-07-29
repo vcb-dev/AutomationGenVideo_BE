@@ -181,6 +181,10 @@ function esc(val: any): string {
 
         await server.$executeRawUnsafe(`DROP TABLE IF EXISTS sync_channels_buffer`);
         console.log('✅ Channel sync successful!');
+
+        console.log('🔗 Enriching channel emails from Users table...');
+        const enrichedCount = await enrichChannelEmailsFromUsers(server);
+        console.log(`✅ Enriched ${enrichedCount} channels with correct emails.`);
     } catch (err) {
         console.error('❌ Channel sync failed:', err);
         throw err;
@@ -193,6 +197,61 @@ function esc(val: any): string {
   } finally {
     await server.$disconnect();
   }
+}
+
+function normalizeOwnerName(s: string | null | undefined): string {
+    return (s || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'd')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+}
+
+async function enrichChannelEmailsFromUsers(server: PrismaClient): Promise<number> {
+    const users = await server.user.findMany({
+        where: { is_active: true },
+        select: { email: true, full_name: true },
+    });
+
+    const nameToEmail = new Map<string, string>();
+    for (const u of users) {
+        if (u.full_name && u.email) {
+            nameToEmail.set(normalizeOwnerName(u.full_name), u.email);
+        }
+    }
+
+    const channels = await server.channel.findMany({
+        select: { id: true, owner: true, email: true },
+    });
+
+    let updated = 0;
+    for (const ch of channels) {
+        if (!ch.owner) continue;
+
+        const normalizedOwner = normalizeOwnerName(ch.owner);
+        let matchedEmail = nameToEmail.get(normalizedOwner);
+
+        if (!matchedEmail) {
+            for (const [normalizedName, email] of nameToEmail) {
+                if (normalizedOwner.includes(normalizedName) || normalizedName.includes(normalizedOwner)) {
+                    matchedEmail = email;
+                    break;
+                }
+            }
+        }
+
+        if (matchedEmail) {
+            await server.channel.update({
+                where: { id: ch.id },
+                data: { email: matchedEmail },
+            });
+            updated++;
+        }
+    }
+    return updated;
 }
 
 main();

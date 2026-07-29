@@ -102,7 +102,7 @@ export class MediaLibraryService {
     url = uploaded.url;
     storage = 'google_drive';
     drive_file_id = uploaded.fileId;
-    drive_web_view_url = uploaded.webViewUrl || null;
+    drive_web_view_url = uploaded.webViewUrl;
     this.logger.log(`[Library] Google Drive: ${filename}`);
 
     let thumbnail_url: string | null = null;
@@ -204,8 +204,8 @@ export class MediaLibraryService {
     return (this.prisma as any).socialUploadedFile || (this.prisma as any).SocialUploadedFile;
   }
 
-  async list(userId: string, page = 1, limit = 20) {
-    this.logger.log(`[Library] Lay danh sach cho User: ${userId} (Page: ${page})`);
+  async list(userId: string, page = 1, limit = 20, date?: string) {
+    this.logger.log(`[Library] Lay danh sach cho User: ${userId} (Page: ${page}${date ? `, Date: ${date}` : ''})`);
     if (!modelReady(this.prisma)) {
       this.logger.warn('[Library] Prisma generate chua chay');
       return EMPTY_LIST;
@@ -213,9 +213,15 @@ export class MediaLibraryService {
     try {
       const model = this.getModel();
       const skip = (page - 1) * limit;
+      const where: any = { user_id: userId };
+      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        const start = new Date(`${date}T00:00:00.000Z`);
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        where.created_at = { gte: start, lt: end };
+      }
       const [items, total] = await Promise.all([
-        model.findMany({ where: { user_id: userId }, orderBy: { created_at: 'desc' }, skip, take: limit }),
-        model.count({ where: { user_id: userId } }),
+        model.findMany({ where, orderBy: { created_at: 'desc' }, skip, take: limit }),
+        model.count({ where }),
       ]);
       return { items, total, page, limit, pages: Math.ceil(total / limit) };
     } catch (err: any) {
@@ -252,6 +258,21 @@ export class MediaLibraryService {
     } catch (err: any) {
       if (isNotReady(err)) return EMPTY_STATS;
       throw err;
+    }
+  }
+
+  async removeByDriveFileId(driveFileId: string): Promise<void> {
+    if (!modelReady(this.prisma)) return;
+    try {
+      const model = this.getModel();
+      const file = await model.findFirst({ where: { drive_file_id: driveFileId } });
+      if (file) {
+        await model.delete({ where: { id: file.id } });
+        this.logger.log(`[Library] Removed media library entry for Drive file ${driveFileId}`);
+      }
+    } catch (err: any) {
+      if (isNotReady(err)) return;
+      this.logger.warn(`[Library] removeByDriveFileId failed for ${driveFileId}: ${err.message}`);
     }
   }
 

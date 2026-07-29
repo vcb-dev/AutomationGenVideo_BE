@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as FormData from 'form-data';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as jwt from 'jsonwebtoken';
 
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -9,6 +11,16 @@ const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3/files';
 const METADATA_TOKEN_URL = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+
+// Douyin CDN — một số node chỉ accessible từ IP Trung Quốc, cần browser headers giả
+// + timeout ngắn hơn để không giữ job cron quá lâu khi chúng fail.
+const CHINA_CDN_DOMAINS = ['douyinpic.com', 'bytecdn.cn', 'ibyteimg.com', 'douyinstatic.com', 'douyinvod.com'];
+const CHINA_CDN_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+  'Referer': 'https://www.douyin.com/',
+};
 
 interface GoogleServiceAccountCredentials {
   client_email: string;
@@ -19,7 +31,7 @@ interface GoogleServiceAccountCredentials {
 export interface GoogleDriveUploadResult {
   fileId: string;
   url: string;
-  webViewUrl?: string;
+  webViewUrl: string;
 }
 
 export interface GoogleDriveFileMetadata {
@@ -36,6 +48,17 @@ export interface GoogleDriveResumableStatus {
   uploadedBytes: number;
   completed: boolean;
   fileId?: string;
+}
+
+export interface GoogleDriveReadStream {
+  stream: NodeJS.ReadableStream;
+  /** 200, hoặc 206 khi request có Range */
+  status: number;
+  name: string;
+  mimetype: string;
+  size: number;
+  contentRange?: string;
+  contentLength?: number;
 }
 
 @Injectable()
@@ -75,6 +98,32 @@ export class GoogleDriveStorageService {
     }
 
     return subfolder ? this.getOrCreateFolder(dateFolderId, subfolder) : dateFolderId;
+  }
+
+  /** Cây folder gom file theo LOẠI thay vì theo ngày: Root/{name}/{YYYY-MM-DD}/
+   * Dùng cho các file không gắn với user (audio TTS, ảnh cào...) để tất cả file
+   * cùng loại nằm chung 1 nơi, bên trong mới chia theo ngày — thay vì rải mỗi
+   * folder ngày một ít như resolveTargetFolder. */
+  async resolveDatedFolder(name: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const typeFolderId = await this.getOrCreateFolder(rootFolderId, name);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(typeFolderId, dateStr);
+  }
+
+  private static readonly SCRAPER_ROOT_FOLDER_NAME = 'Scraper Cào Dữ Liệu';
+
+  /** Cây folder RIÊNG cho ảnh cào dữ liệu: Root/Scraper Cào Dữ Liệu/{Platform}/{YYYY-MM-DD}/
+   * Không đụng tới resolveTargetFolder ở trên (vẫn dùng nguyên cho luồng publish
+   * video, tổ chức theo user) — ảnh cào không gắn với user nào nên nhóm theo
+   * platform trước để dễ duyệt riêng từng nền tảng, mỗi platform tự giới hạn
+   * quy mô theo ngày thay vì dồn chung 1 folder ngày như trước. */
+  async resolveScraperFolder(platform: string): Promise<string> {
+    const rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
+    const scraperRootId = await this.getOrCreateFolder(rootFolderId, GoogleDriveStorageService.SCRAPER_ROOT_FOLDER_NAME);
+    const platformFolderId = await this.getOrCreateFolder(scraperRootId, platform);
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return this.getOrCreateFolder(platformFolderId, dateStr);
   }
 
   private folderPending = new Map<string, Promise<string>>();
@@ -150,15 +199,23 @@ export class GoogleDriveStorageService {
     filename: string,
     mimetype: string,
     user?: any,
-    opts?: { subfolder?: string; displayName?: string },
+    opts?: { subfolder?: string; displayName?: string; folderId?: string },
   ): Promise<GoogleDriveUploadResult> {
     if (!this.isAvailable()) {
       throw new Error('Google Drive storage is not configured');
     }
 
     const driveName = opts?.displayName || filename;
-    const folderId = await this.resolveTargetFolder(user, opts?.subfolder);
+    // folderId override — dùng cho luồng ảnh cào dữ liệu (resolveScraperFolder),
+    // bỏ qua resolveTargetFolder (vốn dành cho luồng publish video theo user).
+    const folderId = opts?.folderId ?? (await this.resolveTargetFolder(user, opts?.subfolder));
     const token = await this.getAccessToken();
+    const fileSize = fs.statSync(filePath).size;
+
+    // Drive multipart upload is capped at 5 MB — use resumable for anything larger
+    if (fileSize > 5 * 1024 * 1024) {
+      return this._uploadLargeFileResumable(filePath, driveName, mimetype, folderId, token, fileSize);
+    }
 
     const form = new FormData();
     form.append('metadata', JSON.stringify({
@@ -168,19 +225,171 @@ export class GoogleDriveStorageService {
     }), { contentType: 'application/json' });
     form.append('media', fs.createReadStream(filePath), { filename: driveName, contentType: mimetype });
 
-    const uploadRes = await axios.post(
-      DRIVE_UPLOAD_URL,
-      form,
+    let uploadRes: any;
+    try {
+      uploadRes = await axios.post(
+        DRIVE_UPLOAD_URL,
+        form,
+        {
+          headers: { ...form.getHeaders(), Authorization: `Bearer ${token}` },
+          params: {
+            uploadType: 'multipart',
+            supportsAllDrives: true,
+            fields: 'id,webViewLink,webContentLink',
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 900_000,
+        },
+      );
+    } catch (err: any) {
+      const status = err.response?.status;
+      const detail = JSON.stringify(err.response?.data ?? err.message);
+      this.logger.error(`[GoogleDrive] Upload failed ${status}: ${detail} | folder=${folderId} file=${driveName}`);
+      throw err;
+    }
+
+    const fileId = uploadRes.data.id as string;
+    if (process.env.GOOGLE_DRIVE_PUBLIC !== 'false') {
+      await this.makePublic(fileId, token);
+    }
+
+    const isImage = mimetype.startsWith('image/');
+    const directUrl = isImage
+      ? `https://lh3.googleusercontent.com/d/${fileId}`
+      : this.buildDownloadUrl(fileId, driveName);
+    this.logger.log(`[GoogleDrive] Uploaded ${driveName} -> ${fileId}`);
+
+    return {
+      fileId,
+      url: directUrl,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
+    };
+  }
+
+  /**
+   * Tải file từ một URL rồi upload lên Drive, trả về link công khai.
+   * Trả '' nếu thất bại (không throw) — caller tự fallback về URL gốc.
+   */
+  async uploadFromUrl(
+    sourceUrl: string,
+    filename: string,
+    mimetype: string,
+    opts?: { subfolder?: string; folderId?: string; timeoutMs?: number },
+  ): Promise<string> {
+    if (!sourceUrl || !this.isAvailable()) return '';
+
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        timeout: opts?.timeoutMs ?? 60_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+    } catch (err: any) {
+      this.logger.warn(`[GoogleDrive] uploadFromUrl download failed (${sourceUrl.slice(0, 80)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `dl_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const uploaded = await this.uploadFromPath(tmpPath, filename, mimetype, undefined, {
+        subfolder: opts?.subfolder,
+        folderId: opts?.folderId,
+      });
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[GoogleDrive] uploadFromUrl upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+
+  /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền.
+   * platform (vd 'Kuaishou', 'TikTok') → upload vào Root/Scraper Cào Dữ Liệu/{platform}/{YYYY-MM-DD}/
+   * thay vì folder ngày dùng chung mặc định. */
+  async uploadThumbnailFromUrl(sourceUrl: string, filename: string, platform?: string): Promise<string> {
+    if (!sourceUrl) return '';
+    if (sourceUrl.includes('drive.google.com') || sourceUrl.includes('googleusercontent.com')) return sourceUrl;
+    if (!this.isAvailable()) return '';
+
+    const isChinaCdn = CHINA_CDN_DOMAINS.some(domain => sourceUrl.includes(domain));
+    let buffer: Buffer;
+    try {
+      const res = await axios.get(sourceUrl, {
+        headers: isChinaCdn ? CHINA_CDN_HEADERS : {},
+        timeout: isChinaCdn ? 8_000 : 15_000,
+        responseType: 'arraybuffer',
+      });
+      buffer = Buffer.from(res.data);
+      const contentType = (res.headers['content-type'] || '') as string;
+      if (!contentType.startsWith('image/')) {
+        this.logger.warn(`[ThumbnailMigration] Expected image, got '${contentType}' from ${sourceUrl.slice(0, 80)}`);
+        return '';
+      }
+    } catch (err: any) {
+      this.logger.warn(`[ThumbnailMigration] Download failed (${sourceUrl.slice(0, 70)}...): ${err.message}`);
+      return '';
+    }
+    if (!buffer.length) return '';
+
+    const tmpPath = path.join(os.tmpdir(), `thumb_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
+    try {
+      fs.writeFileSync(tmpPath, buffer);
+      const folderId = platform ? await this.resolveScraperFolder(platform) : undefined;
+      const uploaded = await this.uploadFromPath(tmpPath, filename, 'image/jpeg', undefined, folderId ? { folderId } : undefined);
+      return uploaded.url;
+    } catch (err: any) {
+      this.logger.error(`[ThumbnailMigration] Upload failed ${filename}: ${err.message}`);
+      return '';
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+
+  private async _uploadLargeFileResumable(
+    filePath: string,
+    driveName: string,
+    mimetype: string,
+    folderId: string,
+    token: string,
+    fileSize: number,
+  ): Promise<GoogleDriveUploadResult> {
+    this.logger.log(`[GoogleDrive] Starting resumable upload for ${driveName} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    // Step 1: Initiate resumable session
+    const initRes = await axios.post(
+      `${DRIVE_UPLOAD_URL}?uploadType=resumable&supportsAllDrives=true`,
+      { name: driveName, parents: [folderId], mimeType: mimetype },
       {
-        headers: { ...form.getHeaders(), Authorization: `Bearer ${token}` },
-        params: {
-          uploadType: 'multipart',
-          supportsAllDrives: true,
-          fields: 'id,webViewLink,webContentLink',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': mimetype,
+          'X-Upload-Content-Length': String(fileSize),
+        },
+      },
+    );
+
+    const uploadUrl: string = initRes.headers['location'];
+    if (!uploadUrl) throw new Error('[GoogleDrive] Drive did not return a resumable upload URL');
+
+    // Step 2: Upload the full file in a single PUT to the resumable URL
+    const uploadRes = await axios.put(
+      uploadUrl,
+      fs.createReadStream(filePath),
+      {
+        headers: {
+          'Content-Type': mimetype,
+          'Content-Length': String(fileSize),
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
-        timeout: 900_000,
+        timeout: 1_800_000, // 30 min for large videos
+        params: { fields: 'id,webViewLink,webContentLink' },
       },
     );
 
@@ -190,12 +399,12 @@ export class GoogleDriveStorageService {
     }
 
     const directUrl = this.buildDownloadUrl(fileId, driveName);
-    this.logger.log(`[GoogleDrive] Uploaded ${driveName} -> ${fileId}`);
+    this.logger.log(`[GoogleDrive] Resumable upload complete: ${driveName} -> ${fileId}`);
 
     return {
       fileId,
       url: directUrl,
-      webViewUrl: uploadRes.data.webViewLink,
+      webViewUrl: uploadRes.data.webViewLink || this.buildViewUrl(fileId),
     };
   }
 
@@ -307,6 +516,47 @@ export class GoogleDriveStorageService {
     };
   }
 
+  /**
+   * Mở stream nội dung file từ Drive bằng token service-account. Dùng khi cần
+   * đưa file về trình duyệt qua BE — link công khai uc?export=download redirect
+   * qua trang HTML của Google nên <audio>/<a download> dùng trực tiếp không ổn
+   * định. Forward được Range header để trình duyệt seek/đọc metadata.
+   */
+  async openReadStream(fileId: string, rangeHeader?: string): Promise<GoogleDriveReadStream> {
+    if (!this.isAvailable()) {
+      throw new Error('Google Drive storage is not configured');
+    }
+    const token = await this.getAccessToken();
+
+    const metaRes = await axios.get(`${DRIVE_API_URL}/${encodeURIComponent(fileId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { supportsAllDrives: true, fields: 'id,name,mimeType,size' },
+      timeout: 30_000,
+    });
+
+    const res = await axios.get(`${DRIVE_API_URL}/${encodeURIComponent(fileId)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(rangeHeader ? { Range: rangeHeader } : {}),
+      },
+      params: { alt: 'media', supportsAllDrives: true },
+      responseType: 'stream',
+      timeout: 300_000,
+      validateStatus: (s) => s === 200 || s === 206,
+    });
+
+    const contentLength = res.headers['content-length'] ? Number(res.headers['content-length']) : undefined;
+    return {
+      stream: res.data,
+      status: res.status,
+      name: metaRes.data.name,
+      mimetype: metaRes.data.mimeType || 'application/octet-stream',
+      size: Number(metaRes.data.size || 0),
+      contentRange: res.headers['content-range'],
+      contentLength,
+    };
+  }
+
   async getResumableStatus(uploadUrl: string, totalSize: number): Promise<GoogleDriveResumableStatus> {
     try {
       const res = await axios.put(uploadUrl, null, {
@@ -381,6 +631,10 @@ export class GoogleDriveStorageService {
     return `https://drive.google.com/uc?${params.toString()}`;
   }
 
+  private buildViewUrl(fileId: string): string {
+    return `https://drive.google.com/file/d/${fileId}/view`;
+  }
+
   private buildThumbnailUrl(fileId: string): string {
     return `https://drive.google.com/thumbnail?id=${fileId}&sz=w640`;
   }
@@ -443,19 +697,26 @@ export class GoogleDriveStorageService {
         throw new Error('Google Drive refresh token requires GOOGLE_DRIVE_CLIENT_ID/SECRET or GOOGLE_CLIENT_ID/SECRET');
       }
 
-      const res = await axios.post(
-        GOOGLE_TOKEN_URL,
-        new URLSearchParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          refresh_token: refreshToken,
-          grant_type: 'refresh_token',
-        }),
-        {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          timeout: 30_000,
-        },
-      );
+      this.logger.debug(`[GoogleDrive] Token request — client_id: ${clientId?.slice(0, 20)}... refresh_token: ${refreshToken?.slice(0, 10)}...`)
+      let res: any
+      try {
+        res = await axios.post(
+          GOOGLE_TOKEN_URL,
+          new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            refresh_token: refreshToken,
+            grant_type: 'refresh_token',
+          }),
+          {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 30_000,
+          },
+        )
+      } catch (err: any) {
+        this.logger.error(`[GoogleDrive] Token 401 detail: ${JSON.stringify(err.response?.data)}`)
+        throw err
+      }
 
       if (!res.data?.access_token) {
         throw new Error('Google refresh token flow did not return an access token');
