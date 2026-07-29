@@ -1088,13 +1088,15 @@ export class TaskAutoTasksService {
     roles: string[],
     dateFrom?: string,
     dateTo?: string,
+    /** "YYYY-MM" — tháng báo cáo cho leader dashboard (mặc định tháng hiện tại nếu bỏ trống/sai định dạng). */
+    month?: string,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard(range);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month);
     return this.getPersonalDashboard(userId);
   }
 
@@ -1172,11 +1174,19 @@ export class TaskAutoTasksService {
   private async getLeaderDashboard(
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
+    month?: string,
   ) {
     const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // Tháng báo cáo do leader chọn (bộ lọc tháng) — mặc định về tháng thực tế nếu bỏ trống/sai định dạng.
+    const currentMonth = month && /^\d{4}-\d{2}$/.test(month) ? month : realCurrentMonth;
+    const [selYear, selMonthNum] = currentMonth.split("-").map(Number);
+    const monthStart = new Date(selYear, selMonthNum - 1, 1);
+    const monthEnd = new Date(selYear, selMonthNum, 1);
+    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc tháng, vì đây là
+    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một tháng đã qua.
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
     // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
@@ -1200,6 +1210,7 @@ export class TaskAutoTasksService {
         tasks: { total: 0 },
         members: [],
         kpi: null,
+        video_by_line: [],
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1210,6 +1221,9 @@ export class TaskAutoTasksService {
     }
     const memberRows = Array.from(memberByUserId.values());
     const memberIds = memberRows.map((m) => m.user_id);
+    const memberEmails = memberRows
+      .map((m) => m.user?.email?.toLowerCase().trim())
+      .filter((e): e is string => !!e);
 
     const [
       tasksByStatus,
@@ -1217,6 +1231,11 @@ export class TaskAutoTasksService {
       editorKpis,
       monthlyTeamApproved,
       monthlyMemberApproved,
+      memberAssignedToday,
+      memberApprovedToday,
+      memberTrafficMonth,
+      teamApprovedByContentLine,
+      contentLines,
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
@@ -1254,6 +1273,53 @@ export class TaskAutoTasksService {
         },
         _count: { id: true },
       }),
+      // "KPI ngày": mục tiêu ngày = số task được giao (assigned_at) trong hôm nay, bất kể trạng
+      // thái hiện tại đã đi tiếp tới đâu — nếu lọc theo status=ASSIGNED tại thời điểm query thì
+      // task đã giao sáng nay nhưng chiều đã duyệt xong sẽ biến mất khỏi mẫu số, sai ý nghĩa "đã giao".
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: { notIn: ["CANCELLED"] },
+          assigned_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      // Traffic báo cáo hằng ngày (TrafficReport, tách biệt task-auto) — khớp theo email vì field
+      // `team` trên TrafficReport là text tự do, không đảm bảo khớp tên với Team.name của task-auto.
+      memberEmails.length > 0
+        ? this.prisma.trafficReport.groupBy({
+            by: ["email"],
+            where: {
+              email: { in: memberEmails, mode: "insensitive" as any },
+              date: { gte: monthStart, lt: monthEnd },
+            },
+            _sum: { total_traffic: true },
+          })
+        : Promise.resolve([]),
+      // "TEAM - Số video theo tuyến": số task đã duyệt trong tháng của cả team, gộp theo tuyến
+      // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
+      // không thuộc tuyến nào.
+      this.prisma.task.groupBy({
+        by: ["content_line_id"],
+        where: {
+          team_id: { in: teamIds },
+          content_line_id: { not: null },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1268,14 +1334,37 @@ export class TaskAutoTasksService {
     const kpiApprovedByUser = Object.fromEntries(
       monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
     );
+    const assignedTodayByUser = Object.fromEntries(
+      memberAssignedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const approvedTodayByUser = Object.fromEntries(
+      memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const trafficMonthByEmail = Object.fromEntries(
+      memberTrafficMonth.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_traffic ?? 0n),
+      ]),
+    );
+
+    const approvedCountByContentLineId = Object.fromEntries(
+      teamApprovedByContentLine.map((r) => [r.content_line_id as string, r._count.id]),
+    );
+    // Chỉ liệt kê tuyến A1-A5 (đúng thứ tự tên) — bỏ qua các ContentLine khác không thuộc mô hình
+    // này để không làm loãng biểu đồ "Số video theo tuyến".
+    const videoByLine = contentLines
+      .filter((cl) => /^A[1-5]$/.test(cl.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((cl) => ({ line: cl.name, count: approvedCountByContentLineId[cl.id] ?? 0 }));
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
     const members = memberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
+      const email = m.user?.email ?? "";
       return {
         user_id: m.user_id,
         full_name: m.user?.full_name ?? "",
-        email: m.user?.email ?? "",
+        email,
         pending: memberStats[m.user_id]?.["pending"] ?? 0,
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
@@ -1285,6 +1374,12 @@ export class TaskAutoTasksService {
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
+        /** Số task đã giao (assigned_at) hôm nay cho thành viên này — "mục tiêu" của KPI ngày. */
+        kpi_day_target: assignedTodayByUser[m.user_id] ?? 0,
+        /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
+        kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
+        /** Tổng traffic tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
+        traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
       };
     });
 
@@ -1319,6 +1414,8 @@ export class TaskAutoTasksService {
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
       },
+      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo tuyến nội dung A1-A5. */
+      video_by_line: videoByLine,
     };
   }
 
