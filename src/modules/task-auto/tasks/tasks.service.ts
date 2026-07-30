@@ -554,10 +554,13 @@ export class TaskAutoTasksService {
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
     if (q.deadline_date) {
-      where.deadline = {
-        gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
-        lte: new Date(`${q.deadline_date}T23:59:59.999+07:00`),
-      };
+      const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
+      const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
+      // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+      where.OR = [
+        { deadline: { gte: dayStart, lte: dayEnd } },
+        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+      ];
     } else if (q.month) {
       const start = new Date(`${q.month}-01`);
       const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
@@ -1134,8 +1137,11 @@ export class TaskAutoTasksService {
       }),
       this.prisma.task.count({
         where: {
-          deadline: { gte: todayStart, lt: todayEnd },
           status: { notIn: ["APPROVED", "CANCELLED"] },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
         },
       }),
       this.prisma.task.count({
@@ -1273,15 +1279,17 @@ export class TaskAutoTasksService {
         },
         _count: { id: true },
       }),
-      // "KPI ngày": mục tiêu ngày = số task được giao (assigned_at) trong hôm nay, bất kể trạng
-      // thái hiện tại đã đi tiếp tới đâu — nếu lọc theo status=ASSIGNED tại thời điểm query thì
-      // task đã giao sáng nay nhưng chiều đã duyệt xong sẽ biến mất khỏi mẫu số, sai ý nghĩa "đã giao".
+      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào hôm nay; task chưa có deadline thì
+      // tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal Dashboard.
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          assigned_at: { gte: todayStart, lt: todayEnd },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
         },
         _count: { id: true },
       }),
@@ -1374,7 +1382,7 @@ export class TaskAutoTasksService {
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
-        /** Số task đã giao (assigned_at) hôm nay cho thành viên này — "mục tiêu" của KPI ngày. */
+        /** Số task có deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) — "mục tiêu" của KPI ngày. */
         kpi_day_target: assignedTodayByUser[m.user_id] ?? 0,
         /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
         kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
@@ -1441,8 +1449,11 @@ export class TaskAutoTasksService {
         this.prisma.task.count({
           where: {
             assignee_id: userId,
-            deadline: { gte: todayStart, lt: todayEnd },
             status: { notIn: ["APPROVED", "CANCELLED"] },
+            OR: [
+              { deadline: { gte: todayStart, lt: todayEnd } },
+              { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+            ],
           },
         }),
         this.prisma.task.count({
