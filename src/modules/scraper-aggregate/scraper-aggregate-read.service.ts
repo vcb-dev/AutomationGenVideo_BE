@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { dieuKienThiTruong, dieuKienTuyenNoiDung } from './content-filters';
+import { dieuKienThiTruong, dieuKienTuyenNoiDung, dieuKienHashtag, dieuKienKenh } from './content-filters';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
@@ -313,6 +313,10 @@ export class ScraperAggregateReadService {
     market?: string;
     /** 'A1'..'A5' — bắt theo hashtag #A1..#A5 sẵn có trong caption */
     content_line?: string;
+    /** Định danh kênh: page_id (Facebook) / username / channel_id tuỳ nền tảng */
+    channel?: string;
+    /** Hashtag bất kỳ, có hoặc không có dấu # đều được */
+    hashtag?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
@@ -324,6 +328,8 @@ export class ScraperAggregateReadService {
     const dateTo = (params.date_to || '').trim();
     const market = (params.market || '').trim();
     const contentLine = (params.content_line || '').trim();
+    const channel = (params.channel || '').trim();
+    const hashtag = (params.hashtag || '').trim();
 
     /** Hai bộ lọc mới đều dựa vào chữ, mà mỗi nhánh gọi cột chữ một tên khác nhau. */
     function locTheoChu(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql): Prisma.Sql[] {
@@ -332,7 +338,15 @@ export class ScraperAggregateReadService {
       if (tt) c.push(tt);
       const tuyen = dieuKienTuyenNoiDung(cotChu, contentLine, cotHashtag);
       if (tuyen) c.push(tuyen);
+      const the = dieuKienHashtag(cotChu, hashtag, cotHashtag);
+      if (the) c.push(the);
       return c;
+    }
+
+    /** Cột định danh kênh khác tên ở từng nhánh nên phải truyền vào. */
+    function locTheoKenh(cotKenh: Prisma.Sql): Prisma.Sql[] {
+      const dk = dieuKienKenh(cotKenh, channel);
+      return dk ? [dk] : [];
     }
 
     // Douyin/Xiaohongshu không có field view/play thật (TikHub không trả về) —
@@ -354,6 +368,7 @@ export class ScraperAggregateReadService {
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
       conditions.push(...locTheoChu(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...locTheoKenh(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'tiktok' AS platform, v.video_id AS post_id, v.url, v.description,
                COALESCE(v.cover_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
@@ -371,6 +386,7 @@ export class ScraperAggregateReadService {
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`r.description`, null, q));
       conditions.push(...locTheoChu(Prisma.sql`r.description`, Prisma.sql`r.hashtags`));
+      conditions.push(...locTheoKenh(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'instagram' AS platform, r.post_id, r.url, r.description,
                COALESCE(NULLIF(r.thumbnail_drive_url, ''), r.thumbnail_url, '') AS thumbnail_url,
@@ -391,6 +407,7 @@ export class ScraperAggregateReadService {
       ];
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
       conditions.push(...locTheoChu(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...locTheoKenh(Prisma.sql`v.author_username`));
       branches.push(Prisma.sql`
         SELECT 'douyin' AS platform, v.post_id, v.url, v.description,
                COALESCE(v.preview_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
@@ -410,6 +427,7 @@ export class ScraperAggregateReadService {
         );
       }
       conditions.push(...locTheoChu(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`));
+      conditions.push(...locTheoKenh(Prisma.sql`v.author_id`));
       branches.push(Prisma.sql`
         SELECT 'xiaohongshu' AS platform, v.note_id AS post_id, v.url,
                COALESCE(NULLIF(v.title, ''), v.description) AS description,
@@ -429,6 +447,7 @@ export class ScraperAggregateReadService {
       if (minPlays !== undefined) conditions.push(Prisma.sql`s.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`s.title`, null, q));
       conditions.push(...locTheoChu(Prisma.sql`s.title`, Prisma.sql`s.hashtags`));
+      conditions.push(...locTheoKenh(Prisma.sql`p.channel_id`));
       branches.push(Prisma.sql`
         SELECT 'youtube' AS platform, s.video_id AS post_id, s.url, s.title AS description,
                COALESCE(NULLIF(s.thumbnail_drive_url, ''), s.thumbnail_url, '') AS thumbnail_url,
@@ -448,6 +467,7 @@ export class ScraperAggregateReadService {
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.caption`, null, q));
       conditions.push(...locTheoChu(Prisma.sql`v.caption`));
+      conditions.push(...locTheoKenh(Prisma.sql`mp.page_id`));
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
         SELECT 'facebook' AS platform, v.post_id, COALESCE(v.permalink_url, '') AS url, COALESCE(v.caption, '') AS description,
@@ -494,5 +514,62 @@ export class ScraperAggregateReadService {
         return rest;
       }),
     };
+  }
+
+  /**
+   * Danh sách KÊNH NỘI BỘ để đổ vào ô chọn, kèm số video của từng kênh.
+   *
+   * Thực tế trong dữ liệu: 97 fanpage Facebook, còn TikTok/Instagram/YouTube chưa có kênh
+   * nội bộ nào. Vẫn gộp cả các nền tảng kia để sau này bật lên là chạy, không phải sửa lại.
+   *
+   * Sắp theo SỐ VIDEO giảm dần chứ không theo tên: 97 dòng mà xếp theo bảng chữ cái thì
+   * kênh chính nằm lẫn đâu đó giữa danh sách.
+   */
+  async ownedChannels() {
+    const rows = await this.prisma.$queryRaw<
+      { platform: string; id: string; ten: string; so_video: number }[]
+    >`
+      SELECT 'facebook' AS platform, mp.page_id AS id, mp.name AS ten, COUNT(v.id)::int AS so_video
+      FROM video_management_managedfacebookpage mp
+      LEFT JOIN video_management_ownedvideocontent v ON v.managed_page_id = mp.id
+      GROUP BY mp.page_id, mp.name
+      UNION ALL
+      SELECT 'tiktok', p.username, COALESCE(NULLIF(p.nickname, ''), p.username),
+             (SELECT COUNT(*)::int FROM scraper_tiktok_profile_videos t WHERE t.profile_id = p.id)
+      FROM scraper_tiktok_profiles p WHERE p.is_owned
+      UNION ALL
+      SELECT 'instagram', p.username, p.username,
+             (SELECT COUNT(*)::int FROM scraper_instagram_reels r WHERE r.profile_id = p.id)
+      FROM scraper_instagram_profiles p WHERE p.is_owned
+      UNION ALL
+      SELECT 'youtube', p.channel_id, COALESCE(NULLIF(p.title, ''), p.channel_id),
+             (SELECT COUNT(*)::int FROM scraper_youtube_shorts s WHERE s.profile_id = p.id)
+      FROM scraper_youtube_profiles p WHERE p.is_owned
+      ORDER BY so_video DESC, ten ASC
+    `;
+    return { channels: rows };
+  }
+
+  /**
+   * Hashtag đang thực sự có trong dữ liệu, để đổ vào ô chọn.
+   *
+   * Bảng video Facebook nội bộ KHÔNG có cột hashtag — mà đó là nơi chứa gần như toàn bộ dữ
+   * liệu nội bộ — nên phải bóc thẳng từ caption bằng biểu thức chính quy.
+   *
+   * `regexp_matches(..., 'g')` trả một DÒNG cho mỗi lần khớp, nên một caption gắn #vang hai
+   * lần sẽ bị đếm hai. Dùng COUNT(DISTINCT v.id) để đếm đúng SỐ VIDEO, không phải số lần khớp.
+   */
+  async ownedHashtags(limit = 60) {
+    const gioiHan = Math.min(200, Math.max(1, limit));
+    const rows = await this.prisma.$queryRaw<{ the: string; so_video: number }[]>`
+      SELECT lower(m[1]) AS the, COUNT(DISTINCT v.id)::int AS so_video
+      FROM video_management_ownedvideocontent v,
+           regexp_matches(v.caption, '#([[:alnum:]_]{1,64})', 'g') AS m
+      GROUP BY 1
+      HAVING COUNT(DISTINCT v.id) >= 3
+      ORDER BY so_video DESC, the ASC
+      LIMIT ${gioiHan}
+    `;
+    return { hashtags: rows };
   }
 }

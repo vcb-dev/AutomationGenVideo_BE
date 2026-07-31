@@ -1,5 +1,8 @@
 import { Prisma } from '@prisma/client';
 import {
+  chuanHoaHashtag,
+  dieuKienHashtag,
+  dieuKienKenh,
   CONTENT_LINES,
   dieuKienThiTruong,
   dieuKienTuyenNoiDung,
@@ -99,5 +102,66 @@ describe('Bộ lọc tuyến nội dung A1–A5', () => {
     expect(s).toBeNull();                       // chặn ngay từ vòng kiểm giá trị hợp lệ
     const hopLe = dieuKienTuyenNoiDung(COT, 'A1')!;
     expect(chu(hopLe)).not.toContain('A1');     // mã nằm ở values, không nằm trong chữ SQL
+  });
+});
+
+
+describe('Bộ lọc hashtag bất kỳ', () => {
+  it('bỏ dấu # người dùng lỡ gõ, hai cách gõ ra cùng một kết quả', () => {
+    expect(chuanHoaHashtag('#trangsuc')).toBe('trangsuc');
+    expect(chuanHoaHashtag(' trangsuc ')).toBe('trangsuc');
+    expect(chuanHoaHashtag('##a1')).toBe('a1');
+  });
+
+  it('giữ được hashtag có dấu tiếng Việt và chữ Trung/Thái', () => {
+    // Dữ liệu thật có #đánănglượngcao, #翡翠知识, #เครื่องประดับ — chặn theo a-z là mất sạch.
+    for (const the of ['đánănglượngcao', '翡翠知识', 'เครื่องประดับ']) {
+      expect(chuanHoaHashtag(the)).toBe(the);
+    }
+  });
+
+  it('loại ký tự có nghĩa trong biểu thức chính quy — không cho nhét mẫu vào truy vấn', () => {
+    for (const doc of ['.*', 'a|b', '(a)', 'a{1,9}', 'a\\b', 'a b', 'a%', 'a_b', 'ab', 'a\nb']) {
+      expect(chuanHoaHashtag(doc)).toBe('');
+      expect(dieuKienHashtag(COT, doc)).toBeNull();
+    }
+    expect(chuanHoaHashtag('a'.repeat(65))).toBe('');
+  });
+
+  it('có ranh giới cuối — lọc #vang KHÔNG vơ nhầm #vang18k', () => {
+    // Đo trên dữ liệu thật: thiếu ranh giới thì #vang khớp 1.812 video thay vì 1.533,
+    // tức vơ nhầm 279 video của #vang18k, #vangbac, #vanghong...
+    const [mau] = giaTri(dieuKienHashtag(COT, 'vang')!) as string[];
+    expect(mau).toBe('#vang([^[:alnum:]_]|$)');
+
+    const nhu = new RegExp(mau.replace('[^[:alnum:]_]', '[^a-zA-Z0-9_]'), 'i');
+    expect(nhu.test('deo #vang18k dep')).toBe(false);
+    expect(nhu.test('deo #vangbac')).toBe(false);
+    expect(nhu.test('deo #vang dep')).toBe(true);
+    expect(nhu.test('cuoi caption #vang')).toBe(true);
+  });
+
+  it('bảng có cột hashtag thì tìm cả trong mảng', () => {
+    const s = dieuKienHashtag(COT, 'TrangSuc', Prisma.sql`v.hashtags`)!;
+    expect(chu(s)).toContain('unnest');
+    expect(giaTri(s)).toContain('trangsuc');   // so sánh chữ thường
+  });
+});
+
+describe('Bộ lọc kênh', () => {
+  it('bỏ trống thì coi như không lọc', () => {
+    expect(dieuKienKenh(COT, '')).toBeNull();
+    expect(dieuKienKenh(COT, '   ')).toBeNull();
+  });
+
+  it('so sánh không phân biệt hoa thường, và định danh đi vào dưới dạng tham số', () => {
+    const s = dieuKienKenh(Prisma.sql`mp.page_id`, 'HuyK_Page')!;
+    expect(chu(s)).toContain('lower(');
+    expect(giaTri(s)).toEqual(['huyk_page']);
+    expect(chu(s)).not.toContain('HuyK_Page');   // không nối thẳng vào chuỗi SQL
+  });
+
+  it('bọc COALESCE — kênh chưa có định danh không được lọt vào bất kỳ bộ lọc nào', () => {
+    expect(chu(dieuKienKenh(COT, 'x')!)).toContain('COALESCE');
   });
 });

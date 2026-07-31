@@ -89,3 +89,62 @@ export function dieuKienTuyenNoiDung(
     SELECT 1 FROM unnest(COALESCE(${cotHashtag}, ARRAY[]::text[])) AS t WHERE lower(t) = ${ma.toLowerCase()}
   ))`;
 }
+
+
+/**
+ * Lọc theo HASHTAG bất kỳ (khác với tuyến A1–A5 vốn là bộ mã cố định).
+ *
+ * Bảng video Facebook nội bộ — nơi chứa gần như toàn bộ dữ liệu nội bộ, 19.971/19.971 dòng —
+ * KHÔNG có cột hashtag, chỉ có caption. Nên nhánh bắt theo chữ mới là nhánh chính; cột mảng
+ * hashtag của mấy nền tảng khác chỉ là bổ sung.
+ *
+ * Ranh giới cuối `([^[:alnum:]_]|$)` là bắt buộc: thiếu nó thì lọc #vang sẽ vơ luôn #vangtay,
+ * và lọc #a1 sẽ vơ #a10.
+ */
+export function dieuKienHashtag(
+  cot: Prisma.Sql,
+  hashtag: string,
+  cotHashtag?: Prisma.Sql,
+): Prisma.Sql | null {
+  const the = chuanHoaHashtag(hashtag);
+  if (!the) return null;
+
+  // `the` đã qua chuanHoaHashtag nên chắc chắn không còn ký tự có nghĩa trong biểu thức
+  // chính quy — không cần thoát thêm, và giá trị vẫn đi vào truy vấn dưới dạng tham số.
+  const mau = `#${the}([^[:alnum:]_]|$)`;
+  const theoChu = Prisma.sql`COALESCE(${cot}, '') ~* ${mau}`;
+  if (!cotHashtag) return theoChu;
+
+  return Prisma.sql`(${theoChu} OR EXISTS (
+    SELECT 1 FROM unnest(COALESCE(${cotHashtag}, ARRAY[]::text[])) AS t WHERE lower(t) = ${the.toLowerCase()}
+  ))`;
+}
+
+/** Bỏ dấu # người dùng lỡ gõ, và CẤM ký tự lạ để không ai nhét được biểu thức chính quy vào. */
+export function chuanHoaHashtag(raw: string): string {
+  const s = (raw || '').trim().replace(/^#+/, '');
+  // Hashtag thật chỉ gồm chữ, số và gạch dưới. Dữ liệu có cả hashtag tiếng Việt có dấu và
+  // tiếng Trung/Thái nên KHÔNG giới hạn về a-z; chặn theo ký tự nguy hiểm thay vì liệt kê.
+  if (!s || s.length > 64) return '';
+  // Ký tự có nghĩa trong biểu thức chính quy của Postgres, khoảng trắng, ký tự đại diện của
+  // LIKE (% _) và ký tự điều khiển đều bị loại — hashtag thật không bao giờ chứa chúng.
+  if (/[\s#.*+?^${}()|[\]\\%_]/.test(s)) return '';
+  // `\s` KHONG bao gom ky tu dieu khien nhu \b (xoa lui) nen phai chan rieng.
+  // PHAI viet bang ma thoat \u...: go ky tu that vao day lam ca tep thanh nhi phan.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(s)) return '';
+  return s;
+}
+
+/**
+ * Lọc theo KÊNH.
+ *
+ * Mỗi nhánh nền tảng gọi định danh kênh một tên khác nhau (page_id / username / channel_id),
+ * nên phải truyền cột vào chứ không viết cứng được. So sánh không phân biệt hoa thường vì
+ * username Facebook và TikTok trong dữ liệu không thống nhất.
+ */
+export function dieuKienKenh(cot: Prisma.Sql, kenh: string): Prisma.Sql | null {
+  const v = (kenh || '').trim();
+  if (!v) return null;
+  return Prisma.sql`lower(COALESCE(${cot}, '')) = ${v.toLowerCase()}`;
+}
