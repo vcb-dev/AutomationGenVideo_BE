@@ -1462,7 +1462,8 @@ export class LarkService implements OnModuleInit {
 
                 // ─── MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi + Task), thay cho lark_kpi ───
                 // MT Tháng lấy từ EditorKpi.total_target (số video mục tiêu trong tháng) của đúng tháng đang xem.
-                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc.
+                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc;
+                // task chưa có deadline thì tính theo ngày tạo (created_at) thay thế.
                 // Đã Xong = trong số đó, bao nhiêu task đã được duyệt (status = APPROVED).
                 const nowVnForGoal = getVietnamParts();
                 const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
@@ -1482,7 +1483,10 @@ export class LarkService implements OnModuleInit {
                         where: {
                             assignee_id: { not: null },
                             status: { not: 'CANCELLED' },
-                            deadline: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay },
+                            OR: [
+                                { deadline: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                                { deadline: null, created_at: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                            ],
                         },
                         _count: { id: true },
                     }),
