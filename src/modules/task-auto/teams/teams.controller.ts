@@ -347,12 +347,14 @@ export class TaskAutoTeamsController {
     @Request() req: any,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
+    @Query("month") month?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
       req.user.roles ?? [],
       dateFrom,
       dateTo,
+      month,
     );
   }
 }

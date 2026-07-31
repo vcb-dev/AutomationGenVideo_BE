@@ -8,6 +8,25 @@ import { Prisma, UserRole } from '@prisma/client';
 import { CacheService } from '../../common/cache/cache.service';
 import { Semaphore } from '../../common/utils/semaphore';
 
+/**
+ * Đọc một ô số liệu người dùng nhập trong báo cáo Traffic/Doanh thu.
+ *
+ * → null  : ô để trống, người dùng KHÔNG báo cáo nền tảng này
+ * → số    : người dùng có nhập, kể cả khi nhập 0
+ *
+ * Ranh giới này là bắt buộc: form ghi rõ "nếu không có hãy nhập số 0", mà trước đây code chỉ
+ * lưu khi giá trị > 0 — nên một ngày doanh thu 0 đồng không sinh dòng nào, và vì
+ * reportedRevenueTeams được suy ra từ chính các dòng đó, người dùng bị tính là chưa báo cáo
+ * dù đã bấm gửi. Dùng chung cho cả 4 nhánh (traffic/doanh thu × breakdown/fallback).
+ */
+function readReportedValue(raw: unknown): number | null {
+    if (raw === null || raw === undefined) return null;
+    const digits = String(raw).replace(/\D/g, '');
+    if (digits === '') return null;
+    const value = Number.parseInt(digits, 10);
+    return Number.isFinite(value) ? value : null;
+}
+
 @Injectable()
 export class LarkService implements OnModuleInit {
     private readonly logger = new Logger(LarkService.name);
@@ -335,8 +354,11 @@ export class LarkService implements OnModuleInit {
         platformKeys.forEach(pKey => {
             const platformEntries = breakdown[pKey] || [];
             platformEntries.forEach((entry: any) => {
-                const val = parseInt(entry.value || '0');
-                if (val > 0) {
+                // Phải nhận cả số 0: form nói rõ "nếu không có hãy nhập số 0", mà bỏ qua val=0
+                // thì hôm đó không có dòng nào → hệ thống vẫn coi là CHƯA báo cáo. Chỉ bỏ qua
+                // dòng thật sự để trống (readReportedValue trả null).
+                const val = readReportedValue(entry.value);
+                if (val !== null) {
                     const data: any = {
                         id: `local_trf_${pKey}_${Math.random().toString(36).slice(2, 7)}_${Date.now()}`,
                         email, name, date: now, employee: name, team, month: monthString,
@@ -356,8 +378,8 @@ export class LarkService implements OnModuleInit {
         // 2. Fallback for legacy submissions (if no breakdown entries were created but traffic object has values)
         if (recordsToCreate.length === 0) {
             platformKeys.forEach(pKey => {
-                const val = parseInt(traffic[pKey as keyof typeof traffic] || '0');
-                if (val > 0) {
+                const val = readReportedValue(traffic[pKey as keyof typeof traffic]);
+                if (val !== null) {
                     const data: any = {
                         id: `local_legacy_${pKey}_${Date.now()}`,
                         email, name, date: now, employee: name, team, month: monthString,
@@ -496,8 +518,10 @@ export class LarkService implements OnModuleInit {
         platformKeys.forEach(pKey => {
             const platformEntries = breakdown[pKey] || [];
             platformEntries.forEach((entry: any) => {
-                const val = parseInt(entry.value || '0');
-                if (val > 0) {
+                // Nhận cả 0 — xem ghi chú ở submitTrafficReport: bỏ qua 0 thì "báo cáo 0 đồng"
+                // không để lại dấu vết nào và bị tính là chưa báo cáo.
+                const val = readReportedValue(entry.value);
+                if (val !== null) {
                     const data: any = {
                         id: `local_rev_${pKey}_${Math.random().toString(36).slice(2, 7)}_${Date.now()}`,
                         email, name, date: now, employee: name, team, month: monthString,
@@ -514,8 +538,8 @@ export class LarkService implements OnModuleInit {
         // Fallback nếu FE gửi object revenue phẳng thay vì breakdown (không có nhiều dòng/kênh).
         if (recordsToCreate.length === 0 && revenue) {
             platformKeys.forEach(pKey => {
-                const val = parseInt(revenue[pKey as keyof typeof revenue] || '0');
-                if (val > 0) {
+                const val = readReportedValue(revenue[pKey as keyof typeof revenue]);
+                if (val !== null) {
                     const data: any = {
                         id: `local_rev_${pKey}_${Date.now()}`,
                         email, name, date: now, employee: name, team, month: monthString,
@@ -1438,7 +1462,8 @@ export class LarkService implements OnModuleInit {
 
                 // ─── MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi + Task), thay cho lark_kpi ───
                 // MT Tháng lấy từ EditorKpi.total_target (số video mục tiêu trong tháng) của đúng tháng đang xem.
-                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc.
+                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc;
+                // task chưa có deadline thì tính theo ngày tạo (created_at) thay thế.
                 // Đã Xong = trong số đó, bao nhiêu task đã được duyệt (status = APPROVED).
                 const nowVnForGoal = getVietnamParts();
                 const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
@@ -1458,7 +1483,10 @@ export class LarkService implements OnModuleInit {
                         where: {
                             assignee_id: { not: null },
                             status: { not: 'CANCELLED' },
-                            deadline: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay },
+                            OR: [
+                                { deadline: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                                { deadline: null, created_at: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                            ],
                         },
                         _count: { id: true },
                     }),

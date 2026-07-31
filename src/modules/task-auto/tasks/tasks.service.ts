@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Logger,
 } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -553,10 +554,13 @@ export class TaskAutoTasksService {
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
     if (q.deadline_date) {
-      where.deadline = {
-        gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
-        lte: new Date(`${q.deadline_date}T23:59:59.999+07:00`),
-      };
+      const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
+      const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
+      // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+      where.OR = [
+        { deadline: { gte: dayStart, lte: dayEnd } },
+        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+      ];
     } else if (q.month) {
       const start = new Date(`${q.month}-01`);
       const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
@@ -1016,6 +1020,57 @@ export class TaskAutoTasksService {
     });
   }
 
+  // Task đã duyệt nhưng editor chưa nộp link bài đăng nào — nhắc mỗi ngày cho tới khi có link,
+  // chờ ít nhất 24h sau khi duyệt để không làm phiền ngay lập tức.
+  @Cron("0 30 9 * * *", {
+    name: "task-missing-published-link",
+    timeZone: "Asia/Ho_Chi_Minh",
+  })
+  async checkMissingPublishedLinks() {
+    try {
+      const approvedBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const candidates = await this.prisma.task.findMany({
+        where: {
+          status: "APPROVED",
+          assignee_id: { not: null },
+          reviewed_at: { lte: approvedBefore },
+        },
+        select: { id: true, assignee_id: true, published_links: true },
+      });
+
+      const missing = candidates.filter(
+        (t) =>
+          !Array.isArray(t.published_links) || t.published_links.length === 0,
+      );
+      if (!missing.length) return;
+
+      // Tránh nhắc trùng trong cùng một ngày nếu cron chạy lại (deploy lại, retry, ...).
+      const notifiedSince = new Date(Date.now() - 20 * 60 * 60 * 1000);
+      for (const task of missing) {
+        const alreadyNotified = await this.prisma.notification.findFirst({
+          where: {
+            task_id: task.id,
+            type: "TASK_MISSING_PUBLISHED_LINK",
+            created_at: { gte: notifiedSince },
+          },
+          select: { id: true },
+        });
+        if (alreadyNotified) continue;
+
+        await this.notify(
+          task.assignee_id!,
+          "TASK_MISSING_PUBLISHED_LINK",
+          "Task đã duyệt nhưng chưa nộp link bài đăng",
+          task.id,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[checkMissingPublishedLinks] failed: ${err.message}`,
+      );
+    }
+  }
+
   /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
   private parseDateRange(
     dateFrom?: string,
@@ -1036,13 +1091,15 @@ export class TaskAutoTasksService {
     roles: string[],
     dateFrom?: string,
     dateTo?: string,
+    /** "YYYY-MM" — tháng báo cáo cho leader dashboard (mặc định tháng hiện tại nếu bỏ trống/sai định dạng). */
+    month?: string,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard(range);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month);
     return this.getPersonalDashboard(userId);
   }
 
@@ -1080,8 +1137,11 @@ export class TaskAutoTasksService {
       }),
       this.prisma.task.count({
         where: {
-          deadline: { gte: todayStart, lt: todayEnd },
           status: { notIn: ["APPROVED", "CANCELLED"] },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
         },
       }),
       this.prisma.task.count({
@@ -1120,11 +1180,19 @@ export class TaskAutoTasksService {
   private async getLeaderDashboard(
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
+    month?: string,
   ) {
     const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // Tháng báo cáo do leader chọn (bộ lọc tháng) — mặc định về tháng thực tế nếu bỏ trống/sai định dạng.
+    const currentMonth = month && /^\d{4}-\d{2}$/.test(month) ? month : realCurrentMonth;
+    const [selYear, selMonthNum] = currentMonth.split("-").map(Number);
+    const monthStart = new Date(selYear, selMonthNum - 1, 1);
+    const monthEnd = new Date(selYear, selMonthNum, 1);
+    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc tháng, vì đây là
+    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một tháng đã qua.
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
     // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
@@ -1148,6 +1216,7 @@ export class TaskAutoTasksService {
         tasks: { total: 0 },
         members: [],
         kpi: null,
+        video_by_line: [],
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1158,6 +1227,9 @@ export class TaskAutoTasksService {
     }
     const memberRows = Array.from(memberByUserId.values());
     const memberIds = memberRows.map((m) => m.user_id);
+    const memberEmails = memberRows
+      .map((m) => m.user?.email?.toLowerCase().trim())
+      .filter((e): e is string => !!e);
 
     const [
       tasksByStatus,
@@ -1165,6 +1237,11 @@ export class TaskAutoTasksService {
       editorKpis,
       monthlyTeamApproved,
       monthlyMemberApproved,
+      memberAssignedToday,
+      memberApprovedToday,
+      memberTrafficMonth,
+      teamApprovedByContentLine,
+      contentLines,
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
@@ -1202,6 +1279,55 @@ export class TaskAutoTasksService {
         },
         _count: { id: true },
       }),
+      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào hôm nay; task chưa có deadline thì
+      // tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal Dashboard.
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: { notIn: ["CANCELLED"] },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
+        },
+        _count: { id: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      // Traffic báo cáo hằng ngày (TrafficReport, tách biệt task-auto) — khớp theo email vì field
+      // `team` trên TrafficReport là text tự do, không đảm bảo khớp tên với Team.name của task-auto.
+      memberEmails.length > 0
+        ? this.prisma.trafficReport.groupBy({
+            by: ["email"],
+            where: {
+              email: { in: memberEmails, mode: "insensitive" as any },
+              date: { gte: monthStart, lt: monthEnd },
+            },
+            _sum: { total_traffic: true },
+          })
+        : Promise.resolve([]),
+      // "TEAM - Số video theo tuyến": số task đã duyệt trong tháng của cả team, gộp theo tuyến
+      // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
+      // không thuộc tuyến nào.
+      this.prisma.task.groupBy({
+        by: ["content_line_id"],
+        where: {
+          team_id: { in: teamIds },
+          content_line_id: { not: null },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1216,14 +1342,37 @@ export class TaskAutoTasksService {
     const kpiApprovedByUser = Object.fromEntries(
       monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
     );
+    const assignedTodayByUser = Object.fromEntries(
+      memberAssignedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const approvedTodayByUser = Object.fromEntries(
+      memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const trafficMonthByEmail = Object.fromEntries(
+      memberTrafficMonth.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_traffic ?? 0n),
+      ]),
+    );
+
+    const approvedCountByContentLineId = Object.fromEntries(
+      teamApprovedByContentLine.map((r) => [r.content_line_id as string, r._count.id]),
+    );
+    // Chỉ liệt kê tuyến A1-A5 (đúng thứ tự tên) — bỏ qua các ContentLine khác không thuộc mô hình
+    // này để không làm loãng biểu đồ "Số video theo tuyến".
+    const videoByLine = contentLines
+      .filter((cl) => /^A[1-5]$/.test(cl.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((cl) => ({ line: cl.name, count: approvedCountByContentLineId[cl.id] ?? 0 }));
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
     const members = memberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
+      const email = m.user?.email ?? "";
       return {
         user_id: m.user_id,
         full_name: m.user?.full_name ?? "",
-        email: m.user?.email ?? "",
+        email,
         pending: memberStats[m.user_id]?.["pending"] ?? 0,
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
@@ -1233,6 +1382,12 @@ export class TaskAutoTasksService {
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
+        /** Số task có deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) — "mục tiêu" của KPI ngày. */
+        kpi_day_target: assignedTodayByUser[m.user_id] ?? 0,
+        /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
+        kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
+        /** Tổng traffic tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
+        traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
       };
     });
 
@@ -1267,6 +1422,8 @@ export class TaskAutoTasksService {
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
       },
+      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo tuyến nội dung A1-A5. */
+      video_by_line: videoByLine,
     };
   }
 
@@ -1292,8 +1449,11 @@ export class TaskAutoTasksService {
         this.prisma.task.count({
           where: {
             assignee_id: userId,
-            deadline: { gte: todayStart, lt: todayEnd },
             status: { notIn: ["APPROVED", "CANCELLED"] },
+            OR: [
+              { deadline: { gte: todayStart, lt: todayEnd } },
+              { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+            ],
           },
         }),
         this.prisma.task.count({

@@ -212,7 +212,7 @@ export class TiktokScraperReadService {
     ];
 
     const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { followers_count: 'desc' as const };
-    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy];
+    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy, { id: 'desc' as const }];
 
     const [total, paginated] = await Promise.all([
       this.prisma.scraperTikTokProfile.count({ where }),

@@ -15,6 +15,18 @@ export class ScraperAggregateController {
     return this.readService.allExternalVideos(query);
   }
 
+  /** Đổ vào ô chọn kênh — xem ownedChannels(). */
+  @Get('owned/channels')
+  async ownedChannels() {
+    return this.readService.ownedChannels();
+  }
+
+  /** Đổ vào ô chọn hashtag — xem ownedHashtags(). */
+  @Get('owned/hashtags')
+  async ownedHashtags(@Query('limit') limit?: string) {
+    return this.readService.ownedHashtags(Number(limit) || 60);
+  }
+
   @Get('owned/videos')
   async ownedVideos(@Query() query: Record<string, string>) {
     return this.readService.ownedChannelVideos(query);

@@ -24,6 +24,14 @@ export class ProposeVideoDto {
   @IsOptional()
   source?: 'SCRAPED' | 'MANUAL';
   @ApiPropertyOptional() @IsString() @IsOptional() notes?: string;
+
+  /**
+   * true = tiêu đề/mô tả trong payload do CON NGƯỜI tự gõ (form "Đề xuất video" trong Bộ
+   * Sưu Tập), nên bước làm giàu dữ liệu KHÔNG được đè lên. Extension và các thẻ video ở
+   * trang Khám phá thì để trống/false vì chữ ở đó là do máy đọc được, số liệu từ nền tảng
+   * bao giờ cũng chuẩn hơn.
+   */
+  @ApiPropertyOptional() @IsOptional() user_edited?: boolean;
 }
 
 export class ReviewProposalDto {

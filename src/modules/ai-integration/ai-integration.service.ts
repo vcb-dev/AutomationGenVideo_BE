@@ -1,4 +1,5 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { PlayUrlNoCreditError } from './play-url-errors';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -6,6 +7,20 @@ import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
+
+/** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
+export interface VideoDetailResult {
+  platform: string;
+  title: string;
+  description: string;
+  author_name: string;
+  author_username: string;
+  thumbnail_url: string;
+  views_count: number;
+  likes_count: number;
+  comments_count: number;
+  shares_count: number;
+}
 
 @Injectable()
 export class AiIntegrationService {
@@ -1959,6 +1974,118 @@ export class AiIntegrationService {
     } catch {
       // Fail-open: giữ nguyên text gốc, caller vẫn tìm được (chỉ là kết quả kém hơn).
       return { original, translated: original, source: 'failed' };
+    }
+  }
+
+  /**
+   * Lấy chi tiết 1 video (view/tim/bình luận/chia sẻ/tiêu đề/ảnh bìa) theo (platform, video_id).
+   *
+   * Dùng cho luồng đề xuất video: extension chỉ moi được mã video từ URL, còn số liệu đọc trên
+   * trang thì không đáng tin (bảng tin nhúng JSON của nhiều video, trang SPA thì state đã cũ).
+   *
+   * Fail-open: hỏng thì trả null, KHÔNG ném — đề xuất vẫn phải đi tiếp, chỉ là thiếu số liệu.
+   * Facebook không hỗ trợ (TikHub không có endpoint nào cho Facebook).
+   */
+  async fetchVideoDetail(params: {
+    platform: string;
+    videoId?: string;
+    videoUrl?: string;
+  }): Promise<VideoDetailResult | null> {
+    const platform = (params.platform || '').toLowerCase().trim();
+    if (!platform) return null;
+
+    const url = `${this.aiServiceUrl}/api/scraper/video-detail/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            url,
+            {
+              platform,
+              video_id: params.videoId || '',
+              video_url: params.videoUrl || '',
+            },
+            // Ngan hon thoi gian cho cua route FE de FE khong bo cuoc truoc BE.
+            { timeout: 30000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.warn(`AI Service scraper/video-detail lỗi: ${error.message}`);
+              throw error;
+            }),
+          ),
+      );
+      if (!data?.success || !data?.data) {
+        this.logger.log(
+          `[video-detail] ${platform} không lấy được: ${data?.error || 'không rõ lý do'}`,
+        );
+        return null;
+      }
+      return data.data as VideoDetailResult;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Lấy link phát trực tiếp (mp4) để BE làm trung gian phát video ngay trên web hệ thống.
+   *
+   * Chỉ có tác dụng với Douyin/Kuaishou/Xiaohongshu — 5 nền tảng còn lại dùng mã nhúng chính
+   * chủ nên FE không gọi tới đây. Link CÓ HẠN (~3 giờ) nên KHÔNG được lưu vào DB, chỉ cache.
+   *
+   * Fail-open: hỏng thì trả null để chỗ gọi báo lỗi tử tế, không ném.
+   */
+  async fetchVideoPlayUrl(params: {
+    platform: string;
+    videoId?: string;
+    videoUrl?: string;
+    /** Bỏ qua bộ đệm phía AI. Dùng khi vừa gặp 403 vì link cũ hết hạn — không có cờ này
+     *  thì AI trả lại đúng cái link vừa hỏng và vòng thử lại của controller thành vô nghĩa. */
+    forceRefresh?: boolean;
+  }): Promise<string | null> {
+    const platform = (params.platform || '').toLowerCase().trim();
+    if (!platform) return null;
+
+    const url = `${this.aiServiceUrl}/api/scraper/play-url/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            url,
+            {
+              platform,
+              video_id: params.videoId || '',
+              video_url: params.videoUrl || '',
+              force_refresh: params.forceRefresh === true,
+            },
+            { timeout: 30000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.warn(`AI Service scraper/play-url lỗi: ${error.message}`);
+              throw error;
+            }),
+          ),
+      );
+      if (!data?.success || !data?.play_url) {
+        // Het so du TikHub thi keu THAT TO: ca 4 nen tang chet cung luc, va cach chua la nap
+        // tien chu khong phai sua code. Gom chung vao mot dong log 'khong lay duoc' nhu truoc
+        // khien viec do loi di rat lech huong.
+        if (data?.reason === 'no_credit') {
+          this.logger.error(
+            `[play-url] TAI KHOAN TIKHUB DA HET SO DU — moi video cua douyin/tiktok/xiaohongshu/kuaishou ` +
+            `deu se khong phat duoc cho toi khi nap them. https://user.tikhub.io/users/add_credit`,
+          );
+          throw new PlayUrlNoCreditError();
+        }
+        this.logger.log(`[play-url] ${platform} khong lay duoc: ${data?.reason || 'khong ro'}`);
+        return null;
+      }
+      return String(data.play_url);
+    } catch (err) {
+      // Loi het so du phai di tiep len tren de controller bao dung nguyen nhan cho nguoi dung.
+      if (err instanceof PlayUrlNoCreditError) throw err;
+      return null;
     }
   }
 

@@ -7,12 +7,15 @@ function parseIntOrDefault(val: any, def?: number): number | undefined {
   return Number.isFinite(n) ? n : def;
 }
 
+// Moi muc them khoa phu id: id duy nhat nen thu tu luon xac dinh. Thieu no thi cac dong
+// hoa nhau (2240/3942 video Xiaohongshu cung so tim) bi Postgres tra ve thu tu tuy y moi
+// lan goi, lat trang se thay video lap lai.
 const SORT_FIELDS: Record<string, any> = {
-  likes: { liked_count: 'desc' },
-  date: { date_posted: 'desc' },
-  collects: { collected_count: 'desc' },
-  comments: { comments_count: 'desc' },
-  scraped: { created_at: 'desc' },
+  likes: [{ liked_count: 'desc' }, { id: 'desc' }],
+  date: [{ date_posted: 'desc' }, { id: 'desc' }],
+  collects: [{ collected_count: 'desc' }, { id: 'desc' }],
+  comments: [{ comments_count: 'desc' }, { id: 'desc' }],
+  scraped: [{ created_at: 'desc' }, { id: 'desc' }],
 };
 
 // Port từ xiaohongshu_search_views.py::list_xiaohongshu_videos/xiaohongshu_keyword_suggest/

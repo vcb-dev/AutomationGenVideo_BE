@@ -18,6 +18,8 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
         count: jest.fn(async () => 0),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
+      trafficReport: { groupBy: jest.fn(async () => []) },
+      contentLine: { findMany: jest.fn(async () => []) },
     };
     const service = new TaskAutoTasksService(prisma, videoService, push);
     return { service, prisma };
@@ -69,6 +71,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       tasks: { total: 0 },
       members: [],
       kpi: null,
+      video_by_line: [],
     });
   });
 
