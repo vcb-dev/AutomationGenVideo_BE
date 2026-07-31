@@ -237,7 +237,9 @@ export class DouyinScraperReadService {
 
     const profiles = await this.prisma.scraperDouyinProfile.findMany({
       where,
-      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy],
+      // { id: 'desc' } là khoá phụ phá hoà — thiếu nó thì các kênh cùng lượng follow bị
+      // Postgres trả về thứ tự tuỳ ý mỗi lần gọi, lật trang sẽ thấy kênh lặp lại.
+      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy, { id: 'desc' }],
       skip: offset,
       take: pageSize,
     });
@@ -312,7 +314,13 @@ export class DouyinScraperReadService {
     }
     if (minDigg !== undefined) where.digg_count = { gte: BigInt(minDigg) };
 
-    const orderBy: any = sort === 'likes' ? { digg_count: 'desc' } : { date_posted: 'desc' };
+    // Khoa phu: id la duy nhat nen thu tu luon xac dinh. Thieu no thi cac dong hoa
+    // nhau (530/853 video Douyin cung so tim) bi Postgres tra ve thu tu tuy y moi lan
+    // goi, lat trang se thay video lap lai.
+    const orderBy: any = [
+      sort === 'likes' ? { digg_count: 'desc' } : { date_posted: 'desc' },
+      { id: 'desc' },
+    ];
 
     const total = await this.prisma.scraperDouyinVideo.count({ where });
     const totalPages = Math.max(1, Math.ceil(total / pageSize));

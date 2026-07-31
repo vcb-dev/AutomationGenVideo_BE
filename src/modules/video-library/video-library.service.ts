@@ -3,6 +3,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { PushService } from '../../common/push/push.service';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { ProposeVideoDto } from './video-library.dto';
+import { isShortLink, resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractVideoId, detectPlatformFromUrl } from '../../common/utils/video-url.util';
 
 function isAdminOrManager(roles: string[]): boolean {
   return roles.includes('ADMIN') || roles.includes('MANAGER');
@@ -72,7 +74,113 @@ export class VideoLibraryService {
 
   // ─── Proposals (member đề xuất) ─────────────────────────────────────────────
 
-  async proposeVideo(memberId: string, dto: ProposeVideoDto) {
+  /**
+   * Lấy số liệu thật (view/tim/bình luận/chia sẻ/tiêu đề/ảnh bìa) cho video được đề xuất.
+   *
+   * Vì sao cần: video đề xuất từ ngoài (extension) chỉ chắc chắn có platform + video_id.
+   * Số liệu đọc trên trang không đáng tin — bảng tin nhúng JSON của nhiều video khác nhau,
+   * trang SPA thì state nhúng đã cũ — nên để server hỏi TikHub, đúng nguồn mà hệ thống vẫn
+   * cào lâu nay.
+   *
+   * Quy tắc trộn: số liệu từ TikHub luôn thắng; chữ (tiêu đề, tên kênh, ảnh bìa) chỉ ghi đè
+   * khi TikHub thực sự có — không xoá mất thứ extension đã đọc được bằng một giá trị rỗng.
+   *
+   * Fail-open: TikHub hỏng / nền tảng không hỗ trợ (Facebook) → giữ nguyên dto, đề xuất vẫn đi
+   * tiếp. Thà thiếu số liệu còn hơn chặn người dùng.
+   */
+  private async enrichFromPlatform(dto: ProposeVideoDto): Promise<ProposeVideoDto> {
+    const detail = await this.aiIntegration.fetchVideoDetail({
+      platform: dto.platform,
+      videoId: dto.video_id,
+      videoUrl: dto.video_url,
+    });
+    if (!detail) {
+      this.logger.log(
+        `[propose] Khong lay duoc chi tiet ${dto.platform}/${dto.video_id} — giu du lieu extension gui len`,
+      );
+      return dto;
+    }
+
+    // Chữ do CON NGƯỜI gõ thì giữ nguyên — leader đặt tiêu đề riêng cho team mà bị thay
+    // bằng tiêu đề gốc tiếng Trung của nền tảng thì coi như mất công gõ.
+    // Chữ do MÁY đọc (extension/thẻ video) thì để dữ liệu nền tảng thắng, vì chuẩn hơn.
+    const keep = (fresh: string, current?: string) => {
+      const mine = (current || '').trim();
+      if (dto.user_edited && mine) return mine;
+      return fresh && fresh.trim() ? fresh : mine;
+    };
+    return {
+      ...dto,
+      title: keep(detail.title, dto.title),
+      description: keep(detail.description, dto.description),
+      author_name: keep(detail.author_name, dto.author_name),
+      author_username: keep(detail.author_username, dto.author_username),
+      thumbnail_url: keep(detail.thumbnail_url, dto.thumbnail_url) || undefined,
+      // Nền tảng giấu chỉ số nào thì trả 0 (Douyin không công khai lượt xem, YouTube không
+      // trả tim/bình luận ở endpoint này) — lúc đó dùng lại con số extension đọc được.
+      views_count: detail.views_count || dto.views_count || 0,
+      likes_count: detail.likes_count || dto.likes_count || 0,
+      comments_count: detail.comments_count || dto.comments_count || 0,
+      shares_count: detail.shares_count || dto.shares_count || 0,
+    };
+  }
+
+  /**
+   * Giải link rút gọn rồi bóc lại mã video khi cần.
+   *
+   * App điện thoại bấm "Chia sẻ → Sao chép liên kết" là ra link rút gọn (vt.tiktok.com,
+   * v.douyin.com, xhslink.com, b23.tv, fb.watch...). Những link đó không chứa mã video nên
+   * FE không bóc được, và người dùng bị chặn ngay ở bước dán link — trong khi đó lại là
+   * cách chia sẻ phổ biến nhất. Ở đây follow redirect (allowlist, không SSRF) để lấy link
+   * đầy đủ rồi bóc mã.
+   */
+  private async resolveVideoRef(dto: ProposeVideoDto): Promise<ProposeVideoDto> {
+    if (!isShortLink(dto.video_url)) return dto;
+
+    const full = await resolveShortLink(dto.video_url);
+    if (!full || full === dto.video_url) return dto;
+
+    const videoId = extractVideoId(full);
+    this.logger.log(`[propose] Giai link rut gon: ${dto.video_url} -> ${full} (ma: ${videoId || 'khong ro'})`);
+    return {
+      ...dto,
+      video_url: full,
+      // Chỉ thay mã khi bóc được — không xoá mất mã FE đã gửi lên.
+      video_id: videoId || dto.video_id,
+      platform: detectPlatformFromUrl(full) || dto.platform,
+    };
+  }
+
+  /**
+   * Chặn đề xuất trùng TRƯỚC khi gọi lấy chi tiết video.
+   *
+   * Hai lý do phải chặn, và phải chặn sớm:
+   *  - bấm nút 2-3 lần (hoặc gặp lại video đó ở trang khác) sẽ nhồi hàng chờ duyệt của
+   *    leader bằng cùng một video;
+   *  - mỗi lượt đề xuất là một lượt gọi TikHub có tính phí, chặn sau khi gọi là đã mất tiền.
+   */
+  private async assertNotDuplicate(dto: ProposeVideoDto): Promise<void> {
+    const pending = await this.prisma.scraperVideoProposal.findFirst({
+      where: { video_id: dto.video_id, platform: dto.platform, status: 'PENDING' },
+      select: { id: true },
+    });
+    if (pending) throw new ConflictException('Video này đã được đề xuất và đang chờ duyệt.');
+
+    const inLibrary = await this.prisma.videoLibrary.findFirst({
+      where: { video_id: dto.video_id },
+      select: { collection_type: true },
+    });
+    if (inLibrary) {
+      throw new ConflictException(
+        `Video này đã có trong Bộ Sưu Tập (${inLibrary.collection_type === 'SHARED' ? 'Chung' : 'Team'}).`,
+      );
+    }
+  }
+
+  async proposeVideo(memberId: string, inputDto: ProposeVideoDto) {
+    const rawDto = await this.resolveVideoRef(inputDto);
+    await this.assertNotDuplicate(rawDto);
+    const dto = await this.enrichFromPlatform(rawDto);
     const proposal = await this.prisma.scraperVideoProposal.create({
       data: {
         video_id: dto.video_id,
@@ -138,6 +246,7 @@ export class VideoLibraryService {
           likes_count: proposal.likes_count,
           comments_count: proposal.comments_count,
           shares_count: proposal.shares_count,
+          notes: proposal.notes,
         },
         reviewerId,
         reviewerName,
@@ -164,7 +273,24 @@ export class VideoLibraryService {
 
   // ─── Leader/Admin tự thêm thẳng (không qua hàng đợi, coi như tự duyệt) ──────
 
-  async addVideoDirectly(reviewerId: string, reviewerName: string, roles: string[], dto: ProposeVideoDto) {
+  async addVideoDirectly(reviewerId: string, reviewerName: string, roles: string[], inputDto: ProposeVideoDto) {
+    const rawDto = await this.resolveVideoRef(inputDto);
+    // Đã có sẵn trong bộ sưu tập thì dừng ngay, ĐỪNG gọi lấy chi tiết: mỗi lượt gọi TikHub
+    // đều tính phí, mà kết quả cuối cùng vẫn là trả về đúng dòng cũ (approveIntoLibrary tự
+    // dedup). Giữ nguyên shape trả về để không đổi hành vi phía gọi.
+    const collectionType = roles.includes('ADMIN') ? 'SHARED' : 'TEAM';
+    const existing = await this.prisma.videoLibrary.findUnique({
+      where: { video_id_collection_type: { video_id: rawDto.video_id, collection_type: collectionType } },
+      select: { id: true },
+    });
+    if (existing) {
+      this.logger.log(`[direct-add] ${rawDto.platform}/${rawDto.video_id} da co trong ${collectionType}, bo qua`);
+      return { videoLibraryId: existing.id, approvedContentId: null };
+    }
+
+    // Leader/admin vào thẳng Bộ Sưu Tập nên càng phải có số liệu thật — không thì bộ sưu tập
+    // đầy những dòng 0 lượt xem, 0 tim, không lọc/sắp xếp được.
+    const dto = await this.enrichFromPlatform(rawDto);
     return this.approveIntoLibrary(
       {
         video_id: dto.video_id,
@@ -179,6 +305,7 @@ export class VideoLibraryService {
         likes_count: BigInt(dto.likes_count || 0),
         comments_count: BigInt(dto.comments_count || 0),
         shares_count: BigInt(dto.shares_count || 0),
+        notes: dto.notes ?? null,
       },
       reviewerId,
       reviewerName,
@@ -204,6 +331,8 @@ export class VideoLibraryService {
       likes_count: bigint;
       comments_count: bigint;
       shares_count: bigint;
+      /** Ghi chú người đề xuất/người thêm nhập tay — trước đây bị rơi mất khi vào bộ sưu tập. */
+      notes?: string | null;
     },
     approverId: string,
     approverName: string,
@@ -236,10 +365,48 @@ export class VideoLibraryService {
           added_by_id: approverId,
           added_by_name: approverName,
           added_by_role: approverRole,
+          notes: video.notes ?? null,
         },
       }));
 
-    let approvedContentId: string | null = null;
+    // Sinh script CHẠY NỀN, không bắt người bấm ngồi đợi.
+    //
+    // Trước đây bước này được await ngay tại đây: gọi AI mất ~10-15 giây (timeout tới 120s),
+    // cộng với bước lấy số liệu nền tảng thì leader bấm "Thêm vào BST" phải chờ ~15-19 giây
+    // mới thấy phản hồi. Mà kết quả của nó vốn đã là "best effort" — lỗi AI không hề rollback
+    // VideoLibrary (xem chú thích ở đầu hàm) — nên chẳng có lý do gì phải chặn.
+    this.trackScriptJob(this.generateScriptFor(video, approverId, approverName, approverRole));
+
+    // approvedContentId luôn null từ đây: content được tạo sau, ở chạy nền.
+    // Đã kiểm tra không nơi nào (FE lẫn BE) đọc giá trị này ngoài khai báo kiểu.
+    return { videoLibraryId: libraryRow.id, approvedContentId: null };
+  }
+
+  /**
+   * Các việc sinh script đang chạy nền.
+   *
+   * Giữ tham chiếu để (a) test await được thay vì phải sleep đoán mò, (b) nếu sau này cần
+   * chờ hết việc trước khi tắt tiến trình thì có sẵn chỗ móc vào.
+   */
+  private readonly pendingScriptJobs = new Set<Promise<void>>();
+
+  private trackScriptJob(job: Promise<void>): void {
+    this.pendingScriptJobs.add(job);
+    void job.finally(() => this.pendingScriptJobs.delete(job));
+  }
+
+  /** Dùng trong test: đợi mọi việc sinh script chạy nền xong. */
+  async waitForPendingScripts(): Promise<void> {
+    await Promise.all([...this.pendingScriptJobs]);
+  }
+
+  private async generateScriptFor(
+    video: { video_id: string; platform: string; title: string; description: string; video_url: string;
+             views_count: bigint; likes_count: bigint; comments_count: bigint },
+    approverId: string,
+    approverName: string,
+    approverRole: any,
+  ): Promise<void> {
     try {
       const result = await this.aiIntegration.analyzeScrapedVideo({
         platform: video.platform,
@@ -251,7 +418,7 @@ export class VideoLibraryService {
       });
 
       const script = `${result.vietnamese_content}\n\n--- Phân tích ---\n${result.script_outline}`;
-      const approvedContent = await this.prisma.approvedContent.create({
+      await this.prisma.approvedContent.create({
         data: {
           script,
           content_type: 'SCRAPED_VIDEO',
@@ -266,11 +433,13 @@ export class VideoLibraryService {
           approved_by_role: approverRole,
         },
       });
-      approvedContentId = approvedContent.id;
+      this.logger.log(`[VIDEO-LIBRARY] Da sinh xong script nen cho "${video.title.slice(0, 40)}"`);
     } catch (err: any) {
-      this.logger.error(`[VIDEO-LIBRARY] Duyệt "${video.title}" xong nhưng AI phân tích lỗi: ${err.message}`);
+      // Không ném ra ngoài: video đã vào bộ sưu tập rồi, thiếu script không được phép làm
+      // sập tiến trình vì đây là promise không ai await.
+      this.logger.error(
+        `[VIDEO-LIBRARY] Video "${video.title.slice(0, 40)}" da vao bo suu tap nhung sinh script loi: ${err.message}`,
+      );
     }
-
-    return { videoLibraryId: libraryRow.id, approvedContentId };
   }
 }
