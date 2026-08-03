@@ -357,4 +357,19 @@ export class TaskAutoTeamsController {
       month,
     );
   }
+
+  @Get("team-report")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({
+    summary:
+      "Báo cáo kiểu leader dashboard cho ADMIN/MANAGER — xem 1 team cụ thể (team = Team.name, unique) hoặc tổng hợp tất cả team (bỏ trống/=all), theo khoảng ngày tự do (mặc định tháng hiện tại).",
+  })
+  getTeamReport(
+    @Query("team") team?: string,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+  ) {
+    return this.tasks.getTeamReport(team, dateFrom, dateTo);
+  }
 }
