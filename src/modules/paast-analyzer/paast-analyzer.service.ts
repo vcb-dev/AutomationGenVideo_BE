@@ -66,13 +66,13 @@ export class PaastAnalyzerService {
         ),
       );
 
-      const { layers, total_score, cta_warning } = response.data;
+      const { layers, total_score, verdict, cta_warning } = response.data;
       const durationMs = Date.now() - startTime;
 
       return this.prisma.paastAnalysisHistory.update({
         where: { id: history.id },
         data: {
-          analysis_result: { layers, cta_warning },
+          analysis_result: { layers, cta_warning, verdict },
           total_score: total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
@@ -162,7 +162,7 @@ export class PaastAnalyzerService {
         where: { id: history.id },
         data: {
           input_text: upgraded,
-          analysis_result: { layers: new_analysis.layers, cta_warning: new_analysis.cta_warning, changes_added },
+          analysis_result: { layers: new_analysis.layers, cta_warning: new_analysis.cta_warning, verdict: new_analysis.verdict, changes_added },
           total_score: new_analysis.total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
