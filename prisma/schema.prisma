@@ -77,6 +77,8 @@ model User {
   editor_kpis                 EditorKpi[]         @relation("EditorKpiOf")
   editor_kpis_set             EditorKpi[]         @relation("EditorKpiSetBy")
   team_kpis_created           TeamKpi[]           @relation("TeamKpiCreatedBy")
+  characters_updated          Character[]                     @relation("CharacterUpdatedBy")
+  character_prompt_changes    CharacterSystemPromptHistory[]  @relation("CharacterSystemPromptHistoryChangedBy")
   products_added              Product[]           @relation("ProductAddedBy")
   team_products_added         TeamProduct[]       @relation("TeamProductAddedBy")
   team_contents_added         TeamContent[]       @relation("TeamContentAddedBy")
@@ -3647,17 +3649,37 @@ model Character {
   slug           String   @unique          // "huyk", "chi-nhan", "chung-bui" — dùng làm key ổn định
   description    String?  @db.Text         // Mô tả ngắn hiển thị trên UI
   avatar_url     String?                   // Ảnh đại diện nhân vật
-  system_prompt  String   @db.Text         // Prompt đầy đủ — chỉ BE đọc, không expose FE
+  system_prompt  String   @db.Text         // Prompt đầy đủ — chỉ BE đọc, không expose FE qua endpoint public (/content-transform/characters); CÓ expose qua endpoint admin CRUD (/characters/*, chỉ ADMIN/MANAGER)
   is_active      Boolean  @default(true)   // Ẩn/hiện nhân vật mà không xoá
   order_index    Int      @default(0)      // Thứ tự hiển thị trong danh sách
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
+  updated_by     String?                   // Người sửa gần nhất — FK users.id (users.id thực tế là text trên DB live, không phải uuid — xem ContentTransformHistory.user_id), null nếu chưa từng sửa qua admin CRUD
 
-  histories ContentTransformHistory[]
+  histories      ContentTransformHistory[]
+  prompt_history CharacterSystemPromptHistory[]
+  updatedByUser  User?                     @relation("CharacterUpdatedBy", fields: [updated_by], references: [id])
 
   @@index([is_active])
   @@index([order_index])
   @@map("characters")
+}
+
+/// Lưu lại bản CŨ của system_prompt mỗi khi bị ghi đè qua admin CRUD — để đối chiếu/khôi phục
+/// khi cần, tránh lặp lại sự cố mất dữ liệu do sửa prompt thủ công không có lưu vết trước đây.
+model CharacterSystemPromptHistory {
+  id           String    @id @default(uuid())
+  character_id String    // Nhân vật bị đổi system_prompt — FK characters.id
+  old_content  String    @db.Text // Nội dung system_prompt TRƯỚC lần sửa này (giữ nguyên tuyệt đối, không trim/normalize)
+  changed_by   String?   // Người thực hiện lần sửa — FK users.id (text trên DB live), null nếu không xác định được
+  changed_at   DateTime  @default(now())
+
+  character     Character @relation(fields: [character_id], references: [id], onDelete: Cascade)
+  changedByUser User?     @relation("CharacterSystemPromptHistoryChangedBy", fields: [changed_by], references: [id])
+
+  @@index([character_id])
+  @@index([changed_at])
+  @@map("character_system_prompt_history")
 }
 
 /// Lịch sử mỗi lần chuyển đổi content
@@ -3672,6 +3694,10 @@ model ContentTransformHistory {
   error_message  String?                    // Lý do lỗi nếu status = FAILED
   model_used     String?                    // Tên model AI ("mock", "gpt-4o", ...)
   duration_ms    Int?                       // Thời gian xử lý (ms) — monitoring
+  /// Kết quả chấm điểm đầy đủ (7 nhóm/23 tiêu chí + hardGateViolations) — xem scoring-criteria.ts
+  score_result   Json?
+  /// Điểm tổng /100, tách riêng để lọc/sắp xếp mà không cần parse JSON
+  overall_score  Int?
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 

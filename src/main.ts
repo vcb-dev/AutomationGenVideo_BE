@@ -4,6 +4,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
+import { json, urlencoded } from 'express';
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { initSocialSyncCron } from './social-sync.scheduler';
@@ -19,6 +20,12 @@ async function bootstrap() {
       ? ['error', 'warn', 'log']
       : ['error', 'warn', 'log', 'debug'],
   });
+
+  // Express body-parser mặc định giới hạn 100kb — không đủ cho system_prompt dài (~30-60KB
+  // thô, cộng thêm overhead escape ký tự đặc biệt khi encode JSON). Nâng lên 2mb để có dư
+  // nhiều lần, tránh lỗi "PayloadTooLargeError" khi admin lưu prompt dài qua CRUD nhân vật.
+  app.use(json({ limit: '2mb' }));
+  app.use(urlencoded({ limit: '2mb', extended: true }));
 
   // Security and Optimization
   app.use(helmet({

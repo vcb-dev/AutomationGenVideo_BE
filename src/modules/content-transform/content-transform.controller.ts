@@ -18,7 +18,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { CreateTransformDto, HistoryQueryDto } from './dto';
+import { CreateTransformDto, HistoryQueryDto, UpgradeTransformDto, RescoreDto } from './dto';
 
 @ApiTags('Content Transform')
 @ApiBearerAuth()
@@ -37,6 +37,21 @@ export class ContentTransformController {
   @ApiOperation({ summary: 'Thực hiện chuyển đổi kịch bản bằng AI' })
   async transformContent(@Request() req: any, @Body() dto: CreateTransformDto) {
     return this.service.transformContent(req.user.id, dto);
+  }
+
+  @Post('upgrade')
+  @ApiOperation({
+    summary:
+      'Sửa nâng cấp kịch bản: ưu tiên khắc phục Hard Gate rồi nhóm tiêu chí yếu nhất, tự động chấm điểm lại để so sánh cũ/mới',
+  })
+  async upgradeContent(@Request() req: any, @Body() dto: UpgradeTransformDto) {
+    return this.service.upgradeContent(req.user.id, req.user.roles, dto);
+  }
+
+  @Post('rescore')
+  @ApiOperation({ summary: 'Chấm điểm lại 1 bản ghi đã có kịch bản kết quả (dùng khi lần chấm điểm trước đó thất bại)' })
+  async rescoreContent(@Request() req: any, @Body() dto: RescoreDto) {
+    return this.service.rescoreContent(req.user.id, req.user.roles, dto);
   }
 
   @Post('transcribe')
