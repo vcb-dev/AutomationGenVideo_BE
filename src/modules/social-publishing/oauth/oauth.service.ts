@@ -1,11 +1,5 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
-import axios from 'axios';
-
-/** Tạo platformId ổn định từ access_token để tránh tạo duplicate accounts */
-function tokenHash(token: string): string {
-  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
-}
 import { AccountsService } from '../accounts/accounts.service';
 import { FacebookOAuthStrategy } from './strategies/facebook.strategy';
 import { InstagramOAuthStrategy } from './strategies/instagram.strategy';
@@ -147,49 +141,5 @@ export class OAuthService {
 
     this.logger.log(`[OAuth] ✅ Đã kết nối ${platform} cho user ${userId} — ${result.name}`);
     return { success: true };
-  }
-
-  async connectViaToken(
-    platform: string,
-    userId: string,
-    body: { access_token: string; refresh_token?: string; page_id?: string },
-  ) {
-    const validPlatforms = Object.values(SocialPlatform) as string[];
-    if (!validPlatforms.includes(platform)) {
-      throw new BadRequestException(`Platform không hợp lệ: ${platform}`);
-    }
-
-    // Dùng hash của token làm platformId fallback — đảm bảo idempotent (cùng token → cùng account)
-    let platformId = `manual_${tokenHash(body.access_token)}`;
-    let name = `${platform} Account`;
-    let username = '';
-
-    try {
-      if (platform === 'FACEBOOK') {
-        const r = await axios.get('https://graph.facebook.com/v21.0/me', {
-          params: { access_token: body.access_token, fields: 'id,name' },
-          timeout: 10000,
-        });
-        platformId = r.data.id; name = r.data.name; username = r.data.id;
-      } else if (platform === 'THREADS') {
-        const r = await axios.get('https://graph.threads.net/v1.0/me', {
-          params: { access_token: body.access_token, fields: 'id,username,name' },
-          timeout: 10000,
-        });
-        platformId = r.data.id; name = r.data.name || r.data.username; username = r.data.username;
-      }
-    } catch (e: any) {
-      this.logger.warn(`[connectViaToken] profile fetch failed: ${e.message}`);
-    }
-
-    await this.accounts.saveAccount(userId, {
-      platform: platform as SocialPlatform,
-      platformId, name, username,
-      accessToken: body.access_token,
-      refreshToken: body.refresh_token,
-      extraData: body.page_id ? { pageId: body.page_id } : undefined,
-    });
-
-    return { success: true, platform, name };
   }
 }

@@ -43,6 +43,8 @@ Job **Prisma migrate deploy** chạy **trước** redeploy:
 - Chỉ apply folder chuẩn `prisma/migrations/<timestamp>_*/migration.sql`
 - File `manual_*.sql` rời **không** tự chạy — phải tạo migration Prisma (`prisma migrate dev`) rồi commit
 
+**Hướng dẫn cho toàn team:** xem [`docs/PRISMA_MIGRATION_GUIDE.md`](./PRISMA_MIGRATION_GUIDE.md).
+
 ## Railway
 
 - Source Image: `viejhaf/automationgenvideo-be:latest`

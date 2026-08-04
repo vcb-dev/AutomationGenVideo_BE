@@ -1,10 +1,26 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { PlayUrlNoCreditError } from './play-url-errors';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
+
+/** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
+export interface VideoDetailResult {
+  platform: string;
+  title: string;
+  description: string;
+  author_name: string;
+  author_username: string;
+  thumbnail_url: string;
+  views_count: number;
+  likes_count: number;
+  comments_count: number;
+  shares_count: number;
+}
 
 @Injectable()
 export class AiIntegrationService {
@@ -28,7 +44,7 @@ export class AiIntegrationService {
    */
   private readonly voiceAiServiceUrl: string;
   private static readonly RAILWAY_VOICE_AI_INTERNAL_URL =
-    'http://automationgenvideo-ai.railway.internal:8000';
+    'http://automationgenvideo-ai.railway.internal:8080';
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
@@ -39,6 +55,7 @@ export class AiIntegrationService {
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
   ) {
@@ -1878,6 +1895,201 @@ export class AiIntegrationService {
   }
 
   /**
+   * Dịch caption/mô tả 1 video đã cào (scraper subsystem) sang tiếng Việt +
+   * phân tích ngắn cấu trúc video gốc — dùng cho luồng duyệt video vào
+   * VideoLibrary/ApprovedContent (xem VideoLibraryService.approveIntoLibrary()).
+   * KHÔNG dùng chung endpoint với generateVideoScript() — đó là adapt content
+   * đã win cho sản phẩm mới, không hợp với video cào về không gắn sản phẩm nào.
+   */
+  async analyzeScrapedVideo(params: {
+    platform: string;
+    title: string;
+    description: string;
+    hashtags?: string[];
+    viewsCount?: number;
+    likesCount?: number;
+    commentsCount?: number;
+  }): Promise<{ vietnamese_content: string; script_outline: string; hashtags: string[] }> {
+    const url = `${this.aiServiceUrl}/api/scraped-video/script/generate/`;
+    this.logger.log(`Calling AI Service: ${url} for platform=${params.platform}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, {
+          platform: params.platform,
+          title: params.title,
+          description: params.description,
+          hashtags: params.hashtags,
+          views_count: params.viewsCount,
+          likes_count: params.likesCount,
+          comments_count: params.commentsCount,
+        }, {
+          timeout: 120000,
+        }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service scraped-video script error: ${error.message}`, error.response?.data);
+            throw new HttpException(
+              error.response?.data || 'Failed to analyze scraped video',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+          }),
+        ),
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to analyze scraped video', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Dịch từ khoá tìm kiếm (tiếng Việt/Anh) sang tiếng Trung giản thể — dùng cho các nền tảng
+   * Trung Quốc (Douyin/Xiaohongshu/Kuaishou/Bilibili) vốn chỉ ra kết quả tốt với query tiếng Trung.
+   *
+   * Endpoint AI đã tự bỏ qua khi text vốn đã là tiếng Trung (trả source='already_chinese'),
+   * nên caller cứ gọi thẳng không cần tự kiểm tra.
+   *
+   * KHÔNG ném lỗi ra ngoài: dịch chỉ là bước phụ trợ, nếu AI service chết thì trả lại text gốc
+   * để luồng tìm kiếm/cron vẫn chạy được thay vì vỡ nguyên request.
+   */
+  async translateSearchKeyword(
+    text: string,
+  ): Promise<{ original: string; translated: string; source: string }> {
+    const original = (text || '').trim();
+    if (!original) return { original: '', translated: '', source: 'empty' };
+
+    const url = `${this.aiServiceUrl}/api/search/translate/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, { text: original }, { timeout: 20000 }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.warn(`AI Service search/translate lỗi: ${error.message}`);
+            throw error;
+          }),
+        ),
+      );
+      const translated = (data?.translated || '').trim();
+      if (!translated) return { original, translated: original, source: 'fallback_empty' };
+      return { original, translated, source: data?.source || 'unknown' };
+    } catch {
+      // Fail-open: giữ nguyên text gốc, caller vẫn tìm được (chỉ là kết quả kém hơn).
+      return { original, translated: original, source: 'failed' };
+    }
+  }
+
+  /**
+   * Lấy chi tiết 1 video (view/tim/bình luận/chia sẻ/tiêu đề/ảnh bìa) theo (platform, video_id).
+   *
+   * Dùng cho luồng đề xuất video: extension chỉ moi được mã video từ URL, còn số liệu đọc trên
+   * trang thì không đáng tin (bảng tin nhúng JSON của nhiều video, trang SPA thì state đã cũ).
+   *
+   * Fail-open: hỏng thì trả null, KHÔNG ném — đề xuất vẫn phải đi tiếp, chỉ là thiếu số liệu.
+   * Facebook không hỗ trợ (TikHub không có endpoint nào cho Facebook).
+   */
+  async fetchVideoDetail(params: {
+    platform: string;
+    videoId?: string;
+    videoUrl?: string;
+  }): Promise<VideoDetailResult | null> {
+    const platform = (params.platform || '').toLowerCase().trim();
+    if (!platform) return null;
+
+    const url = `${this.aiServiceUrl}/api/scraper/video-detail/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            url,
+            {
+              platform,
+              video_id: params.videoId || '',
+              video_url: params.videoUrl || '',
+            },
+            // Ngan hon thoi gian cho cua route FE de FE khong bo cuoc truoc BE.
+            { timeout: 30000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.warn(`AI Service scraper/video-detail lỗi: ${error.message}`);
+              throw error;
+            }),
+          ),
+      );
+      if (!data?.success || !data?.data) {
+        this.logger.log(
+          `[video-detail] ${platform} không lấy được: ${data?.error || 'không rõ lý do'}`,
+        );
+        return null;
+      }
+      return data.data as VideoDetailResult;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Lấy link phát trực tiếp (mp4) để BE làm trung gian phát video ngay trên web hệ thống.
+   *
+   * Chỉ có tác dụng với Douyin/Kuaishou/Xiaohongshu — 5 nền tảng còn lại dùng mã nhúng chính
+   * chủ nên FE không gọi tới đây. Link CÓ HẠN (~3 giờ) nên KHÔNG được lưu vào DB, chỉ cache.
+   *
+   * Fail-open: hỏng thì trả null để chỗ gọi báo lỗi tử tế, không ném.
+   */
+  async fetchVideoPlayUrl(params: {
+    platform: string;
+    videoId?: string;
+    videoUrl?: string;
+    /** Bỏ qua bộ đệm phía AI. Dùng khi vừa gặp 403 vì link cũ hết hạn — không có cờ này
+     *  thì AI trả lại đúng cái link vừa hỏng và vòng thử lại của controller thành vô nghĩa. */
+    forceRefresh?: boolean;
+  }): Promise<string | null> {
+    const platform = (params.platform || '').toLowerCase().trim();
+    if (!platform) return null;
+
+    const url = `${this.aiServiceUrl}/api/scraper/play-url/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService
+          .post(
+            url,
+            {
+              platform,
+              video_id: params.videoId || '',
+              video_url: params.videoUrl || '',
+              force_refresh: params.forceRefresh === true,
+            },
+            { timeout: 30000 },
+          )
+          .pipe(
+            catchError((error: AxiosError) => {
+              this.logger.warn(`AI Service scraper/play-url lỗi: ${error.message}`);
+              throw error;
+            }),
+          ),
+      );
+      if (!data?.success || !data?.play_url) {
+        // Het so du TikHub thi keu THAT TO: ca 4 nen tang chet cung luc, va cach chua la nap
+        // tien chu khong phai sua code. Gom chung vao mot dong log 'khong lay duoc' nhu truoc
+        // khien viec do loi di rat lech huong.
+        if (data?.reason === 'no_credit') {
+          this.logger.error(
+            `[play-url] TAI KHOAN TIKHUB DA HET SO DU — moi video cua douyin/tiktok/xiaohongshu/kuaishou ` +
+            `deu se khong phat duoc cho toi khi nap them. https://user.tikhub.io/users/add_credit`,
+          );
+          throw new PlayUrlNoCreditError();
+        }
+        this.logger.log(`[play-url] ${platform} khong lay duoc: ${data?.reason || 'khong ro'}`);
+        return null;
+      }
+      return String(data.play_url);
+    } catch (err) {
+      // Loi het so du phai di tiep len tren de controller bao dung nguyen nhan cho nguoi dung.
+      if (err instanceof PlayUrlNoCreditError) throw err;
+      return null;
+    }
+  }
+
+  /**
    * Dịch lại content/hashtags hiện có (vd sau khi user sửa tay) sang một ngôn ngữ đã biết trước —
    * không đọc lại file nguồn, không sinh script mới, chỉ dịch (xem VideoScriptService.translate()).
    */
@@ -2266,6 +2478,16 @@ export class AiIntegrationService {
     return `${this.aiServiceUrl}/api/tools/video-downloader/${path}`;
   }
 
+  /**
+   * Các endpoint video-downloader bên AI (video_management/views/video_downloader_views.py)
+   * yêu cầu IsAuthenticated qua NestJWTAuthentication — cùng cơ chế token nội bộ mà
+   * TiktokAiClientService/... đã dùng, chứ không forward JWT của user gọi request gốc.
+   */
+  private videoDownloaderAuthHeaders(): { Authorization: string } {
+    const token = this.jwtService.sign({ sub: 'be-system', email: 'be-system@internal.local' });
+    return { Authorization: `Bearer ${token}` };
+  }
+
   /** Lỗi từ AI trả nguyên body về FE (trang đọc data.error để hiện toast). */
   private rethrowVideoDownloaderError(error: any): never {
     throw new HttpException(
@@ -2277,7 +2499,7 @@ export class AiIntegrationService {
   async videoDownloaderInfo(body: { url: string }): Promise<any> {
     try {
       const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('info/'), body, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
         timeout: 120000, // yt-dlp extract info có thể chậm với link lạ
       });
       return response.data;
@@ -2289,7 +2511,7 @@ export class AiIntegrationService {
   async videoDownloaderStartJob(body: { url: string; type?: string; quality?: string }): Promise<any> {
     try {
       const response = await this.httpService.axiosRef.post(this.videoDownloaderUrl('jobs/'), body, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.videoDownloaderAuthHeaders() },
         timeout: 30000,
       });
       return response.data;
@@ -2302,7 +2524,7 @@ export class AiIntegrationService {
     try {
       const response = await this.httpService.axiosRef.get(
         this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/`),
-        { timeout: 30000 },
+        { headers: this.videoDownloaderAuthHeaders(), timeout: 30000 },
       );
       return response.data;
     } catch (error: any) {
@@ -2315,7 +2537,7 @@ export class AiIntegrationService {
     try {
       const response = await this.httpService.axiosRef.get(
         this.videoDownloaderUrl(`jobs/${encodeURIComponent(jobId)}/file/`),
-        { responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
+        { headers: this.videoDownloaderAuthHeaders(), responseType: 'stream', timeout: 0 }, // file video lớn — không giới hạn thời gian stream
       );
       res.status(response.status);
       for (const h of ['content-type', 'content-length', 'content-disposition', 'accept-ranges']) {

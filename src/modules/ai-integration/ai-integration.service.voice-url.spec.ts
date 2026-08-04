@@ -21,9 +21,10 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
       ),
     };
     const prisma: any = {};
+    const jwtService: any = { sign: jest.fn(() => 'fake.jwt.token') };
     const driveStorage: any = {};
 
-    const service = new AiIntegrationService(httpService, configService, prisma, driveStorage);
+    const service = new AiIntegrationService(httpService, configService, jwtService, prisma, driveStorage);
     return { service, httpService };
   }
 
@@ -50,7 +51,7 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
     await service.generateTTS('xin chào', 'voice_1');
 
     expect(httpService.post).toHaveBeenCalledWith(
-      'http://automationgenvideo-ai.railway.internal:8000/api/voice/tts/',
+      'http://automationgenvideo-ai.railway.internal:8080/api/voice/tts/',
       expect.anything(),
       expect.anything(),
     );
@@ -81,7 +82,7 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
     await service.listVoices();
 
     expect(httpService.get).toHaveBeenCalledWith(
-      'http://automationgenvideo-ai.railway.internal:8000/api/voice/list/',
+      'http://automationgenvideo-ai.railway.internal:8080/api/voice/list/',
     );
   });
 });

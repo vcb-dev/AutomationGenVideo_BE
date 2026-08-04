@@ -67,6 +67,55 @@ export class YoutubeScraperReadService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── Lookalike Creator: kênh khác trùng hashtag ────────────────────────────
+  private static readonly TOP_HASHTAGS_PER_PROFILE = 15;
+  private static readonly MIN_HASHTAG_OVERLAP = 2;
+  private static readonly MAX_LOOKALIKE_RESULTS = 10;
+
+  async lookalikes(profileId: bigint) {
+    const topTags = await this.prisma.$queryRaw<{ hashtag: string; cnt: bigint }[]>`
+      SELECT h AS hashtag, COUNT(*) AS cnt
+      FROM scraper_youtube_shorts, unnest(hashtags) AS h
+      WHERE profile_id = ${profileId}
+      GROUP BY h ORDER BY cnt DESC LIMIT ${YoutubeScraperReadService.TOP_HASHTAGS_PER_PROFILE}
+    `;
+    if (topTags.length === 0) return { lookalikes: [] };
+    const tagList = topTags.map((t) => t.hashtag);
+
+    const overlaps = await this.prisma.$queryRaw<{ profile_id: bigint; overlap_count: bigint }[]>`
+      SELECT s.profile_id AS profile_id, COUNT(DISTINCT h) AS overlap_count
+      FROM scraper_youtube_shorts s, unnest(s.hashtags) AS h
+      WHERE h IN (${Prisma.join(tagList)}) AND s.profile_id <> ${profileId}
+      GROUP BY s.profile_id
+      HAVING COUNT(DISTINCT h) >= ${YoutubeScraperReadService.MIN_HASHTAG_OVERLAP}
+      ORDER BY overlap_count DESC
+      LIMIT ${YoutubeScraperReadService.MAX_LOOKALIKE_RESULTS}
+    `;
+    if (overlaps.length === 0) return { lookalikes: [] };
+
+    const profiles = await this.prisma.scraperYoutubeProfile.findMany({
+      where: { id: { in: overlaps.map((o) => o.profile_id) } },
+    });
+    const profileMap = new Map(profiles.map((p) => [p.id.toString(), p]));
+
+    return {
+      lookalikes: overlaps
+        .map((o) => {
+          const p = profileMap.get(o.profile_id.toString());
+          if (!p) return null;
+          return {
+            id: Number(p.id),
+            channel_id: p.channel_id,
+            title: p.title,
+            avatar_url: p.avatar_url || '',
+            subscriber_count: Number(p.subscriber_count),
+            overlap_count: Number(o.overlap_count),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null),
+    };
+  }
+
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string; is_owned?: string;
   }) {

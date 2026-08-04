@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
 import {
   InstagramAiClientService,
   ParsedInstagramFullProfile,
@@ -183,7 +184,7 @@ export class InstagramScraperService {
     return { created, updated, items_returned: reels.length };
   }
 
-  async scrapeProfile(username: string, isOwned?: boolean): Promise<any> {
+  async scrapeProfile(username: string, isOwned?: boolean, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
     let profile = await this.prisma.scraperInstagramProfile.findUnique({ where: { username } });
     const wasCreated = !profile;
     if (!profile) {
@@ -206,22 +207,23 @@ export class InstagramScraperService {
     if (isOwned && !profile.is_owned) updateData.is_owned = true;
     await this.prisma.scraperInstagramProfile.update({ where: { id: profile.id }, data: updateData });
 
-    // Profile đã cào lần đầu rồi → chỉ cào delta (50 reels mới nhất), fully async như cũ
+    // Profile đã cào lần đầu rồi → chỉ cào delta tới targetCount reels mới nhất, fully async
     if (needsDeltaScrape) {
-      this.scrapeProfileReels(profile.id, 50).catch((err) => {
+      this.scrapeProfileReels(profile.id, targetCount).catch((err) => {
         this.logger.error(`[IG-PROFILE] ${username} thất bại: ${err.message}`);
       });
       return {
         status: 'ok',
-        message: `Đang cập nhật reels mới cho @${username}...`,
+        message: `Đang cập nhật tới ${targetCount} reels mới nhất cho @${username}...`,
         already_exists: true,
         profile_id: Number(profile.id),
       };
     }
 
-    // Batch đầu SYNCHRONOUS (~20 reels, rất nhanh) — trả data ngay cho user
+    // Batch đầu SYNCHRONOUS (nhỏ, rất nhanh) — trả data ngay cho user, phần còn lại chạy nền
+    const firstBatch = Math.min(20, targetCount);
     const freshProfile = await this.prisma.scraperInstagramProfile.findUniqueOrThrow({ where: { id: profile.id } });
-    const result = await this.ingestProfileReelsSync(freshProfile, 20);
+    const result = await this.ingestProfileReelsSync(freshProfile, firstBatch);
 
     if (result.items_returned === 0) {
       if (wasCreated) {
@@ -235,14 +237,31 @@ export class InstagramScraperService {
       throw new HttpException({ error: 'Không tìm thấy reels cho username này' }, HttpStatus.NOT_FOUND);
     }
 
-    // Dispatch cào tiếp tới tổng 300 reels (fire-and-forget) — sẽ tự set scraping_status='completed'
-    this.scrapeProfileReels(profile.id, 300).catch((err) => {
-      this.logger.error(`[IG-PROFILE] ${username} continuation thất bại: ${err.message}`);
-    });
+    // Dispatch cào tiếp tới tổng targetCount reels (fire-and-forget) — tự set scraping_status='completed'
+    const continuationNeeded = targetCount > firstBatch;
+    if (continuationNeeded) {
+      this.scrapeProfileReels(profile.id, targetCount).catch((err) => {
+        this.logger.error(`[IG-PROFILE] ${username} continuation thất bại: ${err.message}`);
+      });
+    } else {
+      // Không có phần chạy nền → tự chốt trạng thái, tránh kẹt 'processing'.
+      await this.prisma.scraperInstagramProfile.update({
+        where: { id: profile.id },
+        data: {
+          scraping_status: 'completed',
+          scrape_error: null,
+          is_initial_scraped: true,
+          last_scraped_at: new Date(),
+        },
+      });
+    }
 
+    const batchInfo = `${result.items_returned} reels (${result.created} mới)`;
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} reels đầu cho @${username}. Đang tiếp tục cào thêm...`,
+      message: continuationNeeded
+        ? `Đã cào ${batchInfo} cho @${username}. Đang cào tiếp tới ${targetCount}...`
+        : `Đã cào ${batchInfo} cho @${username}.`,
       already_exists: false,
       profile_id: Number(profile.id),
     };

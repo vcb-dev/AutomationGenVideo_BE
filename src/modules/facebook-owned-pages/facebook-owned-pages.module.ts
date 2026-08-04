@@ -23,5 +23,6 @@ import { FacebookOwnedPagesCronService } from './facebook-owned-pages-cron.servi
   ],
   controllers: [FacebookOwnedPagesController],
   providers: [FacebookOwnedPagesService, FacebookOwnedPagesReadService, FacebookAiClientService, FacebookOwnedPagesCronService],
+  exports: [FacebookOwnedPagesService],
 })
 export class FacebookOwnedPagesModule {}

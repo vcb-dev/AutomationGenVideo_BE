@@ -7,6 +7,8 @@ import { InstagramPublisher } from './platforms/instagram.platform';
 import { ThreadsPublisher } from './platforms/threads.platform';
 import { YoutubePublisher } from './platforms/youtube.platform';
 import { GoogleDriveStorageService } from '../upload/google-drive-storage.service';
+import { HistoryService } from '../history/history.service';
+import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -95,6 +97,8 @@ export class PublishService {
     private readonly threads: ThreadsPublisher,
     private readonly yt: YoutubePublisher,
     private readonly googleDrive: GoogleDriveStorageService,
+    private readonly history: HistoryService,
+    private readonly notifyStream: NotificationStreamService,
   ) { }
 
   private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
@@ -630,7 +634,7 @@ export class PublishService {
     dto: any, status: SocialPostStatus, source: SocialPostSource,
     result?: any, errorMsg?: string,
   ) {
-    return this.prisma.socialPost.create({
+    const post = await this.prisma.socialPost.create({
       data: {
         user_id: userId, account_id: accountId, platform, source, status,
         message: dto.message, media_urls: dto.mediaUrls || [],
@@ -639,6 +643,14 @@ export class PublishService {
         updated_at: new Date(),
       },
     });
+
+    if (status === SocialPostStatus.FAILED) {
+      this.history.getFailedPostAudience(userId)
+        .then((audience) => this.notifyStream.emitMany(audience))
+        .catch(() => {});
+    }
+
+    return post;
   }
 
   /**

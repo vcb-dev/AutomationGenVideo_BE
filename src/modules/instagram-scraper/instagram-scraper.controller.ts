@@ -1,7 +1,18 @@
-import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { InstagramScraperService } from './instagram-scraper.service';
 import { InstagramScraperReadService } from './instagram-scraper-read.service';
+
+function assertCanManageChannels(req: any): void {
+  const roles: string[] = req.user?.roles ?? [];
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
+    throw new ForbiddenException('Chỉ leader/admin được quản lý kênh chú ý');
+  }
+}
 
 // Thay thế instagram_profile_scrape / instagram_profile_toggle bên AI (đã xóa) —
 // route giữ nguyên path cũ để FE (scraperService.ts) không cần đổi gì.
@@ -40,10 +51,27 @@ export class InstagramScraperController {
     return result;
   }
 
+  @Get('profiles/:profileId/lookalikes')
+  async lookalikes(@Param('profileId') profileId: string) {
+    return this.readService.lookalikes(BigInt(profileId));
+  }
+
   @Post('profiles/scrape')
-  async profileScrape(@Body() body: { username?: string; is_owned?: boolean }) {
-    const username = (body?.username || '').trim().replace(/^@/, '');
-    if (!username) throw new HttpException({ error: 'username is required' }, HttpStatus.BAD_REQUEST);
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async profileScrape(@Body() body: { username?: string; is_owned?: boolean; num_of_posts?: number }) {
+    const raw = (body?.username || '').trim();
+    if (!raw) throw new HttpException({ error: 'username is required' }, HttpStatus.BAD_REQUEST);
+
+    const targetCount = normalizeTargetCount(body?.num_of_posts);
+
+    // Cho phép nhập nguyên URL profile (instagram.com/username) hoặc username trần.
+    // Loại các path không phải profile (p/reel/tv/stories/explore/accounts/direct).
+    const reservedPaths = ['p', 'reel', 'reels', 'tv', 'stories', 'explore', 'accounts', 'direct'];
+    const urlMatch = raw.match(/instagram\.com\/([A-Za-z0-9_.]+)/i);
+    let username = raw;
+    if (urlMatch) username = reservedPaths.includes(urlMatch[1].toLowerCase()) ? '' : urlMatch[1];
+    username = username.replace(/^@/, '');
 
     if (!/^[A-Za-z0-9_.]{1,30}$/.test(username)) {
       throw new HttpException(
@@ -52,15 +80,20 @@ export class InstagramScraperController {
       );
     }
 
-    return this.service.scrapeProfile(username, body?.is_owned);
+    return this.service.scrapeProfile(username, body?.is_owned, targetCount);
   }
 
   @Post('profiles/:profileId/toggle')
-  async toggle(@Param('profileId') profileId: string, @Body() body: { field?: 'is_bookmarked' | 'is_tracked' }) {
+  async toggle(
+    @Param('profileId') profileId: string,
+    @Body() body: { field?: 'is_bookmarked' | 'is_tracked' },
+    @Request() req: any,
+  ) {
     const field = body?.field;
     if (field !== 'is_bookmarked' && field !== 'is_tracked') {
       throw new HttpException({ error: 'field must be is_bookmarked or is_tracked' }, HttpStatus.BAD_REQUEST);
     }
+    if (field === 'is_tracked') assertCanManageChannels(req);
     const newValue = await this.service.toggleProfile(BigInt(profileId), field);
     return { status: 'ok', [field]: newValue };
   }

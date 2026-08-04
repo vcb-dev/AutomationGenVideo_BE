@@ -1,6 +1,6 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
-import { SocialPostStatus } from '@prisma/client';
+import { SocialPostStatus, UserRole } from '@prisma/client';
 
 export interface HistoryFilter {
   team?: string;
@@ -154,6 +154,27 @@ export class HistoryService {
       orderBy: { updated_at: 'desc' },
       include: { account: { select: { name: true, platform: true } } },
     });
+  }
+
+  /**
+   * User cần được báo real-time khi 1 post của `ownerId` chuyển sang FAILED — khớp đúng
+   * phạm vi ai nhìn thấy notification này qua getNotifications()/resolveUserIds(): chính
+   * chủ post + mọi ADMIN/MANAGER (thấy toàn hệ thống) + LEADER cùng team với chủ post.
+   */
+  async getFailedPostAudience(ownerId: string): Promise<string[]> {
+    const owner = await this.prisma.user.findUnique({ where: { id: ownerId }, select: { team: true } });
+    const privileged = await this.prisma.user.findMany({
+      where: {
+        is_active: true,
+        id: { not: ownerId },
+        OR: [
+          { roles: { hasSome: [UserRole.ADMIN, UserRole.MANAGER] } },
+          ...(owner?.team ? [{ roles: { has: UserRole.LEADER }, team: owner.team }] : []),
+        ],
+      },
+      select: { id: true },
+    });
+    return [ownerId, ...privileged.map((u) => u.id)];
   }
 
   /** Danh sách nhân viên để filter (chỉ ADMIN/MANAGER/LEADER) */

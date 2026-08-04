@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
+import { NotificationsModule } from '../task-auto/notifications/notifications.module';
 import { DouyinScraperController } from './douyin-scraper.controller';
 import { DouyinScraperService } from './douyin-scraper.service';
 import { DouyinScraperReadService } from './douyin-scraper-read.service';
@@ -12,6 +13,7 @@ import { DouyinScraperCronService } from './douyin-scraper-cron.service';
 @Module({
   imports: [
     PrismaModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

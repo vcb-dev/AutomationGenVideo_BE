@@ -17,7 +17,8 @@ describe('AccountsService.saveAccount — is_shared default', () => {
       },
     };
     const crypto: any = { encrypt: jest.fn(() => 'enc') };
-    const service = new AccountsService(prisma, crypto);
+    const instagramScraper: any = { scrapeProfile: jest.fn(async () => ({})) };
+    const service = new AccountsService(prisma, crypto, instagramScraper);
     return { service, calls };
   }
 
@@ -55,6 +56,62 @@ describe('AccountsService.saveAccount — is_shared default', () => {
     try {
       await service.saveAccount('u1', { ...baseData, isShared: false });
       expect(calls.update.is_shared).toBe(false);
+    } finally {
+      service.onModuleDestroy();
+    }
+  });
+});
+
+/**
+ * autoSaveFacebookPages lặp qua TẤT CẢ Page mỗi lần user resync Facebook, kể cả Page
+ * đã lưu từ trước. Guard existingIgAccount đảm bảo chỉ cào profile Instagram cho account
+ * MỚI kết nối lần đầu — tránh bắn hàng loạt request cào trùng mỗi lần user bấm "Đồng bộ".
+ */
+describe('AccountsService.saveFacebookPageAccount — auto-scrape guard', () => {
+  function build(existingIgAccount: any) {
+    const prisma: any = {
+      socialAccount: {
+        findFirst: jest.fn(async ({ where }: any) => {
+          if (where.platform === SocialPlatform.INSTAGRAM && where.platform_id) return existingIgAccount;
+          if (where.id) return { id: where.id, user_id: where.user_id }; // findOneOwned (parent page)
+          return null; // existing-check cho page account (FACEBOOK) — luôn tạo mới trong test
+        }),
+        update: jest.fn(async ({ data }: any) => ({ id: 'acc1', ...data })),
+        create: jest.fn(async ({ data }: any) => ({ id: 'acc1', ...data })),
+      },
+    };
+    const crypto: any = { encrypt: jest.fn(() => 'enc') };
+    const instagramScraper: any = { scrapeProfile: jest.fn(async () => ({})) };
+    const service = new AccountsService(prisma, crypto, instagramScraper);
+    return { service, instagramScraper };
+  }
+
+  const baseOpts = {
+    parentAccountId: 'parent1',
+    pageId: 'page1',
+    pageName: 'Page',
+    pageToken: 'tok',
+    igId: 'ig123',
+    igUsername: 'my_ig',
+  };
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('cào profile khi Instagram Business account là MỚI kết nối qua Facebook Page', async () => {
+    const { service, instagramScraper } = build(null);
+    try {
+      await service.saveFacebookPageAccount('u1', baseOpts);
+      expect(instagramScraper.scrapeProfile).toHaveBeenCalledWith('my_ig', true);
+    } finally {
+      service.onModuleDestroy();
+    }
+  });
+
+  it('KHÔNG cào lại profile khi Instagram Business account đã tồn tại (resync token)', async () => {
+    const { service, instagramScraper } = build({ id: 'ig-existing' });
+    try {
+      await service.saveFacebookPageAccount('u1', baseOpts);
+      expect(instagramScraper.scrapeProfile).not.toHaveBeenCalled();
     } finally {
       service.onModuleDestroy();
     }

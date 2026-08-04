@@ -6,12 +6,16 @@ import {
   Post,
   Param,
   Query,
+  Sse,
+  MessageEvent,
   UseGuards,
   Request,
 } from "@nestjs/common";
+import { Observable } from "rxjs";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
+import { NotificationStreamService } from "../../../common/push/notification-stream.service";
 import { NotificationsService } from "./notifications.service";
 import {
   QueryNotificationDto,
@@ -24,7 +28,19 @@ import {
 @UseGuards(JwtAuthGuard)
 @Controller("task-auto/notifications")
 export class NotificationsController {
-  constructor(private notifications: NotificationsService) {}
+  constructor(
+    private notifications: NotificationsService,
+    private notifStream: NotificationStreamService,
+  ) {}
+
+  // EventSource của browser không set được header Authorization, nên JwtStrategy
+  // đã hỗ trợ sẵn `?access_token=` (dùng chung cơ chế với stream video) — FE truyền
+  // token qua query string thay vì header cho riêng endpoint này.
+  @Sse("stream")
+  @ApiOperation({ summary: "Real-time (SSE) stream thông báo mới của user hiện tại" })
+  stream(@Request() req: any): Observable<MessageEvent> {
+    return this.notifStream.stream(req.user.id);
+  }
 
   @Get()
   @ApiOperation({ summary: "List notifications of the current user" })

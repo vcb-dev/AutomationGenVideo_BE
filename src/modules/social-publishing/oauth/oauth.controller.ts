@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query, Body, Param, Res, UseGuards, Request, Logger } from '@nestjs/common';
+import { Controller, Get, Query, Param, Res, UseGuards, Request, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
@@ -50,19 +50,6 @@ export class OAuthController {
   @ApiOperation({ summary: 'YouTube OAuth callback' })
   async youtubeCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     return this.handleCallback('YOUTUBE', code, state, null, res);
-  }
-
-  /** Kết nối trực tiếp bằng access token (không cần popup) */
-  @Post(':platform/token')
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Kết nối tài khoản bằng token trực tiếp' })
-  async connectViaToken(
-    @Param('platform') platform: string,
-    @Body() body: { access_token: string; refresh_token?: string; page_id?: string },
-    @Request() req,
-  ) {
-    return this.oauthService.connectViaToken(platform.toUpperCase(), req.user.id, body);
   }
 
   private async handleCallback(platform: string, code: string, state: string, extra: any, res: Response) {

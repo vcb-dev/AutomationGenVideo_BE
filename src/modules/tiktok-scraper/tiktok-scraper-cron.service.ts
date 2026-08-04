@@ -20,4 +20,15 @@ export class TiktokScraperCronService {
       this.logger.error(`❌ [TT-PERIODIC] Lỗi: ${err.message}`);
     }
   }
+
+  // Cụm giờ riêng (13h-15h VN) tách khỏi cụm periodicRefresh (5h30-9h30) — auto
+  // re-run từ khoá tìm nhiều nhất, xem autoRerunTopKeywords().
+  @Cron('0 0 13 * * *', VN_TZ)
+  async cronAutoRerunKeywords(): Promise<void> {
+    try {
+      await this.service.autoRerunTopKeywords();
+    } catch (err: any) {
+      this.logger.error(`❌ [TT-AUTO-RERUN] Lỗi: ${err.message}`);
+    }
+  }
 }

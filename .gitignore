@@ -75,3 +75,4 @@ cloudflared.exe
 # Env files (except .env.example)
 .env.*
 !.env.example
+.gstack/

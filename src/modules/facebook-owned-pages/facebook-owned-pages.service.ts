@@ -1,8 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookAiClientService } from './facebook-ai-client.service';
+import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
 
 const STALE_LOCK_MINUTES = 30;
+
+export interface PublishedLinkStatsResult {
+  status: 'success' | 'failed' | 'unsupported';
+  views?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  error?: string;
+}
 
 // Toàn bộ logic ghi DB port từ AI (video_management/services/facebook_fetcher.py +
 // tasks.py phần "FACEBOOK SCRAPER — 4 PHASES"). AI giờ chỉ fetch + parse (facebook_fetch_views.py),
@@ -347,5 +358,121 @@ export class FacebookOwnedPagesService {
 
     this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics`);
     return { updated: totalUpdated, total: recentVideos.length };
+  }
+
+  // Chuẩn hoá permalink Facebook để so khớp: bỏ query string/tracking param, ép
+  // host về www.facebook.com (m.facebook.com/fb.watch đều quy về 1 dạng), giữ
+  // nguyên path. Trả về cả 2 biến thể có/không trailing slash vì permalink_url
+  // Graph API trả về luôn có "/" cuối (vd ".../reel/123.../"), còn URL user dán
+  // tay thường không có.
+  private normalizeFacebookPermalinkVariants(url: string): string[] {
+    let path: string;
+    try {
+      path = new URL(url).pathname.replace(/\/+$/, '');
+    } catch {
+      return [];
+    }
+    const base = `https://www.facebook.com${path}`;
+    return [base, `${base}/`];
+  }
+
+  // ─── Kéo số liệu tương tác cho 1 URL bất kỳ (dùng bởi task published-links) ─
+  // Chỉ hoạt động nếu URL thuộc 1 page công ty đã "connect" (có page_access_token
+  // đã lưu) — không thể lấy số liệu của page Facebook ngoài hệ thống. Tái dùng
+  // nguyên xi fetchMetricsRefresh() (AI không cần sửa gì).
+
+  async fetchStatsForUrl(rawUrl: string): Promise<PublishedLinkStatsResult> {
+    let resolvedUrl = await resolveShortLink(rawUrl);
+
+    // Facebook "share link" (facebook.com/share/r|v|p/{code}/) không nằm trong danh
+    // sách domain rút gọn của resolveShortLink() — nó cần xử lý riêng (xem comment
+    // resolveFacebookShareLink) vì www.facebook.com chặn cứng request kiểu bot.
+    if (isFacebookShareLink(resolvedUrl)) {
+      resolvedUrl = await resolveFacebookShareLink(resolvedUrl);
+    }
+
+    // Ưu tiên khớp theo permalink_url THẬT đã lưu khi sync (đáng tin cậy nhất) —
+    // post_id nội bộ Graph API (dạng {page_id}_{object_id}) và ID hiển thị trên
+    // link Reels công khai (vd /reel/{id}/) là 2 định danh HOÀN TOÀN KHÁC NHAU,
+    // không thể suy ra cái này từ cái kia bằng cách parse URL. Chỉ video chưa
+    // từng sync mới cần fallback sang parse post_id/page handle từ URL.
+    const permalinkVariants = this.normalizeFacebookPermalinkVariants(resolvedUrl);
+    const owned = permalinkVariants.length
+      ? await this.prisma.video_management_ownedvideocontent.findFirst({
+          where: { permalink_url: { in: permalinkVariants } },
+          include: { managed_page: true },
+        })
+      : null;
+
+    let page = owned?.managed_page ?? null;
+    let postId = owned?.post_id ?? null;
+    // true khi postId là 1 Video/Reels NODE THUẦN (tra ra page qua resolveOwnerPage,
+    // không phải qua permalink đã sync hay page handle trong URL) — node loại này
+    // không hỗ trợ field Post (shares/reactions/insights), cần gọi endpoint metrics
+    // riêng (fetchVideoNodeMetrics) thay vì fetchMetricsRefresh.
+    let isVideoNode = false;
+
+    if (!page) {
+      const parsed = extractPostIdFromUrl(resolvedUrl);
+      postId = parsed.postId;
+      if (!postId) return { status: 'unsupported' };
+
+      page = parsed.pageHandle
+        ? await this.prisma.video_management_managedfacebookpage.findFirst({
+            where: { OR: [{ page_id: parsed.pageHandle }, { username: parsed.pageHandle }] },
+          })
+        : null;
+
+      // Link Reels công khai (/reel/{id}) hoặc ?v={id} không mang page handle trong
+      // path → không thể suy ra page bằng cách parse chuỗi. Tra ngược field "from"
+      // của chính object đó qua Graph API (đọc được bằng token của BẤT KỲ page nào
+      // đã kết nối, không cần đúng page sở hữu) rồi đối chiếu với các page đã liên
+      // kết hệ thống — id parse được (postId) vẫn dùng thẳng để gọi metrics vì đó là
+      // ID Graph API thật của chính object, chỉ khác định dạng permalink lưu lúc sync.
+      if (!page) {
+        page = await this.resolveOwnerPage(postId);
+        isVideoNode = !!page;
+      }
+    }
+
+    if (!page || !page.page_access_token || !postId) return { status: 'unsupported' };
+
+    try {
+      const { metrics } = isVideoNode
+        ? await this.aiClient.fetchVideoNodeMetrics(page.page_access_token, [postId])
+        : await this.aiClient.fetchMetricsRefresh(page.page_access_token, [postId]);
+      const m = metrics[postId];
+      if (!m) return { status: 'failed', error: 'Không lấy được số liệu cho bài viết này' };
+      return {
+        status: 'success',
+        views: m.view_count ?? 0,
+        likes: m.like_count ?? 0,
+        comments: m.comment_count ?? 0,
+        shares: m.share_count ?? 0,
+      };
+    } catch (err: any) {
+      return { status: 'failed', error: (err.message || 'Lỗi không xác định').slice(0, 300) };
+    }
+  }
+
+  // Tra page sở hữu thật của 1 object Graph API (post/video/reel) khi URL không mang
+  // page handle — mượn token của 1 page bất kỳ đã kết nối để đọc field công khai
+  // "from" của object, rồi đối chiếu "from.id" với danh sách page đã liên kết hệ
+  // thống. Trả null nếu không mượn được token, Graph API lỗi, hoặc "from.id" không
+  // khớp page nào đã kết nối (video thực sự thuộc page ngoài hệ thống).
+  private async resolveOwnerPage(objectId: string) {
+    const lender = await this.prisma.video_management_managedfacebookpage.findFirst({
+      where: { page_access_token: { not: '' } },
+      select: { page_access_token: true },
+    });
+    if (!lender?.page_access_token) return null;
+
+    try {
+      const { from_id } = await this.aiClient.resolveOwner(objectId, lender.page_access_token);
+      if (!from_id) return null;
+      return this.prisma.video_management_managedfacebookpage.findFirst({ where: { page_id: from_id } });
+    } catch {
+      return null;
+    }
   }
 }

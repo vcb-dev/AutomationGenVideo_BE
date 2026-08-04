@@ -1,8 +1,12 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../task-auto/notifications/notifications.service';
+import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import {
   BilibiliAiClientService, ParsedBilibiliProfile, ParsedBilibiliVideo, ParsedBilibiliSearchVideo,
 } from './bilibili-ai-client.service';
+import { BilibiliScraperReadService } from './bilibili-scraper-read.service';
 
 const STALE_LOCK_MINUTES = 30;
 
@@ -19,13 +23,53 @@ export class BilibiliScraperService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClient: BilibiliAiClientService,
+    private readonly notifications: NotificationsService,
+    private readonly readService: BilibiliScraperReadService,
+    private readonly aiIntegration: AiIntegrationService,
   ) {}
+
+  // ─── Growth Alert: snapshot followers + báo động nếu tăng đột biến ────────
+  private static readonly GROWTH_ALERT_THRESHOLD_PCT = 0.2;
+
+  private async recordMetricsAndMaybeAlert(profileId: bigint, profileName: string): Promise<void> {
+    const fresh = await this.prisma.scraperBilibiliProfile.findUniqueOrThrow({ where: { id: profileId } });
+    const previous = await this.prisma.scraperBilibiliProfileMetrics.findFirst({
+      where: { profile_id: profileId },
+      orderBy: { captured_at: 'desc' },
+    });
+
+    await this.prisma.scraperBilibiliProfileMetrics.create({
+      data: {
+        profile_id: profileId,
+        followers_count: fresh.followers_count,
+        following_count: fresh.following_count,
+        likes_count: fresh.likes_count,
+      },
+    });
+
+    if (!previous || previous.followers_count <= 0n) return;
+    const growth = Number(fresh.followers_count - previous.followers_count) / Number(previous.followers_count);
+    if (growth < BilibiliScraperService.GROWTH_ALERT_THRESHOLD_PCT) return;
+
+    const pct = Math.round(growth * 100);
+    await this.notifications.broadcastToActiveUsers(
+      'GROWTH_ALERT',
+      `Kênh Bilibili ${profileName} tăng trưởng đột biến`,
+      `Followers tăng ${pct}% (${previous.followers_count} → ${fresh.followers_count}) kể từ lần cào trước.`,
+      { platform: 'bilibili', profile_id: Number(profileId) },
+    );
+  }
 
   // ─── Keyword search ────────────────────────────────────────────────────────
 
-  private async upsertSearchVideo(v: ParsedBilibiliSearchVideo): Promise<{ created: boolean }> {
+  private async upsertSearchVideo(
+    v: ParsedBilibiliSearchVideo,
+    keywordOverride?: string,
+  ): Promise<{ created: boolean }> {
     const existing = await this.prisma.scraperBilibiliSearchVideo.findUnique({ where: { post_id: v.post_id } });
-    const search_keyword = existing?.search_keyword || v.search_keyword || '';
+    // keywordOverride (tiếng Việt user gõ) ưu tiên hơn v.search_keyword (tiếng Trung đã query),
+    // để bộ lọc/gợi ý hiển thị chữ dễ đọc.
+    const search_keyword = existing?.search_keyword || keywordOverride || v.search_keyword || '';
 
     const data = {
       url: v.url,
@@ -58,11 +102,56 @@ export class BilibiliScraperService {
   // (không lặp lại từ đầu) để bù phần bị trùng, tối đa MAX_SEARCH_ROUNDS lần.
   private static readonly MAX_SEARCH_ROUNDS = 5;
 
-  async searchKeyword(keyword: string, count = 30): Promise<{ created: number; updated: number }> {
+  // ─── Auto-discover kênh mới từ tác giả xuất hiện trong kết quả search ──────
+  // Bilibili không có follower count trong search-video, dùng view_count làm
+  // ranking signal thay thế. author_id ở đây chính là mid (số), khớp trực
+  // tiếp với input của scrapeProfile(mid).
+  private static readonly MAX_AUTO_DISCOVER_PER_SEARCH = 5;
+  private static readonly MIN_AUTO_DISCOVER_VIEWS = 10000;
+
+  private async autoDiscoverNewAuthors(candidates: Map<string, number>): Promise<string[]> {
+    const ranked = Array.from(candidates.entries())
+      .filter(([, views]) => views >= BilibiliScraperService.MIN_AUTO_DISCOVER_VIEWS)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, BilibiliScraperService.MAX_AUTO_DISCOVER_PER_SEARCH)
+      .map(([mid]) => mid);
+
+    if (ranked.length === 0) return [];
+
+    const existing = await this.prisma.scraperBilibiliProfile.findMany({
+      where: { mid: { in: ranked } },
+      select: { mid: true },
+    });
+    const existingSet = new Set(existing.map((p) => p.mid));
+    const newMids = ranked.filter((mid) => !existingSet.has(mid));
+
+    for (const mid of newMids) {
+      this.scrapeProfile(mid).catch((err) => {
+        this.logger.error(`[BILIBILI-AUTO-DISCOVER] ${mid} thất bại: ${err.message}`);
+      });
+    }
+
+    if (newMids.length > 0) {
+      this.logger.log(`[BILIBILI-AUTO-DISCOVER] Phát hiện + dispatch cào ${newMids.length} kênh mới: ${newMids.join(', ')}`);
+    }
+    return newMids;
+  }
+
+  /**
+   * @param keyword       Từ khoá GỬI ĐI để query (tiếng Trung với nền tảng TQ).
+   * @param displayKeyword Từ khoá LƯU vào DB để hiển thị (tiếng Việt user gõ). Bỏ trống = dùng `keyword`.
+   */
+  async searchKeyword(
+    keyword: string,
+    count = 30,
+    displayKeyword?: string,
+  ): Promise<{ created: number; updated: number; auto_discovered: string[] }> {
     let created = 0;
     let updated = 0;
     let cursor: number | null | undefined = undefined;
     let hasMore = true;
+    const authorCandidates = new Map<string, number>();
+    const storedKeyword = (displayKeyword || '').trim() || undefined;
 
     for (let round = 0; round < BilibiliScraperService.MAX_SEARCH_ROUNDS && created < count && hasMore; round++) {
       const remaining = count - created;
@@ -70,17 +159,24 @@ export class BilibiliScraperService {
       if (videos.length === 0) break;
 
       for (const v of videos) {
-        const r = await this.upsertSearchVideo(v);
+        const r = await this.upsertSearchVideo(v, storedKeyword);
         if (r.created) created++;
         else updated++;
+
+        if (v.author_id) {
+          const prevMax = authorCandidates.get(v.author_id) ?? 0;
+          authorCandidates.set(v.author_id, Math.max(prevMax, v.view_count ?? 0));
+        }
       }
 
       cursor = nextCursor;
       hasMore = has_more;
     }
 
-    this.logger.log(`[BILIBILI-SEARCH] Ingest '${keyword}': +${created} new, ~${updated} updated`);
-    return { created, updated };
+    this.logger.log(`[BILIBILI-SEARCH] Ingest '${keyword}'${storedKeyword ? ` (lưu '${storedKeyword}')` : ''}: +${created} new, ~${updated} updated`);
+
+    const auto_discovered = await this.autoDiscoverNewAuthors(authorCandidates);
+    return { created, updated, auto_discovered };
   }
 
   // ─── Profile: helpers ──────────────────────────────────────────────────────
@@ -205,6 +301,11 @@ export class BilibiliScraperService {
         data: { scraping_status: 'completed', scrape_error: null, last_scraped_at: new Date() },
       });
 
+      const profileLabel = profile.nickname || profile.mid;
+      this.recordMetricsAndMaybeAlert(profileId, profileLabel).catch((err) => {
+        this.logger.error(`[BILIBILI-GROWTH-ALERT] ${profileLabel}: ${err.message}`);
+      });
+
       this.logger.log(`[BILIBILI-PROFILE] ${profile.nickname || profile.mid}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated, items_returned: videos.length };
     } catch (err: any) {
@@ -216,7 +317,7 @@ export class BilibiliScraperService {
     }
   }
 
-  async scrapeProfile(mid: string): Promise<any> {
+  async scrapeProfile(mid: string, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
     let profile = await this.prisma.scraperBilibiliProfile.findUnique({ where: { mid } });
     const wasCreated = !profile;
     if (!profile) {
@@ -241,23 +342,24 @@ export class BilibiliScraperService {
     });
 
     if (needsDeltaScrape) {
-      // Delta: chỉ cào 20 video mới nhất, fully async
-      this.scrapeProfileVideos(profile.id, 20).catch((err) => {
+      // Delta: kênh đã cào rồi, lấy thêm tới targetCount video mới nhất, fully async
+      this.scrapeProfileVideos(profile.id, targetCount).catch((err) => {
         this.logger.error(`[BILIBILI-PROFILE] ${mid} thất bại: ${err.message}`);
       });
       return {
         status: 'ok',
-        message: `Đang cập nhật video mới cho kênh ${profile.nickname || mid}...`,
+        message: `Đang cập nhật tới ${targetCount} video mới nhất cho kênh ${profile.nickname || mid}...`,
         already_exists: true,
         profile_id: Number(profile.id),
       };
     }
 
-    // Batch đầu SYNCHRONOUS (~20 video, rất nhanh) — trả data ngay cho user
+    // Batch đầu SYNCHRONOUS (nhỏ, rất nhanh) — trả data ngay cho user, phần còn lại chạy nền
+    const firstBatch = Math.min(20, targetCount);
     const freshProfile = await this.prisma.scraperBilibiliProfile.findUniqueOrThrow({ where: { id: profile.id } });
     let result: { created: number; updated: number; items_returned: number };
     try {
-      result = await this.ingestVideosSync(freshProfile, 20);
+      result = await this.ingestVideosSync(freshProfile, firstBatch);
     } catch (err: any) {
       await this.prisma.scraperBilibiliProfile.update({
         where: { id: profile.id },
@@ -284,16 +386,33 @@ export class BilibiliScraperService {
       throw new HttpException({ error: 'Không tìm thấy video cho mid này' }, HttpStatus.NOT_FOUND);
     }
 
-    // Dispatch cào tiếp tới tổng 300 video (fire-and-forget) — sẽ tự set scraping_status='completed'
-    this.scrapeProfileVideos(profile.id, 300).catch((err) => {
-      this.logger.error(`[BILIBILI-PROFILE] ${mid} continuation thất bại: ${err.message}`);
-    });
+    // Dispatch cào tiếp tới tổng targetCount video (fire-and-forget) — tự set scraping_status='completed'
+    const continuationNeeded = targetCount > firstBatch;
+    if (continuationNeeded) {
+      this.scrapeProfileVideos(profile.id, targetCount).catch((err) => {
+        this.logger.error(`[BILIBILI-PROFILE] ${mid} continuation thất bại: ${err.message}`);
+      });
+    } else {
+      // Không có phần chạy nền → tự chốt trạng thái, tránh kẹt 'processing'.
+      await this.prisma.scraperBilibiliProfile.update({
+        where: { id: profile.id },
+        data: {
+          scraping_status: 'completed',
+          scrape_error: null,
+          is_initial_scraped: true,
+          last_scraped_at: new Date(),
+        },
+      });
+    }
 
     const updated = await this.prisma.scraperBilibiliProfile.findUniqueOrThrow({ where: { id: profile.id } });
 
+    const batchInfo = `${result.items_returned} video (${result.created} mới)`;
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} video đầu cho kênh ${updated.nickname || mid}. Đang tiếp tục cào thêm...`,
+      message: continuationNeeded
+        ? `Đã cào ${batchInfo} cho kênh ${updated.nickname || mid}. Đang cào tiếp tới ${targetCount}...`
+        : `Đã cào ${batchInfo} cho kênh ${updated.nickname || mid}.`,
       profile_id: Number(updated.id),
       newly_scraped: true,
     };
@@ -324,6 +443,36 @@ export class BilibiliScraperService {
   // ─── Periodic: cào video mới cho profile is_tracked=true (cron) ──────────
   // is_tracked là tiêu chí chọn lọc duy nhất; scraping_status chỉ dùng để loại trừ
   // profile đang cào dở (!= 'processing'), không so khớp cứng 1 giá trị cụ thể.
+
+  // ─── Auto re-run từ khoá đã search nhiều nhất (cron riêng, khác giờ periodicRefresh) ──
+  private static readonly MAX_AUTO_RERUN_KEYWORDS_PER_CRON = 3;
+  private static readonly MIN_HIT_COUNT_FOR_AUTO_RERUN = 3;
+
+  async autoRerunTopKeywords(): Promise<{ keywords: string[]; created: number; updated: number }> {
+    const { suggestions } = await this.readService.keywordSuggest('');
+    const keywords = suggestions
+      .filter((s) => s.count >= BilibiliScraperService.MIN_HIT_COUNT_FOR_AUTO_RERUN)
+      .slice(0, BilibiliScraperService.MAX_AUTO_RERUN_KEYWORDS_PER_CRON)
+      .map((s) => s.keyword);
+
+    let created = 0;
+    let updated = 0;
+    for (const keyword of keywords) {
+      try {
+        // Từ khoá lưu trong DB là TIẾNG VIỆT (user gõ) — Bilibili chỉ ra kết quả tốt với
+        // tiếng Trung nên phải dịch lại trước khi query; giữ tiếng Việt khi lưu lại.
+        const { translated } = await this.aiIntegration.translateSearchKeyword(keyword);
+        const r = await this.searchKeyword(translated, 30, keyword);
+        created += r.created;
+        updated += r.updated;
+      } catch (err: any) {
+        this.logger.error(`[BILIBILI-AUTO-RERUN] '${keyword}' thất bại: ${err.message}`);
+      }
+    }
+
+    this.logger.log(`[BILIBILI-AUTO-RERUN] Rerun ${keywords.length} từ khoá: ${keywords.join(', ') || '(không có)'}`);
+    return { keywords, created, updated };
+  }
 
   async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();

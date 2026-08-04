@@ -225,6 +225,52 @@ export class LarkController {
         return this.larkService.getDashboardAnalytics({ startDate, endDate, team });
     }
 
+    @Get('dashboard-5a')
+    @UseGuards(RolesGuard)
+    @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.LEADER)
+    @Header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120')
+    @ApiOperation({
+        summary: 'Dashboard tổng quan 5A (team roster + KPI thật + kênh) — ADMIN/MANAGER xem toàn bộ, LEADER chỉ xem team mình lead',
+    })
+    async getDashboard5A(
+        @Request() req: any,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
+        @Query('team') team?: string,
+    ) {
+        const roles: string[] = req.user?.roles ?? [];
+        const isAdmin = roles.includes(UserRole.ADMIN) || roles.includes(UserRole.MANAGER);
+
+        if (isAdmin) {
+            const data = await this.larkService.getDashboard5A({ startDate, endDate, team });
+            return { scope: 'admin' as const, ...data };
+        }
+
+        // LEADER: bỏ qua team query do client gửi lên, khoá cứng theo (các) team mình đang lead —
+        // chống leader xem chéo KPI/doanh thu của team khác qua query param. Dùng findMany (không phải
+        // findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người lead cả "Scale Data",
+        // "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1/3 team, làm mất dữ liệu 2 team còn lại.
+        const ownTeams = await this.prisma.team.findMany({
+            where: { leader_id: req.user.id },
+            select: { name: true },
+        });
+        if (ownTeams.length === 0) {
+            return {
+                scope: 'leader' as const,
+                kpi: null,
+                teams: [],
+                channels: [],
+                a5: { available: false, note: 'Bạn chưa được gán làm leader của team nào.' },
+            };
+        }
+
+        const data = await this.larkService.getDashboard5AForTeams(
+            { startDate, endDate },
+            ownTeams.map((t) => t.name),
+        );
+        return { scope: 'leader' as const, ...data };
+    }
+
     @Post('checklist-report')
     @ApiOperation({ summary: 'Submit daily checklist report (replaces Django AI endpoint)' })
     async submitChecklistReport(@Body() data: any, @Request() req: any) {
@@ -245,6 +291,12 @@ export class LarkController {
     async submitTrafficReport(@Body() data: any, @Request() req: any) {
         // Danh tính báo cáo PHẢI lấy từ JWT của người gọi, không tin email/name client gửi lên.
         return this.larkService.submitTrafficReport({ ...data, email: req.user.email, name: req.user.full_name });
+    }
+
+    @Post('revenue-report')
+    @ApiOperation({ summary: 'Submit daily revenue report' })
+    async submitRevenueReport(@Body() data: any, @Request() req: any) {
+        return this.larkService.submitRevenueReport({ ...data, email: req.user.email, name: req.user.full_name });
     }
 
     @Post('upload-evidence')
