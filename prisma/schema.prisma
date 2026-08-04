@@ -3898,3 +3898,185 @@ enum InputType {
   VIDEO
   AUDIO
 }
+
+// ─────────────────────────────────────────────
+//  VÒNG QUAY MAY MẮN — sự kiện nội bộ
+//  Dữ liệu dùng chung toàn công ty, mọi người đăng nhập đều xem và thao tác được.
+// ─────────────────────────────────────────────
+
+enum SpinEntryStatus {
+  ACTIVE // còn trong vòng quay
+  DONE   // đã trúng, bị loại khỏi các lượt sau cho tới khi đặt lại
+}
+
+/// Mỗi vòng quay là một bộ dữ liệu tách biệt (SECI, Đào tạo cán bộ nguồn...)
+model SpinWorkspace {
+  id          String   @id @default(uuid())
+  slug        String   @unique // "seci" — key ổn định dùng trên URL và FE
+  name        String
+  order_index Int      @default(0)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  // Khóa điều khiển: giữa buổi sự kiện chỉ một người được quay và sửa dữ liệu, những người
+  // khác vẫn xem trực tiếp được. Khóa tự hết hạn để không ai bị kẹt khi MC đóng máy.
+  controller_id      String?   @db.Uuid
+  controller_name    String?
+  control_expires_at DateTime?
+
+  teams       SpinTeam[]
+  members     SpinMember[]
+  rounds      SpinRound[]
+  gifts       SpinGift[]
+  member_wins SpinMemberWin[]
+  team_wins   SpinTeamWin[]
+  gift_awards SpinGiftAward[]
+
+  @@map("spin_workspaces")
+}
+
+model SpinTeam {
+  id            String          @id @default(uuid())
+  workspace_id  String
+  name          String
+  status        SpinEntryStatus @default(ACTIVE)
+  gift_received Boolean         @default(false)
+  created_at    DateTime        @default(now())
+  updated_at    DateTime        @updatedAt
+
+  workspace SpinWorkspace   @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  members   SpinMember[]
+  wins      SpinTeamWin[]
+  awards    SpinGiftAward[]
+
+  @@index([workspace_id])
+  @@map("spin_teams")
+}
+
+model SpinMember {
+  id            String          @id @default(uuid())
+  workspace_id  String
+  team_id       String?
+  name          String
+  status        SpinEntryStatus @default(ACTIVE)
+  gift_received Boolean         @default(false)
+  created_at    DateTime        @default(now())
+  updated_at    DateTime        @updatedAt
+
+  workspace SpinWorkspace   @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  team      SpinTeam?       @relation(fields: [team_id], references: [id], onDelete: SetNull)
+  wins      SpinMemberWin[]
+  awards    SpinGiftAward[]
+
+  @@index([workspace_id])
+  @@index([team_id])
+  @@map("spin_members")
+}
+
+model SpinGift {
+  id           String   @id @default(uuid())
+  workspace_id String
+  name         String
+  total        Int
+  remaining    Int
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  workspace SpinWorkspace   @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  awards    SpinGiftAward[]
+
+  @@index([workspace_id])
+  @@map("spin_gifts")
+}
+
+/// Lịch sử thành viên trúng.
+/// Tên người và tên team được chụp lại tại thời điểm quay: đổi tên hay xoá thành viên về sau
+/// không được phép làm sai lệch biên bản của buổi sự kiện đã diễn ra.
+model SpinMemberWin {
+  id              String   @id @default(uuid())
+  workspace_id    String
+  member_id       String? // null khi thành viên đã bị xoá khỏi danh sách
+  member_name     String
+  team_name       String
+  created_by_id   String?  @db.Uuid // user bấm xác nhận — không đặt FK để khỏi sửa model User
+  created_by_name String?
+  created_at      DateTime @default(now())
+
+  workspace SpinWorkspace @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  member    SpinMember?   @relation(fields: [member_id], references: [id], onDelete: SetNull)
+
+  @@index([workspace_id, created_at])
+  @@index([member_id])
+  @@map("spin_member_wins")
+}
+
+model SpinTeamWin {
+  id              String   @id @default(uuid())
+  workspace_id    String
+  team_id         String?
+  team_name       String
+  created_by_id   String?  @db.Uuid
+  created_by_name String?
+  created_at      DateTime @default(now())
+
+  workspace SpinWorkspace @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  team      SpinTeam?     @relation(fields: [team_id], references: [id], onDelete: SetNull)
+
+  @@index([workspace_id, created_at])
+  @@map("spin_team_wins")
+}
+
+/// Lịch sử quà đã trao — cho cá nhân hoặc cho cả team.
+model SpinGiftAward {
+  id              String   @id @default(uuid())
+  workspace_id    String
+  member_id       String? // có giá trị khi trao cho cá nhân
+  team_id         String? // có giá trị khi trao cho cả team
+  gift_id         String?
+  recipient_name  String
+  team_name       String
+  gift_name       String
+  created_by_id   String?  @db.Uuid
+  created_by_name String?
+  created_at      DateTime @default(now())
+
+  workspace SpinWorkspace @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  member    SpinMember?   @relation(fields: [member_id], references: [id], onDelete: SetNull)
+  team      SpinTeam?     @relation(fields: [team_id], references: [id], onDelete: SetNull)
+  gift      SpinGift?     @relation(fields: [gift_id], references: [id], onDelete: SetNull)
+
+  @@index([workspace_id, created_at])
+  @@index([member_id])
+  @@map("spin_gift_awards")
+}
+
+enum SpinRoundKind {
+  MEMBER
+  TEAM
+  GIFT
+}
+
+/// Một lượt quay do server bốc.
+///
+/// Ghi lại nguyên trạng bánh xe tại thời điểm quay (thứ tự ô + chỉ số ô thắng) để hai việc:
+/// người thắng không thể bị can thiệp từ trình duyệt, và mọi người đang xem dựng lại được
+/// đúng vòng quay đó trên màn hình của họ.
+model SpinRound {
+  id              String        @id @default(uuid())
+  workspace_id    String
+  kind            SpinRoundKind
+  pool_ids        String[]
+  pool_names      String[]
+  winner_indexes  Int[]
+  recipient_id    String? // vòng quay quà: ai sẽ nhận
+  recipient_type  String? // 'member' | 'team'
+  started_at      DateTime      @default(now())
+  settled_at      DateTime? // đã xác nhận hoặc đã hủy
+  created_by_id   String?       @db.Uuid
+  created_by_name String?
+
+  workspace SpinWorkspace @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+
+  @@index([workspace_id, started_at])
+  @@map("spin_rounds")
+}

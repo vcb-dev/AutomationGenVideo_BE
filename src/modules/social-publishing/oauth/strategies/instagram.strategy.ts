@@ -42,11 +42,13 @@ export class InstagramOAuthStrategy {
       const params = new URLSearchParams({
         client_id: process.env.IG_APP_ID!,
         redirect_uri: this.redirectUri,
+        // CHỈ xin đúng 2 quyền app thực sự dùng. 'instagram_business_manage_comments'
+        // và '..._manage_messages' đã bị gỡ: app không gọi API comments/messages,
+        // mà chúng vẫn hiện trên màn hình consent → Meta App Review coi là quyền
+        // không khớp use case và từ chối cả submission.
         scope: [
           'instagram_business_basic',
           'instagram_business_content_publish',
-          'instagram_business_manage_comments',
-          'instagram_business_manage_messages',
         ].join(','),
         response_type: 'code',
         state,
