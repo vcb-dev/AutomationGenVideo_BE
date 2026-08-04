@@ -124,6 +124,24 @@ export class TaskAutoTasksController {
     );
   }
 
+  @Post("tasks/:id/published-links/:linkId/refresh-stats")
+  @ApiOperation({
+    summary:
+      "Làm mới thủ công số liệu tương tác (views/likes/comments/shares) cho 1 link đã nộp",
+  })
+  refreshPublishedLinkStats(
+    @Param("id") id: string,
+    @Param("linkId") linkId: string,
+    @Request() req: any,
+  ) {
+    return this.tasks.refreshPublishedLinkStats(
+      id,
+      linkId,
+      req.user.id,
+      req.user.roles ?? [],
+    );
+  }
+
   @Delete("tasks/:id")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")

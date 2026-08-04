@@ -100,4 +100,35 @@ export class FacebookAiClientService {
     );
     return data;
   }
+
+  // Refresh metrics cho ID Video/Reels NODE THUẦN (không phải Page Post ID) — khác
+  // fetchMetricsRefresh() ở trên. Video node không hỗ trợ field shares/reactions/insights
+  // như Post nên cần field set + edge riêng (video_insights) ở phía AI.
+  async fetchVideoNodeMetrics(
+    tokenEncrypted: string,
+    videoIds: string[],
+  ): Promise<{ metrics: Record<string, { view_count: number; like_count: number; comment_count: number; share_count: number }> }> {
+    const { data } = await axios.post(
+      `${this.aiServiceUrl}/api/facebook/fetch/video-metrics-refresh/`,
+      { page_access_token_encrypted: tokenEncrypted, video_ids: videoIds },
+      { headers: this.authHeaders(), timeout: 120_000 },
+    );
+    return data;
+  }
+
+  // Tra chủ sở hữu (Page) thật của 1 object Graph API bất kỳ — dùng khi URL user dán
+  // (link Reels /reel/{id}, ?v={id}...) không mang page handle nên không tra được page
+  // bằng cách parse chuỗi. `tokenEncrypted` chỉ cần là token của MỘT page bất kỳ đã kết
+  // nối (đủ quyền đọc field công khai 'from' của object khác), không cần đúng page sở hữu.
+  async resolveOwner(
+    objectId: string,
+    tokenEncrypted?: string,
+  ): Promise<{ from_id: string | null; from_name: string | null; permalink_url: string | null }> {
+    const { data } = await axios.post(
+      `${this.aiServiceUrl}/api/facebook/fetch/resolve-owner/`,
+      { object_id: objectId, page_access_token_encrypted: tokenEncrypted || '' },
+      { headers: this.authHeaders(), timeout: 30_000 },
+    );
+    return data;
+  }
 }
