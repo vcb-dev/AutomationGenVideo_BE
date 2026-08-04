@@ -142,6 +142,20 @@ export class ReviewContentApprovalDto {
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
 }
 
+export class QueryContentApprovalDto {
+  @ApiPropertyOptional({ enum: ['PENDING', 'APPROVED', 'REJECTED'] })
+  @IsIn(['PENDING', 'APPROVED', 'REJECTED']) @IsOptional() status?: 'PENDING' | 'APPROVED' | 'REJECTED'
+  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
+
+  @ApiPropertyOptional({ default: 1 })
+  @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
+
+  @ApiPropertyOptional({ default: 10 })
+  @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 10
+}
+
 export class TranslateVideoScriptDto {
   @ApiPropertyOptional({
     description: "Thị trường mục tiêu (vd 'Indonesia') — dùng để AI tự xác định ngôn ngữ khi task chưa từng có bản dịch nào",

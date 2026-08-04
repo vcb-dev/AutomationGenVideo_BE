@@ -1077,57 +1077,6 @@ export class TaskAutoTasksService {
     });
   }
 
-  // Task đã duyệt nhưng editor chưa nộp link bài đăng nào — nhắc mỗi ngày cho tới khi có link,
-  // chờ ít nhất 24h sau khi duyệt để không làm phiền ngay lập tức.
-  @Cron("0 30 9 * * *", {
-    name: "task-missing-published-link",
-    timeZone: "Asia/Ho_Chi_Minh",
-  })
-  async checkMissingPublishedLinks() {
-    try {
-      const approvedBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const candidates = await this.prisma.task.findMany({
-        where: {
-          status: "APPROVED",
-          assignee_id: { not: null },
-          reviewed_at: { lte: approvedBefore },
-        },
-        select: { id: true, assignee_id: true, published_links: true },
-      });
-
-      const missing = candidates.filter(
-        (t) =>
-          !Array.isArray(t.published_links) || t.published_links.length === 0,
-      );
-      if (!missing.length) return;
-
-      // Tránh nhắc trùng trong cùng một ngày nếu cron chạy lại (deploy lại, retry, ...).
-      const notifiedSince = new Date(Date.now() - 20 * 60 * 60 * 1000);
-      for (const task of missing) {
-        const alreadyNotified = await this.prisma.notification.findFirst({
-          where: {
-            task_id: task.id,
-            type: "TASK_MISSING_PUBLISHED_LINK",
-            created_at: { gte: notifiedSince },
-          },
-          select: { id: true },
-        });
-        if (alreadyNotified) continue;
-
-        await this.notify(
-          task.assignee_id!,
-          "TASK_MISSING_PUBLISHED_LINK",
-          "Task đã duyệt nhưng chưa nộp link bài đăng",
-          task.id,
-        );
-      }
-    } catch (err) {
-      this.logger.warn(
-        `[checkMissingPublishedLinks] failed: ${err.message}`,
-      );
-    }
-  }
-
   // Tự động refresh số liệu tương tác (views/likes/comments/shares) mỗi sáng cho các
   // link bài đăng thuộc task được tạo trong tháng hiện tại. Lệch giờ 8:15 (thay vì
   // đúng 8:00) để tránh dồn tải cùng lúc với cron Douyin/Xiaohongshu (cũng 8h sáng)
