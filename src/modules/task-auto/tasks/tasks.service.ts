@@ -555,7 +555,23 @@ export class TaskAutoTasksService {
     if (q.assignee_id) where.assignee_id = q.assignee_id;
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
-    if (q.deadline_date) {
+    if (q.deadline_from || q.deadline_to) {
+      // Khoảng ngày: mặc định mở về quá khứ/tương lai nếu chỉ truyền 1 đầu mốc.
+      const rangeStart = q.deadline_from
+        ? new Date(`${q.deadline_from}T00:00:00+07:00`)
+        : undefined;
+      const rangeEnd = q.deadline_to
+        ? new Date(`${q.deadline_to}T23:59:59.999+07:00`)
+        : undefined;
+      const bounds: { gte?: Date; lte?: Date } = {};
+      if (rangeStart) bounds.gte = rangeStart;
+      if (rangeEnd) bounds.lte = rangeEnd;
+      // Task có deadline rơi vào khoảng lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+      where.OR = [
+        { deadline: bounds },
+        { deadline: null, created_at: bounds },
+      ];
+    } else if (q.deadline_date) {
       const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
       const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
       // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
