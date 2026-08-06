@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { SpinEntryStatus } from '@prisma/client';
-import { LuckySpinService } from './lucky-spin.service';
-import { laTenKhongDuocTrung } from './lucky-spin.constants';
+import { LuckySpinService } from '../lucky-spin.service';
+import { laTenKhongDuocTrung } from '../lucky-spin.constants';
 
 /**
  * Ban tổ chức yêu cầu hai cái tên không bao giờ được bốc trúng ở vòng quay cá nhân.
