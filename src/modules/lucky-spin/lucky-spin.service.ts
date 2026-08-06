@@ -9,6 +9,7 @@ import {
   NO_TEAM_LABEL,
   SPIN_DURATION_MS,
   SPIN_WORKSPACES,
+  laTenKhongDuocTrung,
 } from './lucky-spin.constants';
 import {
   AwardGiftDto,
@@ -343,7 +344,26 @@ export class LuckySpinService {
       throw new BadRequestException(`Chỉ còn ${pool.length} mục, không bốc được ${count}.`);
     }
 
-    const winnerIndexes = this.pickDistinctIndexes(pool.length, kind === SpinRoundKind.GIFT ? 1 : count);
+    const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
+
+    /*
+     * Vòng quay cá nhân: loại người trong danh sách chặn ra khỏi tập ô CÓ THỂ THẮNG, không phải
+     * ra khỏi `pool`. Bánh xe vẫn hiện đủ tên như file nhân sự đã nhập, chỉ ô thắng là không bao
+     * giờ rơi vào họ. Lọc ở đây chứ không lọc trong câu findMany vì `pool` còn được dùng để dựng
+     * bánh xe cho mọi màn hình đang xem.
+     *
+     * Vòng quay team không lọc: pool là tên team, không phải tên người.
+     */
+    const oCoTheThang = pool
+      .map((_, i) => i)
+      .filter((i) => kind !== SpinRoundKind.MEMBER || !laTenKhongDuocTrung(pool[i].name));
+
+    // Không đủ người hợp lệ thì báo lỗi chứ không hạ chuẩn: để lọt một lượt là hỏng cả yêu cầu.
+    if (oCoTheThang.length < soLuongBoc) {
+      throw new BadRequestException(`Chỉ còn ${oCoTheThang.length} mục hợp lệ, không bốc được ${soLuongBoc}.`);
+    }
+
+    const winnerIndexes = this.pickDistinctIndexes(oCoTheThang, soLuongBoc);
 
     const round = await this.prisma.spinRound.create({
       data: {
@@ -362,11 +382,16 @@ export class LuckySpinService {
     return this.roundView(round);
   }
 
-  /** Fisher-Yates một phần bằng crypto — không lặp người, không lệch phân phối. */
-  private pickDistinctIndexes(size: number, count: number): number[] {
-    const idx = Array.from({ length: size }, (_, i) => i);
+  /**
+   * Fisher-Yates một phần bằng crypto — không lặp người, không lệch phân phối.
+   *
+   * Nhận sẵn danh sách ô được phép thắng thay vì kích thước bánh xe, vì hai con số này không
+   * còn bằng nhau từ khi có danh sách chặn: người bị chặn vẫn chiếm một ô trên bánh xe.
+   */
+  private pickDistinctIndexes(oCoTheThang: number[], count: number): number[] {
+    const idx = [...oCoTheThang];
     for (let i = 0; i < count; i++) {
-      const j = i + randomInt(size - i);
+      const j = i + randomInt(idx.length - i);
       [idx[i], idx[j]] = [idx[j], idx[i]];
     }
     return idx.slice(0, count);
