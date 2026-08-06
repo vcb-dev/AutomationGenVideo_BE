@@ -50,17 +50,27 @@ export const MAX_DRAW_COUNT = 20;
 export const TEN_KHONG_DUOC_TRUNG = ['Trần Trung Hiếu', 'Nguyễn Văn Toán'];
 
 /**
- * Chuẩn hoá tên để so khớp: gộp về NFC, thường hoá, gộp khoảng trắng thừa.
+ * Chuẩn hoá tên để so khớp: bỏ dấu, thường hoá, gộp khoảng trắng thừa.
  *
- * CỐ Ý GIỮ DẤU. Bỏ dấu thì "Nguyễn Văn Toàn" — một cái tên khác, rất phổ biến — cũng thành
- * "nguyen van toan" và bị chặn oan. Đổi lại, file nhân sự viết không dấu sẽ lọt: gặp trường hợp
- * đó thì thêm thẳng cách viết không dấu vào `TEN_KHONG_DUOC_TRUNG`.
+ * Bỏ dấu là yêu cầu rõ ràng của ban tổ chức — file nhân sự mỗi nơi xuất một kiểu ("TRAN TRUNG
+ * HIEU", "Tran Trung Hieu"), giữ dấu thì những bản không dấu lọt hết.
  *
- * NFC là bắt buộc: Excel xuất ra máy Mac hay để "ế" ở dạng tổ hợp (e + dấu rời), so chuỗi thô
- * với bản gõ sẵn trong code sẽ không khớp dù nhìn giống hệt nhau.
+ * ĐÁNH ĐỔI ĐÃ BIẾT VÀ ĐÃ CHẤP NHẬN: mọi cái tên bỏ dấu ra cùng chuỗi cũng bị chặn theo. Cụ thể
+ * "Nguyễn Văn Toàn"/"Toản" và "Trần Trung Hiệu"/"Hiều" — những tên khác người — đều thành
+ * "nguyen van toan"/"tran trung hieu". Có người như vậy trong danh sách thì phải phân biệt bằng
+ * thứ khác chứ không sửa được ở đây; file Excel nhập vào chỉ có cột Tên và Team.
+ *
+ * NFD rồi cắt dải U+0300–U+036F là cách bỏ dấu: tách "ế" thành "e" + dấu rời rồi vứt dấu đi.
+ * Riêng "đ" không phải chữ có dấu tổ hợp nên NFD không đụng tới, phải thay tay.
  */
 function chuanHoaTen(ten: string): string {
-  return ten.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+  return ten
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 const TEN_CHAN = new Set(TEN_KHONG_DUOC_TRUNG.map(chuanHoaTen));

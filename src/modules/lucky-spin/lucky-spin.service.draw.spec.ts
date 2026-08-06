@@ -44,13 +44,23 @@ function buildService(memberNames: string[]) {
 
 describe('laTenKhongDuocTrung', () => {
   it.each([
+    // có dấu
     'Trần Trung Hiếu',
     'trần trung hiếu',
     'TRẦN TRUNG HIẾU',
+    'TrầN tRuNg HiẾu',
     '  Trần   Trung  Hiếu ',
     'Nguyễn Văn Toán',
     'nguyễn văn toán',
     'NGUYỄN VĂN TOÁN',
+    // không dấu — file nhân sự nhiều nơi xuất kiểu này
+    'Tran Trung Hieu',
+    'tran trung hieu',
+    'TRAN TRUNG HIEU',
+    '  TRAN   trung Hieu  ',
+    'Nguyen Van Toan',
+    'nguyen van toan',
+    'NGUYEN VAN TOAN',
   ])('chặn "%s"', (ten) => {
     expect(laTenKhongDuocTrung(ten)).toBe(true);
   });
@@ -59,11 +69,23 @@ describe('laTenKhongDuocTrung', () => {
     expect(laTenKhongDuocTrung('Trần Trung Hiếu'.normalize('NFD'))).toBe(true);
   });
 
+  /*
+   * Hệ quả đã biết của việc bỏ dấu, ban tổ chức chấp nhận: mọi cách bỏ dấu ra cùng một chuỗi
+   * đều bị chặn. "Nguyễn Văn Toàn" là tên khác nhưng bỏ dấu cũng thành "nguyen van toan".
+   */
+  it.each(['Nguyễn Văn Toàn', 'Nguyễn Văn Toản', 'Trần Trung Hiệu', 'Trần Trung Hiều'])(
+    'chặn luôn "%s" — bỏ dấu ra cùng chuỗi',
+    (ten) => {
+      expect(laTenKhongDuocTrung(ten)).toBe(true);
+    },
+  );
+
   it.each([
-    'Nguyễn Văn Toàn',
     'Trần Trung Hiền',
     'Trần Trung Hiếu Anh',
     'Nguyễn Văn Toán Em',
+    'Trần Trung',
+    'Nguyễn Văn Toa',
     '',
   ])('không đụng tới "%s"', (ten) => {
     expect(laTenKhongDuocTrung(ten)).toBe(false);
