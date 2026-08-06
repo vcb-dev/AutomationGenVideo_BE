@@ -3831,7 +3831,7 @@ model Character {
   order_index    Int      @default(0)      // Thứ tự hiển thị trong danh sách
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
-  updated_by     String?                   // Người sửa gần nhất — FK users.id (users.id thực tế là text trên DB live, không phải uuid — xem ContentTransformHistory.user_id), null nếu chưa từng sửa qua admin CRUD
+  updated_by     String?  @db.Uuid         // Người sửa gần nhất — FK users.id (uuid, khớp User.id), null nếu chưa từng sửa qua admin CRUD
 
   histories      ContentTransformHistory[]
   prompt_history CharacterSystemPromptHistory[]
@@ -3848,7 +3848,7 @@ model CharacterSystemPromptHistory {
   id           String    @id @default(uuid())
   character_id String    // Nhân vật bị đổi system_prompt — FK characters.id
   old_content  String    @db.Text // Nội dung system_prompt TRƯỚC lần sửa này (giữ nguyên tuyệt đối, không trim/normalize)
-  changed_by   String?   // Người thực hiện lần sửa — FK users.id (text trên DB live), null nếu không xác định được
+  changed_by   String?   @db.Uuid // Người thực hiện lần sửa — FK users.id (uuid), null nếu không xác định được
   changed_at   DateTime  @default(now())
 
   character     Character @relation(fields: [character_id], references: [id], onDelete: Cascade)

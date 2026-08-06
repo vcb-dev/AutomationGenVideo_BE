@@ -34,7 +34,10 @@ export class ContentTransformController {
   }
 
   @Post('transform')
-  @ApiOperation({ summary: 'Thực hiện chuyển đổi kịch bản bằng AI' })
+  @ApiOperation({
+    summary:
+      'Bước 1 — CHỈ viết kịch bản bằng AI (không chấm điểm). Trả scoreStatus "pending"; gọi tiếp POST /rescore để chấm điểm bản ghi vừa tạo',
+  })
   async transformContent(@Request() req: any, @Body() dto: CreateTransformDto) {
     return this.service.transformContent(req.user.id, dto);
   }
@@ -49,7 +52,10 @@ export class ContentTransformController {
   }
 
   @Post('rescore')
-  @ApiOperation({ summary: 'Chấm điểm lại 1 bản ghi đã có kịch bản kết quả (dùng khi lần chấm điểm trước đó thất bại)' })
+  @ApiOperation({
+    summary:
+      'Bước 2 — chấm điểm PAAST cho 1 bản ghi đã có kịch bản kết quả. Dùng cho cả lần chấm đầu tiên (sau /transform) lẫn chấm lại khi lần trước thất bại; luôn cập nhật vào đúng bản ghi đó',
+  })
   async rescoreContent(@Request() req: any, @Body() dto: RescoreDto) {
     return this.service.rescoreContent(req.user.id, req.user.roles, dto);
   }

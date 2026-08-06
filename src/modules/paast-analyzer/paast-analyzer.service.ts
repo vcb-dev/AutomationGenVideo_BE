@@ -5,12 +5,26 @@ import { TransformStatus } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import {
+  PaastAnalysisPayload,
+  PaastMissingElement,
+  PAAST_LOGIC_VERSION,
+} from './interfaces/paast-analysis.interface';
 
-interface MissingElement {
-  layer: string;
-  criterion: string;
-  suggestion: string;
-}
+/**
+ * Timeout mặc định cho 1 lượt chấm PAAST (BE -> AI service).
+ *
+ * Trước đây là 60s, NHỎ HƠN cả timeout mà Django tự đặt cho lệnh gọi DeepSeek (120s hard-code)
+ * — tức axios của BE luôn bung trước trong khi AI service vẫn đang chạy bình thường, và vẫn đốt
+ * tiếp quota DeepSeek tới 120s dù không còn ai đọc kết quả. Đặt bằng 120s để khớp đúng ngân sách
+ * mà luồng /rescore của content-transform vẫn dùng cho mỗi lần thử (xem scoreContentWithRetry);
+ * Django tự trừ biên an toàn 20s trước khi gọi DeepSeek nên timeout trong luôn nhỏ hơn hẳn
+ * timeout ngoài, không còn cảnh 2 mốc bằng nhau rồi tranh nhau bung trước.
+ */
+export const PAAST_DEFAULT_TIMEOUT_MS = 120000;
+
+/** Ngân sách cho /upgrade: Django chạy 2 lượt LLM nối tiếp (viết rồi chấm lại) nên cần dài hơn. */
+const PAAST_UPGRADE_TIMEOUT_MS = 240000;
 
 /**
  * PaastAnalyzerService — điều phối gọi AI service (Django) để phân tích/nâng cấp
@@ -38,10 +52,43 @@ export class PaastAnalyzerService {
    * nhưng bản ghi trong DB thì còn).
    */
   async findLatestByContent(userId: string, content: string) {
-    return this.prisma.paastAnalysisHistory.findFirst({
+    const candidates = await this.prisma.paastAnalysisHistory.findMany({
       where: { user_id: userId, input_text: content, status: TransformStatus.SUCCESS },
       orderBy: { created_at: 'desc' },
+      take: 5,
     });
+
+    // Phải khớp CẢ nội dung LẪN phiên bản logic chấm. Bản ghi chấm bằng công thức đời trước
+    // (hoặc chấm từ khi chưa có cơ chế version, nên không có `logic_version`) bị coi là cache
+    // miss và sẽ được chấm lại thật — không trả về điểm tính theo công thức đã lỗi thời.
+    return (
+      candidates.find(
+        (c) => (c.analysis_result as any)?.logic_version === PAAST_LOGIC_VERSION,
+      ) || null
+    );
+  }
+
+  /**
+   * Chấm điểm PAAST cho 1 đoạn content — CHỈ gọi AI service và trả kết quả thô, KHÔNG ghi
+   * lịch sử, KHÔNG nuốt lỗi (ném ra để bên gọi tự quyết định retry/hiển thị).
+   *
+   * Tách riêng để các module khác (hiện tại: content-transform) tái dùng đúng logic chấm điểm
+   * này mà không bị ép tạo thêm 1 bản ghi `paast_analysis_history` song song với bản ghi lịch
+   * sử của chính chúng. `analyzeContent` bên dưới vẫn là đường dùng cho màn PAAST Analyzer độc
+   * lập (có ghi lịch sử) và gọi lại đúng hàm này, nên 2 nơi không thể lệch nhau.
+   */
+  async analyzeText(content: string, timeoutMs = PAAST_DEFAULT_TIMEOUT_MS): Promise<PaastAnalysisPayload> {
+    const response = await firstValueFrom(
+      this.httpService.post(
+        `${this.aiServiceUrl}/api/ai/paast/analyze/`,
+        // Giây, không phải ms — khớp tham số `timeout_seconds` mà view Django đọc.
+        { content, timeout_seconds: Math.ceil(timeoutMs / 1000) },
+        { timeout: timeoutMs },
+      ),
+    );
+
+    const { layers, total_score, cta_warning } = response.data;
+    return { layers, total_score, cta_warning };
   }
 
   /**
@@ -58,21 +105,15 @@ export class PaastAnalyzerService {
 
     const startTime = Date.now();
     try {
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `${this.aiServiceUrl}/api/ai/paast/analyze/`,
-          { content: dto.content },
-          { timeout: 60000 },
-        ),
-      );
-
-      const { layers, total_score, cta_warning } = response.data;
+      const { layers, total_score, cta_warning } = await this.analyzeText(dto.content);
       const durationMs = Date.now() - startTime;
 
       return this.prisma.paastAnalysisHistory.update({
         where: { id: history.id },
         data: {
-          analysis_result: { layers, cta_warning },
+          // `as any`: Prisma InputJsonValue đòi index signature, interface PAAST có shape cố định.
+          // `logic_version` để findLatestByContent biết bản ghi này chấm bằng công thức nào.
+          analysis_result: { layers, cta_warning, logic_version: PAAST_LOGIC_VERSION } as any,
           total_score: total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
@@ -98,9 +139,9 @@ export class PaastAnalyzerService {
    * Trích các tiêu chí đang `miss` từ 1 bản phân tích đã lưu (loại tiêu chí `na` của Stick
    * — không thể "nâng cấp" phần cần production bằng cách sửa text, business doc §11.2).
    */
-  private extractMissingElements(analysisResult: any): MissingElement[] {
+  extractMissingElements(analysisResult: any): PaastMissingElement[] {
     const layers = analysisResult?.layers || {};
-    const missing: MissingElement[] = [];
+    const missing: PaastMissingElement[] = [];
     const criteriaLayers: Array<[string, string]> = [
       ['action', 'criteria'],
       ['acknowledge', 'criteria'],
@@ -150,8 +191,12 @@ export class PaastAnalyzerService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/upgrade/`,
-          { original_content: original.input_text, missing_elements: missingElements },
-          { timeout: 90000 },
+          {
+            original_content: original.input_text,
+            missing_elements: missingElements,
+            timeout_seconds: Math.ceil(PAAST_UPGRADE_TIMEOUT_MS / 1000),
+          },
+          { timeout: PAAST_UPGRADE_TIMEOUT_MS },
         ),
       );
 
@@ -162,7 +207,12 @@ export class PaastAnalyzerService {
         where: { id: history.id },
         data: {
           input_text: upgraded,
-          analysis_result: { layers: new_analysis.layers, cta_warning: new_analysis.cta_warning, changes_added },
+          analysis_result: {
+            layers: new_analysis.layers,
+            cta_warning: new_analysis.cta_warning,
+            changes_added,
+            logic_version: PAAST_LOGIC_VERSION,
+          },
           total_score: new_analysis.total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',

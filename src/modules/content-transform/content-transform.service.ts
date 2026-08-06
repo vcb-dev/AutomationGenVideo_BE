@@ -1,20 +1,45 @@
 import { Injectable, NotFoundException, ForbiddenException, BadRequestException, ConflictException, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateTransformDto, HistoryQueryDto, UpgradeTransformDto, RescoreDto } from './dto';
-import { UserRole, TransformStatus } from '@prisma/client';
+import { UserRole, TransformStatus, Prisma } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import { ScoreResult } from './interfaces/score-result.interface';
 import { INTERNAL_TOKEN_HEADER } from '../characters/guards/admin-or-internal.guard';
+import { PaastAnalyzerService } from '../paast-analyzer/paast-analyzer.service';
 import {
-  SCORING_SYSTEM_PROMPT,
-  buildContextPrompt,
-  buildScoreResult,
-  buildUpgradeSystemPrompt,
-  extractJson,
-  normalizeStoredScoreResult,
-} from './scoring.util';
+  PaastAnalysisPayload,
+  PaastStoredScore,
+  PAAST_LOGIC_VERSION,
+} from '../paast-analyzer/interfaces/paast-analysis.interface';
+import {
+  buildPaastUpgradeSystemPrompt,
+  buildPaastUpgradeUserPrompt,
+} from './paast-upgrade.util';
+
+/**
+ * Kết quả chấm điểm lưu vào ContentTransformHistory.score_result và trả cho FE — chính là
+ * payload PAAST nguyên bản (layers + total_score + cta_warning), không đổi tên field.
+ */
+type ScoreResult = PaastAnalysisPayload;
+
+/**
+ * Trạng thái chấm điểm của 1 bản ghi, dùng chung cho /transform, /rescore, /upgrade và các
+ * endpoint lịch sử:
+ *  - `null`    : bản ghi chưa từng có output_text (vd transform hỏng ngay từ bước viết) —
+ *                không áp dụng khái niệm chấm điểm.
+ *  - `pending` : ĐÃ có kịch bản kết quả nhưng CHƯA chấm điểm. Đây là trạng thái bình thường
+ *                ngay sau /transform kể từ khi tách "viết kịch bản" và "chấm điểm" thành 2
+ *                request riêng — KHÔNG phải lỗi, người dùng bấm "Chấm điểm content" để chấm.
+ *  - `success` : đã chấm xong, có scoreResult theo khung PAAST.
+ *  - `failed`  : lần chấm vừa rồi thất bại (sau khi đã tự retry), hoặc bản ghi dùng hệ điểm cũ.
+ */
+type ScoreStatus = 'success' | 'failed' | 'pending' | null;
+
+/** Bản ghi cũ chấm bằng hệ 7 nhóm/23 tiêu chí + Hard Gate (đã ngừng dùng) không có `layers`. */
+function isPaastScoreResult(raw: any): raw is ScoreResult {
+  return !!raw && typeof raw === 'object' && !!raw.layers && !!raw.layers.prefer;
+}
 
 @Injectable()
 export class ContentTransformService {
@@ -33,10 +58,16 @@ export class ContentTransformService {
   // ── Chống bấm trùng /upgrade cho cùng 1 history_id — in-memory Set, tự dọn trong finally.
   private readonly processingUpgrades = new Set<string>();
 
+  // ── Tương tự cho /rescore. Cần thiết hơn hẳn kể từ khi tách luồng: chấm điểm giờ là 1 nút
+  // riêng người dùng chủ động bấm (thay vì chạy tự động trong /transform), nên khả năng bấm 2
+  // lần liên tiếp trong lúc lượt đầu còn đang chạy là có thật.
+  private readonly processingScores = new Set<string>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly paastAnalyzer: PaastAnalyzerService,
   ) {}
 
   /** Chặn spam: tối đa RATE_LIMIT_MAX lần "Chuyển đổi"/"Nâng cấp" mỗi RATE_LIMIT_WINDOW_MS/user. */
@@ -56,42 +87,120 @@ export class ContentTransformService {
   }
 
   /**
-   * Gọi scoreContent với tự động thử lại tối đa 3 lần (1 lần đầu + 2 retry) — model reasoning
-   * đôi khi trả JSON bị cắt cụt (chạm max_tokens) hoặc timeout, phần lớn các lần thử lại sau
-   * đều thành công (đã thực đo: dao động reasoning_tokens rất lớn giữa các lần gọi dù cùng
-   * input). Log rõ từng lần thử để theo dõi tỷ lệ lỗi thật của tính năng theo thời gian.
+   * Chấm điểm kịch bản theo khung PAAST bằng PaastAnalyzerService, tự động thử lại tối đa 3 lần
+   * (1 lần đầu + 2 retry) — model reasoning đôi khi trả JSON bị cắt cụt (chạm max_tokens) hoặc
+   * timeout, phần lớn các lần thử lại sau đều thành công (đã thực đo: dao động reasoning_tokens
+   * rất lớn giữa các lần gọi dù cùng input). Log rõ từng lần thử để theo dõi tỷ lệ lỗi thật của
+   * tính năng theo thời gian.
    *
    * Từng thử giảm timeout retry xuống 60s để chặn tổng thời gian chờ, nhưng thực đo cho thấy
    * làm vậy TĂNG tỷ lệ thất bại (input dài/phức tạp cần >60s để suy luận xong, cắt sớm ở đúng
    * lần lẽ ra sẽ thành công) — phản tác dụng so với mục tiêu "giảm lỗi thật" của retry. Giữ
    * nguyên 120s cho MỌI lần thử; chấp nhận tổng tối đa 360s (3×120s) và đã tăng timeout phía
    * FE tương ứng để không bị client huỷ ngang khi BE vẫn đang xử lý bình thường.
+   *
+   * PAAST chấm trên chính kịch bản kết quả, không cần input_text hay system_prompt nhân vật —
+   * đó là 2 tham số hệ chấm điểm cũ (7 nhóm/23 tiêu chí) cần, nay đã bỏ.
    */
-  private async scoreContentWithRetry(
-    inputText: string,
-    characterSystemPrompt: string,
-    outputText: string,
-    logContext = 'chấm điểm',
-  ): Promise<ScoreResult> {
+  private async scoreContentWithRetry(outputText: string, logContext = 'chấm điểm'): Promise<ScoreResult> {
     const maxAttempts = 3;
     const timeoutsMs = [120000, 120000, 120000];
     let lastError: any;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const result = await this.scoreContent(inputText, characterSystemPrompt, outputText, timeoutsMs[attempt - 1]);
+        const result = await this.paastAnalyzer.analyzeText(outputText, timeoutsMs[attempt - 1]);
         if (attempt > 1) {
           this.logger.warn(`[${logContext}] Thành công ở lần thử ${attempt}/${maxAttempts}`);
         }
         return result;
       } catch (err: any) {
         lastError = err;
+
+        // 4xx = lỗi TẤT ĐỊNH (request sai, content không hợp lệ...) — thử lại nguyên văn cùng
+        // 1 request chắc chắn ra đúng kết quả đó, chỉ tốn thêm thời gian chờ của người dùng và
+        // che mất lỗi thật. Chỉ 5xx/timeout/lỗi mạng mới đáng thử lại.
+        const status = err.response?.status;
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+          this.logger.error(
+            `[${logContext}] Lỗi ${status} từ AI service — lỗi tất định, KHÔNG thử lại: ${this.extractAiErrorMessage(err)}`,
+          );
+          throw err;
+        }
+
         this.logger.warn(`[${logContext}] Thất bại ở lần thử ${attempt}/${maxAttempts}: ${err.message}`);
       }
     }
 
     this.logger.error(`[${logContext}] Thất bại cả ${maxAttempts} lần thử — trả về scoreStatus: failed. Lỗi cuối: ${lastError?.message}`);
     throw lastError;
+  }
+
+  /**
+   * Lấy message lỗi THẬT từ AI service để trả nguyên văn cho FE.
+   *
+   * Trước đây mọi lỗi chấm điểm đều bị thay bằng "có thể do timeout hoặc lỗi tạm thời từ AI",
+   * kể cả khi nguyên nhân thật hoàn toàn khác (vd content không hợp lệ) — người dùng đọc thấy
+   * "timeout" rồi bấm chấm lại vô ích vì lỗi tất định thì lần sau vẫn hệt vậy.
+   */
+  private extractAiErrorMessage(err: any): string {
+    return err?.response?.data?.error || err?.message || 'Lỗi không xác định khi chấm điểm';
+  }
+
+  /**
+   * Tìm bản ghi ĐÃ chấm thành công cho đúng kịch bản này (của chính user đó), để tái dùng điểm
+   * thay vì gọi AI chấm lại.
+   *
+   * Giới hạn trong bản ghi của chính user — điểm chỉ phụ thuộc nội dung nên về lý thuyết dùng
+   * chung được, nhưng đọc sang bản ghi user khác là mở rộng phạm vi truy cập dữ liệu không cần
+   * thiết. Cùng cách phân quyền mà findLatestByContent của PaastAnalyzerService đang dùng.
+   *
+   * CÓ tính cả chính bản ghi đang chấm. Nếu loại trừ nó thì bấm "Chấm điểm lại" trên bản ghi đã
+   * có điểm sẽ gọi AI chấm lại và ra điểm khác — đúng cái dao động cần loại bỏ.
+   *
+   * Chỉ tái dùng điểm có shape PAAST hợp lệ (`isPaastScoreResult`): bản ghi chấm bằng hệ điểm cũ
+   * (7 nhóm/23 tiêu chí) vẫn có `score_result` khác null, nếu nhận bừa thì những bản ghi đó vĩnh
+   * viễn không chấm lại được sang khung PAAST.
+   *
+   * VÀ phải đúng PAAST_LOGIC_VERSION hiện hành: điểm chấm bằng công thức đời trước không còn so
+   * sánh được với điểm chấm hôm nay, tái dùng chúng sẽ khiến cùng một màn hình trộn lẫn điểm của
+   * 2 hệ khác nhau mà người dùng không hề biết. Khác version ⇒ cache miss ⇒ chấm lại thật.
+   */
+  private async findCachedScoreByOutput(userId: string, outputText: string) {
+    const candidates = await this.prisma.contentTransformHistory.findMany({
+      where: {
+        user_id: userId,
+        output_text: outputText,
+        score_result: { not: Prisma.DbNull },
+      },
+      orderBy: { created_at: 'desc' },
+      take: 5,
+      select: { id: true, score_result: true },
+    });
+
+    return (
+      candidates.find(
+        (c) =>
+          isPaastScoreResult(c.score_result) &&
+          (c.score_result as any).logic_version === PAAST_LOGIC_VERSION,
+      ) || null
+    );
+  }
+
+  /** Gắn dấu phiên bản logic vào kết quả chấm TRƯỚC khi ghi DB — nguồn cho lần tra cache sau. */
+  private withLogicVersion(scoreResult: ScoreResult): PaastStoredScore {
+    return { ...scoreResult, logic_version: PAAST_LOGIC_VERSION };
+  }
+
+  /** Message hiển thị cho FE: giữ nguyên lỗi thật, chỉ nói "có thể do timeout" khi ĐÚNG là timeout. */
+  private buildScoreErrorMessage(err: any): string {
+    const status = err?.response?.status;
+    const detail = this.extractAiErrorMessage(err);
+
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return `Không thể chấm điểm nội dung này: ${detail}`;
+    }
+    return `Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng thử chấm điểm lại. Chi tiết: ${detail}`;
   }
 
   /**
@@ -147,19 +256,12 @@ export class ContentTransformService {
       const outputText = await this.writeContentWithRetry(character.system_prompt, dto.input_text, 16000, 'transform-write');
       const durationMs = Date.now() - startTime;
 
-      // Lần gọi 2 (MỚI) — chấm điểm ngay sau khi có kết quả, tự retry tối đa 3 lần. Lỗi ở bước
-      // này (sau khi retry hết) KHÔNG được làm hỏng kết quả chuyển đổi chính — chỉ trả rõ
-      // scoreStatus: 'failed' + scoreError để FE hiển thị thông báo, không im lặng bỏ qua.
-      let scoreResult: ScoreResult | null = null;
-      let scoreStatus: 'success' | 'failed' = 'success';
-      let scoreError: string | null = null;
-      try {
-        scoreResult = await this.scoreContentWithRetry(dto.input_text, character.system_prompt, outputText, 'transform');
-      } catch (err: any) {
-        scoreStatus = 'failed';
-        scoreError = 'Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng thử chấm điểm lại.';
-      }
-
+      // CHỦ Ý KHÔNG chấm điểm ở đây. Trước đây request này gọi AI 2 lượt nối nhau (viết kịch
+      // bản rồi chấm điểm), mỗi lượt tự retry tới 3x120s => tối đa ~720s cho 1 lần bấm nút —
+      // quá nặng và rất dễ bị huỷ giữa chừng, kéo theo mất luôn kết quả viết đã xong. Giờ tách
+      // đôi: /transform chỉ viết (tối đa ~360s), người dùng bấm "Chấm điểm content" để gọi
+      // /rescore chấm sau. Bản ghi lưu ngay với score_result = null và trả scoreStatus
+      // 'pending' để FE biết là "chưa chấm", không phải "chấm thất bại".
       const updatedHistory = await this.prisma.contentTransformHistory.update({
         where: { id: history.id },
         data: {
@@ -167,8 +269,6 @@ export class ContentTransformService {
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-v4-flash',
           duration_ms: durationMs,
-          score_result: scoreResult as any,
-          overall_score: scoreResult?.overallScore ?? null,
         },
         include: {
           character: {
@@ -182,7 +282,7 @@ export class ContentTransformService {
         },
       });
 
-      return { ...updatedHistory, scoreResult: updatedHistory.score_result, scoreStatus, scoreError };
+      return this.attachScoreFields(updatedHistory);
     } catch (error: any) {
       this.logger.error(`Failed to transform content: ${error.message}`);
       let errMsg = error.message || 'Lỗi không xác định trong quá trình xử lý';
@@ -209,7 +309,7 @@ export class ContentTransformService {
         },
       });
 
-      return failedHistory;
+      return this.attachScoreFields(failedHistory);
     }
   }
 
@@ -338,30 +438,8 @@ export class ContentTransformService {
   }
 
   /**
-   * Lần gọi AI thứ 2 — chấm điểm theo đúng 7 nhóm/23 tiêu chí + Hard Gate (Playbook mục 21.1, 22).
-   * AI chỉ trả về passed/quote/suggestion cho từng tiêu chí; điểm số/verdict được tính lại
-   * quyết định ở buildScoreResult() (không tin tưởng tuyệt đối phép cộng của AI), và mọi quote
-   * được validate là substring nguyên văn của outputText trước khi hiển thị.
-   */
-  private async scoreContent(
-    inputText: string,
-    characterSystemPrompt: string,
-    outputText: string,
-    timeoutMs = 120000,
-  ): Promise<ScoreResult> {
-    const userPrompt = buildContextPrompt(inputText, characterSystemPrompt, outputText);
-    const raw = await this.callAiService(SCORING_SYSTEM_PROMPT, userPrompt, { maxTokens: 16000, timeoutMs });
-
-    const parsed = extractJson(raw);
-    if (!parsed) {
-      throw new Error('AI không trả về JSON hợp lệ khi chấm điểm');
-    }
-
-    return buildScoreResult(parsed, outputText);
-  }
-
-  /**
-   * Sửa nâng cấp kịch bản: ưu tiên khắc phục Hard Gate, sau đó nhóm tiêu chí yếu nhất.
+   * Sửa nâng cấp kịch bản: sửa các tiêu chí PAAST đang `miss` theo thứ tự ưu tiên lớp
+   * (Prefer → Acknowledge → Trust → Action → Stick, xem paast-upgrade.util.ts).
    * Nhận id lịch sử (ưu tiên, tái dùng đúng permission check của getHistoryDetail) hoặc
    * bộ 3 field thô (input_text/character_id/output_text). Sau khi có kịch bản mới, tự
    * động chấm điểm lại để so sánh điểm cũ/mới.
@@ -396,6 +474,15 @@ export class ContentTransformService {
         currentOutputText = history.output_text;
         previousScoreResult = history.scoreResult ?? null;
         ownerUserId = history.user_id;
+
+        // Nâng cấp = sửa đúng các tiêu chí đang `miss`, nên bắt buộc phải có điểm trước. Từ chối
+        // sớm thay vì âm thầm tự chấm baseline: FE chỉ hiện nút "Nâng cấp content theo gợi ý"
+        // sau khi đã chấm xong, nên rơi vào đây nghĩa là bản ghi thật sự chưa được chấm.
+        if (!previousScoreResult) {
+          throw new BadRequestException(
+            'Bản ghi này chưa được chấm điểm. Vui lòng bấm "Chấm điểm content" trước khi nâng cấp.',
+          );
+        }
       } else {
         if (!dto.input_text || !dto.character_id || !dto.output_text) {
           throw new BadRequestException(
@@ -418,11 +505,14 @@ export class ContentTransformService {
       // nên ở đây vẫn để lỗi (sau retry) làm fail cả request, khác với bước chấm lại bản MỚI
       // bên dưới (được cho phép fail độc lập, không kéo sập cả kết quả nâng cấp).
       if (!previousScoreResult) {
-        previousScoreResult = await this.scoreContentWithRetry(inputText, character.system_prompt, currentOutputText, 'upgrade-baseline');
+        previousScoreResult = await this.scoreContentWithRetry(currentOutputText, 'upgrade-baseline');
       }
 
-      const upgradeSystemPrompt = buildUpgradeSystemPrompt(previousScoreResult.hardGateViolations, previousScoreResult.groups);
-      const upgradeUserPrompt = buildContextPrompt(inputText, character.system_prompt, currentOutputText);
+      // Các tiêu chí đang `miss` lấy bằng đúng hàm của PaastAnalyzerService — hàm này đã loại
+      // sẵn tiêu chí `na` (cần production, không sửa được bằng cách viết thêm chữ).
+      const missing = this.paastAnalyzer.extractMissingElements(previousScoreResult);
+      const upgradeSystemPrompt = buildPaastUpgradeSystemPrompt(previousScoreResult, missing);
+      const upgradeUserPrompt = buildPaastUpgradeUserPrompt(inputText, character.system_prompt, currentOutputText);
 
       const startTime = Date.now();
       // Tự động thử lại tối đa 3 lần, cùng lý do với bước viết ở /transform (xem writeContentWithRetry).
@@ -435,10 +525,10 @@ export class ContentTransformService {
       let scoreStatus: 'success' | 'failed' = 'success';
       let scoreError: string | null = null;
       try {
-        newScoreResult = await this.scoreContentWithRetry(inputText, character.system_prompt, newOutputText, 'upgrade-rescore');
+        newScoreResult = await this.scoreContentWithRetry(newOutputText, 'upgrade-rescore');
       } catch (err: any) {
         scoreStatus = 'failed';
-        scoreError = 'Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng thử chấm điểm lại.';
+        scoreError = this.buildScoreErrorMessage(err);
       }
 
       const durationMs = Date.now() - startTime;
@@ -452,8 +542,8 @@ export class ContentTransformService {
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-v4-flash (upgrade)',
           duration_ms: durationMs,
-          score_result: newScoreResult as any,
-          overall_score: newScoreResult?.overallScore ?? null,
+          score_result: (newScoreResult ? this.withLogicVersion(newScoreResult) : null) as any,
+          overall_score: newScoreResult?.total_score ?? null,
         },
         include: {
           character: {
@@ -477,9 +567,13 @@ export class ContentTransformService {
   }
 
   /**
-   * Chấm điểm lại 1 bản ghi đã có sẵn output_text (dùng cho nút "Thử chấm điểm lại" ở FE khi
-   * bước chấm điểm ban đầu thất bại) — KHÔNG gọi lại AI viết kịch bản, chỉ chạy lại lần gọi
-   * AI chấm điểm (có retry) và cập nhật score_result/overall_score vào ĐÚNG bản ghi đó.
+   * Chấm điểm 1 bản ghi đã có sẵn output_text — KHÔNG gọi lại AI viết kịch bản, chỉ chạy lượt
+   * gọi AI chấm điểm (có retry) rồi cập nhật score_result/overall_score vào ĐÚNG bản ghi đó,
+   * không bao giờ tạo bản ghi mới.
+   *
+   * Đây là bước 2 của luồng đã tách đôi: dùng cho cả lần chấm ĐẦU TIÊN (nút "Chấm điểm content"
+   * ngay sau khi chuyển đổi xong, và ở tab Lịch sử với bản ghi 'pending') lẫn lần chấm LẠI khi
+   * lần trước thất bại.
    */
   async rescoreContent(userId: string, roles: UserRole[], dto: RescoreDto) {
     this.checkRateLimit(userId);
@@ -489,63 +583,95 @@ export class ContentTransformService {
       throw new BadRequestException('Bản ghi này chưa có kịch bản kết quả để chấm điểm');
     }
 
-    // getHistoryDetail() không select system_prompt (chủ đích — không expose ra FE), nên phải
-    // lấy riêng. Dùng API nội bộ GET /characters/:id thay vì đọc thẳng DB, giống transformContent
-    // và upgradeContent — xem fetchCharacterViaApi.
-    const character = await this.fetchCharacterViaApi(history.character_id);
-    if (!character) {
-      throw new NotFoundException('Không tìm thấy nhân vật phù hợp');
+    // Chống bấm trùng cho cùng 1 bản ghi — cùng lý do với /upgrade: 2 lượt chấm song song chỉ
+    // tốn gấp đôi chi phí AI mà kết quả sau ghi đè kết quả trước.
+    if (this.processingScores.has(history.id)) {
+      throw new ConflictException('Bản ghi này đang được chấm điểm, vui lòng chờ hoàn tất trước khi thử lại.');
     }
+    this.processingScores.add(history.id);
 
+    // PAAST chấm trực tiếp trên kịch bản kết quả — không cần lấy system_prompt của nhân vật
+    // như hệ chấm điểm cũ, nên bỏ luôn lượt gọi API nội bộ GET /characters/:id ở đây.
     let scoreResult: ScoreResult | null = null;
-    let scoreStatus: 'success' | 'failed' = 'success';
     let scoreError: string | null = null;
+    // Bật khi kết quả trả về là điểm CŨ dùng lại, không phải lượt chấm mới — FE hiển thị ghi chú
+    // để người dùng không tưởng nhầm vừa có một lượt chấm mới chạy.
+    let fromCache = false;
     try {
-      scoreResult = await this.scoreContentWithRetry(
-        history.input_text,
-        character.system_prompt,
-        history.output_text,
-        'rescore',
-      );
-    } catch (err: any) {
-      scoreStatus = 'failed';
-      scoreError = 'Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng thử chấm điểm lại.';
-    }
+      // Tái dùng điểm đã chấm cho ĐÚNG nội dung này nếu có — đây là cách duy nhất đảm bảo
+      // "cùng nội dung luôn ra cùng điểm". Hạ temperature về 0 chỉ thu hẹp dao động chứ không
+      // xoá được (thực đo 8 lượt cùng 1 kịch bản ở temperature=0 vẫn ra 3 kết quả khác nhau:
+      // 80/90/93 — DeepSeek không đảm bảo tái lập, kể cả khi thêm seed cố định). Không gọi lại
+      // AI còn tiết kiệm nguyên 1 lượt chấm cho thao tác bấm lại trên nội dung không đổi.
+      const cached = await this.findCachedScoreByOutput(userId, history.output_text);
+      if (cached) {
+        this.logger.log(`[rescore] Tái dùng điểm đã chấm của bản ghi ${cached.id} cho nội dung y hệt`);
+        scoreResult = cached.score_result as unknown as ScoreResult;
+        fromCache = true;
+      }
 
-    const updatedHistory = await this.prisma.contentTransformHistory.update({
-      where: { id: history.id },
-      data: {
-        score_result: scoreResult as any,
-        overall_score: scoreResult?.overallScore ?? null,
-      },
-      include: {
-        character: {
-          select: { id: true, name: true, slug: true, avatar_url: true },
+      if (!scoreResult) {
+        try {
+          scoreResult = await this.scoreContentWithRetry(history.output_text, 'rescore');
+        } catch (err: any) {
+          scoreError = this.buildScoreErrorMessage(err);
+        }
+      }
+
+      // Chỉ ghi DB khi chấm THÀNH CÔNG. Trước đây luôn ghi, nên 1 lần chấm lại thất bại sẽ set
+      // score_result = null và xoá mất điểm cũ vẫn còn dùng được của bản ghi.
+      if (!scoreResult) {
+        return { ...history, scoreResult: history.scoreResult, scoreStatus: 'failed' as const, scoreError, fromCache: false };
+      }
+
+      const updatedHistory = await this.prisma.contentTransformHistory.update({
+        where: { id: history.id },
+        data: {
+          // Luôn ghi kèm PAAST_LOGIC_VERSION — kể cả khi điểm lấy từ cache, để chính bản ghi này
+          // cũng tra cache được ở lần sau mà không phải dò ngược sang bản ghi nguồn.
+          score_result: this.withLogicVersion(scoreResult) as any,
+          overall_score: scoreResult.total_score ?? null,
         },
-      },
-    });
+        include: {
+          character: {
+            select: { id: true, name: true, slug: true, avatar_url: true },
+          },
+        },
+      });
 
-    return { ...updatedHistory, scoreResult: updatedHistory.score_result, scoreStatus, scoreError };
+      return { ...this.attachScoreFields(updatedHistory), fromCache };
+    } finally {
+      this.processingScores.delete(history.id);
+    }
   }
 
   /**
    * Chuẩn hoá 1 bản ghi lịch sử (Prisma, field snake_case score_result) về đúng shape
    * scoreResult/scoreStatus/scoreError camelCase mà /transform, /upgrade, /rescore đã trả —
    * dùng ở GET /history, /history/member/:id, /history/:id để FE dùng chung 1 shape scoreResult
-   * cho mọi nơi hiển thị. Bản ghi cũ lưu trước khi có field groups[].status vẫn được tính bổ
-   * sung ngay tại đây (normalizeStoredScoreResult) — không cần migration hay chấm điểm lại.
+   * cho mọi nơi hiển thị.
+   *
+   * Bản ghi cũ chấm bằng hệ 7 nhóm/23 tiêu chí + Hard Gate (đã ngừng dùng) có shape hoàn toàn
+   * khác PAAST và KHÔNG quy đổi được sang 5 lớp — bị coi như chưa có điểm, kèm thông báo mời
+   * chấm lại. Cố tình không giữ code render hệ cũ ở FE chỉ để hiển thị mấy bản ghi này.
+   *
+   * Bản ghi có output_text nhưng score_result rỗng là trạng thái BÌNH THƯỜNG kể từ khi tách
+   * /transform và /rescore (xem ScoreStatus) — trả 'pending' chứ không phải 'failed', để FE
+   * hiển thị "Chưa chấm điểm" thay vì báo lỗi cho thứ chưa từng chạy. Lần chấm thất bại thật
+   * sự vẫn được báo 'failed' ngay trong response của /rescore, /upgrade.
    */
   private attachScoreFields<T extends { output_text: string | null; score_result: any }>(
     history: T,
   ): Omit<T, 'score_result'> & {
     scoreResult: ScoreResult | null;
-    scoreStatus: 'success' | 'failed' | null;
+    scoreStatus: ScoreStatus;
     scoreError: string | null;
   } {
     const { score_result, ...rest } = history;
-    const scoreResult = normalizeStoredScoreResult(score_result);
+    const isLegacy = !!score_result && !isPaastScoreResult(score_result);
+    const scoreResult: ScoreResult | null = isPaastScoreResult(score_result) ? score_result : null;
 
-    let scoreStatus: 'success' | 'failed' | null;
+    let scoreStatus: ScoreStatus;
     let scoreError: string | null;
 
     if (!history.output_text) {
@@ -556,10 +682,13 @@ export class ContentTransformService {
     } else if (scoreResult) {
       scoreStatus = 'success';
       scoreError = null;
-    } else {
+    } else if (isLegacy) {
       scoreStatus = 'failed';
       scoreError =
-        'Bản ghi này chưa có điểm chấm (có thể do được tạo trước khi tính năng chấm điểm ra đời, hoặc lần chấm trước đó thất bại). Vui lòng thử chấm điểm lại.';
+        'Bản ghi này được chấm bằng hệ điểm cũ (7 nhóm tiêu chí, đã ngừng sử dụng). Bấm "Chấm điểm content" để chấm theo khung PAAST.';
+    } else {
+      scoreStatus = 'pending';
+      scoreError = null;
     }
 
     return { ...rest, scoreResult, scoreStatus, scoreError };
