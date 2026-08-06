@@ -20,8 +20,6 @@ CREATE TABLE "paast_analysis_histories" (
 
 CREATE INDEX "paast_analysis_histories_user_id_idx" ON "paast_analysis_histories"("user_id");
 
-CREATE INDEX "paast_analysis_histories_status_idx" ON "paast_analysis_histories"("status");
-
 ALTER TABLE "paast_analysis_histories" ADD CONSTRAINT "paast_analysis_histories_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "paast_analysis_histories" ADD CONSTRAINT "paast_analysis_histories_upgraded_from_id_fkey" FOREIGN KEY ("upgraded_from_id") REFERENCES "paast_analysis_histories"("id") ON DELETE SET NULL ON UPDATE CASCADE;
