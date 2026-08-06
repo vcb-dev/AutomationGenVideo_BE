@@ -87,8 +87,8 @@ export class PaastAnalyzerService {
       ),
     );
 
-    const { layers, total_score, cta_warning } = response.data;
-    return { layers, total_score, cta_warning };
+    const { layers, total_score, cta_warning, verdict } = response.data;
+    return { layers, total_score, cta_warning, verdict };
   }
 
   /**
@@ -105,7 +105,10 @@ export class PaastAnalyzerService {
 
     const startTime = Date.now();
     try {
-      const { layers, total_score, cta_warning } = await this.analyzeText(dto.content);
+      // Gọi qua analyzeText thay vì tự dựng lại lệnh HTTP ở đây: hàm đó gửi kèm
+      // timeout_seconds cho AI service và dùng PAAST_DEFAULT_TIMEOUT_MS, nên 2 đường chấm
+      // điểm (màn PAAST độc lập và /rescore của content-transform) không thể lệch nhau.
+      const { layers, total_score, cta_warning, verdict } = await this.analyzeText(dto.content);
       const durationMs = Date.now() - startTime;
 
       return this.prisma.paastAnalysisHistory.update({
@@ -113,7 +116,7 @@ export class PaastAnalyzerService {
         data: {
           // `as any`: Prisma InputJsonValue đòi index signature, interface PAAST có shape cố định.
           // `logic_version` để findLatestByContent biết bản ghi này chấm bằng công thức nào.
-          analysis_result: { layers, cta_warning, logic_version: PAAST_LOGIC_VERSION } as any,
+          analysis_result: { layers, cta_warning, verdict, logic_version: PAAST_LOGIC_VERSION } as any,
           total_score: total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
@@ -210,6 +213,7 @@ export class PaastAnalyzerService {
           analysis_result: {
             layers: new_analysis.layers,
             cta_warning: new_analysis.cta_warning,
+            verdict: new_analysis.verdict,
             changes_added,
             logic_version: PAAST_LOGIC_VERSION,
           },

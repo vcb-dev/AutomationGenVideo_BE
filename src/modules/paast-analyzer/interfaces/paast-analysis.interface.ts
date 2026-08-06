@@ -72,11 +72,24 @@ export interface PaastCtaWarning {
   matches: string[];
 }
 
+/**
+ * Kết luận đạt/chưa đạt chuẩn PAAST — do AI service tính (compute_verdict), KHÔNG theo ngưỡng
+ * điểm tổng: điểm cao vẫn có thể do dồn hết vào vài lớp trong khi bỏ trắng hẳn 1 lớp khác.
+ * Đạt khi cả 5 lớp đều có ít nhất 1 tiêu chí đạt (riêng Prefer đòi ≥1 insight `primary`).
+ */
+export interface PaastVerdict {
+  passed: boolean;
+  passed_layers: string[];
+  missing_layers: string[];
+}
+
 /** Payload thô AI service trả về ở /api/ai/paast/analyze/. */
 export interface PaastAnalysisPayload {
   layers: PaastLayers;
   total_score: number;
   cta_warning: PaastCtaWarning;
+  /** Optional: bản ghi/response cũ chấm trước khi AI service có compute_verdict không có field này. */
+  verdict?: PaastVerdict;
 }
 
 /**

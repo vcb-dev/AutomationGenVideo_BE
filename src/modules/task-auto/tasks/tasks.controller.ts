@@ -37,6 +37,7 @@ import {
   UpdateVideoScriptDto,
   TranslateVideoScriptDto,
   ReviewContentApprovalDto,
+  QueryContentApprovalDto,
 } from "./task.dto";
 
 @ApiTags("task-auto")
@@ -269,6 +270,14 @@ export class TaskAutoTasksController {
   }
 
   // ── Content Approval ─────────────────────────────────────────────────────
+
+  @Get("content-approvals")
+  @ApiOperation({
+    summary: "List content-approval requests (mặc định PENDING) — tab 'Content chờ duyệt'",
+  })
+  listContentApprovals(@Query() q: QueryContentApprovalDto) {
+    return this.contentApproval.list(q);
+  }
 
   @Get("tasks/:id/content-approval")
   @ApiOperation({

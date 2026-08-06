@@ -8,11 +8,37 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
-import { ReviewContentApprovalDto } from "./task.dto";
+import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./task.dto";
 
 const approvalInclude = {
   requested_by: { select: { id: true, full_name: true, email: true } },
   reviewed_by: { select: { id: true, full_name: true } },
+};
+
+// Include cho danh sách (tab "Content chờ duyệt") — cần thêm thông tin task để hiển thị
+// tiêu đề/team/người làm mà không phải gọi thêm request riêng cho từng dòng.
+const approvalListInclude = {
+  ...approvalInclude,
+  task: {
+    select: {
+      id: true,
+      deadline: true,
+      team: { select: { id: true, name: true } },
+      assignee: { select: { id: true, full_name: true } },
+      content: {
+        select: {
+          title: true,
+          source_team_content: {
+            select: { title: true, source_editor_content: { select: { title: true } } },
+          },
+        },
+      },
+      editor_content: { select: { title: true } },
+      team_content: {
+        select: { title: true, source_editor_content: { select: { title: true } } },
+      },
+    },
+  },
 };
 
 @Injectable()
@@ -23,6 +49,36 @@ export class ContentApprovalService {
     private prisma: PrismaService,
     private push: PushService,
   ) {}
+
+  /** Danh sách yêu cầu duyệt content (mặc định PENDING) — dùng cho tab "Content chờ duyệt". */
+  async list(q: QueryContentApprovalDto) {
+    const where: any = { status: q.status ?? "PENDING" };
+
+    const taskWhere: any = {};
+    if (q.team_id) taskWhere.team_id = q.team_id;
+    if (q.assignee_id) taskWhere.assignee_id = q.assignee_id;
+    if (q.search) {
+      taskWhere.content = { title: { contains: q.search, mode: "insensitive" } };
+    }
+    if (Object.keys(taskWhere).length) where.task = taskWhere;
+
+    const page = q.page ?? 1;
+    const limit = q.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.taskContentApproval.findMany({
+        where,
+        include: approvalListInclude,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: limit,
+      }),
+      this.prisma.taskContentApproval.count({ where }),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
 
   /** Yêu cầu duyệt content gần nhất của task (nếu có) — dùng để render badge trạng thái ở task detail. */
   async getCurrent(taskId: string) {
