@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { SpinEntryStatus } from '@prisma/client';
-import { LuckySpinService } from './lucky-spin.service';
-import { laTenKhongDuocTrung } from './lucky-spin.constants';
+import { LuckySpinService } from '../lucky-spin.service';
+import { laTenKhongDuocTrung } from '../lucky-spin.constants';
 
 /**
  * Ban tổ chức yêu cầu hai cái tên không bao giờ được bốc trúng ở vòng quay cá nhân.
@@ -9,6 +9,11 @@ import { laTenKhongDuocTrung } from './lucky-spin.constants';
  * Họ vẫn phải hiện đủ trên bánh xe (danh sách nhân sự nhập từ Excel là gì thì bánh xe hiện
  * đúng như vậy), chỉ có ô thắng là không bao giờ rơi vào họ. Vì thế test này không kiểm tra
  * `pool` mà kiểm tra `winnerIndexes` — chỗ duy nhất quyết định ai trúng.
+ *
+ * TẠM TẮT (07/08/2026): danh sách chặn trong lucky-spin.constants.ts đã được comment lại theo
+ * yêu cầu, nên toàn bộ test ở đây `.skip`. BẬT LẠI: bỏ comment hai dòng tên trong
+ * TEN_KHONG_DUOC_TRUNG rồi bỏ `.skip` ở hai `describe` bên dưới. Giữ nguyên phần thân test —
+ * không sửa gì thêm là chạy lại được ngay.
  */
 
 const ACTOR = { id: 'u1', name: 'MC' };
@@ -42,7 +47,7 @@ function buildService(memberNames: string[]) {
   return new LuckySpinService(prisma);
 }
 
-describe('laTenKhongDuocTrung', () => {
+describe.skip('laTenKhongDuocTrung', () => {
   it.each([
     // có dấu
     'Trần Trung Hiếu',
@@ -92,7 +97,7 @@ describe('laTenKhongDuocTrung', () => {
   });
 });
 
-describe('LuckySpinService.drawRound — người bị chặn', () => {
+describe.skip('LuckySpinService.drawRound — người bị chặn', () => {
   it('không bao giờ trúng, dù bánh xe vẫn hiện đủ tên', async () => {
     const names = ['An', 'Trần Trung Hiếu', 'Bình', 'Nguyễn Văn Toán', 'Cường'];
     const service = buildService(names);
@@ -117,6 +122,58 @@ describe('LuckySpinService.drawRound — người bị chặn', () => {
       expect(tenTrung).not.toContain('Trần Trung Hiếu');
       expect(tenTrung).not.toContain('Nguyễn Văn Toán');
     }
+  });
+
+  /*
+   * File nhân sự mỗi phòng xuất một kiểu viết. Tầng hàm thuần đã phủ các biến thể rồi, nhưng
+   * phủ thêm ở đây mới chứng minh `drawRound` thực sự gọi qua bộ chuẩn hoá — chứ không phải so
+   * chuỗi thô ở đâu đó trên đường đi.
+   */
+  it.each([
+    ['không dấu, IN HOA', 'TRAN TRUNG HIEU'],
+    ['không dấu, in thường', 'tran trung hieu'],
+    ['không dấu, Viết Hoa Đầu', 'Tran Trung Hieu'],
+    ['không dấu, IN HOA', 'NGUYEN VAN TOAN'],
+    ['không dấu, in thường', 'nguyen van toan'],
+    ['có dấu, IN HOA', 'NGUYỄN VĂN TOÁN'],
+    ['có dấu, in thường', 'trần trung hiếu'],
+    ['có dấu, hoa thường lẫn lộn', 'TrầN tRuNg HiẾu'],
+    ['thừa khoảng trắng', '  Nguyen   Van  Toan  '],
+  ])('%s: "%s" nằm trong pool nhưng không bao giờ trúng', async (_kieu: string, tenBiChan: string) => {
+    const names = ['An', tenBiChan, 'Bình'];
+    const service = buildService(names);
+
+    const daTrung = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const round = await service.drawRound('seci', { kind: 'member', count: 1 } as any, ACTOR);
+      expect(round.pool.map((p) => p.name)).toEqual(names);
+      round.winnerIndexes.forEach((idx) => daTrung.add(round.pool[idx].name));
+    }
+
+    expect([...daTrung].sort()).toEqual(['An', 'Bình']);
+  });
+
+  it('pool trộn đủ kiểu viết của cả hai người vẫn không lọt ai', async () => {
+    const names = [
+      'An',
+      'TRAN TRUNG HIEU',
+      'Bình',
+      'nguyen van toan',
+      'Cường',
+      'trần trung hiếu',
+      'Dũng',
+      'NGUYỄN VĂN TOÁN',
+    ];
+    const service = buildService(names);
+
+    const daTrung = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const round = await service.drawRound('seci', { kind: 'member', count: 4 } as any, ACTOR);
+      expect(round.winnerIndexes).toHaveLength(4);
+      round.winnerIndexes.forEach((idx) => daTrung.add(round.pool[idx].name));
+    }
+
+    expect([...daTrung].sort()).toEqual(['An', 'Bình', 'Cường', 'Dũng']);
   });
 
   it('báo lỗi thay vì để người bị chặn trúng khi không đủ người hợp lệ', async () => {

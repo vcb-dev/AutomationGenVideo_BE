@@ -63,6 +63,17 @@ export class FacebookAiClientService {
     return data;
   }
 
+  // Gia hạn User Access Token. Token nằm bên AI (token store) nên BE không truyền gì
+  // vào — chỉ kích hoạt và nhận lại kết quả để log.
+  async refreshUserToken(): Promise<{ status: string; message: string; days_left?: number }> {
+    const { data } = await axios.post(
+      `${this.aiServiceUrl}/api/facebook/fetch/token-refresh/`,
+      {},
+      { headers: this.authHeaders(), timeout: 60_000 },
+    );
+    return data;
+  }
+
   async fetchPageSync(
     pageId: string,
     tokenEncrypted: string,

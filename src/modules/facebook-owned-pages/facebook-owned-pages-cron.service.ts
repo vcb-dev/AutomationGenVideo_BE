@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
+import { FacebookAiClientService } from './facebook-ai-client.service';
 
 const VN_TZ = { timeZone: 'Asia/Ho_Chi_Minh' };
 
@@ -15,7 +16,24 @@ export class FacebookOwnedPagesCronService implements OnApplicationBootstrap {
   constructor(
     private readonly prisma: PrismaService,
     private readonly service: FacebookOwnedPagesService,
+    private readonly aiClient: FacebookAiClientService,
   ) {}
+
+  // Chạy TRƯỚC import 6h: import là bước duy nhất cần User Access Token, gia hạn xong
+  // mới import thì mới có tác dụng trong cùng ngày.
+  @Cron('0 30 5 * * *', VN_TZ)
+  async cronRefreshUserToken(): Promise<void> {
+    try {
+      const { status, message } = await this.aiClient.refreshUserToken();
+      if (status === 'refreshed' || status === 'ok') {
+        this.logger.log(`[TOKEN] ${message}`);
+      } else {
+        this.logger.error(`❌ [TOKEN] ${message}`);
+      }
+    } catch (err: any) {
+      this.logger.error(`❌ [TOKEN] Không kiểm tra được token: ${err.message}`);
+    }
+  }
 
   async onApplicationBootstrap(): Promise<void> {
     const pageCount = await this.prisma.video_management_managedfacebookpage.count();

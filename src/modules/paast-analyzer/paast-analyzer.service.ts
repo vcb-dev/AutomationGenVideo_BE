@@ -95,6 +95,56 @@ export class PaastAnalyzerService {
   }
 
   /**
+   * Phân tích PAAST BẢN 2 — dùng cho video kênh nội bộ.
+   *
+   * Khác bản 1: không có thang điểm 0–100 (chỉ đếm element + kết luận đạt/chưa) và có thêm
+   * 16 hook gợi ý. Vẫn lưu chung bảng `paast_analysis_histories` vì cột `analysis_result` là
+   * JSON tự do; `total_score` để null — đó chính là dấu hiệu phân biệt bản 2 với bản 1, cùng
+   * với khoá `phien_ban` nằm trong JSON.
+   *
+   * Cố ý KHÔNG đụng analyzeContent() bản 1: task-auto đang chạy trên nó.
+   */
+  async analyzeContentV2(userId: string, content: string) {
+    const history = await this.prisma.paastAnalysisHistory.create({
+      data: { user_id: userId, input_text: content, status: TransformStatus.PENDING },
+    });
+
+    const startTime = Date.now();
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/api/ai/paast/analyze-v2/`,
+          { content },
+          // Sinh 16 hook là một lệnh gọi LLM riêng ngoài 5 lệnh phân loại — đo thật mất ~14
+          // giây, nên 60s của bản 1 là quá sát.
+          { timeout: 150000 },
+        ),
+      );
+
+      const { verdict, layers, ctaWarning, phien_ban } = response.data;
+      return this.prisma.paastAnalysisHistory.update({
+        where: { id: history.id },
+        data: {
+          analysis_result: { phien_ban: phien_ban ?? 2, verdict, layers, ctaWarning },
+          status: TransformStatus.SUCCESS,
+          model_used: 'deepseek-chat',
+          duration_ms: Date.now() - startTime,
+        },
+      });
+    } catch (error: any) {
+      this.logger.error(`Failed to analyze PAAST v2: ${error.message}`);
+      return this.prisma.paastAnalysisHistory.update({
+        where: { id: history.id },
+        data: {
+          status: TransformStatus.FAILED,
+          error_message: error.response?.data?.error || error.message || 'Lỗi không xác định',
+          duration_ms: Date.now() - startTime,
+        },
+      });
+    }
+  }
+
+  /**
    * Trích các tiêu chí đang `miss` từ 1 bản phân tích đã lưu (loại tiêu chí `na` của Stick
    * — không thể "nâng cấp" phần cần production bằng cách sửa text, business doc §11.2).
    */
