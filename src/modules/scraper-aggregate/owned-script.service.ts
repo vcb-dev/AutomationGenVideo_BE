@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { PaastAnalyzerService } from '../paast-analyzer/paast-analyzer.service';
+import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 
 /**
  * Kịch bản + điểm PAAST cho video kênh nội bộ.
@@ -53,7 +53,7 @@ export class OwnedScriptService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
-    private readonly paast: PaastAnalyzerService,
+    private readonly aiIntegration: AiIntegrationService,
   ) {}
 
   /**
@@ -175,7 +175,7 @@ export class OwnedScriptService {
     }
 
     // Bản 2: không thang điểm 100, có 16 hook gợi ý — khớp với paast.vercel.app.
-    const moi: any = await this.paast.analyzeContentV2(userId, noiDungCham);
+    const moi: any = await this.aiIntegration.analyzeContentV2(userId, noiDungCham);
     if (moi?.status === 'SUCCESS') {
       await this.prisma.ownedVideoScript.update({
         where: { id: kichBan.id },
