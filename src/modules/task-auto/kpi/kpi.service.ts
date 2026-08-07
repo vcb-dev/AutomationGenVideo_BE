@@ -4,8 +4,13 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
-import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "./kpi.dto";
+import {
+  UpsertTeamKpiDto,
+  UpsertEditorKpiDto,
+  UpsertEditorDailyKpiDto,
+} from "./kpi.dto";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
+import { dailyKpiDate } from "../../../utils/date.utils";
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -197,6 +202,101 @@ export class TaskAutoKpiService {
     return { success: true };
   }
 
+  // ─── Editor Daily KPI ─────────────────────────────────────────────────────
+
+  async getEditorDailyKpis(params: {
+    date?: string;
+    from?: string;
+    to?: string;
+    team_id?: string;
+    user_id?: string;
+  }) {
+    const { date, from, to, team_id, user_id } = params;
+    return this.prisma.editorDailyKpi.findMany({
+      where: {
+        ...(date
+          ? { date: dailyKpiDate(date) }
+          : from || to
+            ? {
+                date: {
+                  ...(from ? { gte: dailyKpiDate(from) } : {}),
+                  ...(to ? { lte: dailyKpiDate(to) } : {}),
+                },
+              }
+            : {}),
+        ...(team_id ? { team_id } : {}),
+        ...(user_id ? { user_id } : {}),
+      },
+      include: this.editorDailyKpiInclude,
+      orderBy: [{ date: "desc" as const }, { user: { full_name: "asc" as const } }],
+    });
+  }
+
+  // Upsert theo lô (cả team cho 1 ngày) — UI lưu nguyên bảng một lần.
+  async upsertEditorDailyKpis(
+    dto: UpsertEditorDailyKpiDto,
+    setById: string,
+    roles: string[] = [],
+  ) {
+    const isLeaderOnly =
+      roles.includes("LEADER") &&
+      !roles.includes("ADMIN") &&
+      !roles.includes("MANAGER");
+    if (isLeaderOnly) {
+      const myTeam = await this.prisma.team.findFirst({
+        where: { id: dto.team_id, leader_id: setById },
+      });
+      if (!myTeam)
+        throw new ForbiddenException("Bạn không phải leader của team này");
+    }
+
+    const members = await this.prisma.teamMember.findMany({
+      where: {
+        team_id: dto.team_id,
+        user_id: { in: dto.entries.map((e) => e.user_id) },
+      },
+      select: { user_id: true },
+    });
+    const memberSet = new Set(members.map((m) => m.user_id));
+    if (dto.entries.some((e) => !memberSet.has(e.user_id)))
+      throw new BadRequestException(
+        "Có người dùng không thuộc team được chọn",
+      );
+
+    const day = dailyKpiDate(dto.date);
+    return this.prisma.$transaction(
+      dto.entries.map((e) =>
+        this.prisma.editorDailyKpi.upsert({
+          where: {
+            user_id_team_id_date: {
+              user_id: e.user_id,
+              team_id: dto.team_id,
+              date: day,
+            },
+          },
+          update: { target: e.target, note: e.note ?? null, set_by_id: setById },
+          create: {
+            user_id: e.user_id,
+            team_id: dto.team_id,
+            date: day,
+            target: e.target,
+            note: e.note,
+            set_by_id: setById,
+          },
+          include: this.editorDailyKpiInclude,
+        }),
+      ),
+    );
+  }
+
+  async deleteEditorDailyKpi(id: string) {
+    await runOrNotFound(
+      () => this.prisma.editorDailyKpi.delete({ where: { id } }),
+      "EditorDailyKpi not found",
+    );
+    return { success: true };
+  }
+
   private kpiInclude = {
     team: { select: { id: true, name: true } },
     created_by: { select: { id: true, full_name: true } },
@@ -218,5 +318,11 @@ export class TaskAutoKpiService {
         product_line: { select: { id: true, name: true } },
       },
     },
+  };
+
+  private editorDailyKpiInclude = {
+    user: { select: { id: true, full_name: true, email: true } },
+    set_by: { select: { id: true, full_name: true } },
+    team: { select: { id: true, name: true } },
   };
 }
