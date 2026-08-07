@@ -1,5 +1,9 @@
 import { DateTime } from "luxon";
-import { deriveDailyTarget } from "../../../../utils/date.utils";
+import {
+  deriveDailyTarget,
+  effectiveAssignmentDate,
+  dailyKpiDate,
+} from "../../../../utils/date.utils";
 import { EditorCapacity, WeightedAllocation } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
@@ -62,6 +66,7 @@ export async function loadEligibleEditors(
     todayTaskCounts,
     monthlyByContentLine,
     monthlyByProductLine,
+    manualDailyKpis,
   ] = await Promise.all([
     prisma.task.groupBy({
       by: ["assignee_id"],
@@ -103,6 +108,17 @@ export async function loadEligibleEditors(
       },
       _count: { id: true },
     }),
+    // KPI ngày set tay cho ngày hiệu lực (task giao hôm nay → làm ngày mai);
+    // target = 0 coi như chưa set nên lọc luôn ở query.
+    prisma.editorDailyKpi.findMany({
+      where: {
+        user_id: { in: userIds },
+        team_id: teamId,
+        date: dailyKpiDate(effectiveAssignmentDate(now).toFormat("yyyy-MM-dd")),
+        target: { gt: 0 },
+      },
+      select: { user_id: true, target: true },
+    }),
   ]);
 
   const monthlyTaskCountMap = new Map(
@@ -110,6 +126,9 @@ export async function loadEligibleEditors(
   );
   const todayTaskCountMap = new Map(
     todayTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
+  );
+  const manualDailyTargetMap = new Map(
+    manualDailyKpis.map((r) => [r.user_id, r.target]),
   );
 
   // editorId -> (lineId -> count đã giao trong tháng)
@@ -143,11 +162,10 @@ export async function loadEligibleEditors(
     // dailyTarget must be based on state BEFORE today so it stays stable across multiple same-day runs
     const assignedBeforeToday = Math.max(0, assignedThisMonth - assignedToday);
     const remainingMonthly = Math.max(0, kpi.total_target - assignedThisMonth);
-    const dailyTarget = deriveDailyTarget(
-      kpi.total_target,
-      assignedBeforeToday,
-      now,
-    );
+    // KPI ngày set tay (nếu có) thay cho target dẫn xuất từ KPI tháng
+    const dailyTarget =
+      manualDailyTargetMap.get(u.id) ??
+      deriveDailyTarget(kpi.total_target, assignedBeforeToday, now);
     // Only assign what's left of today's quota (handles multiple same-day runs correctly)
     const remainingDaily = Math.max(
       0,

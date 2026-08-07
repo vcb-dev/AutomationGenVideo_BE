@@ -80,6 +80,8 @@ model User {
   task_content_approvals_reviewed  TaskContentApproval[]     @relation("TaskContentApprovalReviewedBy")
   editor_kpis                      EditorKpi[]               @relation("EditorKpiOf")
   editor_kpis_set                  EditorKpi[]               @relation("EditorKpiSetBy")
+  editor_daily_kpis                EditorDailyKpi[]          @relation("EditorDailyKpiOf")
+  editor_daily_kpis_set            EditorDailyKpi[]          @relation("EditorDailyKpiSetBy")
   team_kpis_created                TeamKpi[]                 @relation("TeamKpiCreatedBy")
   products_added                   Product[]                 @relation("ProductAddedBy")
   team_products_added              TeamProduct[]             @relation("TeamProductAddedBy")
@@ -2380,6 +2382,7 @@ model Team {
   members         TeamMember[]
   team_kpis       TeamKpi[]
   editor_kpis     EditorKpi[]
+  editor_daily_kpis EditorDailyKpi[]
   tasks           Task[]
   products        TeamProduct[]
   contents        TeamContent[]
@@ -2830,6 +2833,31 @@ model EditorKpiAllocation {
   @@index([content_line_id])
   @@index([product_line_id])
   @@map("editor_kpi_allocations")
+}
+
+/// KPI ngày set tay cho từng editor, theo từng ngày cụ thể (một con số/người/ngày/team).
+/// target = 0 (hoặc không có bản ghi) = chưa set → nơi đọc fallback về logic cũ
+/// (auto-assign: derive từ KPI tháng; dashboard "MT Ngày": đếm task có deadline trong ngày).
+/// `date` lưu dạng DATE (ngày lịch VN), quy ước đọc/ghi bằng chuỗi YYYY-MM-DD → UTC midnight.
+model EditorDailyKpi {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  team_id    String   @db.Uuid
+  date       DateTime @db.Date
+  target     Int      @default(0)
+  note       String?
+  set_by_id  String   @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user   User @relation("EditorDailyKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  team   Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  set_by User @relation("EditorDailyKpiSetBy", fields: [set_by_id], references: [id])
+
+  @@unique([user_id, team_id, date])
+  @@index([team_id, date])
+  @@index([date])
+  @@map("editor_daily_kpis")
 }
 
 model ContentLine {
