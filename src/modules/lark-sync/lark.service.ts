@@ -7,6 +7,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { Prisma, UserRole } from '@prisma/client';
 import { CacheService } from '../../common/cache/cache.service';
 import { Semaphore } from '../../common/utils/semaphore';
+import { dailyKpiDate } from '../../utils/date.utils';
 
 /**
  * Đọc một ô số liệu người dùng nhập trong báo cáo Traffic/Doanh thu.
@@ -1470,7 +1471,7 @@ export class LarkService implements OnModuleInit {
                 const goalMonthStr = `${goalMonthInfo.year}-${String(goalMonthInfo.monthNum).padStart(2, '0')}`;
                 const goalMonthBounds = getVietnamMonthBounds(goalMonthInfo.year, goalMonthInfo.monthNum);
 
-                const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts] = await Promise.all([
+                const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows] = await Promise.all([
                     this.prisma.editorKpi.findMany({
                         where: { month: goalMonthStr },
                         select: { user_id: true, team_id: true, total_target: true },
@@ -1499,6 +1500,15 @@ export class LarkService implements OnModuleInit {
                         },
                         _count: { id: true },
                     }),
+                    // KPI ngày set tay (EditorDailyKpi) trong khoảng ngày đang lọc — target = 0 coi như
+                    // chưa set nên lọc luôn tại query. Cột date là DATE (UTC midnight của ngày lịch VN).
+                    this.prisma.editorDailyKpi.findMany({
+                        where: {
+                            date: { gte: dailyKpiDate(uiDayStartStr), lte: dailyKpiDate(uiDayEndStr) },
+                            target: { gt: 0 },
+                        },
+                        select: { user_id: true, team_id: true, target: true },
+                    }),
                 ]);
 
                 /** `${user_id}_${team_id}` → total_target (EditorKpi) cho đúng tháng đang xem */
@@ -1506,6 +1516,14 @@ export class LarkService implements OnModuleInit {
                 for (const ek of editorKpiRows) {
                     if (!ek.team_id) continue;
                     editorKpiTeamMap.set(`${ek.user_id}_${ek.team_id}`, ek.total_target || 0);
+                }
+
+                /** `${user_id}_${team_id}` → tổng KPI ngày set tay (>0) trong khoảng ngày đang lọc.
+                 *  Xem 1 ngày (mặc định) = đúng con số của ngày đó; xem khoảng = tổng các ngày đã set. */
+                const manualDailyKpiTeamMap = new Map<string, number>();
+                for (const dk of manualDailyKpiRows) {
+                    const key = `${dk.user_id}_${dk.team_id}`;
+                    manualDailyKpiTeamMap.set(key, (manualDailyKpiTeamMap.get(key) || 0) + dk.target);
                 }
 
                 /** user_id → danh sách team (task-auto) đang là thành viên, dùng khi không lọc theo 1 team cụ thể */
@@ -2595,7 +2613,14 @@ export class LarkService implements OnModuleInit {
                     const monthlyVideoTarget = (resolvedUserId && taskAutoTeamId)
                         ? (editorKpiTeamMap.get(`${resolvedUserId}_${taskAutoTeamId}`) || 0)
                         : 0;
-                    const dailyTaskGoal = resolvedUserId ? (taskGoalByUser.get(resolvedUserId) || 0) : 0;
+                    // MT Ngày: ưu tiên KPI ngày set tay (EditorDailyKpi của đúng team);
+                    // chưa set (hoặc = 0) → fallback đếm task theo deadline như cũ.
+                    const manualDailyGoal = (resolvedUserId && taskAutoTeamId)
+                        ? (manualDailyKpiTeamMap.get(`${resolvedUserId}_${taskAutoTeamId}`) || 0)
+                        : 0;
+                    const derivedDailyGoal = resolvedUserId ? (taskGoalByUser.get(resolvedUserId) || 0) : 0;
+                    const dailyTaskGoal = manualDailyGoal > 0 ? manualDailyGoal : derivedDailyGoal;
+                    const dailyGoalSource: 'manual' | 'derived' = manualDailyGoal > 0 ? 'manual' : 'derived';
                     const dailyTaskDone = resolvedUserId ? (taskDoneByUser.get(resolvedUserId) || 0) : 0;
                     const monthlyTaskDone = resolvedUserId ? (taskApprovedMonthByUser.get(resolvedUserId) || 0) : 0;
 
@@ -2623,6 +2648,7 @@ export class LarkService implements OnModuleInit {
                         // MT Ngày/Đã Xong: đếm task-auto (Task.deadline trong ngày/khoảng đang lọc, status APPROVED = đã xong).
                         // MT Tháng: EditorKpi.total_target (số video mục tiêu) của đúng team + tháng đang xem.
                         dailyGoal: dailyTaskGoal,
+                        dailyGoalSource,
                         done: dailyTaskDone,
                         kpi_day: dailyTaskGoal,
                         kpi_month: monthlyVideoTarget,
@@ -2813,6 +2839,7 @@ export class LarkService implements OnModuleInit {
                             answers: answersData,
                             videoCount: answersData ? Number(answersData[Object.keys(answersData).find(k => k.toLowerCase().includes('50%')) || ''] || 0) : 0,
                             dailyGoal: 0,
+                            dailyGoalSource: 'derived' as const,
                             done: 0,
                             kpi_day: 0,
                             kpi_month: 0,

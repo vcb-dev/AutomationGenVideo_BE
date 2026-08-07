@@ -36,10 +36,13 @@ export class PaastAnalyzerService {
    * Tìm bản phân tích PAAST gần nhất khớp ĐÚNG nội dung này (nếu có) — để FE tránh gọi phân tích lại
    * khi content không đổi, kể cả sau khi user reload trang (cache trong React state bị mất khi remount,
    * nhưng bản ghi trong DB thì còn).
+   *
+   * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
+   * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
    */
-  async findLatestByContent(userId: string, content: string) {
+  async findLatestByContent(content: string) {
     return this.prisma.paastAnalysisHistory.findFirst({
-      where: { user_id: userId, input_text: content, status: TransformStatus.SUCCESS },
+      where: { input_text: content, status: TransformStatus.SUCCESS },
       orderBy: { created_at: 'desc' },
     });
   }

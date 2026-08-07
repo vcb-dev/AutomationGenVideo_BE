@@ -18,9 +18,9 @@ export class PaastAnalyzerController {
   }
 
   @Post('find-by-content')
-  @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này — tránh chấm điểm lại content không đổi (kể cả sau khi reload trang)' })
-  async findByContent(@Request() req: any, @Body() dto: AnalyzeContentDto) {
-    return this.service.findLatestByContent(req.user.id, dto.content);
+  @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này (mọi user) — tránh chấm điểm lại content không đổi, kể cả khi người khác đã chấm' })
+  async findByContent(@Body() dto: AnalyzeContentDto) {
+    return this.service.findLatestByContent(dto.content);
   }
 
   @Post('upgrade/:analysisId')

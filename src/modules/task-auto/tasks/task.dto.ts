@@ -78,6 +78,11 @@ export class QueryTaskDto {
   @ApiPropertyOptional({ enum: ['auto', 'extra'] })
   @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 
+  // Kanban cần task vừa đổi cột (đổi status) nổi lên đầu danh sách thay vì kẹt theo created_at
+  // như view bảng — mặc định giữ nguyên created_at để không đổi hành vi Table view hiện có.
+  @ApiPropertyOptional({ enum: ['created_at', 'updated_at'] })
+  @IsIn(['created_at', 'updated_at']) @IsOptional() sort?: 'created_at' | 'updated_at'
+
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
 
