@@ -720,6 +720,16 @@ export class AiIntegrationController {
     return this.aiService.cloneVoiceStatus(jobId, req.user?.id);
   }
 
+  @Delete('voice/:voiceId')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Xoá một giọng đã clone (xoá cả trên MiniMax lẫn DB)' })
+  async deleteClonedVoice(@Param('voiceId') voiceId: string) {
+    if (!voiceId) {
+      throw new HttpException('voiceId is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.deleteClonedVoice(voiceId);
+  }
+
   @Get('voice/usage/stats')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Voice usage stats (điểm TTS + số clone), tổng và theo từng user' })

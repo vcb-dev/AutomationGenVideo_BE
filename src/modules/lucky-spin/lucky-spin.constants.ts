@@ -46,8 +46,15 @@ export const MAX_DRAW_COUNT = 20;
  * Họ vẫn nằm trong danh sách nhân sự và vẫn hiện đủ trên bánh xe; chỉ có ô thắng là không bao
  * giờ rơi vào họ. Danh sách so theo TÊN nên nếu công ty có người thứ hai trùng tên thì người đó
  * cũng bị chặn oan — chưa có cách nào tránh vì file Excel nhập vào chỉ có cột Tên và Team.
+ *
+ * TẠM TẮT (07/08/2026, theo yêu cầu người dùng) — danh sách để rỗng nên `laTenKhongDuocTrung`
+ * luôn trả về false và mọi người đều có thể trúng. BẬT LẠI: bỏ comment hai dòng tên bên dưới,
+ * đồng thời bỏ `.skip` ở hai `describe` trong __tests__/lucky-spin.service.draw.spec.ts.
  */
-export const TEN_KHONG_DUOC_TRUNG = ['Trần Trung Hiếu', 'Nguyễn Văn Toán'];
+export const TEN_KHONG_DUOC_TRUNG: string[] = [
+  // 'Trần Trung Hiếu',
+  // 'Nguyễn Văn Toán',
+];
 
 /**
  * Chuẩn hoá tên để so khớp: bỏ dấu, thường hoá, gộp khoảng trắng thừa.
