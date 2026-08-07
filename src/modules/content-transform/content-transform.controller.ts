@@ -18,7 +18,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { CreateTransformDto, HistoryQueryDto } from './dto';
+import { CreateTransformDto, HistoryQueryDto, UpgradeTransformDto, RescoreDto } from './dto';
 
 @ApiTags('Content Transform')
 @ApiBearerAuth()
@@ -34,9 +34,30 @@ export class ContentTransformController {
   }
 
   @Post('transform')
-  @ApiOperation({ summary: 'Thực hiện chuyển đổi kịch bản bằng AI' })
+  @ApiOperation({
+    summary:
+      'Bước 1 — CHỈ viết kịch bản bằng AI (không chấm điểm). Trả scoreStatus "pending"; gọi tiếp POST /rescore để chấm điểm bản ghi vừa tạo',
+  })
   async transformContent(@Request() req: any, @Body() dto: CreateTransformDto) {
     return this.service.transformContent(req.user.id, dto);
+  }
+
+  @Post('upgrade')
+  @ApiOperation({
+    summary:
+      'Sửa nâng cấp kịch bản: ưu tiên khắc phục Hard Gate rồi nhóm tiêu chí yếu nhất, tự động chấm điểm lại để so sánh cũ/mới',
+  })
+  async upgradeContent(@Request() req: any, @Body() dto: UpgradeTransformDto) {
+    return this.service.upgradeContent(req.user.id, req.user.roles, dto);
+  }
+
+  @Post('rescore')
+  @ApiOperation({
+    summary:
+      'Bước 2 — chấm điểm PAAST cho 1 bản ghi đã có kịch bản kết quả. Dùng cho cả lần chấm đầu tiên (sau /transform) lẫn chấm lại khi lần trước thất bại; luôn cập nhật vào đúng bản ghi đó',
+  })
+  async rescoreContent(@Request() req: any, @Body() dto: RescoreDto) {
+    return this.service.rescoreContent(req.user.id, req.user.roles, dto);
   }
 
   @Post('transcribe')
