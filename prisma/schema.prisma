@@ -3887,10 +3887,44 @@ model PaastAnalysisHistory {
   user          User                   @relation("PaastAnalysisOf", fields: [user_id], references: [id])
   upgraded_from PaastAnalysisHistory?  @relation("PaastUpgradeOf", fields: [upgraded_from_id], references: [id])
   upgrades      PaastAnalysisHistory[] @relation("PaastUpgradeOf")
+  video_scripts OwnedVideoScript[]
 
   @@index([user_id])
   @@index([user_id, created_at]) // Query lịch sử theo user + phân trang
   @@map("paast_analysis_histories")
+}
+
+/// Kịch bản của một video kênh nội bộ, dùng để chấm điểm PAAST.
+///
+/// Vì sao cần bảng riêng: PAAST chấm KỊCH BẢN, mà video cào về chỉ có caption bài đăng —
+/// đo trên dữ liệu thật chỉ 9,4% caption đạt mức tối thiểu 100 ký tự, và caption vốn không
+/// phải kịch bản. Nguồn dùng được là phụ đề tự sinh của Facebook (~34% video có), lấy một
+/// lần rồi lưu ở đây để không phải hỏi lại Graph API mỗi lần mở trang.
+///
+/// Khoá theo (platform, post_id) chứ KHÔNG theo user: đây là dữ liệu của video, cả team
+/// nhìn chung một bản. Điểm PAAST cũng vậy — trỏ qua paast_analysis_id thay vì tra lại bằng
+/// findLatestByContent(), vì hàm đó lọc theo user_id nên mỗi người mở lại tốn một lượt LLM.
+model OwnedVideoScript {
+  id                String  @id @default(uuid())
+  platform          String  @db.VarChar(20)
+  post_id           String  @db.VarChar(255)
+  /// 'phu_de' (phụ đề Facebook) · 'task' (kịch bản gốc từ task-auto) · 'whisper'
+  nguon             String  @db.VarChar(20)
+  noi_dung          String  @db.Text
+  so_ky_tu          Int
+  /// Locale của phụ đề, vd 'vi_VN' — khác tiếng Việt thì cần dịch trước khi chấm.
+  ngon_ngu          String  @default("") @db.VarChar(20)
+  /// Bản chấm PAAST mới nhất của kịch bản này; null nghĩa là có kịch bản nhưng chưa chấm.
+  paast_analysis_id String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  paast_analysis PaastAnalysisHistory? @relation(fields: [paast_analysis_id], references: [id])
+
+  @@unique([platform, post_id])
+  @@index([paast_analysis_id])
+  @@map("owned_video_scripts")
 }
 
 enum InputType {
