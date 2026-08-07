@@ -5,6 +5,8 @@ import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody, Api
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
+import { AnalyzeContentDto } from './dto/paast-analyze.dto';
+import { HistoryQueryDto } from './dto/paast-history-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @ApiTags('AI Integration')
@@ -720,6 +722,16 @@ export class AiIntegrationController {
     return this.aiService.cloneVoiceStatus(jobId, req.user?.id);
   }
 
+  @Delete('voice/:voiceId')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Xoá một giọng đã clone (xoá cả trên MiniMax lẫn DB)' })
+  async deleteClonedVoice(@Param('voiceId') voiceId: string) {
+    if (!voiceId) {
+      throw new HttpException('voiceId is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.deleteClonedVoice(voiceId);
+  }
+
   @Get('voice/usage/stats')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Voice usage stats (điểm TTS + số clone), tổng và theo từng user' })
@@ -856,5 +868,49 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Tiện ích tải video: stream file đã tải xong (proxy AI)' })
   async videoDownloaderJobFile(@Param('jobId') jobId: string, @Res() res: Response) {
     return this.aiService.videoDownloaderJobFile(jobId, res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAAST — chấm điểm content theo khung PAAST (5 lớp x 6 tiêu chí)
+  // ═══════════════════════════════════════════════════════════════
+
+  @Post('paast/analyze')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí, thang điểm 100)' })
+  async analyzePaastContent(@Req() req: any, @Body() dto: AnalyzeContentDto) {
+    return this.aiService.analyzeContent(req.user.id, dto);
+  }
+
+  @Post('paast/find-by-content')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này (mọi user) — tránh chấm điểm lại content không đổi, kể cả khi người khác đã chấm' })
+  async findPaastByContent(@Body() dto: AnalyzeContentDto) {
+    return this.aiService.findLatestByContent(dto.content);
+  }
+
+  @Post('paast/upgrade/:analysisId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Nâng cấp content dựa trên các tiêu chí đang thiếu của 1 bản phân tích đã lưu' })
+  async upgradePaastAnalysis(@Req() req: any, @Param('analysisId') analysisId: string) {
+    return this.aiService.upgradeAnalysis(req.user.id, analysisId);
+  }
+
+  @Get('paast/history')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy lịch sử phân tích PAAST của chính user đang login' })
+  async getPaastUserHistory(@Req() req: any, @Query() query: HistoryQueryDto) {
+    return this.aiService.getPaastUserHistory(req.user.id, query);
+  }
+
+  @Get('paast/history/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy chi tiết một bản ghi lịch sử phân tích PAAST' })
+  async getPaastHistoryDetail(@Req() req: any, @Param('id') id: string) {
+    return this.aiService.getPaastHistoryDetail(id, req.user.id);
   }
 }

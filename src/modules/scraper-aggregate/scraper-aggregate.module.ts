@@ -4,6 +4,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { ScraperAggregateController } from './scraper-aggregate.controller';
 import { ScraperAggregateReadService } from './scraper-aggregate-read.service';
+import { OwnedStatsService } from './owned-stats.service';
+import { OwnedScriptService } from './owned-script.service';
+import { OwnedDuplicateService } from './owned-duplicate.service';
+import { OwnedPaastCronService } from './owned-paast-cron.service';
 import { VideoStreamController } from './video-stream.controller';
 import { CacheModule } from '../../common/cache/cache.module';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
@@ -19,6 +23,9 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
   imports: [
     PrismaModule,
     CacheModule,
+    // Chấm PAAST qua AiIntegrationService (global, không cần import module) ngay trong
+    // tiến trình, thay vì BE tự gọi HTTP vào chính mình — vừa thừa một vòng mạng vừa phải
+    // bịa token.
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -28,6 +35,12 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
     }),
   ],
   controllers: [ScraperAggregateController, VideoStreamController],
-  providers: [ScraperAggregateReadService],
+  providers: [
+    ScraperAggregateReadService,
+    OwnedStatsService,
+    OwnedScriptService,
+    OwnedDuplicateService,
+    OwnedPaastCronService,
+  ],
 })
 export class ScraperAggregateModule {}

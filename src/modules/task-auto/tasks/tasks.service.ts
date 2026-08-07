@@ -18,6 +18,7 @@ import {
   ReviewTaskDto,
   UpdatePublishedLinksDto,
 } from "./task.dto";
+import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -596,7 +597,7 @@ export class TaskAutoTasksService {
       this.prisma.task.findMany({
         where,
         include: this.taskListInclude,
-        orderBy: [{ created_at: "desc" }],
+        orderBy: [{ [q.sort ?? "created_at"]: "desc" }],
         skip,
         take: limit,
       }),
@@ -1335,6 +1336,7 @@ export class TaskAutoTasksService {
       memberRevenueMonth,
       teamApprovedByContentLine,
       contentLines,
+      manualDailyKpis,
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
@@ -1432,6 +1434,16 @@ export class TaskAutoTasksService {
         _count: { id: true },
       }),
       this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
+      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      this.prisma.editorDailyKpi.findMany({
+        where: {
+          user_id: { in: memberIds },
+          team_id: { in: teamIds },
+          date: dailyKpiDate(vietnamDateString(now)),
+          target: { gt: 0 },
+        },
+        select: { user_id: true, target: true },
+      }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1452,6 +1464,12 @@ export class TaskAutoTasksService {
     const approvedTodayByUser = Object.fromEntries(
       memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
     );
+    // user → KPI ngày set tay hôm nay (cộng dồn nếu thuộc nhiều team của cùng leader)
+    const manualDayTargetByUser: Record<string, number> = {};
+    for (const dk of manualDailyKpis) {
+      manualDayTargetByUser[dk.user_id] =
+        (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
+    }
     const trafficMonthByEmail = Object.fromEntries(
       memberTrafficMonth.map((r) => [
         (r.email ?? "").toLowerCase().trim(),
@@ -1492,8 +1510,12 @@ export class TaskAutoTasksService {
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
-        /** Số task có deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) — "mục tiêu" của KPI ngày. */
-        kpi_day_target: assignedTodayByUser[m.user_id] ?? 0,
+        /** KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task có
+         * deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) như cũ. */
+        kpi_day_target:
+          manualDayTargetByUser[m.user_id] ??
+          assignedTodayByUser[m.user_id] ??
+          0,
         /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
         kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
         /** Tổng traffic tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
@@ -1620,6 +1642,7 @@ export class TaskAutoTasksService {
       memberRevenueInRange,
       approvedByContentLine,
       contentLines,
+      manualDailyKpis,
     ] = await Promise.all([
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: { in: monthsTouched } },
@@ -1672,6 +1695,16 @@ export class TaskAutoTasksService {
         _count: { id: true },
       }),
       this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
+      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      this.prisma.editorDailyKpi.findMany({
+        where: {
+          user_id: { in: memberIds },
+          team_id: { in: teamIds },
+          date: dailyKpiDate(vietnamDateString(now)),
+          target: { gt: 0 },
+        },
+        select: { user_id: true, target: true },
+      }),
     ]);
 
     const kpiTargetByUser: Record<string, number> = {};
@@ -1700,6 +1733,13 @@ export class TaskAutoTasksService {
       ]),
     );
 
+    // user → KPI ngày set tay hôm nay (cộng dồn nếu 1 người thuộc nhiều team trong phạm vi xem)
+    const manualDayTargetByUser: Record<string, number> = {};
+    for (const dk of manualDailyKpis) {
+      manualDayTargetByUser[dk.user_id] =
+        (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
+    }
+
     const perMember = memberRows.map((m) => ({
       id: m.user_id,
       team_id: m.team_id,
@@ -1707,7 +1747,11 @@ export class TaskAutoTasksService {
       kpi_completed: approvedByUser[m.user_id] ?? 0,
       kpi_target: kpiTargetByUser[m.user_id] ?? 0,
       kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
-      kpi_day_target: assignedTodayByUser[m.user_id] ?? 0,
+      // KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task giao hôm nay.
+      kpi_day_target:
+        manualDayTargetByUser[m.user_id] ??
+        assignedTodayByUser[m.user_id] ??
+        0,
       traffic_month: trafficByEmail[m.email] ?? 0,
       revenue_month: revenueByEmail[m.email] ?? 0,
     }));
@@ -1788,8 +1832,14 @@ export class TaskAutoTasksService {
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, monthlyApproved, myKpiRows] =
-      await Promise.all([
+    const [
+      tasksByStatus,
+      todayDeadline,
+      overdue,
+      monthlyApproved,
+      myKpiRows,
+      myDailyKpiAgg,
+    ] = await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
           where: { assignee_id: userId },
@@ -1829,6 +1879,15 @@ export class TaskAutoTasksService {
               },
             },
           },
+        }),
+        // KPI ngày set tay của chính editor cho hôm nay (cộng dồn nếu thuộc nhiều team)
+        this.prisma.editorDailyKpi.aggregate({
+          where: {
+            user_id: userId,
+            date: dailyKpiDate(vietnamDateString(now)),
+            target: { gt: 0 },
+          },
+          _sum: { target: true },
         }),
       ]);
 
@@ -1888,6 +1947,8 @@ export class TaskAutoTasksService {
       },
       today_deadline: todayDeadline,
       overdue,
+      /** KPI ngày set tay cho hôm nay (0 = chưa set) — hiển thị "Mục tiêu hôm nay" cá nhân. */
+      daily_kpi_target: myDailyKpiAgg._sum.target ?? 0,
       kpi: myKpi
         ? {
             month: myKpi.month,
@@ -1947,7 +2008,7 @@ export class TaskAutoTasksService {
     const TRANSITIONS: Record<string, string[]> = {
       PENDING: ["ASSIGNED", "CANCELLED"],
       ASSIGNED: ["IN_PROGRESS", "SUBMITTED", "CANCELLED"],
-      IN_PROGRESS: ["SUBMITTED", "CANCELLED"],
+      IN_PROGRESS: ["ASSIGNED", "SUBMITTED", "CANCELLED"],
       SUBMITTED: ["APPROVED", "REJECTED"],
       REJECTED: ["ASSIGNED", "IN_PROGRESS", "CANCELLED"],
       APPROVED: [],

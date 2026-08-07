@@ -1,3 +1,5 @@
+-- ĐÃ THAY THẾ (2026-08-05) bởi 20260805141500_add_lucky_spin/migration.sql — đừng chạy file này nữa.
+
 -- Lượt quay do server bốc: chống can thiệp kết quả từ trình duyệt và cho phép người xem
 -- dựng lại đúng vòng quay đang chạy.
 -- Viết tay, KHÔNG dùng prisma db push (xem manual_add_lucky_spin.sql).

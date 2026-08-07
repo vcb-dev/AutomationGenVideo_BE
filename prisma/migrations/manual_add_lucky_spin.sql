@@ -1,3 +1,7 @@
+-- ĐÃ THAY THẾ (2026-08-05) bởi 20260805141500_add_lucky_spin/migration.sql — đừng chạy file này
+-- nữa. Nằm phẳng ngoài thư mục migration nên `prisma migrate deploy` bỏ qua, production thiếu bảng
+-- và trả 500 suốt. Giữ lại chỉ để đối chiếu lịch sử.
+
 -- Vòng quay may mắn: bảng dùng chung toàn công ty cho sự kiện nội bộ.
 
 -- Viết tay vì `prisma migrate dev` không chạy được (xem MIGRATION_DEBT.md) và

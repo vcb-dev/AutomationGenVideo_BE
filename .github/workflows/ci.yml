@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # KHÔNG lọc nhánh đích ở đây: luật "PR nào cũng phải kèm unit test" chỉ có tác dụng nếu CI
+  # chạy trên MỌI PR. Trước đây chỉ bắt PR vào main/truqhieu, nên PR vào dev hay nhánh cá nhân
+  # lọt lưới hoàn toàn.
   pull_request:
-    branches: [main, truqhieu]
+  # push thì vẫn giới hạn nhánh chính — tránh đốt Actions minutes mỗi lần đẩy nhánh cá nhân.
   push:
-    branches: [main, truqhieu]
+    branches: [main, dev, truqhieu]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -48,3 +51,54 @@ jobs:
         run: |
           test -f dist/main.js
           echo "Build OK — dist/main.js present"
+
+  unit-test:
+    name: Unit test (Jest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Jest kéo theo PrismaService → cần @prisma/client đã generate, nếu không mọi suite
+      # đụng tới prisma sẽ đỏ ngay khâu import chứ không phải khâu assert.
+      - name: Prisma generate
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/ci
+          DIRECT_DATABASE_URL: postgresql://user:pass@localhost:5432/ci
+        run: npx prisma generate
+
+      - name: Chạy unit test
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/ci
+          DIRECT_DATABASE_URL: postgresql://user:pass@localhost:5432/ci
+        run: npm test -- --ci
+
+  test-required:
+    name: PR phải kèm unit test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+
+    steps:
+      # fetch-depth 0 vì phải so diff với nhánh đích; bản checkout nông không có commit gốc chung.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Kiểm tra PR có kèm file unit test
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: bash .github/scripts/check-test-required.sh
