@@ -1725,52 +1725,12 @@ export class AiIntegrationService {
   }
 
   /**
-   * Clone a voice from uploaded sample audio
-   */
-  async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
-    const FormData = require('form-data');
-    const url = `${this.voiceAiServiceUrl}/api/voice/clone/`;
-    this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file.buffer, {
-        filename: file.originalname,
-        contentType: file.mimetype
-      });
-      formData.append('voice_name', voiceName);
-      formData.append('gender', gender || 'female');
-
-      const { data } = await firstValueFrom(
-        this.httpService.post(url, formData, {
-          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-          // AI service retries upload+clone up to 3x60s each on network blips to
-          // api.minimax.io (worst case ~360s) — keep this above that ceiling.
-          timeout: 480000,
-        }).pipe(
-          catchError((error: AxiosError) => {
-            this.logger.error(`AI Service error cloning voice: ${error.message}`, error.response?.data);
-            throw new HttpException(
-              error.response?.data || 'Failed to clone voice',
-              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
-            );
-          })
-        )
-      );
-      return data;
-    } catch (error: any) {
-      if (error instanceof HttpException) throw error;
-      throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-  }
-
-  /**
    * Start voice cloning as a background job on the AI service (returns job_id
    * immediately). Mạng tới api.minimax.io có thể chập chờn vài phút — clone
-   * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
-   * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
+   * đồng bộ (một request chờ tới khi xong) dễ khiến FE/BE tự timeout dù MiniMax
+   * cuối cùng vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
+   *
+   * Đây là đường clone duy nhất; bản đồng bộ cloneVoice() đã gỡ ngày 2026-08-07.
    */
   async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
     const FormData = require('form-data');

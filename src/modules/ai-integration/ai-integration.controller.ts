@@ -655,35 +655,9 @@ export class AiIntegrationController {
     return this.aiService.listVoices();
   }
 
-  @Post('voice/clone')
-  @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file', {
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB, matches what the FE UI advertises
-    fileFilter: (_req, file, cb) => {
-      const allowedMimeTypes = /^audio\//;
-      if (allowedMimeTypes.test(file.mimetype)) {
-        cb(null, true);
-      } else {
-        cb(new HttpException(`File type not supported: ${file.mimetype}. Only audio files allowed.`, HttpStatus.BAD_REQUEST), false);
-      }
-    },
-  }))
-  @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Clone a voice from an audio file' })
-  async cloneVoice(
-    @UploadedFile() file: Express.Multer.File,
-    @Body('voice_name') voiceName: string,
-    @Body('gender') gender?: string,
-  ) {
-    if (!file) {
-      throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
-    }
-    if (!voiceName) {
-      throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
-    }
-    return this.aiService.cloneVoice(file, voiceName, gender);
-  }
-
+  // Clone chỉ còn đường nền start + status. Bản đồng bộ POST voice/clone đã gỡ
+  // ngày 2026-08-07: FE không gọi từ khi chuyển sang poll, mà nó vẫn giữ bản sao
+  // riêng của luồng clone ở cả BE lẫn AI nên sửa một bên là lệch ngay.
   @Post('voice/clone/start')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(FileInterceptor('file', {
