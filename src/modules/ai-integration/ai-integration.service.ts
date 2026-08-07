@@ -1852,6 +1852,35 @@ export class AiIntegrationService {
   }
 
   /**
+   * Xoá hẳn một giọng đã clone: AI service xoá trên MiniMax rồi xoá bản ghi Voice.
+   *
+   * Timeout 60s (dài hơn poll status 15s): đường truyền tới api.minimax.io hay
+   * chập chờn nên delete_voice bên AI đã có sẵn 3 lần thử x 30s.
+   */
+  async deleteClonedVoice(voiceId: string): Promise<any> {
+    const url = `${this.voiceAiServiceUrl}/api/voice/delete/${encodeURIComponent(voiceId)}/`;
+    this.logger.log(`Calling AI Service: DELETE ${url}`);
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.delete(url, { headers: this.minimaxHeaders(), timeout: 60000 }).pipe(
+          catchError((error: AxiosError) => {
+            this.logger.error(`AI Service error deleting voice: ${error.message}`, error.response?.data as any);
+            throw new HttpException(
+              error.response?.data || 'Failed to delete voice',
+              error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
+          })
+        )
+      );
+      return data;
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Failed to delete voice', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
    * Generate task-auto video script (adapt content đã "win" cho sản phẩm mới).
    * AI Service chịu trách nhiệm đọc file nguồn + build prompt + gọi DeepSeek;
    * BE chỉ nhận kết quả về để cache/lưu (xem VideoScriptService).
