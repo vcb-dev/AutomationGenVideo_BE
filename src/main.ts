@@ -4,6 +4,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
+import * as cookieParser from 'cookie-parser';
 import { json, urlencoded } from 'express';
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
@@ -26,6 +27,10 @@ async function bootstrap() {
   // nhiều lần, tránh lỗi "PayloadTooLargeError" khi admin lưu prompt dài qua CRUD nhân vật.
   app.use(json({ limit: '2mb' }));
   app.use(urlencoded({ limit: '2mb', extended: true }));
+
+  // Phải đứng trước mọi guard/strategy đọc req.cookies — không có nó thì req.cookies là undefined
+  // và toàn bộ auth bằng cookie im lặng trượt về Bearer, rất khó lần ra khi debug.
+  app.use(cookieParser());
 
   // Security and Optimization
   app.use(helmet({
