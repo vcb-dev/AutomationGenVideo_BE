@@ -1,5 +1,18 @@
 # Gom Facebook app secret về BE — Kế hoạch thi công pha 1
 
+> ## ⛔ KHÔNG THI CÔNG — dừng ngày 10/08/2026
+>
+> Spec gốc dựng trên giả định sai: token hệ thống hoá ra là loại **vĩnh viễn** (`expires_at = 0`,
+> đo bằng `debug_token`), không phải loại 60 ngày. Phần lớn kế hoạch này — cron gia hạn, ngưỡng
+> 7 ngày, cảnh báo Lark, `last_alert_at` — giải quyết một vấn đề không tồn tại.
+>
+> Lý do đầy đủ và rủi ro thật sự đáng xử lý: xem phần đầu của
+> [2026-08-10-gom-facebook-app-secret-ve-be.md](2026-08-10-gom-facebook-app-secret-ve-be.md).
+>
+> **Giữ file lại chứ không xoá** vì hai thứ trong đây vẫn dùng được nếu sau này cần:
+> Task 1 có mẫu chạy thử migration trong transaction rồi rollback, và Bước 3 của Task 5 sửa
+> `AI_SERVICE_URL` mặc định từ cổng 8000 sang 8001 — lỗi thật, độc lập với phần còn lại.
+
 > **Cho agent thi công:** SKILL BẮT BUỘC — dùng `subagent-driven-development` (khuyến nghị) hoặc `executing-plans` để làm từng task một. Các bước dùng cú pháp checkbox (`- [ ]`) để theo dõi.
 
 **Mục tiêu:** BE tự giữ và tự gia hạn User Access Token của Facebook, truyền sang AI theo từng request, báo Lark khi token chết — mà không sửa một dòng nào ở repo AI.

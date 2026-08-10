@@ -1,5 +1,41 @@
 # Gom Facebook app secret về BE — Thiết kế
 
+> ## ⛔ KHÔNG THI CÔNG — dừng ngày 10/08/2026
+>
+> Thiết kế này xây trên một giả định **sai**: rằng token hệ thống là loại 60 ngày và sẽ chết
+> âm thầm khi hết hạn. Đo bằng `debug_token` ngay trong ngày viết spec:
+>
+> ```
+> is_valid   = true
+> expires_at = 0   →  KHÔNG BAO GIỜ HẾT HẠN
+> ```
+>
+> Token vĩnh viễn kéo theo phần lớn thiết kế trở nên vô nghĩa:
+>
+> - **Cảnh báo Lark khi token hết hạn** — không hết hạn thì gần như không bao giờ nổ.
+> - **Ngưỡng 7 ngày, `last_alert_at`, nhắc lại mỗi tuần** — giải quyết vấn đề không tồn tại.
+> - **Bug ổ đĩa tạm** — mất `.fb_token.json` thì rơi về `META_ACCESS_TOKEN`, mà token đó
+>   vĩnh viễn hợp lệ. Không sao cả.
+> - **Cron gia hạn 05:30** — hiện gọi Facebook mỗi ngày để gia hạn thứ không cần gia hạn.
+>   Tệ hơn: không có file state nên `get_expires_at()` trả `None`, bỏ qua luôn kiểm ngưỡng.
+>
+> Phần còn đúng — AI giữ app secret nên đúc được token mới — là rủi ro thật nhưng trừu tượng,
+> không xứng với 5 task / 43 bước và một đợt deploy hai pha qua hai repo.
+>
+> **Rủi ro lớn hơn tìm ra trong lúc khảo sát, chưa xử lý:** token vĩnh viễn đó mang các scope
+> `ads_management`, `pages_manage_posts`, `pages_manage_ads`, `instagram_content_publish`,
+> `leads_retrieval` — đăng bài, chạy quảng cáo, đọc data khách hàng tiềm năng — và nằm dạng
+> thô trong `AutomationGenVideo_AI/.env`. Lộ ra là mất quyền đó **vĩnh viễn** cho tới khi có
+> người thủ công vào Facebook thu hồi. Đã kiểm: token **không** bị commit vào git ở cả ba repo.
+>
+> Muốn làm gì với hướng này thì nên nhắm vào rủi ro trên — đổi token vĩnh viễn quyền cao
+> thành token có hạn, thu hẹp scope xuống đúng `pages_show_list` + `pages_read_engagement`
+> mà AI thật sự cần — chứ không phải gom app secret. Đó là bài toán khác, cần brainstorm lại.
+>
+> Kế hoạch thi công: [2026-08-10-gom-facebook-app-secret-be-plan.md](2026-08-10-gom-facebook-app-secret-be-plan.md) — cũng không thi công.
+
+
+
 **Mục tiêu:** `FACEBOOK_APP_ID` / `FACEBOOK_APP_SECRET` chỉ còn tồn tại ở BE. AI thôi giữ bí mật dài hạn và thôi giữ trạng thái — mọi thao tác Graph API dùng token do BE truyền sang theo từng request.
 
 **Kiến trúc:** BE là nơi duy nhất giữ bí mật và trạng thái. AI trở thành bộ chuyển tiếp Graph API thuần: nhận token, gọi, trả kết quả, không nhớ gì giữa các lần gọi.
