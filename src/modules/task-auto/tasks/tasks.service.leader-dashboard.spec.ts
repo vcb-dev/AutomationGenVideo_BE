@@ -22,6 +22,10 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
         count: jest.fn(async () => 0),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
+      // KPI ngày set tay — model thêm ở nhánh ninh, getLeaderDashboard gọi thẳng
+      // trong Promise.all nên thiếu ở mock là cả suite đổ ở TypeError chứ không
+      // phải sai kết quả. Không nhầm với editorKpi ở trên: hai model khác nhau.
+      editorDailyKpi: { findMany: jest.fn(async () => []) },
       trafficReport: { groupBy: jest.fn(async () => []) },
       revenueReport: { groupBy: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => []) },
