@@ -30,6 +30,8 @@ import { ChatHistoryModule } from './modules/chat-history/chat-history.module';
 import { ContentTransformModule } from './modules/content-transform/content-transform.module';
 import { CharactersModule } from './modules/characters/characters.module';
 import { LuckySpinModule } from './modules/lucky-spin/lucky-spin.module';
+import { MemsCatalogModule } from './modules/mems-catalog/mems-catalog.module';
+import { MemsBorrowModule } from './modules/mems-borrow/mems-borrow.module';
 // TelegramReportModule: tạm tắt (nhánh khai) — bảng `telegram_report_config` chưa có migration/chưa
 // tồn tại trên DB, TelegramReportService.onModuleInit() query bảng này lúc khởi động làm BE crash.
 // import { TelegramReportModule } from './modules/telegram-report/telegram-report.module';
@@ -97,6 +99,8 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     ContentTransformModule,
     CharactersModule,
     LuckySpinModule,
+    MemsCatalogModule,
+    MemsBorrowModule,
     BusinessConnectionsModule,
     OAuthModule,
     FacebookOwnedPagesModule,
