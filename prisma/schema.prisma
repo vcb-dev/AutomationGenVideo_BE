@@ -4246,3 +4246,241 @@ model SpinRound {
   @@index([workspace_id, started_at])
   @@map("spin_rounds")
 }
+
+// ============================================================
+// MEMS — Quản lý thiết bị Media. Nguồn: DAC_TA_NGHIEP_VU_MEMS_v1.0.docx
+//
+// Tên cột đặt tiếng Anh dù tài liệu đặc tả viết tiếng Việt: đây là bảng mới,
+// chưa có hợp đồng API nào để giữ, nên theo quy ước hiện hành của repo.
+// Bảng đối chiếu tên nằm trong docs/plans/2026-08-10-mems-lat-cat-1-kho-va-kha-dung.md
+// ============================================================
+
+enum MemsAssetStatus {
+  PENDING_INSPECTION // Chờ kiểm tra — vừa nhập kho, CHƯA cho mượn được (BR-05)
+  AVAILABLE          // Sẵn sàng
+  ON_LOAN            // Đang mượn
+  POST_RETURN_CHECK  // Kiểm tra sau trả — BR-42 bắt buộc đi qua đây, đặc tả thiếu giá trị này
+  UNDER_MAINTENANCE  // Bảo trì
+  BROKEN             // Hỏng
+  LOST               // Mất
+  DISPOSED           // Đã thanh lý
+}
+
+enum MemsAssetCondition {
+  GOOD           // Tốt
+  USED           // Có dấu hiệu sử dụng
+  NEEDS_CHECK    // Cần kiểm tra
+  BROKEN         // Hỏng
+  IN_MAINTENANCE // Bảo trì
+}
+
+enum MemsRequestStatus {
+  DRAFT              // Nháp
+  PENDING_APPROVAL   // Chờ duyệt
+  APPROVED           // Đã duyệt
+  REJECTED           // Từ chối
+  CANCELLED          // Đã huỷ
+  PREPARING          // Đang chuẩn bị
+  ON_LOAN            // Đang mượn
+  PARTIALLY_RETURNED // Trả một phần
+  CLOSED             // Đã đóng
+}
+
+enum MemsLineStatus {
+  BACKORDERED // Chờ hàng — không giữ chỗ (QĐ-08)
+  RESERVED    // Đã giữ chỗ
+  ALLOCATED   // Đã phân bổ máy cụ thể
+  ON_LOAN     // Đang mượn
+  RETURNED    // Đã trả
+  CANCELLED   // Huỷ
+}
+
+enum MemsReservationStatus {
+  TENTATIVE // Tạm giữ
+  CONFIRMED // Đã xác nhận
+  RELEASED  // Đã nhả — KHÔNG tính vào khả dụng nữa
+}
+
+enum MemsRole {
+  MEMBER
+  APPROVER
+  MANAGER
+  ADMIN
+}
+
+model MemsDepartment {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique
+  name         String
+  borrow_limit Int? // Hạn mức thiết bị giữ đồng thời (BR-02). Null = không giới hạn
+  is_disabled  Boolean  @default(false) // QĐ-07: không xoá cứng
+  created_at   DateTime @default(now())
+
+  members  MemsMember[]
+  requests MemsBorrowRequest[]
+
+  @@map("mems_departments")
+}
+
+model MemsMember {
+  id            String   @id @default(uuid()) @db.Uuid
+  user_id       String   @unique @db.Uuid
+  department_id String   @db.Uuid
+  role          MemsRole @default(MEMBER)
+  is_disabled   Boolean  @default(false)
+  created_at    DateTime @default(now())
+
+  department MemsDepartment @relation(fields: [department_id], references: [id])
+
+  @@index([department_id])
+  @@map("mems_members")
+}
+
+model MemsCategory {
+  id             String   @id @default(uuid()) @db.Uuid
+  code           String   @unique
+  name           String
+  parent_id      String?  @db.Uuid // BR-07: cây chỉ hai cấp
+  buffer_minutes Int      @default(0) // BR-12: buffer kiểm tra sau mỗi lượt trả
+  is_disabled    Boolean  @default(false)
+  created_at     DateTime @default(now())
+
+  parent   MemsCategory?    @relation("MemsCategoryTree", fields: [parent_id], references: [id])
+  children MemsCategory[]   @relation("MemsCategoryTree")
+  models   MemsAssetModel[]
+
+  @@index([parent_id])
+  @@map("mems_categories")
+}
+
+model MemsAssetModel {
+  id              String   @id @default(uuid()) @db.Uuid
+  category_id     String   @db.Uuid
+  name            String
+  manufacturer    String?
+  reference_price Decimal? @db.Decimal(14, 2)
+  is_pooled       Boolean  @default(false) // QĐ-04: vật tư quản lý theo số lượng
+  is_disabled     Boolean  @default(false)
+  created_at      DateTime @default(now())
+
+  category     MemsCategory      @relation(fields: [category_id], references: [id])
+  assets       MemsAsset[]
+  lines        MemsRequestLine[]
+  reservations MemsReservation[]
+
+  @@index([category_id])
+  @@map("mems_asset_models")
+}
+
+model MemsLocation {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  parent_id   String?  @db.Uuid
+  is_disabled Boolean  @default(false)
+  created_at  DateTime @default(now())
+
+  parent   MemsLocation?  @relation("MemsLocationTree", fields: [parent_id], references: [id])
+  children MemsLocation[] @relation("MemsLocationTree")
+  assets   MemsAsset[]
+
+  @@index([parent_id])
+  @@map("mems_locations")
+}
+
+model MemsAsset {
+  id             String             @id @default(uuid()) @db.Uuid
+  asset_code     String             @unique // BR-04: duy nhất, không sửa sau khi tạo
+  model_id       String             @db.Uuid
+  serial_number  String             @unique // BR-04
+  condition      MemsAssetCondition @default(GOOD)
+  status         MemsAssetStatus    @default(PENDING_INSPECTION) // BR-05
+  location_id    String?            @db.Uuid
+  purchase_date  DateTime?          @db.Date
+  purchase_price Decimal?           @db.Decimal(14, 2)
+  qr_code        String             @unique
+  is_disabled    Boolean            @default(false)
+  created_at     DateTime           @default(now())
+  updated_at     DateTime           @updatedAt
+
+  model        MemsAssetModel    @relation(fields: [model_id], references: [id])
+  location     MemsLocation?     @relation(fields: [location_id], references: [id])
+  reservations MemsReservation[]
+  maintenances MemsMaintenance[]
+
+  @@index([model_id, status])
+  @@map("mems_assets")
+}
+
+model MemsBorrowRequest {
+  id            String            @id @default(uuid()) @db.Uuid
+  request_code  String            @unique // REQ-YYYYMMDD-NNN
+  owner_id      String            @db.Uuid // Người chịu trách nhiệm (QĐ-10)
+  department_id String            @db.Uuid
+  project       String // BR-19: bắt buộc
+  place         String
+  from_time     DateTime
+  to_time       DateTime
+  status        MemsRequestStatus @default(DRAFT)
+  is_fast_track Boolean           @default(false) // QĐ-05
+  note          String?
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+
+  department MemsDepartment    @relation(fields: [department_id], references: [id])
+  lines      MemsRequestLine[]
+
+  @@index([owner_id, status])
+  @@map("mems_borrow_requests")
+}
+
+model MemsRequestLine {
+  id         String         @id @default(uuid()) @db.Uuid
+  request_id String         @db.Uuid
+  model_id   String         @db.Uuid
+  quantity   Int
+  status     MemsLineStatus @default(RESERVED)
+  note       String?
+  created_at DateTime       @default(now())
+
+  request      MemsBorrowRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  model        MemsAssetModel    @relation(fields: [model_id], references: [id])
+  reservations MemsReservation[]
+
+  @@index([request_id])
+  @@map("mems_request_lines")
+}
+
+model MemsReservation {
+  id              String                @id @default(uuid()) @db.Uuid
+  request_line_id String                @db.Uuid
+  model_id        String                @db.Uuid
+  asset_id        String?               @db.Uuid // Chỉ điền khi đã ghim máy cụ thể (QĐ-01)
+  from_time       DateTime
+  to_time         DateTime
+  buffer_to_time  DateTime // to_time + buffer của danh mục. Lưu sẵn để đổi tham số không hồi tố
+  status          MemsReservationStatus @default(TENTATIVE)
+  created_at      DateTime              @default(now())
+
+  request_line MemsRequestLine @relation(fields: [request_line_id], references: [id], onDelete: Cascade)
+  model        MemsAssetModel  @relation(fields: [model_id], references: [id])
+  asset        MemsAsset?      @relation(fields: [asset_id], references: [id])
+
+  // Truy vấn khả dụng luôn lọc theo model + khoảng thời gian + trạng thái
+  @@index([model_id, status, from_time, buffer_to_time])
+  @@map("mems_reservations")
+}
+
+model MemsMaintenance {
+  id         String    @id @default(uuid()) @db.Uuid
+  asset_id   String    @db.Uuid
+  reason     String
+  from_time  DateTime
+  to_time    DateTime? // Null = lệnh còn mở, coi như chiếm dụng vô hạn về sau
+  cost       Decimal?  @db.Decimal(14, 2)
+  created_at DateTime  @default(now())
+
+  asset MemsAsset @relation(fields: [asset_id], references: [id])
+
+  @@index([asset_id, from_time])
+  @@map("mems_maintenances")
+}
