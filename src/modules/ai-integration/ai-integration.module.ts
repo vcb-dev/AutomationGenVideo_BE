@@ -5,7 +5,6 @@ import { JwtModule } from '@nestjs/jwt';
 import { AiIntegrationService } from './ai-integration.service';
 import { AiIntegrationController } from './ai-integration.controller';
 import { PrismaModule } from '../../common/prisma/prisma.module';
-import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 
 @Global()
@@ -24,7 +23,7 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
     }),
   ],
   controllers: [AiIntegrationController],
-  providers: [AiIntegrationService, GoogleDriveStorageService],
+  providers: [AiIntegrationService],
   exports: [AiIntegrationService],
 })
 export class AiIntegrationModule {}

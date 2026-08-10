@@ -1,6 +1,6 @@
 import { of, throwError } from 'rxjs';
 import { HttpException } from '@nestjs/common';
-import { AiIntegrationService } from '../ai-integration.service';
+import { VoiceService } from '../voice.service';
 
 /**
  * Chức năng: xoá giọng đã clone (DELETE ai/voice/:voiceId).
@@ -10,7 +10,7 @@ import { AiIntegrationService } from '../ai-integration.service';
  * (AI không có key trong .env nữa → xoá luôn thất bại), và nuốt mất câu lỗi của
  * AI service khiến người dùng chỉ thấy "500".
  */
-describe('AiIntegrationService.deleteClonedVoice', () => {
+describe('VoiceService.deleteClonedVoice', () => {
   function buildService(configValues: Record<string, string> = {}) {
     const httpService: any = {
       post: jest.fn(() => of({ data: {} })),
@@ -22,13 +22,7 @@ describe('AiIntegrationService.deleteClonedVoice', () => {
         configValues[key] !== undefined ? configValues[key] : def,
       ),
     };
-    const service = new AiIntegrationService(
-      httpService,
-      configService,
-      { sign: jest.fn(() => 'fake.jwt.token') } as any,
-      {} as any,
-      {} as any,
-    );
+    const service = new VoiceService(httpService, configService, {} as any, {} as any);
     return { service, httpService };
   }
 

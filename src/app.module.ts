@@ -11,6 +11,7 @@ import { PushModule } from "./common/push/push.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
+import { VoiceModule } from "./modules/voice/voice.module";
 import { ChannelEnrichmentModule } from "./modules/channel-enrichment/channel-enrichment.module";
 import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
@@ -44,6 +45,7 @@ import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.
 import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
 import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
+import { OwnedVideoWeeklyReportModule } from './modules/owned-video-weekly-report/owned-video-weekly-report.module';
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 import { VideoLibraryModule } from './modules/video-library/video-library.module';
@@ -75,6 +77,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     AuthModule,
     UsersModule,
     AiIntegrationModule,
+    VoiceModule,
     ChannelEnrichmentModule,
     CollectionModule,
     TrackedChannelsModule,
@@ -106,6 +109,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     KuaishouScraperModule,
     BilibiliScraperModule,
     ScraperAggregateModule,
+    OwnedVideoWeeklyReportModule,
     SearchKeywordsModule,
     ScraperProxyModule,
     VideoLibraryModule,
