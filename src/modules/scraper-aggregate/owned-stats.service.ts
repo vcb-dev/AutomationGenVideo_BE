@@ -30,11 +30,11 @@ export const NEN_TANG_NOI_BO = ['facebook', 'tiktok', 'instagram', 'youtube'] as
 export type NenTangNoiBo = (typeof NEN_TANG_NOI_BO)[number];
 
 /** Số ngày cho phép — khớp đúng 3 lựa chọn trên nút chọn kỳ ở FE. */
-const SO_NGAY_HOP_LE = [7, 28, 90];
-const SO_NGAY_MAC_DINH = 28;
+const VALID_DAY_COUNTS = [7, 28, 90];
+const DEFAULT_DAY_COUNT = 28;
 
-/** Trần độ dài khoảng ngày — xem chuanHoaKhoang() về lý do phải chặn. */
-const SO_NGAY_TOI_DA = 366;
+/** Trần độ dài khoảng ngày — xem normalizeRange() về lý do phải chặn. */
+const MAX_DAY_COUNT = 366;
 
 /** Quá ngần này ngày không đăng bài thì kênh bị coi là im lặng. */
 const NGUONG_IM_LANG = 7;
@@ -55,7 +55,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 /**
  * Nhận diện caption tiếng Việt để chia thị trường VN / Global.
  *
- * Cùng lớp ký tự với dieuKienThiTruong() trong content-filters.ts — hai chỗ phải khớp nhau,
+ * Cùng lớp ký tự với marketFilter() trong content-filters.ts — hai chỗ phải khớp nhau,
  * lệch một ký tự là bộ lọc trên trang video và số liệu trên trang tổng quan đá nhau.
  * COALESCE vì `~*` gặp NULL trả NULL, video sẽ rơi khỏi CẢ HAI nhóm và tổng bị hụt.
  */
@@ -167,8 +167,8 @@ export class OwnedStatsService {
   ) {}
 
   async thongKe(params: { platform?: string; days?: string; tu?: string; den?: string }) {
-    const platform = chuanHoaNenTang(params.platform);
-    const { tu, den } = chuanHoaKhoang(params.tu, params.den, params.days);
+    const platform = normalizePlatform(params.platform);
+    const { tu, den } = normalizeRange(params.tu, params.den, params.days);
 
     return this.cache.get(
       `owned-stats:${platform || 'all'}:${tu}:${den}`,
@@ -179,8 +179,8 @@ export class OwnedStatsService {
 
   private async tinh(platform: string, tu: string, den: string) {
     // Kỳ trước là đúng ngần ấy ngày liền ngay trước kỳ đang xem, để hai kỳ so được với nhau.
-    const soNgay = soNgayGiua(tu, den);
-    const truocTu = congNgay(tu, -soNgay);
+    const dayCount = midDayCount(tu, den);
+    const truocTu = congNgay(tu, -dayCount);
     const mocTu = dauNgay(tu);
     const mocDen = cuoiNgay(den);
     const mocTruocTu = dauNgay(truocTu);
@@ -190,7 +190,7 @@ export class OwnedStatsService {
     const trongKy = Prisma.sql`SELECT * FROM ${nguon} AS v WHERE v.ngay >= ${mocTu}`;
     const nhanKy = Prisma.sql`CASE WHEN v.ngay >= ${mocTu} THEN 'nay' ELSE 'truoc' END`;
 
-    const [tong, theoNgay, theoKenh, danhSachKenh, topVideo, thiTruong, tuyen, hashtag] =
+    const [tong, theoNgay, byChannel, channelList, topVideo, thiTruong, tuyen, hashtag] =
       await Promise.all([
         this.prisma.$queryRaw<DongTong[]>`
           SELECT v.platform, ${nhanKy} AS ky,
@@ -269,14 +269,14 @@ export class OwnedStatsService {
         `,
       ]);
 
-    const cacNgay = danhSachNgay(tu, den);
-    const tenKenh = new Map(danhSachKenh.map((k) => [`${k.platform}|${k.kenh_id}`, k]));
+    const cacNgay = dateList(tu, den);
+    const tenKenh = new Map(channelList.map((k) => [`${k.platform}|${k.kenh_id}`, k]));
 
     return {
       status: 'ok',
-      ky: { tu, den, so_ngay: soNgay },
-      nen_tang: this.gopNenTang(tong, theoNgay, danhSachKenh, cacNgay, platform),
-      kenh: this.gopKenh(theoKenh, tenKenh),
+      ky: { tu, den, so_ngay: dayCount },
+      nen_tang: this.gopNenTang(tong, theoNgay, channelList, cacNgay, platform),
+      kenh: this.gopKenh(byChannel, tenKenh),
       top_video: topVideo.map((v) => ({
         platform: v.platform,
         post_id: v.post_id,
@@ -295,8 +295,8 @@ export class OwnedStatsService {
       thi_truong: this.gopThiTruong(thiTruong),
       tuyen_noi_dung: this.gopTuyen(tuyen),
       hashtag: hashtag.map((h) => ({ the: h.the, posts: n(h.posts), views: n(h.views) })),
-      canh_bao: this.dungCanhBao(danhSachKenh, theoKenh, soNgay),
-      tong_kenh: danhSachKenh.length,
+      canh_bao: this.dungCanhBao(channelList, byChannel, dayCount),
+      tong_kenh: channelList.length,
     };
   }
 
@@ -467,7 +467,7 @@ export class OwnedStatsService {
   private gopNenTang(
     tong: DongTong[],
     theoNgay: DongNgay[],
-    danhSachKenh: DongDanhSachKenh[],
+    channelList: DongDanhSachKenh[],
     cacNgay: string[],
     platform: string,
   ) {
@@ -493,11 +493,11 @@ export class OwnedStatsService {
             shares: n(truoc?.shares),
             posts: n(truoc?.posts),
           },
-          followers: danhSachKenh
+          followers: channelList
             .filter((k) => k.platform === p)
             .reduce((s, k) => s + n(k.followers), 0),
           so_kenh: n(nay?.so_kenh),
-          tong_kenh: danhSachKenh.filter((k) => k.platform === p).length,
+          tong_kenh: channelList.filter((k) => k.platform === p).length,
           // Ngày không có bài phải là 0 chứ không được thiếu — thiếu thì đường biểu đồ nối
           // tắt qua chỗ trống, nhìn như ngày đó vẫn có lượt xem.
           theo_ngay: cacNgay.map((ngay) => {
@@ -516,13 +516,13 @@ export class OwnedStatsService {
       .filter((x) => x.tong_kenh > 0);
   }
 
-  private gopKenh(theoKenh: DongKenh[], tenKenh: Map<string, DongDanhSachKenh>) {
-    const nay = theoKenh.filter((k) => k.ky === 'nay');
+  private gopKenh(byChannel: DongKenh[], tenKenh: Map<string, DongDanhSachKenh>) {
+    const nay = byChannel.filter((k) => k.ky === 'nay');
     return nay
       .map((k) => {
         const khoa = `${k.platform}|${k.kenh_id}`;
         const meta = tenKenh.get(khoa);
-        const truoc = theoKenh.find(
+        const truoc = byChannel.find(
           (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
         );
         return {
@@ -580,7 +580,7 @@ export class OwnedStatsService {
    * Ba loại, xếp nặng trước nhẹ sau: lỗi đồng bộ → tụt lượt xem → im lặng. Chỉ xét kênh
    * đang hoạt động; kênh đã tắt im lặng là chuyện đương nhiên, báo lên chỉ làm nhiễu.
    */
-  private dungCanhBao(danhSachKenh: DongDanhSachKenh[], theoKenh: DongKenh[], soNgay: number) {
+  private dungCanhBao(channelList: DongDanhSachKenh[], byChannel: DongKenh[], dayCount: number) {
     const canhBao: {
       platform: string;
       kenh: string;
@@ -590,7 +590,7 @@ export class OwnedStatsService {
     }[] = [];
     const bayGio = Date.now();
 
-    for (const k of danhSachKenh) {
+    for (const k of channelList) {
       if (!k.hoat_dong) continue;
       if (!k.loi) continue;
       canhBao.push({
@@ -602,8 +602,8 @@ export class OwnedStatsService {
       });
     }
 
-    for (const k of theoKenh.filter((x) => x.ky === 'nay')) {
-      const truoc = theoKenh.find(
+    for (const k of byChannel.filter((x) => x.ky === 'nay')) {
+      const truoc = byChannel.find(
         (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
       );
       const vTruoc = n(truoc?.views);
@@ -612,18 +612,18 @@ export class OwnedStatsService {
       if (vTruoc < 10_000) continue;
       const delta = Math.round(((n(k.views) - vTruoc) / vTruoc) * 100);
       if (delta > NGUONG_TUT) continue;
-      const meta = danhSachKenh.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
+      const meta = channelList.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
       if (meta && !meta.hoat_dong) continue;
       canhBao.push({
         platform: k.platform,
         kenh: meta?.ten || k.kenh_id,
-        noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${soNgay} ngày trước đó`,
+        noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${dayCount} ngày trước đó`,
         muc: 'b',
         nhan: 'Tụt',
       });
     }
 
-    for (const k of danhSachKenh) {
+    for (const k of channelList) {
       if (!k.hoat_dong) continue;
       if (!k.ngay_cuoi) {
         canhBao.push({
@@ -635,12 +635,12 @@ export class OwnedStatsService {
         });
         continue;
       }
-      const soNgayIm = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
-      if (soNgayIm < NGUONG_IM_LANG) continue;
+      const idleDayCount = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
+      if (idleDayCount < NGUONG_IM_LANG) continue;
       canhBao.push({
         platform: k.platform,
         kenh: k.ten,
-        noi_dung: `Chưa đăng bài trong ${soNgayIm} ngày`,
+        noi_dung: `Chưa đăng bài trong ${idleDayCount} ngày`,
         muc: 'w',
         nhan: 'Im lặng',
       });
@@ -653,9 +653,9 @@ export class OwnedStatsService {
 /**
  * Bốn hàm dưới đây được OwnedDuplicateService dùng lại — xuất ra thay vì chép sang đó, để
  * trang tổng quan và khối trùng lặp không bao giờ hiểu "từ / đến" hay tên nền tảng lệch nhau.
- * Chép một bản thứ hai thì sửa trần SO_NGAY_TOI_DA ở đây mà bên kia vẫn cho chọn 10 năm.
+ * Chép một bản thứ hai thì sửa trần MAX_DAY_COUNT ở đây mà bên kia vẫn cho chọn 10 năm.
  */
-export function chuanHoaNenTang(raw?: string): string {
+export function normalizePlatform(raw?: string): string {
   const v = (raw || '').trim().toLowerCase();
   if (!v || v === 'all') return '';
   return (NEN_TANG_NOI_BO as readonly string[]).includes(v) ? v : '';
@@ -668,7 +668,7 @@ function laNgayHopLe(s?: string): s is string {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
-export function soNgayGiua(tu: string, den: string): number {
+export function midDayCount(tu: string, den: string): number {
   const a = Date.parse(`${tu}T00:00:00.000Z`);
   const b = Date.parse(`${den}T00:00:00.000Z`);
   return Math.floor((b - a) / 86_400_000) + 1;
@@ -686,7 +686,7 @@ export function soNgayGiua(tu: string, den: string): number {
  * (video chưa đăng nên có kéo dài cũng không thêm được gì), và chặn trần độ dài — bóc hashtag
  * bằng regexp trên caption tốn ~3,4 giây cho 90 ngày, thả cho chọn 10 năm là treo cả request.
  */
-export function chuanHoaKhoang(rawTu?: string, rawDen?: string, rawDays?: string): { tu: string; den: string } {
+export function normalizeRange(rawTu?: string, rawDen?: string, rawDays?: string): { tu: string; den: string } {
   const homNay = ngayVN(new Date());
 
   let den = laNgayHopLe(rawDen) ? rawDen : homNay;
@@ -695,21 +695,21 @@ export function chuanHoaKhoang(rawTu?: string, rawDen?: string, rawDays?: string
   if (laNgayHopLe(rawTu)) {
     tu = rawTu;
   } else {
-    const soNgay = SO_NGAY_HOP_LE.includes(parseInt(rawDays || '', 10))
+    const dayCount = VALID_DAY_COUNTS.includes(parseInt(rawDays || '', 10))
       ? parseInt(rawDays!, 10)
-      : SO_NGAY_MAC_DINH;
-    tu = congNgay(den, -(soNgay - 1));
+      : DEFAULT_DAY_COUNT;
+    tu = congNgay(den, -(dayCount - 1));
   }
 
   if (tu > den) [tu, den] = [den, tu];
   if (den > homNay) den = homNay;
   if (tu > den) tu = den;
-  if (soNgayGiua(tu, den) > SO_NGAY_TOI_DA) tu = congNgay(den, -(SO_NGAY_TOI_DA - 1));
+  if (midDayCount(tu, den) > MAX_DAY_COUNT) tu = congNgay(den, -(MAX_DAY_COUNT - 1));
 
   return { tu, den };
 }
 
-function danhSachNgay(tu: string, den: string): string[] {
+function dateList(tu: string, den: string): string[] {
   const out: string[] = [];
   let cur = tu;
   while (cur <= den) {

@@ -150,9 +150,9 @@ export class VideoStreamController {
     // Đổ dữ liệu theo dòng, không nạp cả video vào RAM.
     const reader = upstream.body.getReader();
     let daDong = false;
-    const danhDauDong = () => { daDong = true; };
-    res.on('close', danhDauDong);
-    res.on('error', danhDauDong);
+    const markRow = () => { daDong = true; };
+    res.on('close', markRow);
+    res.on('error', markRow);
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -178,8 +178,8 @@ export class VideoStreamController {
       // Người dùng cuộn sang video khác giữa chừng → kết nối đứt, không phải lỗi.
       res.destroy();
     } finally {
-      res.off('close', danhDauDong);
-      res.off('error', danhDauDong);
+      res.off('close', markRow);
+      res.off('error', markRow);
       reader.cancel().catch(() => {});
     }
   }

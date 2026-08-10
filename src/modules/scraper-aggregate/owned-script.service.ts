@@ -34,7 +34,7 @@ const KHONG_CO = 'khong_co';
 
 export type TrangThaiKichBan = 'da_cham' | 'co_kich_ban' | 'chua_co_kich_ban' | 'qua_ngan' | 'khong_ho_tro';
 
-export interface KetQuaPaastVideo {
+export interface PaastVideoResult {
   trang_thai: TrangThaiKichBan;
   nguon?: string;
   ngon_ngu?: string;
@@ -108,7 +108,7 @@ export class OwnedScriptService {
     postId: string,
     userId: string,
     chiPhuDe = false,
-  ): Promise<KetQuaPaastVideo> {
+  ): Promise<PaastVideoResult> {
     const kichBan = await this.layKichBan(platform, postId, chiPhuDe);
     if (!kichBan) {
       return {

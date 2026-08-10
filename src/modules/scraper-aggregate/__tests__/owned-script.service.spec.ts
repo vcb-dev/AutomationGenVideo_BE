@@ -250,11 +250,11 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
 
 describe('chamDiem — cắt kịch bản dài quá trần 3.000 ký tự', () => {
   /* Video dài bóc ra tới 5.320 ký tự (đo được), trước đây rơi thẳng vào nhánh lỗi. */
-  const noiDungDai = (n: number) => 'Câu này dài vừa đủ để có dấu chấm. '.repeat(n);
+  const longContent = (n: number) => 'Câu này dài vừa đủ để có dấu chấm. '.repeat(n);
 
   it('cắt ở ranh giới câu gần nhất, không cắt giữa chừng', async () => {
     const { service, paast } = dungService();
-    const noiDung = noiDungDai(200);
+    const noiDung = longContent(200);
     ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: noiDung.length }));
 
     await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
@@ -266,7 +266,7 @@ describe('chamDiem — cắt kịch bản dài quá trần 3.000 ký tự', () =
 
   it('báo rõ trong ghi_chu là đã chấm trên phần đầu', async () => {
     const { service } = dungService();
-    const noiDung = noiDungDai(200);
+    const noiDung = longContent(200);
     ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: noiDung.length }));
 
     const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);

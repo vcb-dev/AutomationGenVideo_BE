@@ -1,9 +1,9 @@
 import {
-  chuanHoaKhoang,
-  chuanHoaNenTang,
+  normalizeRange,
+  normalizePlatform,
   congNgay,
   OwnedStatsService,
-  soNgayGiua,
+  midDayCount,
 } from '../owned-stats.service';
 
 /**
@@ -12,7 +12,7 @@ import {
  * Test bám vào phần KHÔNG chạm Postgres: chuẩn hoá tham số vào và gộp kết quả ra. Mấy câu
  * $queryRaw ở giữa phải kiểm bằng dữ liệu thật chứ mock lại chỉ chứng minh mock đúng.
  *
- * Giờ hệ thống ghim vào 12:00 ngày 07/08/2026 giờ VN: chuanHoaKhoang() và dungCanhBao() đều
+ * Giờ hệ thống ghim vào 12:00 ngày 07/08/2026 giờ VN: normalizeRange() và dungCanhBao() đều
  * đọc đồng hồ, không ghim thì test xanh hôm nay đỏ ngày mai.
  */
 
@@ -26,16 +26,16 @@ afterAll(() => {
   jest.useRealTimers();
 });
 
-describe('chuanHoaNenTang', () => {
+describe('normalizePlatform', () => {
   it.each(['facebook', 'tiktok', 'instagram', 'youtube'])('giữ nguyên "%s"', (p) => {
-    expect(chuanHoaNenTang(p)).toBe(p);
+    expect(normalizePlatform(p)).toBe(p);
   });
 
   it.each([
     ['FACEBOOK', 'facebook'],
     ['  TikTok  ', 'tiktok'],
   ])('thường hoá và cắt khoảng trắng: "%s"', (vao, ra) => {
-    expect(chuanHoaNenTang(vao)).toBe(ra);
+    expect(normalizePlatform(vao)).toBe(ra);
   });
 
   /*
@@ -45,12 +45,12 @@ describe('chuanHoaNenTang', () => {
   it.each([undefined, '', '   ', 'all', 'douyin', 'xiaohongshu', "'; DROP TABLE--"])(
     'quy "%s" về tất cả nền tảng',
     (raw) => {
-      expect(chuanHoaNenTang(raw as string | undefined)).toBe('');
+      expect(normalizePlatform(raw as string | undefined)).toBe('');
     },
   );
 });
 
-describe('congNgay / soNgayGiua', () => {
+describe('congNgay / midDayCount', () => {
   it('cộng ngày vượt qua ranh giới tháng', () => {
     expect(congNgay('2026-01-31', 1)).toBe('2026-02-01');
     expect(congNgay('2026-03-01', -1)).toBe('2026-02-28');
@@ -62,16 +62,16 @@ describe('congNgay / soNgayGiua', () => {
 
   /* Khoảng ĐÓNG hai đầu: 7 ngày gần nhất phải là 7, không phải 6. */
   it('đếm cả ngày đầu lẫn ngày cuối', () => {
-    expect(soNgayGiua('2026-08-07', '2026-08-07')).toBe(1);
-    expect(soNgayGiua('2026-08-01', '2026-08-07')).toBe(7);
-    expect(soNgayGiua('2026-01-01', '2026-12-31')).toBe(365);
+    expect(midDayCount('2026-08-07', '2026-08-07')).toBe(1);
+    expect(midDayCount('2026-08-01', '2026-08-07')).toBe(7);
+    expect(midDayCount('2026-01-01', '2026-12-31')).toBe(365);
   });
 });
 
-describe('chuanHoaKhoang', () => {
+describe('normalizeRange', () => {
   it('không tham số nào thì lấy 28 ngày gần nhất tính tới hôm nay', () => {
-    expect(chuanHoaKhoang()).toEqual({ tu: '2026-07-11', den: '2026-08-07' });
-    expect(soNgayGiua('2026-07-11', '2026-08-07')).toBe(28);
+    expect(normalizeRange()).toEqual({ tu: '2026-07-11', den: '2026-08-07' });
+    expect(midDayCount('2026-07-11', '2026-08-07')).toBe(28);
   });
 
   it.each([
@@ -79,26 +79,26 @@ describe('chuanHoaKhoang', () => {
     ['28', '2026-07-11'],
     ['90', '2026-05-10'],
   ])('preset days=%s', (days, tu) => {
-    expect(chuanHoaKhoang(undefined, undefined, days)).toEqual({ tu, den: '2026-08-07' });
+    expect(normalizeRange(undefined, undefined, days)).toEqual({ tu, den: '2026-08-07' });
   });
 
   /* Chỉ 3 preset trên nút chọn kỳ là hợp lệ; số lạ phải rơi về mặc định 28 ngày. */
   it.each(['1', '30', '365', 'abc', ''])('days=%s không hợp lệ → về mặc định 28 ngày', (days) => {
-    expect(chuanHoaKhoang(undefined, undefined, days)).toEqual({
+    expect(normalizeRange(undefined, undefined, days)).toEqual({
       tu: '2026-07-11',
       den: '2026-08-07',
     });
   });
 
   it('tu + den do người dùng chọn thì thắng days', () => {
-    expect(chuanHoaKhoang('2026-06-01', '2026-06-30', '7')).toEqual({
+    expect(normalizeRange('2026-06-01', '2026-06-30', '7')).toEqual({
       tu: '2026-06-01',
       den: '2026-06-30',
     });
   });
 
   it('khoảng ngược thì lật lại chứ không trả về khoảng rỗng', () => {
-    expect(chuanHoaKhoang('2026-06-30', '2026-06-01')).toEqual({
+    expect(normalizeRange('2026-06-30', '2026-06-01')).toEqual({
       tu: '2026-06-01',
       den: '2026-06-30',
     });
@@ -106,14 +106,14 @@ describe('chuanHoaKhoang', () => {
 
   /* Video chưa đăng nên kéo dài sang tương lai không thêm được số nào. */
   it('cắt ngày cuối về hôm nay', () => {
-    expect(chuanHoaKhoang('2026-08-01', '2027-01-01')).toEqual({
+    expect(normalizeRange('2026-08-01', '2027-01-01')).toEqual({
       tu: '2026-08-01',
       den: '2026-08-07',
     });
   });
 
   it('cả khoảng nằm trong tương lai thì thu về đúng hôm nay', () => {
-    expect(chuanHoaKhoang('2027-01-01', '2027-02-01')).toEqual({
+    expect(normalizeRange('2027-01-01', '2027-02-01')).toEqual({
       tu: '2026-08-07',
       den: '2026-08-07',
     });
@@ -124,8 +124,8 @@ describe('chuanHoaKhoang', () => {
    * regexp trên caption tốn ~3,4 giây cho 90 ngày. Thả cho chọn 10 năm là treo cả request.
    */
   it('chặn trần 366 ngày, giữ ngày cuối và đẩy ngày đầu lên', () => {
-    const ra = chuanHoaKhoang('2016-01-01', '2026-08-07');
-    expect(soNgayGiua(ra.tu, ra.den)).toBe(366);
+    const ra = normalizeRange('2016-01-01', '2026-08-07');
+    expect(midDayCount(ra.tu, ra.den)).toBe(366);
     expect(ra.den).toBe('2026-08-07');
   });
 
@@ -133,7 +133,7 @@ describe('chuanHoaKhoang', () => {
   it.each(['2026-02-31', '2026-13-01', '07-08-2026', '2026/08/07', 'hôm qua'])(
     'ngày rác "%s" bị bỏ, rơi về mặc định',
     (rac) => {
-      expect(chuanHoaKhoang(rac, rac)).toEqual({ tu: '2026-07-11', den: '2026-08-07' });
+      expect(normalizeRange(rac, rac)).toEqual({ tu: '2026-07-11', den: '2026-08-07' });
     },
   );
 });
@@ -157,7 +157,7 @@ const kenh = (p: any = {}) => ({
   ...p,
 });
 
-const soKenh = (p: any = {}) => ({
+const channelCount = (p: any = {}) => ({
   platform: 'facebook',
   kenh_id: 'k1',
   ky: 'nay',
@@ -238,13 +238,13 @@ describe('dungCanhBao', () => {
     [6, false],
     [7, true],
     [30, true],
-  ])('im lặng %s ngày → có báo: %s', (soNgayIm, coBao) => {
-    const ngayCuoi = new Date(BAY_GIO.getTime() - soNgayIm * 86_400_000);
+  ])('im lặng %s ngày → có báo: %s', (idleDayCount, coBao) => {
+    const ngayCuoi = new Date(BAY_GIO.getTime() - idleDayCount * 86_400_000);
     const ra = (dungService() as any).dungCanhBao([kenh({ ngay_cuoi: ngayCuoi })], [], 28);
     const imLang = ra.filter((c: any) => c.nhan === 'Im lặng');
 
     expect(imLang).toHaveLength(coBao ? 1 : 0);
-    if (coBao) expect(imLang[0].noi_dung).toBe(`Chưa đăng bài trong ${soNgayIm} ngày`);
+    if (coBao) expect(imLang[0].noi_dung).toBe(`Chưa đăng bài trong ${idleDayCount} ngày`);
   });
 
   /*
@@ -254,7 +254,7 @@ describe('dungCanhBao', () => {
   it('không báo tụt khi kỳ trước dưới 10.000 lượt xem, dù tụt sạch', () => {
     const ra = (dungService() as any).dungCanhBao(
       [kenh()],
-      [soKenh({ ky: 'nay', views: BigInt(0) }), soKenh({ ky: 'truoc', views: BigInt(9_999) })],
+      [channelCount({ ky: 'nay', views: BigInt(0) }), channelCount({ ky: 'truoc', views: BigInt(9_999) })],
       28,
     );
     expect(ra.filter((c: any) => c.nhan === 'Tụt')).toHaveLength(0);
@@ -269,8 +269,8 @@ describe('dungCanhBao', () => {
     const ra = (dungService() as any).dungCanhBao(
       [kenh()],
       [
-        soKenh({ ky: 'nay', views: BigInt(viewsNay) }),
-        soKenh({ ky: 'truoc', views: BigInt(100_000) }),
+        channelCount({ ky: 'nay', views: BigInt(viewsNay) }),
+        channelCount({ ky: 'truoc', views: BigInt(100_000) }),
       ],
       28,
     );
@@ -280,7 +280,7 @@ describe('dungCanhBao', () => {
   it('nội dung cảnh báo tụt nhắc đúng số ngày của kỳ đang xem', () => {
     const ra = (dungService() as any).dungCanhBao(
       [kenh()],
-      [soKenh({ ky: 'nay', views: BigInt(40_000) }), soKenh({ ky: 'truoc', views: BigInt(100_000) })],
+      [channelCount({ ky: 'nay', views: BigInt(40_000) }), channelCount({ ky: 'truoc', views: BigInt(100_000) })],
       90,
     );
     expect(ra[0].noi_dung).toBe('Lượt xem giảm 60% so với 90 ngày trước đó');

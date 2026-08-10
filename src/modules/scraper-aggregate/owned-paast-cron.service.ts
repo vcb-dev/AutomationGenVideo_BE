@@ -45,7 +45,7 @@ export class OwnedPaastCronService {
    */
   @Cron('0 30 7 * * *', VN_TZ)
   async chamVideoMoi(): Promise<void> {
-    await this.chay('MOI', TRAN_MOI_LAN.moi, "v.published_at >= now() - interval '3 days'");
+    await this.run('MOI', TRAN_MOI_LAN.moi, "v.published_at >= now() - interval '3 days'");
   }
 
   /**
@@ -57,10 +57,10 @@ export class OwnedPaastCronService {
    */
   @Cron('0 0 1 * * *', VN_TZ)
   async phuNguoc(): Promise<void> {
-    await this.chay('PHU_NGUOC', TRAN_MOI_LAN.phuNguoc, '1 = 1');
+    await this.run('PHU_NGUOC', TRAN_MOI_LAN.phuNguoc, '1 = 1');
   }
 
-  private async chay(nhan: string, tran: number, dieuKienNgay: string): Promise<void> {
+  private async run(nhan: string, tran: number, dateFilter: string): Promise<void> {
     // Hai cron có thể chồng nhau nếu lần trước chạy quá lâu — bỏ qua lần này thay vì chạy đè.
     if (this.dangChay) {
       this.logger.warn(`[${nhan}] Bỏ qua: lượt trước chưa xong`);
@@ -69,12 +69,12 @@ export class OwnedPaastCronService {
     this.dangChay = true;
 
     try {
-      const nguoiDung = await this.prisma.user.findFirst({
+      const user = await this.prisma.user.findFirst({
         where: { is_active: true },
         orderBy: { created_at: 'asc' },
         select: { id: true },
       });
-      if (!nguoiDung) {
+      if (!user) {
         this.logger.warn(`[${nhan}] Không có user nào để gán bản phân tích`);
         return;
       }
@@ -86,7 +86,7 @@ export class OwnedPaastCronService {
         FROM video_management_ownedvideocontent v
         JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
         WHERE mp.is_active AND mp.page_access_token <> ''
-          AND ${dieuKienNgay}
+          AND ${dateFilter}
           AND NOT EXISTS (
             SELECT 1 FROM owned_video_scripts s
             WHERE s.platform = 'facebook' AND s.post_id = v.post_id
@@ -108,7 +108,7 @@ export class OwnedPaastCronService {
       for (const { post_id } of canCham) {
         try {
           // `true` = chỉ phụ đề, tuyệt đối không gọi Whisper — xem ghi chú đầu file.
-          const kq = await this.script.chamDiem('facebook', post_id, nguoiDung.id, true);
+          const kq = await this.script.chamDiem('facebook', post_id, user.id, true);
           if (kq.trang_thai === 'da_cham') daCham++;
           else khongCoKichBan++;
         } catch (e: any) {

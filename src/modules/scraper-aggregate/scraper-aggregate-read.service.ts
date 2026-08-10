@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { dieuKienThiTruong, dieuKienTuyenNoiDung, dieuKienHashtag, dieuKienKenh } from './content-filters';
+import { marketFilter, contentLineFilter, hashtagFilter, channelFilter } from './content-filters';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
@@ -332,20 +332,20 @@ export class ScraperAggregateReadService {
     const hashtag = (params.hashtag || '').trim();
 
     /** Hai bộ lọc mới đều dựa vào chữ, mà mỗi nhánh gọi cột chữ một tên khác nhau. */
-    function locTheoChu(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql): Prisma.Sql[] {
+    function filterByWord(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql): Prisma.Sql[] {
       const c: Prisma.Sql[] = [];
-      const tt = dieuKienThiTruong(cotChu, market);
+      const tt = marketFilter(cotChu, market);
       if (tt) c.push(tt);
-      const tuyen = dieuKienTuyenNoiDung(cotChu, contentLine, cotHashtag);
+      const tuyen = contentLineFilter(cotChu, contentLine, cotHashtag);
       if (tuyen) c.push(tuyen);
-      const the = dieuKienHashtag(cotChu, hashtag, cotHashtag);
+      const the = hashtagFilter(cotChu, hashtag, cotHashtag);
       if (the) c.push(the);
       return c;
     }
 
     /** Cột định danh kênh khác tên ở từng nhánh nên phải truyền vào. */
-    function locTheoKenh(cotKenh: Prisma.Sql): Prisma.Sql[] {
-      const dk = dieuKienKenh(cotKenh, channel);
+    function filterByChannel(cotKenh: Prisma.Sql): Prisma.Sql[] {
+      const dk = channelFilter(cotKenh, channel);
       return dk ? [dk] : [];
     }
 
@@ -367,8 +367,8 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`v.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
-      conditions.push(...locTheoChu(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
-      conditions.push(...locTheoKenh(Prisma.sql`p.username`));
+      conditions.push(...filterByWord(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'tiktok' AS platform, v.video_id AS post_id, v.url, v.description,
                COALESCE(v.cover_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
@@ -385,8 +385,8 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`r.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`r.description`, null, q));
-      conditions.push(...locTheoChu(Prisma.sql`r.description`, Prisma.sql`r.hashtags`));
-      conditions.push(...locTheoKenh(Prisma.sql`p.username`));
+      conditions.push(...filterByWord(Prisma.sql`r.description`, Prisma.sql`r.hashtags`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'instagram' AS platform, r.post_id, r.url, r.description,
                COALESCE(NULLIF(r.thumbnail_drive_url, ''), r.thumbnail_url, '') AS thumbnail_url,
@@ -406,8 +406,8 @@ export class ScraperAggregateReadService {
         ...dateCond(Prisma.sql`v.date_posted`),
       ];
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
-      conditions.push(...locTheoChu(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
-      conditions.push(...locTheoKenh(Prisma.sql`v.author_username`));
+      conditions.push(...filterByWord(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...filterByChannel(Prisma.sql`v.author_username`));
       branches.push(Prisma.sql`
         SELECT 'douyin' AS platform, v.post_id, v.url, v.description,
                COALESCE(v.preview_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
@@ -426,8 +426,8 @@ export class ScraperAggregateReadService {
           searchCondition(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`, null, q),
         );
       }
-      conditions.push(...locTheoChu(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`));
-      conditions.push(...locTheoKenh(Prisma.sql`v.author_id`));
+      conditions.push(...filterByWord(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`));
+      conditions.push(...filterByChannel(Prisma.sql`v.author_id`));
       branches.push(Prisma.sql`
         SELECT 'xiaohongshu' AS platform, v.note_id AS post_id, v.url,
                COALESCE(NULLIF(v.title, ''), v.description) AS description,
@@ -446,8 +446,8 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`s.created_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`s.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`s.title`, null, q));
-      conditions.push(...locTheoChu(Prisma.sql`s.title`, Prisma.sql`s.hashtags`));
-      conditions.push(...locTheoKenh(Prisma.sql`p.channel_id`));
+      conditions.push(...filterByWord(Prisma.sql`s.title`, Prisma.sql`s.hashtags`));
+      conditions.push(...filterByChannel(Prisma.sql`p.channel_id`));
       branches.push(Prisma.sql`
         SELECT 'youtube' AS platform, s.video_id AS post_id, s.url, s.title AS description,
                COALESCE(NULLIF(s.thumbnail_drive_url, ''), s.thumbnail_url, '') AS thumbnail_url,
@@ -466,8 +466,8 @@ export class ScraperAggregateReadService {
       const conditions = [...dateCond(Prisma.sql`v.published_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.caption`, null, q));
-      conditions.push(...locTheoChu(Prisma.sql`v.caption`));
-      conditions.push(...locTheoKenh(Prisma.sql`mp.page_id`));
+      conditions.push(...filterByWord(Prisma.sql`v.caption`));
+      conditions.push(...filterByChannel(Prisma.sql`mp.page_id`));
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
         SELECT 'facebook' AS platform, v.post_id, COALESCE(v.permalink_url, '') AS url, COALESCE(v.caption, '') AS description,

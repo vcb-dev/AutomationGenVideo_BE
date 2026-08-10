@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { chuanHoaKhoang, chuanHoaNenTang, soNgayGiua } from './owned-stats.service';
+import { normalizeRange, normalizePlatform, midDayCount } from './owned-stats.service';
 
 /**
  * Phát hiện MỘT video được đăng trên NHIỀU kênh nội bộ khác nhau.
@@ -31,7 +31,7 @@ import { chuanHoaKhoang, chuanHoaNenTang, soNgayGiua } from './owned-stats.servi
 const CAPTION_TOI_THIEU = 20;
 
 /** Số nhóm trả về cho khối trên trang tổng quan. */
-const SO_NHOM_TRA_VE = 20;
+const GROUP_LIMIT = 20;
 
 /** Kênh phải có ít nhất ngần này video trong kỳ thì tỷ lệ trùng mới có nghĩa. */
 const SAN_VIDEO_CANH_BAO = 20;
@@ -73,7 +73,7 @@ interface DongTomTat {
 }
 
 /** Cùng hình dạng với cảnh báo của OwnedStatsService để FE trộn thẳng hai danh sách. */
-export interface CanhBaoKenh {
+export interface ChannelAlert {
   platform: string;
   kenh: string;
   noi_dung: string;
@@ -81,7 +81,7 @@ export interface CanhBaoKenh {
   nhan: string;
 }
 
-export interface NhomTrung {
+export interface DuplicateGroup {
   noi_dung: string;
   platform: string;
   giay: number | null;
@@ -94,7 +94,7 @@ export interface NhomTrung {
   url_mau: string;
 }
 
-export interface TrungTheoKenh {
+export interface DuplicateByChannel {
   platform: string;
   id: string;
   ten: string;
@@ -120,12 +120,12 @@ const mot = (v: number): number => Math.round(v * 10) / 10;
 export function rutGonNoiDung(cap: string, toiDa: number): string {
   if (!cap) return '';
   const chuan = cap.normalize('NFC');
-  const kyTu = [...chuan];
-  return kyTu.length <= toiDa ? chuan : kyTu.slice(0, toiDa).join('') + '…';
+  const charCount = [...chuan];
+  return charCount.length <= toiDa ? chuan : charCount.slice(0, toiDa).join('') + '…';
 }
 
 /** Dựng danh sách nhóm trùng, nhiều kênh trước rồi tới lượt xem cao trước. */
-export function gopNhom(rows: DongNhomTrung[]): NhomTrung[] {
+export function mergeGroups(rows: DongNhomTrung[]): DuplicateGroup[] {
   return rows
     .map((r) => ({
       noi_dung: r.cap,
@@ -148,7 +148,7 @@ export function gopNhom(rows: DongNhomTrung[]): NhomTrung[] {
 }
 
 /** Tỷ lệ video trùng của từng kênh, cao trước. */
-export function tinhTheoKenh(rows: DongVideoKenh[]): TrungTheoKenh[] {
+export function computeByChannel(rows: DongVideoKenh[]): DuplicateByChannel[] {
   return rows
     .map((r) => {
       const tong = n(r.tong_video);
@@ -172,12 +172,12 @@ export function tinhTheoKenh(rows: DongVideoKenh[]): TrungTheoKenh[] {
  *
  * Thiết kế đầu định báo mỗi nhóm phủ ≥3 kênh, đo ra 75 cảnh báo ở kỳ 28 ngày và 333 ở kỳ
  * 90 ngày. Khối "Cần chú ý" cắt ở 12 mục nên chúng sẽ đẩy hết cảnh báo đồng bộ lỗi và kênh
- * im lặng ra ngoài. Thêm nữa CanhBaoKenh vẽ avatar + tên kênh, mà một nhóm nội dung phủ 4
+ * im lặng ra ngoài. Thêm nữa ChannelAlert vẽ avatar + tên kênh, mà một nhóm nội dung phủ 4
  * kênh không có MỘT kênh nào để gắn — sẽ ra avatar rỗng. Số liệu cấp nhóm nằm ở khối trùng
  * lặp, nơi có chỗ trình bày tử tế.
  */
-export function dungCanhBaoTrung(theoKenh: TrungTheoKenh[]): CanhBaoKenh[] {
-  return theoKenh
+export function buildDuplicateAlerts(byChannel: DuplicateByChannel[]): ChannelAlert[] {
+  return byChannel
     .filter((k) => k.tong_video >= SAN_VIDEO_CANH_BAO && k.ty_le >= NGUONG_TY_LE_CANH_BAO)
     .map((k) => ({
       platform: k.platform,
@@ -200,8 +200,8 @@ export class OwnedDuplicateService {
   ) {}
 
   async thongKe(params: { platform?: string; days?: string; tu?: string; den?: string }) {
-    const platform = chuanHoaNenTang(params.platform);
-    const { tu, den } = chuanHoaKhoang(params.tu, params.den, params.days);
+    const platform = normalizePlatform(params.platform);
+    const { tu, den } = normalizeRange(params.tu, params.den, params.days);
 
     return this.cache.get(`owned-dup:${platform || 'all'}:${tu}:${den}`, CACHE_TTL_MS, () =>
       this.tinh(platform, tu, den),
@@ -215,7 +215,7 @@ export class OwnedDuplicateService {
 
     // Nhóm trùng = cùng (nền tảng, caption, độ dài) mà xuất hiện ở từ 2 kênh trở lên.
     // GROUP BY coi các NULL bằng nhau nên nhánh YouTube (không có độ dài) vẫn gộp được.
-    const nhomTrung = Prisma.sql`
+    const duplicateGroups = Prisma.sql`
       SELECT v.platform, v.cap, v.giay
       FROM (${nguon}) AS v
       GROUP BY 1, 2, 3
@@ -224,12 +224,12 @@ export class OwnedDuplicateService {
 
     // giay có thể NULL nên phải nối bằng IS NOT DISTINCT FROM; dùng `=` là mọi dòng
     // YouTube rơi khỏi phép nối và tỷ lệ trùng của nền tảng đó luôn ra 0.
-    const noiNhom = Prisma.sql`
-      LEFT JOIN (${nhomTrung}) AS g
+    const joinGroups = Prisma.sql`
+      LEFT JOIN (${duplicateGroups}) AS g
         ON g.platform = v.platform AND g.cap = v.cap AND g.giay IS NOT DISTINCT FROM v.giay
     `;
 
-    const [nhom, theoKenhRaw, [tomTat]] = await Promise.all([
+    const [nhom, byChannelRaw, [summary]] = await Promise.all([
       // Gộp hai lớp: lớp trong gom theo KÊNH trước, lớp ngoài mới gom thành nhóm. Nhờ vậy
       // kenh_id và kenh_ten đi qua cùng một array_agg có cùng ORDER BY nên khớp cặp;
       // array_agg(DISTINCT ...) hai lần là sai cặp khi hai kênh trùng tên.
@@ -255,18 +255,18 @@ export class OwnedDuplicateService {
         FROM k GROUP BY 1, 2, 3
         HAVING COUNT(*) > 1
         ORDER BY so_kenh DESC, views DESC
-        LIMIT ${SO_NHOM_TRA_VE}
+        LIMIT ${GROUP_LIMIT}
       `,
       this.prisma.$queryRaw<DongVideoKenh[]>`
         SELECT v.platform, v.kenh_id, MIN(v.kenh_ten) AS kenh_ten,
                COUNT(*) FILTER (WHERE g.cap IS NOT NULL)::bigint AS video_trung,
                COUNT(*)::bigint AS tong_video
         FROM (${nguon}) AS v
-        ${noiNhom}
+        ${joinGroups}
         GROUP BY 1, 2
       `,
       this.prisma.$queryRaw<DongTomTat[]>`
-        SELECT (SELECT COUNT(*) FROM (${nhomTrung}) AS a)::bigint AS so_nhom,
+        SELECT (SELECT COUNT(*) FROM (${duplicateGroups}) AS a)::bigint AS so_nhom,
                (SELECT COUNT(*) FROM (
                   SELECT 1 FROM (${nguon}) AS b
                   GROUP BY b.platform, b.cap, b.giay
@@ -276,27 +276,27 @@ export class OwnedDuplicateService {
                COUNT(*)::bigint AS tong_video,
                COUNT(DISTINCT v.kenh_id) FILTER (WHERE g.cap IS NOT NULL)::bigint AS so_kenh_dinh
         FROM (${nguon}) AS v
-        ${noiNhom}
+        ${joinGroups}
       `,
     ]);
 
-    const theoKenh = tinhTheoKenh(theoKenhRaw);
-    const tongVideo = n(tomTat?.tong_video);
+    const byChannel = computeByChannel(byChannelRaw);
+    const tongVideo = n(summary?.tong_video);
 
     return {
       status: 'ok',
-      ky: { tu, den, so_ngay: soNgayGiua(tu, den) },
+      ky: { tu, den, so_ngay: midDayCount(tu, den) },
       tom_tat: {
-        so_nhom: n(tomTat?.so_nhom),
-        so_nhom_tu_3_kenh: n(tomTat?.so_nhom_tu_3_kenh),
-        so_video_trung: n(tomTat?.so_video_trung),
+        so_nhom: n(summary?.so_nhom),
+        so_nhom_tu_3_kenh: n(summary?.so_nhom_tu_3_kenh),
+        so_video_trung: n(summary?.so_video_trung),
         tong_video: tongVideo,
-        ty_le: tongVideo > 0 ? mot((n(tomTat?.so_video_trung) / tongVideo) * 100) : 0,
-        so_kenh_dinh: n(tomTat?.so_kenh_dinh),
+        ty_le: tongVideo > 0 ? mot((n(summary?.so_video_trung) / tongVideo) * 100) : 0,
+        so_kenh_dinh: n(summary?.so_kenh_dinh),
       },
-      nhom: gopNhom(nhom),
-      theo_kenh: theoKenh.filter((k) => k.video_trung > 0),
-      canh_bao: dungCanhBaoTrung(theoKenh),
+      nhom: mergeGroups(nhom),
+      theo_kenh: byChannel.filter((k) => k.video_trung > 0),
+      canh_bao: buildDuplicateAlerts(byChannel),
     };
   }
 
