@@ -91,7 +91,15 @@ async function bootstrap() {
     : [];
 
   let corsOriginOption: string | string[] | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void) = '*';
-  if (rawOrigins.length > 0) {
+  if (rawOrigins.length === 0) {
+    // Trình duyệt TỪ CHỐI cookie khi Access-Control-Allow-Origin là '*' và request có credentials.
+    // Nên thiếu CORS_ORIGIN là toàn bộ auth bằng cookie chết — mà chết IM LẶNG: BE trả 200, log
+    // sạch, chỉ có trình duyệt lặng lẽ vứt Set-Cookie đi. Phải hét lên ở đây.
+    console.warn(
+      '[CORS] CORS_ORIGIN rỗng -> Access-Control-Allow-Origin = "*". Auth bằng cookie sẽ KHÔNG ' +
+      'hoạt động với FE chạy khác origin. Đặt CORS_ORIGIN trước khi dùng cookie HttpOnly.',
+    );
+  } else {
     const allowedSet = new Set<string>(rawOrigins);
     for (const o of rawOrigins) {
       try {

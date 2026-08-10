@@ -24,7 +24,12 @@ export class CsrfGuard implements CanActivate {
     if (req.headers.authorization?.startsWith('Bearer ')) return true;
 
     const fromCookie = req.cookies?.[COOKIE_CSRF];
-    const fromHeader = req.headers[CSRF_HEADER];
+    // Header gửi trùng thì Node KHÔNG trả mảng — nó nối bằng ", " thành MỘT chuỗi ("tok, tok");
+    // chỉ set-cookie mới thành mảng. Đã đo bằng http.createServer chứ không suy từ kiểu TypeScript
+    // `string | string[]`. So thẳng chuỗi nối đó với cookie thì luôn lệch, nên client lỡ set hai
+    // lần ăn 403 vĩnh viễn trong khi devtools hiện giá trị đúng y hệt — rất khó lần ra.
+    const rawHeader = req.headers[CSRF_HEADER];
+    const fromHeader = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader)?.split(',')[0].trim();
 
     if (!fromCookie || !fromHeader || fromCookie !== fromHeader) {
       throw new ForbiddenException('CSRF token không hợp lệ');

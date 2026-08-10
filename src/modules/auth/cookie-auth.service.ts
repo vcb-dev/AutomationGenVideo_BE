@@ -31,6 +31,36 @@ export function parseDurationMs(value: string, envName: string): number {
   return Number(matched[1]) * UNIT_TO_MS[matched[2]];
 }
 
+const ALLOWED_SAMESITE = ['lax', 'strict', 'none'] as const;
+type SameSite = (typeof ALLOWED_SAMESITE)[number];
+
+/**
+ * Cùng lý do với parseDurationMs. `COOKIE_SAMESITE="Lax"` viết hoa chữ L thì Express vẫn ghi
+ * nguyên vào header, trình duyệt không nhận ra giá trị và VỨT CẢ COOKIE — đăng nhập trông như
+ * thành công (BE trả 200) mà request kế tiếp đã là 401.
+ */
+export function parseSameSite(value: string, envName: string): SameSite {
+  const normalized = String(value).trim().toLowerCase();
+  if (!(ALLOWED_SAMESITE as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `${envName}="${value}" không hợp lệ. Chỉ nhận ${ALLOWED_SAMESITE.join(' | ')}.`,
+    );
+  }
+  return normalized as SameSite;
+}
+
+/**
+ * `=== 'true'` là cái bẫy im lặng nhất trong nhóm này: gõ `COOKIE_SECURE="True"` hay `"1"` đều ra
+ * false, tức là production tưởng đang bật secure mà cookie phiên vẫn đi qua HTTP trần. Không có
+ * dấu hiệu nào để nhận ra, nên phải ném lỗi thay vì đoán.
+ */
+export function parseBooleanEnv(value: string, envName: string): boolean {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(`${envName}="${value}" không hợp lệ. Chỉ nhận "true" hoặc "false".`);
+}
+
 /** Extractor cho passport-jwt. Trả null (không phải undefined) vì ExtractJwt quy ước như vậy. */
 export function extractAccessTokenFromCookie(req: Request): string | null {
   return (req as Request & { cookies?: Record<string, string> })?.cookies?.[COOKIE_ACCESS] ?? null;
@@ -44,6 +74,7 @@ export class CookieAuthService {
     // hiện được. Deploy hỏng vì env sai thì thà biết ngay ở dòng log đầu tiên.
     this.accessMaxAge();
     this.refreshMaxAge();
+    this.baseOptions();
   }
 
   accessMaxAge(): number {
@@ -93,10 +124,28 @@ export class CookieAuthService {
 
   private baseOptions(): CookieOptions {
     const domain = this.config.get<string>('COOKIE_DOMAIN', '').trim();
+    const secure = parseBooleanEnv(
+      this.config.get<string>('COOKIE_SECURE', 'false'),
+      'COOKIE_SECURE',
+    );
+    const sameSite = parseSameSite(
+      this.config.get<string>('COOKIE_SAMESITE', 'lax'),
+      'COOKIE_SAMESITE',
+    );
+
+    // Trình duyệt VỨT BỎ cookie SameSite=None mà không kèm Secure. Cặp này chỉ dùng khi FE và BE
+    // khác site, đúng lúc không ai kịp nhận ra vì sao mọi người vừa deploy xong là đăng nhập hỏng.
+    if (sameSite === 'none' && !secure) {
+      throw new Error(
+        'COOKIE_SAMESITE="none" bắt buộc phải đi kèm COOKIE_SECURE="true", nếu không trình duyệt ' +
+        'sẽ vứt bỏ toàn bộ cookie phiên.',
+      );
+    }
+
     return {
       httpOnly: true,
-      secure: this.config.get<string>('COOKIE_SECURE', 'false') === 'true',
-      sameSite: this.config.get<'lax' | 'strict' | 'none'>('COOKIE_SAMESITE', 'lax'),
+      secure,
+      sameSite,
       path: '/',
       ...(domain ? { domain } : {}),
     };

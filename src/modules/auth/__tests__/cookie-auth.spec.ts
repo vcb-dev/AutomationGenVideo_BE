@@ -61,6 +61,30 @@ describe('CookieAuthService — kiểm tra env lúc khởi tạo', () => {
     expect(() => buildService({ JWT_ACCESS_EXPIRES: '15x' })).toThrow(/JWT_ACCESS_EXPIRES/);
   });
 
+  // COOKIE_SECURE="True" viết hoa thì `=== 'true'` cho ra false: production tưởng đã bật secure mà
+  // cookie phiên vẫn đi qua HTTP trần, và không có dấu hiệu nào để nhận ra.
+  it('nổ ngay lúc khởi tạo khi COOKIE_SECURE không phải true/false', () => {
+    expect(() => buildService({ COOKIE_SECURE: 'True' })).not.toThrow();
+    expect(() => buildService({ COOKIE_SECURE: '1' })).toThrow(/COOKIE_SECURE/);
+    expect(() => buildService({ COOKIE_SECURE: 'yes' })).toThrow(/COOKIE_SECURE/);
+  });
+
+  // Viết hoa chữ L thì trình duyệt không nhận ra giá trị và vứt cả cookie.
+  it('nổ ngay lúc khởi tạo khi COOKIE_SAMESITE không hợp lệ', () => {
+    expect(() => buildService({ COOKIE_SAMESITE: 'khong-co-that' })).toThrow(/COOKIE_SAMESITE/);
+    expect(() => buildService({ COOKIE_SAMESITE: '' })).toThrow(/COOKIE_SAMESITE/);
+  });
+
+  // Trình duyệt vứt bỏ cookie SameSite=None không kèm Secure — hỏng đúng lúc chuyển sang khác site.
+  it('nổ ngay lúc khởi tạo khi SameSite=none mà không bật Secure', () => {
+    expect(() => buildService({ COOKIE_SAMESITE: 'none', COOKIE_SECURE: 'false' })).toThrow(
+      /COOKIE_SECURE/,
+    );
+    expect(() =>
+      buildService({ COOKIE_SAMESITE: 'none', COOKIE_SECURE: 'true' }),
+    ).not.toThrow();
+  });
+
   it('nổ ngay lúc khởi tạo khi JWT_REFRESH_EXPIRES sai định dạng', () => {
     expect(() => buildService({ JWT_REFRESH_EXPIRES: '7z' })).toThrow(/JWT_REFRESH_EXPIRES/);
   });

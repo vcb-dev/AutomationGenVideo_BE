@@ -4,6 +4,7 @@ import {
   Body,
   Get,
   HttpCode,
+  NotFoundException,
   UnauthorizedException,
   UseGuards,
   UseInterceptors,
@@ -100,7 +101,18 @@ export class AuthController {
         sessionContext(req),
       );
 
-      const user = await this.usersService.findOne(rotated.userId);
+      // findOne NÉM NotFoundException chứ không trả null khi user đã bị xoá. Không nuốt ở đây thì
+      // refresh trả 404 — FE bắt 401 để về trang đăng nhập sẽ trượt qua và treo ở màn hình trắng.
+      //
+      // Nuốt ĐÚNG NotFoundException, không phải mọi lỗi: bắt hết thì một cú rớt kết nối DB cũng
+      // hoá thành "user không tồn tại" → 401 → xoá cookie, tức là sự cố hạ tầng thoáng qua lại
+      // đăng xuất người dùng. Lỗi hạ tầng phải nổi lên thành 500 để cookie được giữ nguyên.
+      const user = await this.usersService
+        .findOne(rotated.userId)
+        .catch((e) => {
+          if (e instanceof NotFoundException) return null;
+          throw e;
+        });
       if (!user || !user.is_active) {
         throw new UnauthorizedException("Tài khoản không còn hoạt động");
       }
@@ -113,9 +125,12 @@ export class AuthController {
 
       return tokenResponse;
     } catch (err) {
-      // Refresh hỏng vì bất kỳ lý do gì thì dọn sạch cookie: để lại cookie chết khiến FE lặp vô
-      // hạn vòng 401 → refresh → 401.
-      this.cookieAuthService.clearAuthCookies(res);
+      // CHỈ dọn cookie khi phiên thật sự chết. Để lại cookie chết thì FE lặp vô hạn 401 → refresh
+      // → 401; nhưng xoá cookie khi DB chớp lỗi một nhịp thì một sự cố hạ tầng thoáng qua đủ đá
+      // văng mọi người đang làm việc — mà phiên của họ vẫn còn hiệu lực hoàn toàn.
+      if (err instanceof UnauthorizedException) {
+        this.cookieAuthService.clearAuthCookies(res);
+      }
       throw err;
     }
   }
@@ -169,7 +184,9 @@ export class AuthController {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3001";
 
     try {
-      console.log("[GoogleCallback] Authenticated google user:", req.user);
+      // Chỉ log email. Log nguyên req.user kéo theo google_id, ảnh, và mọi cột user vừa đọc từ DB
+      // vào log gom trên Railway — không cần chỗ đó để lần ra sự cố đăng nhập.
+      console.log("[GoogleCallback] Authenticated google user:", req.user?.email);
 
       // Tài khoản bị vô hiệu hóa — về login kèm thông báo
       if (req.user.isInactiveUser) {
@@ -201,18 +218,27 @@ export class AuthController {
         refreshToken,
       });
 
-      // Không còn ?token= trong URL: token từng lọt vào browser history, header Referer của mọi
-      // request kế tiếp, và log truy cập của Nginx. Cookie đã đặt ở trên, trang FE chỉ cần gọi
-      // /auth/profile là biết mình là ai.
-      res.redirect(`${frontendUrl}/auth/google/callback`);
+      // ?token= TẠM THỜI GIỮ LẠI — GỠ Ở BƯỚC DEPLOY 3, cùng lúc với extractor ?access_token=
+      // trong jwt.strategy.ts (xem docs/plans/2026-08-08-auth-cookie-httponly.md).
+      //
+      // Cookie đặt ở trên mới là đường chính và FE mới sẽ chỉ dùng nó. Nhưng FE ĐANG CHẠY bắt
+      // buộc phải có ?token= mới cho vào: auth/google/callback/page.tsx đọc searchParams("token"),
+      // thiếu là đá thẳng về /login?error=Google login failed. Bỏ ngay ở giai đoạn BE này thì
+      // đăng nhập Google chết hẳn trong suốt khoảng giữa hai lần deploy — mà cookie vẫn được đặt
+      // đúng, nên nhìn log BE thấy 200 sạch sẽ và không ai hiểu vì sao người dùng không vào được.
+      res.redirect(
+        `${frontendUrl}/auth/google/callback?token=${encodeURIComponent(tokenResponse.access_token)}`,
+      );
     } catch (err: any) {
+      // Stack chỉ để lại trong log server. Đây là đích của một redirect từ Google nên người dùng
+      // cuối nhìn thẳng vào response — trả stack ra là phơi đường dẫn file và cấu trúc nội bộ cho
+      // bất kỳ ai bấm được nút "Đăng nhập với Google".
       console.error("[GoogleCallback] CRITICAL ERROR:", err);
-      res.status(500).json({
-        statusCode: 500,
-        message: err?.message || "Internal server error",
-        error: err?.name || "Error",
-        stack: err?.stack?.split("\n")
-      });
+      res.redirect(
+        `${frontendUrl}/login?error=${encodeURIComponent(
+          "Đăng nhập Google thất bại. Vui lòng thử lại hoặc liên hệ Admin.",
+        )}`,
+      );
     }
   }
 }

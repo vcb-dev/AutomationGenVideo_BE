@@ -5,10 +5,10 @@ import { CsrfGuard } from '../csrf.guard';
 function makeContext(opts: {
   method?: string;
   cookieValue?: string;
-  headerValue?: string;
+  headerValue?: string | string[];
   authorization?: string;
 }): ExecutionContext {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string | string[]> = {};
   if (opts.headerValue !== undefined) headers[CSRF_HEADER] = opts.headerValue;
   if (opts.authorization !== undefined) headers.authorization = opts.authorization;
 
@@ -28,6 +28,28 @@ describe('CsrfGuard', () => {
 
   it('cho qua khi cookie và header khớp nhau', () => {
     expect(guard.canActivate(makeContext({ cookieValue: 'tok', headerValue: 'tok' }))).toBe(true);
+  });
+
+  // Gửi trùng header thì Node nối thành MỘT chuỗi "tok, tok" (đã đo bằng http.createServer —
+  // KHÔNG phải mảng, chỉ set-cookie mới là mảng). So thẳng chuỗi đó với cookie thì luôn lệch, nên
+  // client lỡ set hai lần ăn 403 vĩnh viễn trong khi devtools hiện giá trị đúng y hệt.
+  it('cho qua khi header bị gửi trùng — Node nối thành "tok, tok"', () => {
+    expect(guard.canActivate(makeContext({ cookieValue: 'tok', headerValue: 'tok, tok' }))).toBe(
+      true,
+    );
+  });
+
+  it('vẫn chặn khi header gửi trùng mà giá trị đầu lệch cookie', () => {
+    expect(() =>
+      guard.canActivate(makeContext({ cookieValue: 'tok', headerValue: 'khac, tok' })),
+    ).toThrow(ForbiddenException);
+  });
+
+  // Phòng khi proxy hoặc framework khác trả về mảng thật.
+  it('cũng xử lý được trường hợp header về dưới dạng mảng', () => {
+    expect(
+      guard.canActivate(makeContext({ cookieValue: 'tok', headerValue: ['tok', 'tok'] })),
+    ).toBe(true);
   });
 
   it('chặn khi thiếu header', () => {
