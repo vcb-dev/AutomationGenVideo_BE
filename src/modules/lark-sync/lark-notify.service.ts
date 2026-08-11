@@ -4,13 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
 /**
- * Địa chỉ Lark đọc từ .env. Không gõ cứng: tài khoản Feishu (Trung Quốc) dùng
- * open.feishu.cn chứ không phải open.larksuite.com, và môi trường thử nghiệm cần trỏ
- * sang mock server — gõ cứng thì phải sửa mã nguồn mới đổi được.
- */
-const DEFAULT_LARK_BASE_URL = 'https://open.larksuite.com/open-apis';
-
-/**
  * Mã lỗi Lark mà thử lại KHÔNG bao giờ cứu được — đo bằng lệnh gọi thật lúc dựng tính năng:
  *
  *   99992351  open_id không tồn tại (gửi thử tới "ou_0000…")
@@ -60,8 +53,22 @@ export class LarkNotifyService {
     private readonly configService: ConfigService,
   ) {}
 
+  /**
+   * Không có giá trị mặc định trong mã nguồn: tài khoản Feishu (Trung Quốc) dùng
+   * open.feishu.cn, tài khoản quốc tế dùng open.larksuite.com. Để sẵn một cái trong code thì
+   * môi trường quên cấu hình vẫn chạy được — và chạy sai chỗ, gửi tin vào hư không mà không
+   * ai biết. Thiếu biến thì dừng ngay với thông báo nói rõ phải đặt gì.
+   */
   private get baseUrl(): string {
-    return this.configService.get<string>('LARK_API_BASE_URL') || DEFAULT_LARK_BASE_URL;
+    const url = this.configService.get<string>('LARK_API_BASE_URL');
+    if (!url) {
+      throw new LarkSendError(
+        'Thiếu LARK_API_BASE_URL trong .env — xem .env.example để biết đặt giá trị nào',
+        -1,
+        true,
+      );
+    }
+    return url.replace(/\/$/, '');
   }
 
   async sendMessage(openId: string, content: string): Promise<{ messageId: string }> {

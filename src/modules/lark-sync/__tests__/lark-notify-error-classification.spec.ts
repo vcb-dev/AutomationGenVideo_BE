@@ -14,20 +14,21 @@ import { LarkNotifyService, LarkSendError, isPermanentError } from '../lark-noti
  * đổi được từ Lark Admin. Thử lại chỉ đốt lượt gọi và làm cron chạy lâu vô ích.
  */
 
-const CAU_HINH: Record<string, string> = {
+const CONFIG: Record<string, string> = {
+  LARK_API_BASE_URL: 'https://lark.test/open-apis',
   LARK_NOTIFY_APP_ID: 'cli_test',
   LARK_NOTIFY_APP_SECRET: 'secret_test',
 };
 
-function dungService(post: jest.Mock) {
+function buildService(post: jest.Mock) {
   const httpService = { post } as any;
-  const configService = { get: (k: string) => CAU_HINH[k] } as any;
+  const configService = { get: (k: string) => CONFIG[k] } as any;
   return new LarkNotifyService(httpService, configService);
 }
 
-const dapTokenOk = () => of({ data: { code: 0, tenant_access_token: 'tk_1', expire: 7200 } });
-const dapGuiOk = () => of({ data: { code: 0, data: { message_id: 'om_abc' } } });
-const dapLoi = (code: number, msg = 'loi') => of({ data: { code, msg } });
+const tokenOkResponse = () => of({ data: { code: 0, tenant_access_token: 'tk_1', expire: 7200 } });
+const sendOkResponse = () => of({ data: { code: 0, data: { message_id: 'om_abc' } } });
+const errorResponse = (code: number, msg = 'loi') => of({ data: { code, msg } });
 
 describe('isPermanentError — phân biệt lỗi chết với lỗi tạm', () => {
   it('mã người nhận sai là lỗi chết, thử lại vô nghĩa', () => {
@@ -51,10 +52,10 @@ describe('isPermanentError — phân biệt lỗi chết với lỗi tạm', () 
 describe('LarkNotifyService.sendMessage', () => {
   it('gửi được thì trả message_id', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
-      .mockImplementationOnce(dapGuiOk);
+      .mockImplementationOnce(tokenOkResponse)
+      .mockImplementationOnce(sendOkResponse);
 
-    const result = await dungService(post).sendMessage('ou_that', 'xin chào');
+    const result = await buildService(post).sendMessage('ou_that', 'xin chào');
 
     expect(result.messageId).toBe('om_abc');
     expect(post).toHaveBeenCalledTimes(2);
@@ -62,10 +63,10 @@ describe('LarkNotifyService.sendMessage', () => {
 
   it('gửi đúng open_id và nội dung Lark yêu cầu (content là chuỗi JSON, không phải object)', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
-      .mockImplementationOnce(dapGuiOk);
+      .mockImplementationOnce(tokenOkResponse)
+      .mockImplementationOnce(sendOkResponse);
 
-    await dungService(post).sendMessage('ou_that', 'nội dung');
+    await buildService(post).sendMessage('ou_that', 'nội dung');
 
     const [url, body] = post.mock.calls[1];
     expect(url).toContain('receive_id_type=open_id');
@@ -77,10 +78,10 @@ describe('LarkNotifyService.sendMessage', () => {
 
   it('lỗi chết thì ném LarkSendError có permanent = true', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
-      .mockImplementationOnce(() => dapLoi(230013, 'Bot has NO availability to this user'));
+      .mockImplementationOnce(tokenOkResponse)
+      .mockImplementationOnce(() => errorResponse(230013, 'Bot has NO availability to this user'));
 
-    const service = dungService(post);
+    const service = buildService(post);
     await expect(service.sendMessage('ou_ngoai_pham_vi', 'x')).rejects.toMatchObject({
       code: 230013,
       permanent: true,
@@ -89,36 +90,36 @@ describe('LarkNotifyService.sendMessage', () => {
 
   it('lỗi tạm thì permanent = false để lượt sau còn thử lại', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
-      .mockImplementationOnce(() => dapLoi(50000, 'internal error'));
+      .mockImplementationOnce(tokenOkResponse)
+      .mockImplementationOnce(() => errorResponse(50000, 'internal error'));
 
-    await expect(dungService(post).sendMessage('ou_that', 'x')).rejects.toMatchObject({
+    await expect(buildService(post).sendMessage('ou_that', 'x')).rejects.toMatchObject({
       permanent: false,
     });
   });
 
   it('mạng rớt cũng là lỗi tạm', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
+      .mockImplementationOnce(tokenOkResponse)
       .mockImplementationOnce(() => throwError(() => new Error('ECONNRESET')));
 
-    await expect(dungService(post).sendMessage('ou_that', 'x')).rejects.toMatchObject({
+    await expect(buildService(post).sendMessage('ou_that', 'x')).rejects.toMatchObject({
       permanent: false,
     });
   });
 
   it('lấy token hỏng thì báo lỗi tạm, KHÔNG chốt oan video', async () => {
-    const post = jest.fn().mockImplementationOnce(() => dapLoi(99991663, 'app not found'));
+    const post = jest.fn().mockImplementationOnce(() => errorResponse(99991663, 'app not found'));
 
-    await expect(dungService(post).sendMessage('ou_that', 'x')).rejects.toBeInstanceOf(LarkSendError);
+    await expect(buildService(post).sendMessage('ou_that', 'x')).rejects.toBeInstanceOf(LarkSendError);
   });
 
   it('token dùng lại cho lần gửi sau, không xin lại mỗi message', async () => {
     const post = jest.fn()
-      .mockImplementationOnce(dapTokenOk)
-      .mockImplementation(dapGuiOk);
+      .mockImplementationOnce(tokenOkResponse)
+      .mockImplementation(sendOkResponse);
 
-    const service = dungService(post);
+    const service = buildService(post);
     await service.sendMessage('ou_a', 'message 1');
     await service.sendMessage('ou_b', 'message 2');
 
