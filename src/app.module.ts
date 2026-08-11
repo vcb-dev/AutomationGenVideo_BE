@@ -11,6 +11,7 @@ import { PushModule } from "./common/push/push.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
+import { OwnedVideoWeeklyReportModule } from './modules/owned-video-weekly-report/owned-video-weekly-report.module';
 import { ChannelEnrichmentModule } from "./modules/channel-enrichment/channel-enrichment.module";
 import { CollectionModule } from "./modules/collection/collection.module";
 import { TrackedChannelsModule } from "./modules/tracked-channels/tracked-channels.module";
@@ -75,6 +76,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     AuthModule,
     UsersModule,
     AiIntegrationModule,
+    OwnedVideoWeeklyReportModule,
     ChannelEnrichmentModule,
     CollectionModule,
     TrackedChannelsModule,

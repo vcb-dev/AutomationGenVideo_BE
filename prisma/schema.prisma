@@ -4114,3 +4114,37 @@ model SpinRound {
   @@index([workspace_id, started_at])
   @@map("spin_rounds")
 }
+model OwnedVideoWeeklyNotifyLog {
+  id String @id @default(uuid())
+
+  /// Trỏ tới video_management_ownedvideocontent.post_id. KHÔNG đặt quan hệ Prisma vì bảng video
+  /// do Django (AI) sở hữu; ràng buộc khoá ngoại ở đây sẽ chặn việc bên kia xoá dọn dữ liệu.
+  ///
+  /// Unique: một video chỉ được chốt đúng một lần, dù cron chạy lại bao nhiêu lượt.
+  post_id String @unique @db.VarChar(255)
+
+  /// open_id người đã nhận. v1 luôn bằng LARK_NOTIFY_OPEN_ID; vẫn lưu vào cột thay vì đọc lại
+  /// biến môi trường, vì v2 mỗi video sẽ gửi cho một chủ kênh khác nhau và lúc đó cần biết đã
+  /// gửi cho AI để tra khi có người hỏi "sao tôi không nhận được".
+  lark_open_id String? @db.VarChar(64)
+
+  /// 'da_gui' · 'khong_co_nguoi_nhan' · 'loi'
+  ///
+  /// Hai giá trị đầu là CHỐT, truy vấn chọn video loại chúng ra vĩnh viễn. Riêng 'loi' vẫn được
+  /// thử lại: một cú rớt mạng không đáng để mất hẳn video khỏi báo cáo.
+  trang_thai String @db.VarChar(24)
+
+  /// Số lượt đã thử. Quá 3 thì coi như chốt — lỗi lặp lại 3 lần thì không phải lỗi mạng, thử
+  /// tiếp chỉ đốt hạn mức API.
+  so_lan_thu Int @default(0)
+
+  loi     String?   @db.Text
+  sent_at DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([trang_thai])
+  @@map("owned_video_weekly_notify_log")
+}
+
