@@ -697,7 +697,18 @@ export class GoogleDriveStorageService {
         throw new Error('Google Drive refresh token requires GOOGLE_DRIVE_CLIENT_ID/SECRET or GOOGLE_CLIENT_ID/SECRET');
       }
 
-      this.logger.debug(`[GoogleDrive] Token request — client_id: ${clientId?.slice(0, 20)}... refresh_token: ${refreshToken?.slice(0, 10)}...`)
+      // KHÔNG log mảnh nào của refresh_token. Cron này chạy mỗi phút nên mảnh đó được nhân bản
+      // hàng nghìn lần vào log gom trên Railway. client_id thì không phải bí mật, giữ lại vì đây
+      // chính là thứ cần thấy: token được cấp cho client nào mà lại gửi kèm client nào.
+      this.logger.debug(
+        `[GoogleDrive] Token request — client_id: ${clientId} (nguồn: ${
+          process.env.GOOGLE_DRIVE_CLIENT_ID
+            ? 'GOOGLE_DRIVE_CLIENT_ID'
+            : process.env.GOOGLE_CLIENT_ID
+              ? 'GOOGLE_CLIENT_ID'
+              : 'OAUTH_CLIENT_ID'
+        })`,
+      )
       let res: any
       try {
         res = await axios.post(
@@ -714,7 +725,17 @@ export class GoogleDriveStorageService {
           },
         )
       } catch (err: any) {
-        this.logger.error(`[GoogleDrive] Token 401 detail: ${JSON.stringify(err.response?.data)}`)
+        // "unauthorized_client" gần như luôn có nghĩa là refresh_token được cấp cho MỘT client
+        // khác cái đang gửi kèm — không phải token hết hạn. Nói thẳng ra đây, vì thông điệp gốc
+        // của Google ("Unauthorized") không gợi ý gì và rất dễ đi tìm nhầm hướng.
+        const detail = err.response?.data
+        this.logger.error(`[GoogleDrive] Token request thất bại: ${JSON.stringify(detail)}`)
+        if (detail?.error === 'unauthorized_client') {
+          this.logger.error(
+            `[GoogleDrive] refresh_token KHÔNG thuộc client_id ${clientId}. Đặt ` +
+            `GOOGLE_DRIVE_CLIENT_ID/GOOGLE_DRIVE_CLIENT_SECRET đúng cặp đã sinh ra token này.`,
+          )
+        }
         throw err
       }
 
