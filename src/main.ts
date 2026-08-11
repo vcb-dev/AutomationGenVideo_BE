@@ -4,6 +4,8 @@ import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from 'helmet';
 import * as compression from 'compression';
+import * as cookieParser from 'cookie-parser';
+import { json, urlencoded } from 'express';
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { initSocialSyncCron } from './social-sync.scheduler';
@@ -19,6 +21,16 @@ async function bootstrap() {
       ? ['error', 'warn', 'log']
       : ['error', 'warn', 'log', 'debug'],
   });
+
+  // Express body-parser mặc định giới hạn 100kb — không đủ cho system_prompt dài (~30-60KB
+  // thô, cộng thêm overhead escape ký tự đặc biệt khi encode JSON). Nâng lên 2mb để có dư
+  // nhiều lần, tránh lỗi "PayloadTooLargeError" khi admin lưu prompt dài qua CRUD nhân vật.
+  app.use(json({ limit: '2mb' }));
+  app.use(urlencoded({ limit: '2mb', extended: true }));
+
+  // Phải đứng trước mọi guard/strategy đọc req.cookies — không có nó thì req.cookies là undefined
+  // và toàn bộ auth bằng cookie im lặng trượt về Bearer, rất khó lần ra khi debug.
+  app.use(cookieParser());
 
   // Security and Optimization
   app.use(helmet({
@@ -79,7 +91,15 @@ async function bootstrap() {
     : [];
 
   let corsOriginOption: string | string[] | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void) = '*';
-  if (rawOrigins.length > 0) {
+  if (rawOrigins.length === 0) {
+    // Trình duyệt TỪ CHỐI cookie khi Access-Control-Allow-Origin là '*' và request có credentials.
+    // Nên thiếu CORS_ORIGIN là toàn bộ auth bằng cookie chết — mà chết IM LẶNG: BE trả 200, log
+    // sạch, chỉ có trình duyệt lặng lẽ vứt Set-Cookie đi. Phải hét lên ở đây.
+    console.warn(
+      '[CORS] CORS_ORIGIN rỗng -> Access-Control-Allow-Origin = "*". Auth bằng cookie sẽ KHÔNG ' +
+      'hoạt động với FE chạy khác origin. Đặt CORS_ORIGIN trước khi dùng cookie HttpOnly.',
+    );
+  } else {
     const allowedSet = new Set<string>(rawOrigins);
     for (const o of rawOrigins) {
       try {
