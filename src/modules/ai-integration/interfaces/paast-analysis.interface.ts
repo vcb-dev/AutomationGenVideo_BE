@@ -1,10 +1,13 @@
 /**
  * Cấu trúc kết quả chấm điểm PAAST do AI service trả về.
  *
- * Đây là NGUỒN TÊN FIELD DUY NHẤT cho khung PAAST trong BE: module content-transform
- * import lại chính các type này và lưu/trả nguyên shape cho FE, không tự đặt tên khác
- * (tránh phải sửa 2 nơi mỗi khi khung PAAST đổi). Tên field giữ đúng snake_case như AI
- * service trả ra — cố ý không camelCase hoá để không phát sinh lớp map trung gian.
+ * Đây là NGUỒN TÊN FIELD DUY NHẤT cho khung PAAST trong BE: phần "chuyển đổi content" của
+ * AiIntegrationService import lại chính các type này và lưu/trả nguyên shape cho FE, không tự
+ * đặt tên khác (tránh phải sửa 2 nơi mỗi khi khung PAAST đổi). Tên field giữ đúng snake_case như
+ * AI service trả ra — cố ý không camelCase hoá để không phát sinh lớp map trung gian.
+ *
+ * (Chuyển từ module `paast-analyzer` sang đây khi gộp content-transform vào ai-integration —
+ * module paast-analyzer chỉ còn tồn tại để giữ types này, nay không còn lý do tách riêng.)
  */
 
 /**

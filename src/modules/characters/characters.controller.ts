@@ -7,7 +7,7 @@ import { CreateCharacterDto, UpdateCharacterDto, CharacterQueryDto } from './dto
 /**
  * Quản lý CRUD nhân vật AI (system_prompt) — chỉ ADMIN/MANAGER với người dùng thật.
  * Riêng lệnh gọi server-to-server trong nội bộ BE được phép qua header x-internal-token
- * (xem AdminOrInternalGuard) — dùng cho luồng /content-transform/transform lấy system_prompt.
+ * (xem AdminOrInternalGuard) — dùng cho luồng /ai/content-transform/transform lấy system_prompt.
  */
 @ApiTags('Characters (Admin)')
 @ApiBearerAuth()

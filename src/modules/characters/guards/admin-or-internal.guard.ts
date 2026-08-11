@@ -11,7 +11,7 @@ export const INTERNAL_TOKEN_HEADER = 'x-internal-token';
  * Cho phép truy cập /characters/* khi THOẢ MỘT trong hai:
  *
  *  1. Có header x-internal-token khớp INTERNAL_API_TOKEN — dành cho lệnh gọi server-to-server
- *     trong nội bộ BE (vd luồng /content-transform/transform lấy system_prompt qua HTTP thay vì
+ *     trong nội bộ BE (vd luồng /ai/content-transform/transform lấy system_prompt qua HTTP thay vì
  *     đọc thẳng DB). Không kèm JWT người dùng nên KHÔNG đi qua JwtAuthGuard.
  *  2. Hoặc là user đã đăng nhập VÀ có role ADMIN/MANAGER — hành vi y hệt trước đây
  *     (JwtAuthGuard + RolesGuard + @Roles(ADMIN, MANAGER)).

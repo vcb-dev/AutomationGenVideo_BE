@@ -1,7 +1,7 @@
 import {
   PaastAnalysisPayload,
   PaastMissingElement,
-} from '../paast-analyzer/interfaces/paast-analysis.interface';
+} from './interfaces/paast-analysis.interface';
 
 /**
  * Thứ tự ưu tiên sửa khi nâng cấp content theo PAAST.
@@ -32,10 +32,12 @@ export function sortMissingByPriority(missing: PaastMissingElement[]): PaastMiss
 /**
  * Dựng system prompt cho lần gọi AI "nâng cấp kịch bản".
  *
- * KHÔNG dùng endpoint /api/ai/paast/upgrade/ của paast-analyzer ở luồng này: endpoint đó viết
+ * KHÔNG dùng endpoint /api/ai/paast/upgrade/ (dùng cho luồng PAAST Analyzer độc lập, xem các
+ * method analyzeContent/upgradeAnalysis phía trên trong AiIntegrationService): endpoint đó viết
  * lại content theo giọng trung tính, trong khi kịch bản của Chuyển đổi nội dung BẮT BUỘC giữ
  * đúng giọng nhân vật (system_prompt riêng của từng Character). Nên vẫn đi qua đúng đường viết
- * kịch bản cũ, chỉ thay phần "sửa gì" bằng danh sách tiêu chí PAAST đang thiếu.
+ * kịch bản cũ (callAiService — endpoint transform-content), chỉ thay phần "sửa gì" bằng danh
+ * sách tiêu chí PAAST đang thiếu.
  */
 export function buildPaastUpgradeSystemPrompt(analysis: PaastAnalysisPayload, missing: PaastMissingElement[]): string {
   const lines: string[] = [

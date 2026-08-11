@@ -569,7 +569,7 @@ export class UsersService {
       // team_members hiện rỗng trên thực tế (chưa từng được populate) — nguồn sự thật thực
       // dùng được là User.team (chuỗi, có thể liệt kê nhiều team cách nhau bởi dấu phẩy) so
       // khớp với tên các Team mà caller đang lead (Team.leader_id). Cùng pattern với
-      // getMemberHistory() trong content-transform.service.ts.
+      // getContentTransformMemberHistory() trong ai-integration.service.ts.
       const ledTeams = await this.prisma.team.findMany({
         where: { leader_id: callerId },
         select: { name: true },

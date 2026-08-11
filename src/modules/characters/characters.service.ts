@@ -55,7 +55,7 @@ export class CharactersService {
   /**
    * Chi tiết 1 nhân vật, kèm system_prompt đầy đủ.
    *
-   * Nhận CẢ id lẫn slug — luồng /content-transform/transform vốn cho phép truyền slug
+   * Nhận CẢ id lẫn slug — luồng /ai/content-transform/transform vốn cho phép truyền slug
    * (vd "huyk"), nay lấy prompt qua chính endpoint này nên phải giữ nguyên khả năng đó,
    * nếu chỉ tra theo id thì mọi lệnh gọi bằng slug sẽ vỡ thành 404.
    */
