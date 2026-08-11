@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 export interface FetchedManagedPage {
   page_id: string;
@@ -45,7 +46,7 @@ export interface FetchedPageMetadata {
 // không bao giờ tự mã hóa/giải mã (AI giữ FERNET_KEY, là nơi duy nhất biết mã hóa).
 @Injectable()
 export class FacebookAiClientService {
-  private readonly aiServiceUrl = (process.env.AI_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+  private readonly aiServiceUrl = resolveAiServiceUrlFromEnv();
 
   constructor(private readonly jwtService: JwtService) {}
 

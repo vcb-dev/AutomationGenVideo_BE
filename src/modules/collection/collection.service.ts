@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { catchError, firstValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { CreateCollectionDto, AddVideosToCollectionDto } from './dto/collection.dto';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 @Injectable()
 export class CollectionService {
@@ -14,7 +15,7 @@ export class CollectionService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8001');
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
   }
 
   async getCollections() {

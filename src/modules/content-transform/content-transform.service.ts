@@ -5,6 +5,7 @@ import { UserRole, TransformStatus } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 @Injectable()
 export class ContentTransformService {
@@ -67,7 +68,7 @@ export class ContentTransformService {
 
     const startTime = Date.now();
     try {
-      const aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+      const aiServiceUrl = resolveAiServiceUrl(this.configService);
       const url = `${aiServiceUrl}/api/ai/transform-content/`;
       
       const response = await firstValueFrom(
@@ -351,7 +352,7 @@ export class ContentTransformService {
 
   async transcribeUpload(file: Express.Multer.File, authorization?: string): Promise<any> {
     const FormData = require('form-data');
-    const aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    const aiServiceUrl = resolveAiServiceUrl(this.configService);
     const url = `${aiServiceUrl}/api/content/transcribe-upload/`;
 
     const formData = new FormData();
