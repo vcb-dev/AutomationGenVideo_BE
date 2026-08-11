@@ -5,6 +5,7 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { CacheService } from "../../../common/cache/cache.service";
 import { getRuntimeJwtSecret } from "../jwt-secret.util";
+import { extractAccessTokenFromCookie } from "../cookie-auth.service";
 
 /** TTL for cached JWT user lookups — short enough to pick up role changes, long enough to cut DB load. */
 const JWT_USER_CACHE_TTL_MS = 45_000;
@@ -18,9 +19,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   ) {
     const secret = getRuntimeJwtSecret(configService);
     super({
-      // Accept token from Authorization header OR ?access_token= (needed for video stream in <video> tags)
+      // Thứ tự có ý nghĩa: cookie đứng trước để trình duyệt luôn dùng đường an toàn, kể cả khi
+      // một đoạn code cũ còn sót lại vẫn gắn Bearer header.
       jwtFromRequest: ExtractJwt.fromExtractors([
+        extractAccessTokenFromCookie,
+        // Giữ cho Swagger "Try it out", curl và script nội bộ — các client này không có cookie jar.
         ExtractJwt.fromAuthHeaderAsBearerToken(),
+        // GỠ Ở BƯỚC DEPLOY 4 (xem docs/plans/2026-08-08-auth-cookie-httponly.md). Còn ở đây vì FE
+        // bản cũ đang dùng nó cho SSE thông báo (EventSource không set được header). Gỡ sớm thì
+        // giữa hai lần deploy người dùng vẫn đăng nhập được nhưng mất sạch thông báo realtime —
+        // hỏng âm thầm, rất khó lần ra.
         ExtractJwt.fromUrlQueryParameter('access_token'),
       ]),
       ignoreExpiration: false,
