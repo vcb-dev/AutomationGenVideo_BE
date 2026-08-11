@@ -25,6 +25,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       trafficReport: { groupBy: jest.fn(async () => []) },
       revenueReport: { groupBy: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { findMany: jest.fn(async () => []) },
     };
     const service = new TaskAutoTasksService(prisma, videoService, push, linkStats);
     return { service, prisma };

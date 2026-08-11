@@ -35,3 +35,16 @@ export function deriveDailyTarget(
   const days = remainingCalendarDays(today);
   return Math.min(remaining, Math.ceil(remaining / days));
 }
+
+// Cột EditorDailyKpi.date là DATE, lưu tại UTC midnight của ngày lịch VN —
+// mọi nơi đọc/ghi bảng này phải cùng quy ước "YYYY-MM-DD" → UTC midnight.
+export function dailyKpiDate(date: string): Date {
+  return new Date(`${date}T00:00:00.000Z`);
+}
+
+// Ngày lịch VN của một thời điểm, dạng "YYYY-MM-DD" — bất kể server chạy timezone gì.
+export function vietnamDateString(d: Date = new Date()): string {
+  return DateTime.fromJSDate(d)
+    .setZone("Asia/Ho_Chi_Minh")
+    .toFormat("yyyy-MM-dd");
+}
