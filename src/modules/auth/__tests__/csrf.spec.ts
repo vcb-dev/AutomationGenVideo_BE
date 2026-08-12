@@ -1,6 +1,6 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
-import { COOKIE_CSRF, CSRF_HEADER } from '../../../modules/auth/cookie.constants';
-import { CsrfGuard } from '../csrf.guard';
+import { COOKIE_CSRF, CSRF_HEADER } from '../cookie.constants';
+import { CsrfGuard } from '../guards/csrf.guard';
 
 function makeContext(opts: {
   method?: string;
