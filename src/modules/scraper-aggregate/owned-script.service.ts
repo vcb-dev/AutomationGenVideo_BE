@@ -4,6 +4,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PaastAnalyzerService } from '../paast-analyzer/paast-analyzer.service';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 /**
  * Kịch bản + điểm PAAST cho video kênh nội bộ.
@@ -48,7 +49,7 @@ export interface KetQuaPaastVideo {
 @Injectable()
 export class OwnedScriptService {
   private readonly logger = new Logger(OwnedScriptService.name);
-  private readonly aiServiceUrl = (process.env.AI_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+  private readonly aiServiceUrl = resolveAiServiceUrlFromEnv();
 
   constructor(
     private readonly prisma: PrismaService,

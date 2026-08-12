@@ -16,7 +16,7 @@ describe('DouyinService', () => {
       providers: [
         DouyinService,
         { provide: HttpService, useValue: { post: jest.fn(), get: jest.fn() } },
-        { provide: ConfigService, useValue: { get: jest.fn(() => undefined) } },
+        { provide: ConfigService, useValue: { get: jest.fn((k: string) => (k === 'AI_SERVICE_URL' ? 'http://ai.test:8001' : undefined)) } },
       ],
     }).compile();
 

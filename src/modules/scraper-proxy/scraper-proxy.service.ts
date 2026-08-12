@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosRequestConfig } from 'axios';
 import { Request, Response } from 'express';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 // FE gọi /api/scraper/* và /api/facebook/* — trước đây gọi thẳng sang AI, giờ
 // đi qua BE trước rồi mới relay sang AI (đúng luồng FE → BE → AI). AI tự xác thực
@@ -9,7 +10,7 @@ import { Request, Response } from 'express';
 @Injectable()
 export class ScraperProxyService {
   private readonly logger = new Logger(ScraperProxyService.name);
-  private readonly aiServiceUrl = (process.env.AI_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+  private readonly aiServiceUrl = resolveAiServiceUrlFromEnv();
 
   async forward(req: Request, res: Response): Promise<void> {
     const targetUrl = `${this.aiServiceUrl}${req.originalUrl}`;

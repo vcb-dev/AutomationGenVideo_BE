@@ -12,6 +12,9 @@ import { AiIntegrationService } from '../ai-integration.service';
  */
 describe('AiIntegrationService.deleteClonedVoice', () => {
   function buildService(configValues: Record<string, string> = {}) {
+    // AI_SERVICE_URL không còn giá trị mặc định trong mã nguồn (xem common/config/ai-service-url),
+    // nên test phải cấp — nếu không service dừng ngay ở constructor.
+    configValues = { AI_SERVICE_URL: 'http://ai.test:8001', ...configValues };
     const httpService: any = {
       post: jest.fn(() => of({ data: {} })),
       get: jest.fn(() => of({ data: {} })),

@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { GenerateVideoDto } from './dto/generate-video.dto';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 @Injectable()
 export class HeygenVideoService {
@@ -12,7 +13,7 @@ export class HeygenVideoService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8000';
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
   }
 
   async generateVideo(generateVideoDto: GenerateVideoDto) {

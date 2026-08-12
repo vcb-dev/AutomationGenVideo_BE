@@ -13,6 +13,10 @@ import { OwnedScriptService } from '../owned-script.service';
 
 const NGUOI_DUNG = 'u1';
 
+// AI_SERVICE_URL không còn giá trị mặc định trong mã nguồn (xem common/config/ai-service-url):
+// service đọc lúc khởi tạo property nên phải đặt trước khi dựng instance.
+process.env.AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://ai.test:8001';
+
 function dungService(over: { prisma?: any; paast?: any } = {}) {
   const prisma: any = {
     ownedVideoScript: {

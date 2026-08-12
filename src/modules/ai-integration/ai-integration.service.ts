@@ -7,6 +7,7 @@ import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 /** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
 export interface VideoDetailResult {
@@ -59,7 +60,7 @@ export class AiIntegrationService {
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
     this.voiceAiServiceUrl = this.configService.get<string>(
       'AI_SERVICE_URL_VOICE',

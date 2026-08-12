@@ -5,6 +5,7 @@ import { TransformStatus } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 interface MissingElement {
   layer: string;
@@ -29,7 +30,7 @@ export class PaastAnalyzerService {
   ) {}
 
   private get aiServiceUrl(): string {
-    return this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    return resolveAiServiceUrl(this.configService);
   }
 
   /**

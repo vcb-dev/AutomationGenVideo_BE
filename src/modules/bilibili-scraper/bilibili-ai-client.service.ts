@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 export interface ParsedBilibiliProfile {
   mid: string;
@@ -51,7 +52,7 @@ export interface ParsedBilibiliSearchVideo {
 // AI không đụng DB — chỉ gọi TikHub + parse, trả JSON thô cho BE tự lưu.
 @Injectable()
 export class BilibiliAiClientService {
-  private readonly aiServiceUrl = (process.env.AI_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+  private readonly aiServiceUrl = resolveAiServiceUrlFromEnv();
 
   constructor(private readonly jwtService: JwtService) {}
 
