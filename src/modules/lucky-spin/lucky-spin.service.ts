@@ -9,7 +9,8 @@ import {
   NO_TEAM_LABEL,
   SPIN_DURATION_MS,
   SPIN_WORKSPACES,
-  laTenKhongDuocTrung,
+  hasReducedOdds,
+  REDUCED_ODDS_RATE,
 } from './lucky-spin.constants';
 import {
   AwardGiftDto,
@@ -346,24 +347,7 @@ export class LuckySpinService {
 
     const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
 
-    /*
-     * Vòng quay cá nhân: loại người trong danh sách chặn ra khỏi tập ô CÓ THỂ THẮNG, không phải
-     * ra khỏi `pool`. Bánh xe vẫn hiện đủ tên như file nhân sự đã nhập, chỉ ô thắng là không bao
-     * giờ rơi vào họ. Lọc ở đây chứ không lọc trong câu findMany vì `pool` còn được dùng để dựng
-     * bánh xe cho mọi màn hình đang xem.
-     *
-     * Vòng quay team không lọc: pool là tên team, không phải tên người.
-     */
-    const oCoTheThang = pool
-      .map((_, i) => i)
-      .filter((i) => kind !== SpinRoundKind.MEMBER || !laTenKhongDuocTrung(pool[i].name));
-
-    // Không đủ người hợp lệ thì báo lỗi chứ không hạ chuẩn: để lọt một lượt là hỏng cả yêu cầu.
-    if (oCoTheThang.length < soLuongBoc) {
-      throw new BadRequestException(`Chỉ còn ${oCoTheThang.length} mục hợp lệ, không bốc được ${soLuongBoc}.`);
-    }
-
-    const winnerIndexes = this.pickDistinctIndexes(oCoTheThang, soLuongBoc);
+    const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind);
 
     const round = await this.prisma.spinRound.create({
       data: {
@@ -383,10 +367,60 @@ export class LuckySpinService {
   }
 
   /**
+   * Chọn người thắng, có tính danh sách hạn chế.
+   *
+   * Người trong REDUCED_ODDS_NAMES không bị loại hẳn nữa: mỗi người được tung riêng một lần,
+   * trúng dưới REDUCED_ODDS_RATE thì chiếm luôn một suất thắng. Suất còn lại bốc đều trong số
+   * người thường.
+   *
+   * Vì sao tung riêng thay vì hạ trọng số trong tập bốc chung: hạ trọng số thì xác suất thật
+   * phụ thuộc danh sách dài bao nhiêu — với 50 người, "1% trọng số" thành khoảng 0,02% cơ hội
+   * thật. Tung riêng cho đúng 1% mỗi lượt như ban tổ chức yêu cầu, bất kể danh sách bao nhiêu.
+   *
+   * Bánh xe vẫn hiện đủ tên: chỉ tập ô THẮNG bị chi phối, `pool` giữ nguyên.
+   * Vòng quay team không áp — pool là tên team, không phải tên người.
+   */
+  private pickWinners(
+    pool: { name: string }[],
+    count: number,
+    kind: SpinRoundKind,
+  ): number[] {
+    const allIndexes = pool.map((_, i) => i);
+    if (kind !== SpinRoundKind.MEMBER) {
+      return this.pickDistinctIndexes(allIndexes, count);
+    }
+
+    const restricted = allIndexes.filter((i) => hasReducedOdds(pool[i].name));
+    const normal = allIndexes.filter((i) => !hasReducedOdds(pool[i].name));
+
+    const winners: number[] = [];
+    for (const i of restricted) {
+      if (winners.length >= count) break;
+      if (this.nextUnitRandom() < REDUCED_ODDS_RATE) winners.push(i);
+    }
+
+    const remaining = count - winners.length;
+    if (remaining > 0) {
+      if (normal.length < remaining) {
+        throw new BadRequestException(
+          `Chỉ còn ${normal.length} mục hợp lệ, không bốc được ${remaining}.`,
+        );
+      }
+      winners.push(...this.pickDistinctIndexes(normal, remaining));
+    }
+    return winners;
+  }
+
+  /** Số thực trong [0, 1) lấy từ crypto — không dùng Math.random để kết quả không đoán được. */
+  private nextUnitRandom(): number {
+    return randomInt(0, 2 ** 30) / 2 ** 30;
+  }
+
+  /**
    * Fisher-Yates một phần bằng crypto — không lặp người, không lệch phân phối.
    *
    * Nhận sẵn danh sách ô được phép thắng thay vì kích thước bánh xe, vì hai con số này không
-   * còn bằng nhau từ khi có danh sách chặn: người bị chặn vẫn chiếm một ô trên bánh xe.
+   * còn bằng nhau từ khi có danh sách hạn chế.
    */
   private pickDistinctIndexes(oCoTheThang: number[], count: number): number[] {
     const idx = [...oCoTheThang];
