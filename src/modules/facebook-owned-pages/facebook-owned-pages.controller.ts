@@ -1,8 +1,19 @@
-import { Controller, Get, Body, HttpException, HttpStatus, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Body, HttpException, HttpStatus, Logger, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';
+import { InvalidRefreshDaysError, parseRefreshDays } from './parse-refresh-days';
+
+// Kéo lại chỉ số là thao tác nặng (mỗi video một lượt hỏi Graph API) nên siết quyền như thao tác
+// quản lý kênh ở các module scraper khác.
+function assertCanRefreshMetrics(req: any): void {
+  const roles: string[] = req.user?.roles ?? [];
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
+    throw new ForbiddenException('Chỉ leader/admin được kéo lại chỉ số');
+  }
+}
 
 // Thay thế facebook_import / facebook_sync / facebook_backfill bên AI (đã xóa) —
 // route giữ nguyên path cũ để FE (facebookService.ts) không cần đổi gì.
@@ -66,6 +77,43 @@ export class FacebookOwnedPagesController {
       status: 'ok',
       message: `Đã gửi yêu cầu cào video cho ${page.name}. Dữ liệu sẽ cập nhật trong vài phút.`,
       is_scraping: true,
+    };
+  }
+
+  /**
+   * Kéo lại view/like/comment/share cho video đăng trong N ngày gần đây.
+   *
+   * Vì sao cần endpoint riêng thay vì đợi cron: cron 12:00 gọi cứng 7 ngày, còn delta sync chỉ
+   * lấy 10 bài mới nhất mỗi page. Video cũ hơn thế thì KHÔNG đường nào chạm tới. Sự cố
+   * 27/07–09/08/2026 để lại 1.584 video có view = 0 nằm đúng vùng chết đó.
+   *
+   * Khác delta sync ở chỗ quyết định: hàm này lấy danh sách post_id TỪ DB rồi hỏi Facebook đích
+   * danh từng video, nên không dính giới hạn 10 bài mới nhất.
+   */
+  @Post('refresh-metrics')
+  async refreshMetrics(@Req() req: any, @Body() body: { days?: number | string }) {
+    assertCanRefreshMetrics(req);
+
+    let days: number;
+    try {
+      days = parseRefreshDays(body?.days);
+    } catch (err) {
+      if (err instanceof InvalidRefreshDaysError) {
+        throw new HttpException({ error: err.message }, HttpStatus.BAD_REQUEST);
+      }
+      throw err;
+    }
+
+    // Chạy nền: 1.584 video vượt xa thời gian chờ của một request HTTP.
+    this.service.refreshRecentMetrics(days).then(
+      (r) => this.logger.log(`[REFRESH-METRICS] ${days} ngày: cập nhật ${r.updated}/${r.total} video`),
+      (err) => this.logger.error(`[REFRESH-METRICS] ${days} ngày thất bại: ${err.message}`),
+    );
+
+    return {
+      status: 'ok',
+      days,
+      message: `Đã bắt đầu kéo lại chỉ số cho video đăng trong ${days} ngày gần đây. Theo dõi log [REFRESH-METRICS] để biết kết quả.`,
     };
   }
 
