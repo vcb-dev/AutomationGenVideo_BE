@@ -66,6 +66,31 @@ describe('AllExceptionsFilter — chuyển tiếp lỗi từ AI service', () => 
     expect(phanHoi.body.message).toContain('ECONNREFUSED');
   });
 
+  /**
+   * AI service là hạ tầng NỘI BỘ. Mã 401/403 của nó nói về quan hệ tin cậy BE↔AI, không
+   * nói gì về phiên đăng nhập của người dùng — nhưng FE không phân biệt được: interceptor
+   * ở api-client.ts gặp 401 là xoá localStorage và đá thẳng về /login.
+   *
+   * Hôm nay chưa view nào của AI trả 401/403 kèm khoá `error` nên chưa nổ. Đây là chốt
+   * chặn cho ngày mai: thêm một view như vậy là người dùng bị đăng xuất giữa chừng mà
+   * không ai hiểu vì sao.
+   *
+   * 429 cùng nhóm vì lý do khác: FE tự thử lại 3 lần khi gặp 429, tức bắn lại nguyên
+   * lệnh cào — không phải thứ nên xảy ra sau lưng người dùng.
+   */
+  it.each([401, 403, 429])('mã %i của AI service không lọt ra ngoài, quy về 502', (status) => {
+    filter.catch(loiAxios(status, { error: 'AI service từ chối' }), host);
+
+    expect(phanHoi.status).toBe(HttpStatus.BAD_GATEWAY);
+    expect(phanHoi.body.error).toBe('AI service từ chối');
+  });
+
+  it.each([400, 404, 422])('mã %i giữ nguyên — đó là lỗi về nội dung yêu cầu, có nghĩa với người dùng', (status) => {
+    filter.catch(loiAxios(status, { error: 'username is required' }), host);
+
+    expect(phanHoi.status).toBe(status);
+  });
+
   it('HttpException của chính BE không bị đổi nghĩa', () => {
     filter.catch(new HttpException({ error: 'username is required' }, HttpStatus.BAD_REQUEST), host);
 
