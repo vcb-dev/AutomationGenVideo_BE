@@ -54,7 +54,7 @@ export function laThiTruongHopLe(value: string): value is Market {
  * @param cot biểu thức SQL trỏ tới cột chữ của nhánh (mỗi nền tảng một tên: description /
  *            title / caption), nên phải truyền vào chứ không viết cứng được.
  */
-export function dieuKienThiTruong(cot: Prisma.Sql, market: string): Prisma.Sql | null {
+export function marketFilter(cot: Prisma.Sql, market: string): Prisma.Sql | null {
   const m = (market || '').toLowerCase();
   if (!laThiTruongHopLe(m)) return null;
   // COALESCE: caption NULL thì `~*` trả NULL chứ không trả false, video sẽ rơi khỏi CẢ HAI
@@ -72,7 +72,7 @@ export function dieuKienThiTruong(cot: Prisma.Sql, market: string): Prisma.Sql |
  *        Bảng video Facebook nội bộ KHÔNG có cột này — mà đó lại là nơi chứa gần như toàn
  *        bộ video nội bộ — nên nhánh bắt theo chữ mới là nhánh chính, không phải phòng hờ.
  */
-export function dieuKienTuyenNoiDung(
+export function contentLineFilter(
   cot: Prisma.Sql,
   line: string,
   cotHashtag?: Prisma.Sql,
@@ -81,11 +81,11 @@ export function dieuKienTuyenNoiDung(
   if (!laTuyenHopLe(ma)) return null;
 
   const mau = `#${ma}([^[:alnum:]]|$)`;
-  const theoChu = Prisma.sql`COALESCE(${cot}, '') ~* ${mau}`;
-  if (!cotHashtag) return theoChu;
+  const byKeyword = Prisma.sql`COALESCE(${cot}, '') ~* ${mau}`;
+  if (!cotHashtag) return byKeyword;
 
   // Mảng hashtag lưu không kèm dấu #, và hoa/thường không thống nhất → so bằng lower().
-  return Prisma.sql`(${theoChu} OR EXISTS (
+  return Prisma.sql`(${byKeyword} OR EXISTS (
     SELECT 1 FROM unnest(COALESCE(${cotHashtag}, ARRAY[]::text[])) AS t WHERE lower(t) = ${ma.toLowerCase()}
   ))`;
 }
@@ -101,7 +101,7 @@ export function dieuKienTuyenNoiDung(
  * Ranh giới cuối `([^[:alnum:]_]|$)` là bắt buộc: thiếu nó thì lọc #vang sẽ vơ luôn #vangtay,
  * và lọc #a1 sẽ vơ #a10.
  */
-export function dieuKienHashtag(
+export function hashtagFilter(
   cot: Prisma.Sql,
   hashtag: string,
   cotHashtag?: Prisma.Sql,
@@ -112,10 +112,10 @@ export function dieuKienHashtag(
   // `the` đã qua chuanHoaHashtag nên chắc chắn không còn ký tự có nghĩa trong biểu thức
   // chính quy — không cần thoát thêm, và giá trị vẫn đi vào truy vấn dưới dạng tham số.
   const mau = `#${the}([^[:alnum:]_]|$)`;
-  const theoChu = Prisma.sql`COALESCE(${cot}, '') ~* ${mau}`;
-  if (!cotHashtag) return theoChu;
+  const byKeyword = Prisma.sql`COALESCE(${cot}, '') ~* ${mau}`;
+  if (!cotHashtag) return byKeyword;
 
-  return Prisma.sql`(${theoChu} OR EXISTS (
+  return Prisma.sql`(${byKeyword} OR EXISTS (
     SELECT 1 FROM unnest(COALESCE(${cotHashtag}, ARRAY[]::text[])) AS t WHERE lower(t) = ${the.toLowerCase()}
   ))`;
 }
@@ -143,7 +143,7 @@ export function chuanHoaHashtag(raw: string): string {
  * nên phải truyền cột vào chứ không viết cứng được. So sánh không phân biệt hoa thường vì
  * username Facebook và TikTok trong dữ liệu không thống nhất.
  */
-export function dieuKienKenh(cot: Prisma.Sql, kenh: string): Prisma.Sql | null {
+export function channelFilter(cot: Prisma.Sql, kenh: string): Prisma.Sql | null {
   const v = (kenh || '').trim();
   if (!v) return null;
   return Prisma.sql`lower(COALESCE(${cot}, '')) = ${v.toLowerCase()}`;

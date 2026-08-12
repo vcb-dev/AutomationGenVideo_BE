@@ -41,7 +41,7 @@ export class ScraperAggregateController {
   }
 
   /**
-   * Số liệu cho trang Tổng quan kênh nội bộ — xem OwnedStatsService.
+   * Số liệu cho tokenRow Tổng quan kênh nội bộ — xem OwnedStatsService.
    *
    * Khoảng ngày nhận theo `tu`/`den` (YYYY-MM-DD). `days` giữ lại cho các nút preset và cho
    * những lần gọi cũ; có `tu` thì `days` bị bỏ qua.
@@ -59,7 +59,7 @@ export class ScraperAggregateController {
   /**
    * Video đăng trùng giữa các kênh nội bộ — xem OwnedDuplicateService.
    *
-   * Tách khỏi /owned/stats để khối trùng lặp tự tải: gộp vào đó thì cả trang phải chờ thêm
+   * Tách khỏi /owned/stats để khối trùng lặp tự tải: gộp vào đó thì cả tokenRow phải chờ thêm
    * ba truy vấn nữa mới vẽ được ô số đầu tiên. Nhận cùng bộ tham số kỳ ngày.
    */
   @Get('owned/trung-lap')
@@ -75,7 +75,7 @@ export class ScraperAggregateController {
   /**
    * Trạng thái chấm điểm PAAST của nhiều video — CHỈ đọc bảng đã lưu, không gọi Graph API.
    *
-   * Lưới video gọi đúng một lần cho cả trang. Nếu để mỗi thẻ tự hỏi thì mở trang là bắn 24
+   * Lưới video gọi đúng một lần cho cả tokenRow. Nếu để mỗi thẻ tự hỏi thì mở tokenRow là bắn 24
    * lượt gọi Graph API cho những video người dùng còn chưa buồn bấm tới.
    *
    * `ids` dạng `facebook:123,facebook:456`.
@@ -93,13 +93,13 @@ export class ScraperAggregateController {
         return { platform: s.slice(0, i), post_id: s.slice(i + 1) };
       })
       .filter((k) => k.platform && k.post_id);
-    return this.scriptService.trangThaiNhieu(khoas);
+    return this.scriptService.statusMany(khoas);
   }
 
   /** Lấy kịch bản + chấm điểm PAAST một video. Có thể tốn một lượt LLM — chỉ gọi khi người dùng bấm. */
   @Post('owned/paast')
   async paastVideo(@Request() req: any, @Body() body: { platform: string; post_id: string }) {
-    return this.scriptService.chamDiem(
+    return this.scriptService.scoreVideo(
       (body?.platform || '').trim(),
       (body?.post_id || '').trim(),
       req.user.id,

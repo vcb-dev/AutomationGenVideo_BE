@@ -7,17 +7,17 @@ import { OwnedScriptService } from '../owned-script.service';
  * Việt, và bản chấm cũ đã có. Mỗi lần lọt qua là 6 lượt gọi DeepSeek — chốt hỏng thì tốn tiền
  * thật chứ không phải chỉ sai kết quả.
  *
- * Không test layPhuDeFacebook/layLoiThoaiFacebook: chúng chỉ là lớp gọi HTTP sang AI service,
- * mock lại chỉ chứng minh mock đúng. Ở đây thay thẳng layKichBan để tập trung vào phần quyết định.
+ * Không test getFacebookSubtitles/getFacebookDialogue: chúng chỉ là lớp gọi HTTP sang AI service,
+ * mock lại chỉ chứng minh mock đúng. Ở đây thay thẳng fetchScript để tập trung vào phần quyết định.
  */
 
-const NGUOI_DUNG = 'u1';
+const USER_ID = 'u1';
 
 // AI_SERVICE_URL không còn giá trị mặc định trong mã nguồn (xem common/config/ai-service-url):
 // service đọc lúc khởi tạo property nên phải đặt trước khi dựng instance.
 process.env.AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://ai.test:8001';
 
-function dungService(over: { prisma?: any; paast?: any } = {}) {
+function buildService(over: { prisma?: any; paast?: any } = {}) {
   const prisma: any = {
     ownedVideoScript: {
       findMany: jest.fn(async () => []),
@@ -36,12 +36,12 @@ function dungService(over: { prisma?: any; paast?: any } = {}) {
   return { service, prisma, paast };
 }
 
-/** Thay layKichBan (private) để test đi thẳng vào phần quyết định. */
-function ghimKichBan(service: OwnedScriptService, kichBan: any) {
-  (service as any).layKichBan = jest.fn(async () => kichBan);
+/** Thay fetchScript (private) để test đi thẳng vào phần quyết định. */
+function stubScript(service: OwnedScriptService, script: any) {
+  (service as any).fetchScript = jest.fn(async () => script);
 }
 
-const kichBan = (p: any = {}) => ({
+const script = (p: any = {}) => ({
   id: 'ks1',
   nguon: 'phu_de',
   noi_dung: 'a'.repeat(500),
@@ -51,20 +51,20 @@ const kichBan = (p: any = {}) => ({
   ...p,
 });
 
-describe('trangThaiNhieu — trạng thái kịch bản của cả lưới video', () => {
+describe('statusMany — trạng thái kịch bản của cả lưới video', () => {
   it('không có khoá nào thì trả rỗng, KHÔNG hỏi DB', async () => {
-    const { service, prisma } = dungService();
-    await expect(service.trangThaiNhieu([])).resolves.toEqual({});
+    const { service, prisma } = buildService();
+    await expect(service.statusMany([])).resolves.toEqual({});
     expect(prisma.ownedVideoScript.findMany).not.toHaveBeenCalled();
   });
 
   /*
-   * Bản ghi `khong_co` là DẤU "đã thử mà không ra", không phải kịch bản. Lọt vào kết quả thì
+   * Bản recording `khong_co` là DẤU "đã thử mà không ra", không phải kịch bản. Lọt vào kết quả thì
    * thẻ video hiện "có kịch bản" trong khi bấm vào chẳng có gì.
    */
-  it('loại bản ghi đánh dấu khong_co ngay trong câu truy vấn', async () => {
-    const { service, prisma } = dungService();
-    await service.trangThaiNhieu([{ platform: 'facebook', post_id: 'p1' }]);
+  it('loại bản recording đánh dấu khong_co ngay trong câu truy vấn', async () => {
+    const { service, prisma } = buildService();
+    await service.statusMany([{ platform: 'facebook', post_id: 'p1' }]);
 
     expect(prisma.ownedVideoScript.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -74,7 +74,7 @@ describe('trangThaiNhieu — trạng thái kịch bản của cả lưới video
   });
 
   it('đã chấm thành công thì trả da_cham kèm verdict đạt/chưa đạt', async () => {
-    const { service } = dungService({
+    const { service } = buildService({
       prisma: {
         ownedVideoScript: {
           findMany: async () => [
@@ -91,13 +91,13 @@ describe('trangThaiNhieu — trạng thái kịch bản của cả lưới video
       },
     });
 
-    await expect(service.trangThaiNhieu([{ platform: 'facebook', post_id: 'p1' }])).resolves.toEqual(
+    await expect(service.statusMany([{ platform: 'facebook', post_id: 'p1' }])).resolves.toEqual(
       { 'facebook:p1': { trang_thai: 'da_cham', dat: true, so_ky_tu: 800 } },
     );
   });
 
   it('đã chấm nhưng không đọc được verdict thì dat = null, không đoán bừa là chưa đạt', async () => {
-    const { service } = dungService({
+    const { service } = buildService({
       prisma: {
         ownedVideoScript: {
           findMany: async () => [
@@ -114,22 +114,22 @@ describe('trangThaiNhieu — trạng thái kịch bản của cả lưới video
       },
     });
 
-    const ra = await service.trangThaiNhieu([{ platform: 'facebook', post_id: 'p1' }]);
+    const ra = await service.statusMany([{ platform: 'facebook', post_id: 'p1' }]);
     expect(ra['facebook:p1'].dat).toBeNull();
   });
 
   it.each([
     [99, 'qua_ngan'],
     [100, 'co_kich_ban'],
-  ])('%s ký tự, chưa chấm → %s', async (soKyTu, mong) => {
-    const { service } = dungService({
+  ])('%s ký tự, chưa chấm → %s', async (charCount, mong) => {
+    const { service } = buildService({
       prisma: {
         ownedVideoScript: {
           findMany: async () => [
             {
               platform: 'facebook',
               post_id: 'p1',
-              so_ky_tu: soKyTu,
+              so_ky_tu: charCount,
               nguon: 'phu_de',
               paast_analysis_id: null,
               paast_analysis: null,
@@ -139,17 +139,17 @@ describe('trangThaiNhieu — trạng thái kịch bản của cả lưới video
       },
     });
 
-    const ra = await service.trangThaiNhieu([{ platform: 'facebook', post_id: 'p1' }]);
-    expect(ra['facebook:p1']).toEqual({ trang_thai: mong, dat: null, so_ky_tu: soKyTu });
+    const ra = await service.statusMany([{ platform: 'facebook', post_id: 'p1' }]);
+    expect(ra['facebook:p1']).toEqual({ trang_thai: mong, dat: null, so_ky_tu: charCount });
   });
 });
 
-describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
+describe('scoreVideo — chốt chặn trước khi gọi LLM', () => {
   it('không lấy được kịch bản Facebook → chua_co_kich_ban, không gọi LLM', async () => {
-    const { service, paast } = dungService();
-    ghimKichBan(service, null);
+    const { service, paast } = buildService();
+    stubScript(service, null);
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra.trang_thai).toBe('chua_co_kich_ban');
     expect(paast.analyzeContentV2).not.toHaveBeenCalled();
   });
@@ -157,10 +157,10 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
   it.each(['tiktok', 'instagram', 'youtube'])(
     'nền tảng %s chưa hỗ trợ lấy kịch bản → khong_ho_tro',
     async (platform) => {
-      const { service, paast } = dungService();
-      ghimKichBan(service, null);
+      const { service, paast } = buildService();
+      stubScript(service, null);
 
-      const ra = await service.chamDiem(platform, 'p1', NGUOI_DUNG);
+      const ra = await service.scoreVideo(platform, 'p1', USER_ID);
       expect(ra.trang_thai).toBe('khong_ho_tro');
       expect(ra.ghi_chu).toContain(platform);
       expect(paast.analyzeContentV2).not.toHaveBeenCalled();
@@ -169,10 +169,10 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
 
   /* PAAST đòi tối thiểu 100 ký tự — chặn ở đây để khỏi tốn một lượt LLM cho câu trả lời chắc chắn lỗi. */
   it('kịch bản 99 ký tự → qua_ngan, không gọi LLM', async () => {
-    const { service, paast } = dungService();
-    ghimKichBan(service, kichBan({ noi_dung: 'a'.repeat(99), so_ky_tu: 99 }));
+    const { service, paast } = buildService();
+    stubScript(service, script({ noi_dung: 'a'.repeat(99), so_ky_tu: 99 }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra.trang_thai).toBe('qua_ngan');
     expect(ra.ghi_chu).toContain('99 ký tự');
     expect(paast.analyzeContentV2).not.toHaveBeenCalled();
@@ -183,20 +183,20 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
    * trông như thật nhưng vô nghĩa — thà nói thẳng là chưa hỗ trợ.
    */
   it.each(['th', 'en', 'zh', 'ko'])('kịch bản tiếng "%s" → khong_ho_tro', async (ma) => {
-    const { service, paast } = dungService();
-    ghimKichBan(service, kichBan({ ngon_ngu: ma }));
+    const { service, paast } = buildService();
+    stubScript(service, script({ ngon_ngu: ma }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra.trang_thai).toBe('khong_ho_tro');
     expect(paast.analyzeContentV2).not.toHaveBeenCalled();
   });
 
   /* Whisper trả 'vi', phụ đề Facebook trả 'vi_VN' — phải nhận cả hai. Rỗng thì cho qua. */
   it.each(['vi', 'vi_VN', 'VI', ''])('kịch bản tiếng "%s" được chấm', async (ma) => {
-    const { service, paast } = dungService();
-    ghimKichBan(service, kichBan({ ngon_ngu: ma }));
+    const { service, paast } = buildService();
+    stubScript(service, script({ ngon_ngu: ma }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra.trang_thai).toBe('da_cham');
     expect(paast.analyzeContentV2).toHaveBeenCalledTimes(1);
   });
@@ -208,31 +208,31 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
    */
   it('đã có bản chấm SUCCESS thì trả lại bản cũ, không gọi LLM lần nữa', async () => {
     const cu = { id: 'a1', status: 'SUCCESS' };
-    const { service, paast } = dungService({
+    const { service, paast } = buildService({
       prisma: { paastAnalysisHistory: { findUnique: async () => cu } },
     });
-    ghimKichBan(service, kichBan({ paast_analysis_id: 'a1' }));
+    stubScript(service, script({ paast_analysis_id: 'a1' }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra).toMatchObject({ trang_thai: 'da_cham', phan_tich: cu });
     expect(paast.analyzeContentV2).not.toHaveBeenCalled();
   });
 
   it('bản chấm cũ FAILED thì chấm lại', async () => {
-    const { service, paast } = dungService({
+    const { service, paast } = buildService({
       prisma: { paastAnalysisHistory: { findUnique: async () => ({ id: 'a1', status: 'FAILED' }) } },
     });
-    ghimKichBan(service, kichBan({ paast_analysis_id: 'a1' }));
+    stubScript(service, script({ paast_analysis_id: 'a1' }));
 
-    await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(paast.analyzeContentV2).toHaveBeenCalledTimes(1);
   });
 
-  it('chấm xong thì nối bản phân tích vào bản ghi kịch bản để lần sau dùng lại', async () => {
-    const { service, prisma } = dungService();
-    ghimKichBan(service, kichBan({ id: 'ks9' }));
+  it('chấm xong thì nối bản phân tích vào bản recording kịch bản để lần sau dùng lại', async () => {
+    const { service, prisma } = buildService();
+    stubScript(service, script({ id: 'ks9' }));
 
-    await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(prisma.ownedVideoScript.update).toHaveBeenCalledWith({
       where: { id: 'ks9' },
       data: { paast_analysis_id: 'p1' },
@@ -240,42 +240,42 @@ describe('chamDiem — chốt chặn trước khi gọi LLM', () => {
   });
 
   it('LLM lỗi thì giữ nguyên co_kich_ban kèm lý do, không nuốt lỗi thành da_cham', async () => {
-    const { service } = dungService({
+    const { service } = buildService({
       paast: {
         analyzeContentV2: async () => ({ status: 'FAILED', error_message: 'DeepSeek quá tải' }),
       },
     });
-    ghimKichBan(service, kichBan());
+    stubScript(service, script());
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(ra).toMatchObject({ trang_thai: 'co_kich_ban', ghi_chu: 'DeepSeek quá tải' });
   });
 });
 
-describe('chamDiem — cắt kịch bản dài quá trần 3.000 ký tự', () => {
+describe('scoreVideo — cắt kịch bản dài quá trần 3.000 ký tự', () => {
   /* Video dài bóc ra tới 5.320 ký tự (đo được), trước đây rơi thẳng vào nhánh lỗi. */
-  const noiDungDai = (n: number) => 'Câu này dài vừa đủ để có dấu chấm. '.repeat(n);
+  const longContent = (n: number) => 'Câu này dài vừa đủ để có dấu chấm. '.repeat(n);
 
   it('cắt ở ranh giới câu gần nhất, không cắt giữa chừng', async () => {
-    const { service, paast } = dungService();
-    const noiDung = noiDungDai(200);
-    ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: noiDung.length }));
+    const { service, paast } = buildService();
+    const content = longContent(200);
+    stubScript(service, script({ noi_dung: content, so_ky_tu: content.length }));
 
-    await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    await service.scoreVideo('facebook', 'p1', USER_ID);
 
-    const daGui = paast.analyzeContentV2.mock.calls[0][1];
-    expect(daGui.length).toBeLessThanOrEqual(3000);
-    expect(daGui.endsWith('.')).toBe(true);
+    const sent = paast.analyzeContentV2.mock.calls[0][1];
+    expect(sent.length).toBeLessThanOrEqual(3000);
+    expect(sent.endsWith('.')).toBe(true);
   });
 
   it('báo rõ trong ghi_chu là đã chấm trên phần đầu', async () => {
-    const { service } = dungService();
-    const noiDung = noiDungDai(200);
-    ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: noiDung.length }));
+    const { service } = buildService();
+    const content = longContent(200);
+    stubScript(service, script({ noi_dung: content, so_ky_tu: content.length }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
-    expect(ra.ghi_chu).toContain(`Kịch bản dài ${noiDung.length} ký tự`);
-    expect(ra.so_ky_tu).toBe(noiDung.length); // số ký tự trả về là của bản GỐC
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
+    expect(ra.ghi_chu).toContain(`Kịch bản dài ${content.length} ký tự`);
+    expect(ra.so_ky_tu).toBe(content.length); // số ký tự trả về là của bản GỐC
   });
 
   /*
@@ -283,21 +283,21 @@ describe('chamDiem — cắt kịch bản dài quá trần 3.000 ký tự', () =
    * còn hơn gửi quá trần rồi rơi vào nhánh lỗi và không chấm được gì.
    */
   it('kịch bản không có dấu câu thì cắt cứng đúng 3.000 ký tự', async () => {
-    const { service, paast } = dungService();
-    const noiDung = 'a'.repeat(5000);
-    ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: 5000 }));
+    const { service, paast } = buildService();
+    const content = 'a'.repeat(5000);
+    stubScript(service, script({ noi_dung: content, so_ky_tu: 5000 }));
 
-    await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
+    await service.scoreVideo('facebook', 'p1', USER_ID);
     expect(paast.analyzeContentV2.mock.calls[0][1]).toHaveLength(3000);
   });
 
-  it('kịch bản đúng 3.000 ký tự thì gửi nguyên, không ghi chú cắt', async () => {
-    const { service, paast } = dungService();
-    const noiDung = 'a'.repeat(3000);
-    ghimKichBan(service, kichBan({ noi_dung: noiDung, so_ky_tu: 3000 }));
+  it('kịch bản đúng 3.000 ký tự thì gửi nguyên, không recording chú cắt', async () => {
+    const { service, paast } = buildService();
+    const content = 'a'.repeat(3000);
+    stubScript(service, script({ noi_dung: content, so_ky_tu: 3000 }));
 
-    const ra = await service.chamDiem('facebook', 'p1', NGUOI_DUNG);
-    expect(paast.analyzeContentV2.mock.calls[0][1]).toBe(noiDung);
+    const ra = await service.scoreVideo('facebook', 'p1', USER_ID);
+    expect(paast.analyzeContentV2.mock.calls[0][1]).toBe(content);
     expect(ra.ghi_chu).toBeUndefined();
   });
 });

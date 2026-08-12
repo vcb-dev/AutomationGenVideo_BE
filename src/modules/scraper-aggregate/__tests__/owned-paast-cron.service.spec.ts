@@ -4,7 +4,7 @@ import { OwnedPaastCronService } from '../owned-paast-cron.service';
  * Cron tự chấm PAAST cho video kênh nội bộ.
  *
  * Ba thứ phải khoá lại, vì hỏng cái nào cũng tốn hạn mức thật chứ không chỉ sai kết quả:
- *   1. chamDiem() luôn được gọi với chiPhuDe = true — đường Whisper đi qua RapidAPI, gói hiện
+ *   1. scoreVideo() luôn được gọi với chiPhuDe = true — đường Whisper đi qua RapidAPI, gói hiện
  *      tại chỉ 200 lượt/THÁNG, chạy nền hàng loạt là cháy sạch trong một đêm.
  *   2. Hai cron không được chạy đè nhau.
  *   3. Một video lỗi không được làm đứt cả lượt chạy.
@@ -14,13 +14,13 @@ import { OwnedPaastCronService } from '../owned-paast-cron.service';
 
 const USER = { id: 'u1' };
 
-function dungService(over: { videos?: any[]; user?: any; chamDiem?: any } = {}) {
+function buildService(over: { videos?: any[]; user?: any; scoreVideo?: any } = {}) {
   const prisma: any = {
     user: { findFirst: jest.fn(async () => ('user' in over ? over.user : USER)) },
     $queryRawUnsafe: jest.fn(async () => over.videos ?? []),
   };
   const script: any = {
-    chamDiem: over.chamDiem ?? jest.fn(async () => ({ trang_thai: 'da_cham' })),
+    scoreVideo: over.scoreVideo ?? jest.fn(async () => ({ trang_thai: 'da_cham' })),
   };
   return { service: new OwnedPaastCronService(prisma, script), prisma, script };
 }
@@ -43,24 +43,24 @@ describe('chỉ đi đường phụ đề', () => {
    * Mất nó thì mỗi video tốn 1–4 lượt RapidAPI và một đêm là hết hạn mức tháng.
    */
   it.each([
-    ['chamVideoMoi', 'chamVideoMoi' as const],
+    ['scoreNewVideos', 'scoreNewVideos' as const],
     ['phuNguoc', 'phuNguoc' as const],
-  ])('%s gọi chamDiem với chiPhuDe = true', async (_ten, ham) => {
-    const { service, script } = dungService({ videos: [{ post_id: 'p1' }, { post_id: 'p2' }] });
+  ])('%s gọi scoreVideo với chiPhuDe = true', async (_ten, ham) => {
+    const { service, script } = buildService({ videos: [{ post_id: 'p1' }, { post_id: 'p2' }] });
 
     await service[ham]();
 
-    expect(script.chamDiem).toHaveBeenCalledTimes(2);
-    for (const call of script.chamDiem.mock.calls) {
+    expect(script.scoreVideo).toHaveBeenCalledTimes(2);
+    for (const call of script.scoreVideo.mock.calls) {
       expect(call).toEqual(['facebook', expect.any(String), 'u1', true]);
     }
   });
 });
 
 describe('phạm vi và trần của mỗi lượt', () => {
-  it('chamVideoMoi chỉ lấy video 3 ngày gần đây, trần 300', async () => {
-    const { service, prisma } = dungService();
-    await service.chamVideoMoi();
+  it('scoreNewVideos chỉ lấy video 3 ngày gần đây, trần 300', async () => {
+    const { service, prisma } = buildService();
+    await service.scoreNewVideos();
 
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
     expect(sql).toContain("v.published_at >= now() - interval '3 days'");
@@ -68,7 +68,7 @@ describe('phạm vi và trần của mỗi lượt', () => {
   });
 
   it('phuNguoc quét toàn kho, trần 400', async () => {
-    const { service, prisma } = dungService();
+    const { service, prisma } = buildService();
     await service.phuNguoc();
 
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
@@ -77,11 +77,11 @@ describe('phạm vi và trần của mỗi lượt', () => {
   });
 
   /*
-   * Loại video ĐÃ CÓ bản ghi — kể cả bản ghi đánh dấu "không có phụ đề". Nhờ vậy chạy đi chạy
+   * Loại video ĐÃ CÓ bản recording — kể cả bản recording đánh dấu "không có phụ đề". Nhờ vậy chạy đi chạy
    * lại nhiều đêm là tự tiến chứ không giẫm chân lên cùng một nhóm video.
    */
-  it('bỏ qua video đã có bản ghi kịch bản', async () => {
-    const { service, prisma } = dungService();
+  it('bỏ qua video đã có bản recording kịch bản', async () => {
+    const { service, prisma } = buildService();
     await service.phuNguoc();
 
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
@@ -89,8 +89,8 @@ describe('phạm vi và trần của mỗi lượt', () => {
     expect(sql).toContain('owned_video_scripts');
   });
 
-  it('chỉ lấy trang đang bật và còn token', async () => {
-    const { service, prisma } = dungService();
+  it('chỉ lấy tokenRow đang bật và còn token', async () => {
+    const { service, prisma } = buildService();
     await service.phuNguoc();
 
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
@@ -100,20 +100,20 @@ describe('phạm vi và trần của mỗi lượt', () => {
 });
 
 describe('điều kiện dừng sớm', () => {
-  it('không có user nào thì dừng, không đụng tới chamDiem', async () => {
-    const { service, script, prisma } = dungService({ user: null, videos: [{ post_id: 'p1' }] });
+  it('không có user nào thì dừng, không đụng tới scoreVideo', async () => {
+    const { service, script, prisma } = buildService({ user: null, videos: [{ post_id: 'p1' }] });
 
     await service.phuNguoc();
 
-    expect(script.chamDiem).not.toHaveBeenCalled();
+    expect(script.scoreVideo).not.toHaveBeenCalled();
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
   it('không còn video nào cần chấm thì kết thúc êm', async () => {
-    const { service, script } = dungService({ videos: [] });
+    const { service, script } = buildService({ videos: [] });
 
     await expect(service.phuNguoc()).resolves.toBeUndefined();
-    expect(script.chamDiem).not.toHaveBeenCalled();
+    expect(script.scoreVideo).not.toHaveBeenCalled();
   });
 });
 
@@ -124,51 +124,51 @@ describe('khoá chống chạy đè', () => {
    */
   it('lượt trước chưa xong thì lượt sau bỏ qua', async () => {
     let thaChot: () => void = () => undefined;
-    const chamDiem = jest.fn(
+    const scoreVideo = jest.fn(
       () => new Promise((r) => (thaChot = () => r({ trang_thai: 'da_cham' }))),
     );
-    const { service } = dungService({ videos: [{ post_id: 'p1' }], chamDiem });
+    const { service } = buildService({ videos: [{ post_id: 'p1' }], scoreVideo });
 
-    const dangChay = service.phuNguoc();
-    await service.chamVideoMoi(); // chen vào giữa chừng
+    const isRunning = service.phuNguoc();
+    await service.scoreNewVideos(); // chen vào giữa chừng
 
-    expect(chamDiem).toHaveBeenCalledTimes(1);
+    expect(scoreVideo).toHaveBeenCalledTimes(1);
 
     thaChot();
-    await dangChay;
+    await isRunning;
   });
 
   /* Khoá phải nhả trong finally — lượt lỗi mà giữ khoá là cron chết vĩnh viễn tới lần restart. */
   it('lượt trước ném lỗi thì khoá vẫn nhả, lượt sau chạy được', async () => {
-    const { service, prisma, script } = dungService({ videos: [{ post_id: 'p1' }] });
+    const { service, prisma, script } = buildService({ videos: [{ post_id: 'p1' }] });
     prisma.$queryRawUnsafe.mockRejectedValueOnce(new Error('Postgres đứt kết nối'));
 
     await expect(service.phuNguoc()).rejects.toThrow('Postgres đứt kết nối');
 
-    await service.chamVideoMoi();
-    expect(script.chamDiem).toHaveBeenCalledTimes(1);
+    await service.scoreNewVideos();
+    expect(script.scoreVideo).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('một video lỗi không làm đứt cả lượt', () => {
   it('vẫn chấm hết các video còn lại', async () => {
-    const chamDiem = jest.fn(async (_p: string, postId: string) => {
+    const scoreVideo = jest.fn(async (_p: string, postId: string) => {
       if (postId === 'p2') throw new Error('AI service 500');
       return { trang_thai: 'da_cham' };
     });
-    const { service } = dungService({
+    const { service } = buildService({
       videos: [{ post_id: 'p1' }, { post_id: 'p2' }, { post_id: 'p3' }],
-      chamDiem,
+      scoreVideo,
     });
 
     await expect(service.phuNguoc()).resolves.toBeUndefined();
-    expect(chamDiem.mock.calls.map((c) => c[1])).toEqual(['p1', 'p2', 'p3']);
+    expect(scoreVideo.mock.calls.map((c) => c[1])).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('video không có phụ đề vẫn tính là xong, không ném lỗi', async () => {
-    const { service } = dungService({
+    const { service } = buildService({
       videos: [{ post_id: 'p1' }],
-      chamDiem: jest.fn(async () => ({ trang_thai: 'chua_co_kich_ban' })),
+      scoreVideo: jest.fn(async () => ({ trang_thai: 'chua_co_kich_ban' })),
     });
 
     await expect(service.phuNguoc()).resolves.toBeUndefined();

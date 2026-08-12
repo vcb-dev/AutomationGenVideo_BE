@@ -10,7 +10,7 @@ import { PlayUrlNoCreditError } from '../ai-integration/play-url-errors';
  *
  * Vì sao phải có trung gian này thay vì để thẻ <video> trỏ thẳng vào CDN — đã thử thật:
  *   - Douyin CHẶN THEO REFERER: gọi kèm referer vcbi.vn → 403; gọi từ server → 206.
- *   - Xiaohongshu trả link `http://`, trang chạy HTTPS nhúng vào là bị chặn mixed content.
+ *   - Xiaohongshu trả link `http://`, tokenRow chạy HTTPS nhúng vào là bị chặn mixed content.
  *   - Link CÓ HẠN (Douyin nhúng mốc hết hạn trong đường dẫn, đo được còn ~3 giờ).
  *
  * Năm nền tảng còn lại (YouTube, TikTok, Bilibili, Facebook, Instagram) KHÔNG đi qua đây —
@@ -48,7 +48,7 @@ export class VideoStreamController {
    * Phải khai TRƯỚC ':platform/:videoId'. Thực ra đường này chỉ có một đoạn nên không đụng
    * route hai đoạn kia, nhưng đặt trước cho khỏi phụ thuộc vào chi tiết đó.
    */
-  @Get('trang-thai')
+  @Get('tokenRow-thai')
   trangThai(@Res() res: Response): void {
     const conMoi = Date.now() - VideoStreamController.lanCuoiHetSoDu < VideoStreamController.NHO_HET_SO_DU_MS;
     if (VideoStreamController.lanCuoiHetSoDu > 0 && conMoi) {
@@ -90,7 +90,7 @@ export class VideoStreamController {
       let playUrl: string | null;
       try {
         // Từ lượt thứ hai: ép AI gọi mới, đừng nhận lại link vừa hỏng từ bộ đệm của nó.
-        playUrl = await this.layLinkPhat(key, platform, videoId, videoUrl, luot > 0);
+        playUrl = await this.getPlayUrl(key, platform, videoId, videoUrl, luot > 0);
       } catch (err) {
         if (err instanceof PlayUrlNoCreditError) {
           VideoStreamController.lanCuoiHetSoDu = Date.now();
@@ -120,10 +120,10 @@ export class VideoStreamController {
       if (res1.ok || res1.status === 206) { upstream = res1; break; }
 
       // 403/410 = link hết hạn → đáng để xin lại. Mã khác thì xin lại cũng vô ích.
-      const dangHetHan = res1.status === 403 || res1.status === 410;
-      this.logger.warn(`[stream] ${platform}/${videoId} nguon tra HTTP ${res1.status}${dangHetHan && luot === 0 ? ' — xin link moi roi thu lai' : ''}`);
+      const isExpired = res1.status === 403 || res1.status === 410;
+      this.logger.warn(`[stream] ${platform}/${videoId} nguon tra HTTP ${res1.status}${isExpired && luot === 0 ? ' — xin link moi roi thu lai' : ''}`);
       res1.body?.cancel().catch(() => {});
-      if (!dangHetHan || luot > 0) {
+      if (!isExpired || luot > 0) {
         res.status(502).json({ message: `Nguồn trả về lỗi ${res1.status}.` });
         return;
       }
@@ -149,14 +149,14 @@ export class VideoStreamController {
 
     // Đổ dữ liệu theo dòng, không nạp cả video vào RAM.
     const reader = upstream.body.getReader();
-    let daDong = false;
-    const danhDauDong = () => { daDong = true; };
-    res.on('close', danhDauDong);
-    res.on('error', danhDauDong);
+    let isClosed = false;
+    const markClosed = () => { isClosed = true; };
+    res.on('close', markClosed);
+    res.on('error', markClosed);
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done || daDong) break;
+        if (done || isClosed) break;
         if (!res.write(Buffer.from(value))) {
           // Chờ trình duyệt tiêu thụ bớt. PHẢI chờ cả 'close'/'error': người dùng cuộn sang
           // video khác giữa lúc đang nghẽn thì 'drain' KHÔNG BAO GIỜ tới, lời hứa treo vĩnh
@@ -170,16 +170,16 @@ export class VideoStreamController {
             res.once('close', xong);
             res.once('error', xong);
           });
-          if (daDong) break;
+          if (isClosed) break;
         }
       }
-      if (!daDong) res.end();
+      if (!isClosed) res.end();
     } catch {
       // Người dùng cuộn sang video khác giữa chừng → kết nối đứt, không phải lỗi.
       res.destroy();
     } finally {
-      res.off('close', danhDauDong);
-      res.off('error', danhDauDong);
+      res.off('close', markClosed);
+      res.off('error', markClosed);
       reader.cancel().catch(() => {});
     }
   }
@@ -190,7 +190,7 @@ export class VideoStreamController {
    * CacheService đệm đúng thứ hàm trả về, kể cả `null`. Để nguyên thì một lần nền tảng trục
    * trặc là video đó chết suốt 2 tiếng dù lát sau nền tảng đã bình thường trở lại.
    */
-  private async layLinkPhat(
+  private async getPlayUrl(
     key: string,
     platform: string,
     videoId: string,
@@ -227,10 +227,10 @@ export class VideoStreamController {
     platform: string,
     videoId: string,
   ): Promise<globalThis.Response | null> {
-    const boQua = new AbortController();
-    const hanGio = setTimeout(() => boQua.abort(), 30000);
+    const abortController = new AbortController();
+    const hanGio = setTimeout(() => abortController.abort(), 30000);
     try {
-      return await fetch(playUrl, { headers, signal: boQua.signal });
+      return await fetch(playUrl, { headers, signal: abortController.signal });
     } catch (err: any) {
       this.logger.warn(`[stream] ${platform}/${videoId} khong tai duoc: ${err?.message}`);
       return null;

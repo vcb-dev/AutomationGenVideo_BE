@@ -2,14 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { chuanHoaKhoang, chuanHoaNenTang, soNgayGiua } from './owned-stats.service';
+import { chuanHoaKhoang, chuanHoaNenTang, daysBetween } from './owned-stats.service';
 
 /**
  * Phát hiện MỘT video được đăng trên NHIỀU kênh nội bộ khác nhau.
  *
  * ── Vì sao tách khỏi OwnedStatsService ──────────────────────────────────────────
  * File đó đã 715 dòng và đang chạy 8 truy vấn trong một Promise.all. Khối trùng lặp có
- * vòng đời riêng (FE tự tải, tự hiện khung chờ) nên gộp vào chỉ làm cả trang chờ lâu hơn
+ * vòng đời riêng (FE tự tải, tự hiện khung chờ) nên gộp vào chỉ làm cả tokenRow chờ lâu hơn
  * mà không được gì.
  *
  * ── Luật nhận diện "cùng một video" ─────────────────────────────────────────────
@@ -27,10 +27,10 @@ import { chuanHoaKhoang, chuanHoaNenTang, soNgayGiua } from './owned-stats.servi
  * lưới, hai video khác nhau trùng cả caption lẫn độ dài sẽ bị gộp. Giao diện phải nói rõ.
  */
 
-/** Caption ngắn hơn ngần này thì bỏ qua — loại 247/20.515 bản ghi (1,2%), tránh gộp bừa. */
+/** Caption ngắn hơn ngần này thì bỏ qua — loại 247/20.515 bản recording (1,2%), tránh gộp bừa. */
 const CAPTION_TOI_THIEU = 20;
 
-/** Số nhóm trả về cho khối trên trang tổng quan. */
+/** Số nhóm trả về cho khối trên tokenRow tổng quan. */
 const SO_NHOM_TRA_VE = 20;
 
 /** Kênh phải có ít nhất ngần này video trong kỳ thì tỷ lệ trùng mới có nghĩa. */
@@ -39,7 +39,7 @@ const SAN_VIDEO_CANH_BAO = 20;
 /** Tỷ lệ trùng từ ngần này trở lên thì kênh bị coi là không có nội dung riêng. */
 const NGUONG_TY_LE_CANH_BAO = 90;
 
-/** Cùng lý do đã ghi ở OwnedStatsService: nguồn số chỉ đổi mỗi ngày một lần lúc cron cào. */
+/** Cùng lý do đã recording ở OwnedStatsService: nguồn số chỉ đổi mỗi ngày một lần lúc cron cào. */
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface DongNhomTrung {
@@ -125,7 +125,7 @@ export function rutGonNoiDung(cap: string, toiDa: number): string {
 }
 
 /** Dựng danh sách nhóm trùng, nhiều kênh trước rồi tới lượt xem cao trước. */
-export function gopNhom(rows: DongNhomTrung[]): NhomTrung[] {
+export function mergeGroups(rows: DongNhomTrung[]): NhomTrung[] {
   return rows
     .map((r) => ({
       noi_dung: r.cap,
@@ -148,7 +148,7 @@ export function gopNhom(rows: DongNhomTrung[]): NhomTrung[] {
 }
 
 /** Tỷ lệ video trùng của từng kênh, cao trước. */
-export function tinhTheoKenh(rows: DongVideoKenh[]): TrungTheoKenh[] {
+export function computeByChannel(rows: DongVideoKenh[]): TrungTheoKenh[] {
   return rows
     .map((r) => {
       const tong = n(r.tong_video);
@@ -176,8 +176,8 @@ export function tinhTheoKenh(rows: DongVideoKenh[]): TrungTheoKenh[] {
  * kênh không có MỘT kênh nào để gắn — sẽ ra avatar rỗng. Số liệu cấp nhóm nằm ở khối trùng
  * lặp, nơi có chỗ trình bày tử tế.
  */
-export function dungCanhBaoTrung(theoKenh: TrungTheoKenh[]): CanhBaoKenh[] {
-  return theoKenh
+export function buildDuplicateAlerts(byChannel: TrungTheoKenh[]): CanhBaoKenh[] {
+  return byChannel
     .filter((k) => k.tong_video >= SAN_VIDEO_CANH_BAO && k.ty_le >= NGUONG_TY_LE_CANH_BAO)
     .map((k) => ({
       platform: k.platform,
@@ -224,12 +224,12 @@ export class OwnedDuplicateService {
 
     // giay có thể NULL nên phải nối bằng IS NOT DISTINCT FROM; dùng `=` là mọi dòng
     // YouTube rơi khỏi phép nối và tỷ lệ trùng của nền tảng đó luôn ra 0.
-    const noiNhom = Prisma.sql`
+    const joinGroups = Prisma.sql`
       LEFT JOIN (${nhomTrung}) AS g
         ON g.platform = v.platform AND g.cap = v.cap AND g.giay IS NOT DISTINCT FROM v.giay
     `;
 
-    const [nhom, theoKenhRaw, [tomTat]] = await Promise.all([
+    const [nhom, byChannelRaw, [tomTat]] = await Promise.all([
       // Gộp hai lớp: lớp trong gom theo KÊNH trước, lớp ngoài mới gom thành nhóm. Nhờ vậy
       // kenh_id và kenh_ten đi qua cùng một array_agg có cùng ORDER BY nên khớp cặp;
       // array_agg(DISTINCT ...) hai lần là sai cặp khi hai kênh trùng tên.
@@ -262,7 +262,7 @@ export class OwnedDuplicateService {
                COUNT(*) FILTER (WHERE g.cap IS NOT NULL)::bigint AS video_trung,
                COUNT(*)::bigint AS tong_video
         FROM (${nguon}) AS v
-        ${noiNhom}
+        ${joinGroups}
         GROUP BY 1, 2
       `,
       this.prisma.$queryRaw<DongTomTat[]>`
@@ -276,16 +276,16 @@ export class OwnedDuplicateService {
                COUNT(*)::bigint AS tong_video,
                COUNT(DISTINCT v.kenh_id) FILTER (WHERE g.cap IS NOT NULL)::bigint AS so_kenh_dinh
         FROM (${nguon}) AS v
-        ${noiNhom}
+        ${joinGroups}
       `,
     ]);
 
-    const theoKenh = tinhTheoKenh(theoKenhRaw);
+    const byChannel = computeByChannel(byChannelRaw);
     const tongVideo = n(tomTat?.tong_video);
 
     return {
       status: 'ok',
-      ky: { tu, den, so_ngay: soNgayGiua(tu, den) },
+      ky: { tu, den, so_ngay: daysBetween(tu, den) },
       tom_tat: {
         so_nhom: n(tomTat?.so_nhom),
         so_nhom_tu_3_kenh: n(tomTat?.so_nhom_tu_3_kenh),
@@ -294,9 +294,9 @@ export class OwnedDuplicateService {
         ty_le: tongVideo > 0 ? mot((n(tomTat?.so_video_trung) / tongVideo) * 100) : 0,
         so_kenh_dinh: n(tomTat?.so_kenh_dinh),
       },
-      nhom: gopNhom(nhom),
-      theo_kenh: theoKenh.filter((k) => k.video_trung > 0),
-      canh_bao: dungCanhBaoTrung(theoKenh),
+      nhom: mergeGroups(nhom),
+      theo_kenh: byChannel.filter((k) => k.video_trung > 0),
+      canh_bao: buildDuplicateAlerts(byChannel),
     };
   }
 
@@ -306,13 +306,13 @@ export class OwnedDuplicateService {
    * Mọi nhánh đều phải ĐẶT TÊN CỘT và ÉP KIỂU tường minh: UNION ALL lấy tên lẫn kiểu cột
    * của nhánh ĐẦU TIÊN, mà nhánh đầu tiên đổi theo bộ lọc nền tảng. Bỏ alias ở các nhánh
    * sau thì để "tất cả" vẫn chạy (Facebook đứng đầu, có alias) nhưng lọc riêng TikTok là
-   * hỏng ngay với lỗi `column v.cap does not exist` — cùng cái bẫy đã ghi ở nguonVideo().
+   * hỏng ngay với lỗi `column v.cap does not exist` — cùng cái bẫy đã recording ở nguonVideo().
    */
   private nguonVideoTrung(platform: string, tu: Date, den: Date): Prisma.Sql {
-    const nhanh: Prisma.Sql[] = [];
+    const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'facebook'::text AS platform,
                COALESCE(mp.page_id, '')::text AS kenh_id,
                COALESCE(mp.name, '')::text AS kenh_ten,
@@ -330,7 +330,7 @@ export class OwnedDuplicateService {
     }
 
     if (!platform || platform === 'tiktok') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'tiktok'::text AS platform,
                p.username::text AS kenh_id,
                COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
@@ -347,7 +347,7 @@ export class OwnedDuplicateService {
     }
 
     if (!platform || platform === 'instagram') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'instagram'::text AS platform,
                p.username::text AS kenh_id,
                p.username::text AS kenh_ten,
@@ -367,7 +367,7 @@ export class OwnedDuplicateService {
       // Bảng Shorts không có trường độ dài NÀO — khoá chỉ còn tiêu đề, nên nhánh này dễ gộp
       // nhầm hơn ba nhánh kia. Chấp nhận: hiện chưa có kênh YouTube nội bộ nào để đo.
       // created_at là ngày CÀO VỀ chứ không phải ngày đăng, giống hệt cách nguonVideo() xử lý.
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'youtube'::text AS platform,
                p.channel_id::text AS kenh_id,
                COALESCE(NULLIF(p.title, ''), p.channel_id)::text AS kenh_ten,
@@ -383,10 +383,10 @@ export class OwnedDuplicateService {
       `);
     }
 
-    return Prisma.join(nhanh, ' UNION ALL ');
+    return Prisma.join(branches, ' UNION ALL ');
   }
 
-  /** Chuẩn hoá caption: chỉ hạ hoa/thường và gộp khoảng trắng — xem ghi chú đầu file. */
+  /** Chuẩn hoá caption: chỉ hạ hoa/thường và gộp khoảng trắng — xem recording chú đầu file. */
   private capChuan(cot: Prisma.Sql): Prisma.Sql {
     return Prisma.sql`lower(regexp_replace(btrim(${cot}), '\\s+', ' ', 'g'))::text`;
   }
@@ -396,7 +396,7 @@ export class OwnedDuplicateService {
  * Bóc khối base64 `efg` ra khỏi link CDN. Đi kèm CROSS JOIN LATERAL nên mỗi dòng tính đúng
  * một lần, thay vì lặp lại cùng biểu thức ba chỗ trong CASE bên dưới.
  *
- * `%3D` là dấu `=` padding bị URL-encode — đo trên 20.506 bản ghi, đó là chuỗi %XX DUY NHẤT
+ * `%3D` là dấu `=` padding bị URL-encode — đo trên 20.506 bản recording, đó là chuỗi %XX DUY NHẤT
  * từng xuất hiện, và không có ký tự base64url `-`/`_` nào.
  */
 const EFG_FACEBOOK = Prisma.sql`
@@ -409,7 +409,7 @@ const EFG_FACEBOOK = Prisma.sql`
  * Độ dài video Facebook, bóc từ khối `efg` ở trên.
  *
  * Bảng không có cột độ dài, nhưng link CDN mang sẵn một khối base64 chứa `duration_s`.
- * Đo trên 20.506 bản ghi có video_url: bóc được 100%, tốn ~1 giây cho toàn bảng và 185 ms
+ * Đo trên 20.506 bản recording có video_url: bóc được 100%, tốn ~1 giây cho toàn bảng và 185 ms
  * cho kỳ 28 ngày.
  *
  * Ba lớp chắn, vì `decode()` và `::jsonb` đều NÉM LỖI chứ không trả NULL — một link méo là
