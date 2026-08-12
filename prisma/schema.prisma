@@ -104,6 +104,7 @@ model User {
   ai_voice_usages                  AiVoiceUsage[]            @relation("AiVoiceUsageOf")
   content_transforms               ContentTransformHistory[] @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]    @relation("PaastAnalysisOf")
+  refresh_tokens                   RefreshToken[]            @relation("UserRefreshTokens")
 
   @@index([email])
   @@index([roles])
@@ -4142,3 +4143,37 @@ model SpinRound {
   @@index([workspace_id, started_at])
   @@map("spin_rounds")
 }
+model RefreshToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  user_id String @db.Uuid
+
+  /// SHA-256 hex của token thô. Token thô chỉ sống trong cookie — DB không giữ bản gốc, nên lộ
+  /// dump DB cũng không mạo danh được ai. KHÔNG dùng bcrypt: token là 32 byte ngẫu nhiên (256 bit)
+  /// nên không có gì để dò, mà bcrypt sinh salt riêng mỗi lần nên không đánh index được — tra một
+  /// token sẽ phải quét cả bảng.
+  token_hash String @unique
+
+  /// Nhóm token sinh ra từ MỘT lần đăng nhập. Phát hiện tái dùng thì thu hồi cả nhóm.
+  family_id String @db.Uuid
+
+  expires_at DateTime
+  revoked_at DateTime?
+
+  /// id của token đã thay thế nó khi xoay vòng. null = còn hiệu lực.
+  /// Cố ý KHÔNG đặt khoá ngoại tự trỏ: Prisma bắt khai báo quan hệ hai chiều kèm tên, đổi lại
+  /// chẳng được gì vì chuỗi thay thế chỉ dùng để tra ngược khi điều tra sự cố.
+  replaced_by String? @db.Uuid
+
+  user_agent String?
+  ip_address String?
+  created_at DateTime @default(now())
+
+  user User @relation("UserRefreshTokens", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, revoked_at])
+  @@index([family_id])
+  @@index([expires_at])
+  @@map("refresh_tokens")
+}
+

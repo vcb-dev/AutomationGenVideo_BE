@@ -14,16 +14,17 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
       process.env.GOOGLE_CALLBACK_URL ||
       "http://localhost:3000/api/auth/google/callback";
 
+    // Chỉ log CÓ/KHÔNG, tuyệt đối không log mảnh nào của secret: log BE được gom về Railway và
+    // đọc được bởi mọi người có quyền xem deploy. 8 ký tự cuối tưởng vô hại nhưng là 8 ký tự
+    // người tấn công khỏi phải đoán, và nó nằm lại trong log vĩnh viễn.
     console.log("[GoogleStrategy] ENV CHECK:", {
       OAUTH_CLIENT_ID: process.env.OAUTH_CLIENT_ID ? "SET" : "MISSING",
       GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ? "SET" : "MISSING",
       OAUTH_CLIENT_SECRET: process.env.OAUTH_CLIENT_SECRET ? "SET" : "MISSING",
       GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? "SET" : "MISSING",
       GOOGLE_CALLBACK_URL: process.env.GOOGLE_CALLBACK_URL ? "SET" : "MISSING",
+      callbackURL,
     });
-    console.log("[GoogleStrategy] clientID:", clientID ? clientID.substring(0, 20) + "..." : "MISSING");
-    console.log("[GoogleStrategy] clientSecret last8:", clientSecret ? "..." + clientSecret.slice(-8) : "MISSING");
-    console.log("[GoogleStrategy] callbackURL:", callbackURL);
 
     super({
       clientID,
