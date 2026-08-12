@@ -329,6 +329,7 @@ export class FacebookOwnedPagesService {
     }
 
     let totalUpdated = 0;
+    let failed = 0;
     for (const { page, videos } of pageGroups.values()) {
       if (!page.page_access_token) {
         this.logger.warn(`⚠️ Page ${page.name} chưa có access token`);
@@ -336,27 +337,38 @@ export class FacebookOwnedPagesService {
       }
 
       const postIds = videos.map((v) => v.post_id);
-      const { metrics } = await this.aiClient.fetchMetricsRefresh(page.page_access_token, postIds);
 
-      for (const v of videos) {
-        const m = metrics[v.post_id];
-        if (!m) continue;
-        await this.prisma.video_management_ownedvideocontent.update({
-          where: { id: v.id },
-          data: {
-            view_count: BigInt(m.view_count ?? Number(v.view_count)),
-            like_count: m.like_count ?? v.like_count,
-            comment_count: m.comment_count ?? v.comment_count,
-            share_count: m.share_count ?? v.share_count,
-            updated_at: new Date(),
-          },
-        });
-        totalUpdated++;
+      // Bọc TỪNG page, giống backfillAllPages/deltaSyncAllPages ngay phía trên.
+      // Thiếu try/catch ở đây thì một token hỏng (hay một cú 502 của AI service) làm
+      // `throw` bay khỏi vòng lặp và mọi page phía sau không được cập nhật — bảng số
+      // trang tổng quan đứng im mà trông y như "kỳ này ít view", không ai biết là hỏng.
+      try {
+        const { metrics } = await this.aiClient.fetchMetricsRefresh(page.page_access_token, postIds);
+
+        for (const v of videos) {
+          const m = metrics[v.post_id];
+          if (!m) continue;
+          await this.prisma.video_management_ownedvideocontent.update({
+            where: { id: v.id },
+            data: {
+              view_count: BigInt(m.view_count ?? Number(v.view_count)),
+              like_count: m.like_count ?? v.like_count,
+              comment_count: m.comment_count ?? v.comment_count,
+              share_count: m.share_count ?? v.share_count,
+              updated_at: new Date(),
+            },
+          });
+          totalUpdated++;
+        }
+        this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
+      } catch (err: any) {
+        failed++;
+        this.logger.error(`❌ [METRICS] ${page.name}: ${err.message}`);
       }
-      this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
     }
 
-    this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics`);
+    const phanLoi = failed > 0 ? ` (${failed} page lỗi)` : '';
+    this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics${phanLoi}`);
     return { updated: totalUpdated, total: recentVideos.length };
   }
 
