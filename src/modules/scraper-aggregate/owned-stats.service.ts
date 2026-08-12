@@ -82,7 +82,7 @@ interface DongNgay {
   shares: bigint;
 }
 
-interface DongKenh {
+export interface DongKenh {
   platform: string;
   kenh_id: string;
   ky: string;
@@ -93,7 +93,7 @@ interface DongKenh {
   shares: bigint;
 }
 
-interface DongDanhSachKenh {
+export interface DongDanhSachKenh {
   platform: string;
   kenh_id: string;
   ten: string;
@@ -581,73 +581,128 @@ export class OwnedStatsService {
    * đang hoạt động; kênh đã tắt im lặng là chuyện đương nhiên, báo lên chỉ làm nhiễu.
    */
   private dungCanhBao(danhSachKenh: DongDanhSachKenh[], theoKenh: DongKenh[], soNgay: number) {
-    const canhBao: {
-      platform: string;
-      kenh: string;
-      noi_dung: string;
-      muc: 'w' | 'b';
-      nhan: string;
-    }[] = [];
-    const bayGio = Date.now();
-
-    for (const k of danhSachKenh) {
-      if (!k.hoat_dong) continue;
-      if (!k.loi) continue;
-      canhBao.push({
-        platform: k.platform,
-        kenh: k.ten,
-        noi_dung: `Đồng bộ lỗi: ${k.loi.slice(0, 120)}`,
-        muc: 'b',
-        nhan: 'Lỗi',
-      });
-    }
-
-    for (const k of theoKenh.filter((x) => x.ky === 'nay')) {
-      const truoc = theoKenh.find(
-        (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
-      );
-      const vTruoc = n(truoc?.views);
-      // Kỳ trước quá ít lượt xem thì tỷ lệ phần trăm nhảy loạn (100 → 40 là "tụt 60%"
-      // nhưng chẳng nói lên gì), nên đặt sàn.
-      if (vTruoc < 10_000) continue;
-      const delta = Math.round(((n(k.views) - vTruoc) / vTruoc) * 100);
-      if (delta > NGUONG_TUT) continue;
-      const meta = danhSachKenh.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
-      if (meta && !meta.hoat_dong) continue;
-      canhBao.push({
-        platform: k.platform,
-        kenh: meta?.ten || k.kenh_id,
-        noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${soNgay} ngày trước đó`,
-        muc: 'b',
-        nhan: 'Tụt',
-      });
-    }
-
-    for (const k of danhSachKenh) {
-      if (!k.hoat_dong) continue;
-      if (!k.ngay_cuoi) {
-        canhBao.push({
-          platform: k.platform,
-          kenh: k.ten,
-          noi_dung: 'Chưa cào được video nào',
-          muc: 'w',
-          nhan: 'Trống',
-        });
-        continue;
-      }
-      const soNgayIm = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
-      if (soNgayIm < NGUONG_IM_LANG) continue;
-      canhBao.push({
-        platform: k.platform,
-        kenh: k.ten,
-        noi_dung: `Chưa đăng bài trong ${soNgayIm} ngày`,
-        muc: 'w',
-        nhan: 'Im lặng',
-      });
-    }
-
-    return canhBao.slice(0, 12);
+    return dungCanhBao(danhSachKenh, theoKenh, soNgay);
   }
+}
+
+export interface CanhBaoKenh {
+  platform: string;
+  kenh: string;
+  noi_dung: string;
+  muc: 'w' | 'b';
+  nhan: string;
+}
+
+/** Trần số dòng cảnh báo — 94 dòng thì không ai đọc, mà đọc cũng không ra thông tin gì thêm. */
+const TRAN_CANH_BAO = 12;
+
+/**
+ * Từ ngần này kênh CÙNG một thông báo lỗi trở lên thì gộp thành một dòng.
+ *
+ * Dưới ngưỡng vẫn liệt kê từng kênh: hỏng lẻ tẻ thì tên kênh chính là thông tin cần,
+ * gộp lại chỉ làm mất. Trên ngưỡng thì tên từng kênh vô nghĩa, con số mới là thứ phải thấy.
+ */
+const NGUONG_GOP_LOI = 3;
+
+/**
+ * Xuất ra thay vì để private: đây là chỗ quyết định người trực có nhìn ra sự cố hay không,
+ * cần khoá lại bằng test mà không phải dựng cả 8 truy vấn thô của thongKe().
+ *
+ * ── Vì sao phải gộp nhóm ────────────────────────────────────────────────────────
+ * Sự cố 03/08–12/08/2026: 94/95 fanpage cùng chết với `Request failed with status code 502`.
+ * Bản cũ đẻ 94 dòng giống hệt nhau rồi cắt còn 12, nên trang tổng quan hiện đúng 12 dòng —
+ * đọc như cái đuôi dài chấp nhận được chứ không phải hệ thống sập, và không chỗ nào trên
+ * trang nói ra con số 94. Chín ngày trôi qua không ai báo động.
+ *
+ * Kèm theo đó, 12 chỗ bị lỗi đồng bộ chiếm sạch nên cảnh báo "Tụt" và "Im lặng" không bao
+ * giờ hiện ra được nữa — đúng lúc cần chúng nhất.
+ */
+export function dungCanhBao(
+  danhSachKenh: DongDanhSachKenh[],
+  theoKenh: DongKenh[],
+  soNgay: number,
+): CanhBaoKenh[] {
+  const canhBao: CanhBaoKenh[] = [];
+  const bayGio = Date.now();
+
+  const dangBat = danhSachKenh.filter((k) => k.hoat_dong);
+
+  // Gộp theo (nền tảng + nguyên văn lỗi): hai nguyên nhân khác nhau là hai sự cố khác nhau,
+  // trộn làm một thì lại giấu mất một cái.
+  const theoLoi = new Map<string, DongDanhSachKenh[]>();
+  for (const k of dangBat) {
+    if (!k.loi) continue;
+    const khoa = `${k.platform}|${k.loi.slice(0, 120)}`;
+    const nhom = theoLoi.get(khoa);
+    if (nhom) nhom.push(k);
+    else theoLoi.set(khoa, [k]);
+  }
+
+  for (const [khoa, nhom] of theoLoi) {
+    const loi = khoa.slice(khoa.indexOf('|') + 1);
+    if (nhom.length < NGUONG_GOP_LOI) {
+      for (const k of nhom) {
+        canhBao.push({ platform: k.platform, kenh: k.ten, noi_dung: `Đồng bộ lỗi: ${loi}`, muc: 'b', nhan: 'Lỗi' });
+      }
+      continue;
+    }
+
+    // Mẫu số là số kênh ĐANG BẬT của chính nền tảng đó — "94/95" mới đọc ra mức độ,
+    // chứ "94 kênh lỗi" một mình vẫn không biết là nhiều hay ít.
+    const tongNenTang = dangBat.filter((k) => k.platform === nhom[0].platform).length;
+    canhBao.push({
+      platform: nhom[0].platform,
+      kenh: `${nhom.length} kênh`,
+      noi_dung: `Đồng bộ lỗi ở ${nhom.length}/${tongNenTang} kênh: ${loi}`,
+      muc: 'b',
+      nhan: 'Lỗi',
+    });
+  }
+
+  for (const k of theoKenh.filter((x) => x.ky === 'nay')) {
+    const truoc = theoKenh.find(
+      (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
+    );
+    const vTruoc = n(truoc?.views);
+    // Kỳ trước quá ít lượt xem thì tỷ lệ phần trăm nhảy loạn (100 → 40 là "tụt 60%"
+    // nhưng chẳng nói lên gì), nên đặt sàn.
+    if (vTruoc < 10_000) continue;
+    const delta = Math.round(((n(k.views) - vTruoc) / vTruoc) * 100);
+    if (delta > NGUONG_TUT) continue;
+    const meta = danhSachKenh.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
+    if (meta && !meta.hoat_dong) continue;
+    canhBao.push({
+      platform: k.platform,
+      kenh: meta?.ten || k.kenh_id,
+      noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${soNgay} ngày trước đó`,
+      muc: 'b',
+      nhan: 'Tụt',
+    });
+  }
+
+  for (const k of dangBat) {
+    if (!k.ngay_cuoi) {
+      canhBao.push({
+        platform: k.platform,
+        kenh: k.ten,
+        noi_dung: 'Chưa cào được video nào',
+        muc: 'w',
+        nhan: 'Trống',
+      });
+      continue;
+    }
+    const soNgayIm = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
+    if (soNgayIm < NGUONG_IM_LANG) continue;
+    canhBao.push({
+      platform: k.platform,
+      kenh: k.ten,
+      noi_dung: `Chưa đăng bài trong ${soNgayIm} ngày`,
+      muc: 'w',
+      nhan: 'Im lặng',
+    });
+  }
+
+  return canhBao.slice(0, TRAN_CANH_BAO);
 }
 
 /**
