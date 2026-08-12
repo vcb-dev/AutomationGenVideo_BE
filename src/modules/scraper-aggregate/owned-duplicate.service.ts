@@ -9,7 +9,7 @@ import { chuanHoaKhoang, chuanHoaNenTang, daysBetween } from './owned-stats.serv
  *
  * ── Vì sao tách khỏi OwnedStatsService ──────────────────────────────────────────
  * File đó đã 715 dòng và đang chạy 8 truy vấn trong một Promise.all. Khối trùng lặp có
- * vòng đời riêng (FE tự tải, tự hiện khung chờ) nên gộp vào chỉ làm cả tokenRow chờ lâu hơn
+ * vòng đời riêng (FE tự tải, tự hiện khung chờ) nên gộp vào chỉ làm cả trang chờ lâu hơn
  * mà không được gì.
  *
  * ── Luật nhận diện "cùng một video" ─────────────────────────────────────────────
@@ -27,10 +27,10 @@ import { chuanHoaKhoang, chuanHoaNenTang, daysBetween } from './owned-stats.serv
  * lưới, hai video khác nhau trùng cả caption lẫn độ dài sẽ bị gộp. Giao diện phải nói rõ.
  */
 
-/** Caption ngắn hơn ngần này thì bỏ qua — loại 247/20.515 bản recording (1,2%), tránh gộp bừa. */
+/** Caption ngắn hơn ngần này thì bỏ qua — loại 247/20.515 bản ghi (1,2%), tránh gộp bừa. */
 const CAPTION_TOI_THIEU = 20;
 
-/** Số nhóm trả về cho khối trên tokenRow tổng quan. */
+/** Số nhóm trả về cho khối trên trang tổng quan. */
 const SO_NHOM_TRA_VE = 20;
 
 /** Kênh phải có ít nhất ngần này video trong kỳ thì tỷ lệ trùng mới có nghĩa. */
@@ -39,7 +39,7 @@ const SAN_VIDEO_CANH_BAO = 20;
 /** Tỷ lệ trùng từ ngần này trở lên thì kênh bị coi là không có nội dung riêng. */
 const NGUONG_TY_LE_CANH_BAO = 90;
 
-/** Cùng lý do đã recording ở OwnedStatsService: nguồn số chỉ đổi mỗi ngày một lần lúc cron cào. */
+/** Cùng lý do đã ghi ở OwnedStatsService: nguồn số chỉ đổi mỗi ngày một lần lúc cron cào. */
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface DongNhomTrung {
@@ -306,7 +306,7 @@ export class OwnedDuplicateService {
    * Mọi nhánh đều phải ĐẶT TÊN CỘT và ÉP KIỂU tường minh: UNION ALL lấy tên lẫn kiểu cột
    * của nhánh ĐẦU TIÊN, mà nhánh đầu tiên đổi theo bộ lọc nền tảng. Bỏ alias ở các nhánh
    * sau thì để "tất cả" vẫn chạy (Facebook đứng đầu, có alias) nhưng lọc riêng TikTok là
-   * hỏng ngay với lỗi `column v.cap does not exist` — cùng cái bẫy đã recording ở nguonVideo().
+   * hỏng ngay với lỗi `column v.cap does not exist` — cùng cái bẫy đã ghi ở nguonVideo().
    */
   private nguonVideoTrung(platform: string, tu: Date, den: Date): Prisma.Sql {
     const branches: Prisma.Sql[] = [];
@@ -386,7 +386,7 @@ export class OwnedDuplicateService {
     return Prisma.join(branches, ' UNION ALL ');
   }
 
-  /** Chuẩn hoá caption: chỉ hạ hoa/thường và gộp khoảng trắng — xem recording chú đầu file. */
+  /** Chuẩn hoá caption: chỉ hạ hoa/thường và gộp khoảng trắng — xem ghi chú đầu file. */
   private capChuan(cot: Prisma.Sql): Prisma.Sql {
     return Prisma.sql`lower(regexp_replace(btrim(${cot}), '\\s+', ' ', 'g'))::text`;
   }
@@ -396,7 +396,7 @@ export class OwnedDuplicateService {
  * Bóc khối base64 `efg` ra khỏi link CDN. Đi kèm CROSS JOIN LATERAL nên mỗi dòng tính đúng
  * một lần, thay vì lặp lại cùng biểu thức ba chỗ trong CASE bên dưới.
  *
- * `%3D` là dấu `=` padding bị URL-encode — đo trên 20.506 bản recording, đó là chuỗi %XX DUY NHẤT
+ * `%3D` là dấu `=` padding bị URL-encode — đo trên 20.506 bản ghi, đó là chuỗi %XX DUY NHẤT
  * từng xuất hiện, và không có ký tự base64url `-`/`_` nào.
  */
 const EFG_FACEBOOK = Prisma.sql`
@@ -409,7 +409,7 @@ const EFG_FACEBOOK = Prisma.sql`
  * Độ dài video Facebook, bóc từ khối `efg` ở trên.
  *
  * Bảng không có cột độ dài, nhưng link CDN mang sẵn một khối base64 chứa `duration_s`.
- * Đo trên 20.506 bản recording có video_url: bóc được 100%, tốn ~1 giây cho toàn bảng và 185 ms
+ * Đo trên 20.506 bản ghi có video_url: bóc được 100%, tốn ~1 giây cho toàn bảng và 185 ms
  * cho kỳ 28 ngày.
  *
  * Ba lớp chắn, vì `decode()` và `::jsonb` đều NÉM LỖI chứ không trả NULL — một link méo là

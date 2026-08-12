@@ -10,7 +10,7 @@ import { PlayUrlNoCreditError } from '../ai-integration/play-url-errors';
  *
  * Vì sao phải có trung gian này thay vì để thẻ <video> trỏ thẳng vào CDN — đã thử thật:
  *   - Douyin CHẶN THEO REFERER: gọi kèm referer vcbi.vn → 403; gọi từ server → 206.
- *   - Xiaohongshu trả link `http://`, tokenRow chạy HTTPS nhúng vào là bị chặn mixed content.
+ *   - Xiaohongshu trả link `http://`, trang chạy HTTPS nhúng vào là bị chặn mixed content.
  *   - Link CÓ HẠN (Douyin nhúng mốc hết hạn trong đường dẫn, đo được còn ~3 giờ).
  *
  * Năm nền tảng còn lại (YouTube, TikTok, Bilibili, Facebook, Instagram) KHÔNG đi qua đây —
@@ -48,7 +48,7 @@ export class VideoStreamController {
    * Phải khai TRƯỚC ':platform/:videoId'. Thực ra đường này chỉ có một đoạn nên không đụng
    * route hai đoạn kia, nhưng đặt trước cho khỏi phụ thuộc vào chi tiết đó.
    */
-  @Get('tokenRow-thai')
+  @Get('trang-thai')
   trangThai(@Res() res: Response): void {
     const conMoi = Date.now() - VideoStreamController.lanCuoiHetSoDu < VideoStreamController.NHO_HET_SO_DU_MS;
     if (VideoStreamController.lanCuoiHetSoDu > 0 && conMoi) {

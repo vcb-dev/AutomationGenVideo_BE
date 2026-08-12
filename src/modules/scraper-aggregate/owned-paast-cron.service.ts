@@ -52,7 +52,7 @@ export class OwnedPaastCronService {
    * Phủ ngược kho cũ — chạy 01:00 lúc máy rảnh nhất.
    *
    * Toàn kho 20.515 video, mỗi đêm vài trăm cái nên phải nhiều đêm mới xong. Cứ chạy đi
-   * chạy lại là tự tiến vì video đã xử lý đều có bản recording (kể cả bản recording đánh dấu "không có
+   * chạy lại là tự tiến vì video đã xử lý đều có bản ghi (kể cả bản ghi đánh dấu "không có
    * phụ đề"), truy vấn dưới tự loại chúng ra.
    */
   @Cron('0 0 1 * * *', VN_TZ)
@@ -79,7 +79,7 @@ export class OwnedPaastCronService {
         return;
       }
 
-      // Chỉ lấy video CHƯA có bản recording nào — video đã chấm hoặc đã đánh dấu không có phụ đề
+      // Chỉ lấy video CHƯA có bản ghi nào — video đã chấm hoặc đã đánh dấu không có phụ đề
       // đều bị loại, nên chạy lại nhiều lần vẫn tiến chứ không giẫm chân.
       const canCham = await this.prisma.$queryRawUnsafe<{ post_id: string }[]>(`
         SELECT v.post_id
@@ -107,7 +107,7 @@ export class OwnedPaastCronService {
 
       for (const { post_id } of canCham) {
         try {
-          // `true` = chỉ phụ đề, tuyệt đối không gọi Whisper — xem recording chú đầu file.
+          // `true` = chỉ phụ đề, tuyệt đối không gọi Whisper — xem ghi chú đầu file.
           const kq = await this.script.scoreVideo('facebook', post_id, userId.id, true);
           if (kq.trang_thai === 'da_cham') alreadyScored++;
           else khongCoKichBan++;

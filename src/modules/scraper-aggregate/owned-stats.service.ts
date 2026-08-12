@@ -4,12 +4,12 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
 
 /**
- * Số liệu tổng quan cho tokenRow "Tổng quan kênh nội bộ".
+ * Số liệu tổng quan cho trang "Tổng quan kênh nội bộ".
  *
  * ── Vì sao không tính lại từ /scraper/owned/videos ──────────────────────────────
  * Trang tổng quan cần TOÀN BỘ video trong kỳ (28 ngày ≈ 3.800 video Facebook) chứ không
- * phải một tokenRow 24 video. Kéo hết về FE rồi cộng ở trình duyệt vừa chậm vừa sai khi số
- * video vượt giới hạn phân tokenRow, nên mọi phép cộng đều làm bằng SQL ở đây.
+ * phải một trang 24 video. Kéo hết về FE rồi cộng ở trình duyệt vừa chậm vừa sai khi số
+ * video vượt giới hạn phân trang, nên mọi phép cộng đều làm bằng SQL ở đây.
  *
  * ── Chỉ 4 nền tảng ──────────────────────────────────────────────────────────────
  * Giống ownedChannels(): kênh nội bộ chỉ có khái niệm ở Facebook / TikTok / Instagram /
@@ -56,7 +56,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
  * Nhận diện caption tiếng Việt để chia thị trường VN / Global.
  *
  * Cùng lớp ký tự với marketFilter() trong content-filters.ts — hai chỗ phải khớp nhau,
- * lệch một ký tự là bộ lọc trên tokenRow video và số liệu trên tokenRow tổng quan đá nhau.
+ * lệch một ký tự là bộ lọc trên trang video và số liệu trên trang tổng quan đá nhau.
  * COALESCE vì `~*` gặp NULL trả NULL, video sẽ rơi khỏi CẢ HAI nhóm và tổng bị hụt.
  */
 const DAU_TIENG_VIET = Prisma.sql`(COALESCE(v.mo_ta, '') ~* '[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]')`;
@@ -241,7 +241,7 @@ export class OwnedStatsService {
         `,
         // regexp_matches(...,'g') trả MỘT DÒNG mỗi lần khớp, nên caption gắn #A1 hai lần sẽ
         // được cộng lượt xem hai lần. DISTINCT ở lớp trong gộp các lần khớp trùng lại trước
-        // khi cộng — cùng lý do đã recording ở ownedHashtags().
+        // khi cộng — cùng lý do đã ghi ở ownedHashtags().
         this.prisma.$queryRaw<DongTuyen[]>`
           SELECT t.ma, t.vn, COUNT(*)::bigint AS posts, COALESCE(SUM(t.views), 0)::bigint AS views
           FROM (
@@ -610,9 +610,9 @@ const NGUONG_GOP_LOI = 3;
  *
  * ── Vì sao phải gộp nhóm ────────────────────────────────────────────────────────
  * Sự cố 03/08–12/08/2026: 94/95 fanpage cùng chết với `Request failed with status code 502`.
- * Bản cũ đẻ 94 dòng giống hệt nhau rồi cắt còn 12, nên tokenRow tổng quan hiện đúng 12 dòng —
+ * Bản cũ đẻ 94 dòng giống hệt nhau rồi cắt còn 12, nên trang tổng quan hiện đúng 12 dòng —
  * đọc như cái đuôi dài chấp nhận được chứ không phải hệ thống sập, và không chỗ nào trên
- * tokenRow nói ra con số 94. Chín ngày trôi qua không ai báo động.
+ * trang nói ra con số 94. Chín ngày trôi qua không ai báo động.
  *
  * Kèm theo đó, 12 chỗ bị lỗi đồng bộ chiếm sạch nên cảnh báo "Tụt" và "Im lặng" không bao
  * giờ hiện ra được nữa — đúng lúc cần chúng nhất.
@@ -707,7 +707,7 @@ export function buildAlerts(
 
 /**
  * Bốn hàm dưới đây được OwnedDuplicateService dùng lại — xuất ra thay vì chép sang đó, để
- * tokenRow tổng quan và khối trùng lặp không bao giờ hiểu "từ / đến" hay tên nền tảng lệch nhau.
+ * trang tổng quan và khối trùng lặp không bao giờ hiểu "từ / đến" hay tên nền tảng lệch nhau.
  * Chép một bản thứ hai thì sửa trần SO_NGAY_TOI_DA ở đây mà bên kia vẫn cho chọn 10 năm.
  */
 export function chuanHoaNenTang(raw?: string): string {

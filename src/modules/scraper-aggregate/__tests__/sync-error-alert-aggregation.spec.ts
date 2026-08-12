@@ -6,7 +6,7 @@ import { buildAlerts, type ChannelListRow, type ChannelRow } from '../owned-stat
  * 94/95 fanpage cùng chết với `Request failed with status code 502`. Vòng lặp đầu của
  * buildAlerts() đẻ ra 94 dòng "Đồng bộ lỗi" giống hệt nhau, rồi `slice(0, 12)` cắt còn 12.
  * Trang tổng quan vì thế hiện đúng 12 dòng — và 12 kênh hỏng trên tổng 95 đọc như cái đuôi
- * dài chấp nhận được, không phải một hệ thống sập. Không đâu trên tokenRow nói con số 94.
+ * dài chấp nhận được, không phải một hệ thống sập. Không đâu trên trang nói con số 94.
  *
  * Tệ thêm một tầng: 12 chỗ bị lỗi đồng bộ chiếm sạch, nên cảnh báo "Tụt" và "Im lặng"
  * không bao giờ hiện được nữa — đúng lúc cần chúng nhất.
@@ -33,7 +33,7 @@ describe('buildAlerts — cảnh báo phải nói được quy mô sự cố', (
     };
   }
 
-  it('94 kênh cùng một lỗi gộp thành một dòng có recording số 94', () => {
+  it('94 kênh cùng một lỗi gộp thành một dòng có ghi số 94', () => {
     const danhSach = Array.from({ length: 94 }, (_, i) => kenh(i, LOI_502));
 
     const canhBao = buildAlerts(danhSach, [], 28);

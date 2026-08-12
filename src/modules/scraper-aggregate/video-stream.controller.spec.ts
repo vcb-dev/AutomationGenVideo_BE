@@ -202,7 +202,7 @@ describe('VideoStreamController — phát video qua trung gian', () => {
     const ai = { fetchVideoPlayUrl: jest.fn() } as any;
     global.fetch = jest.fn(async () => hoiDap(200)) as any;
 
-    // 1. Hết số dư → tokenRow-thai phải báo 402.
+    // 1. Hết số dư → trang-thai phải báo 402.
     ai.fetchVideoPlayUrl.mockRejectedValueOnce(new PlayUrlNoCreditError());
     const ctl = new VideoStreamController(buildCache() as any, ai);
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, buildResponse().res);

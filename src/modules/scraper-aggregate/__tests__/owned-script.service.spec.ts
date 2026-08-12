@@ -59,10 +59,10 @@ describe('statusMany — trạng thái kịch bản của cả lưới video', (
   });
 
   /*
-   * Bản recording `khong_co` là DẤU "đã thử mà không ra", không phải kịch bản. Lọt vào kết quả thì
+   * Bản ghi `khong_co` là DẤU "đã thử mà không ra", không phải kịch bản. Lọt vào kết quả thì
    * thẻ video hiện "có kịch bản" trong khi bấm vào chẳng có gì.
    */
-  it('loại bản recording đánh dấu khong_co ngay trong câu truy vấn', async () => {
+  it('loại bản ghi đánh dấu khong_co ngay trong câu truy vấn', async () => {
     const { service, prisma } = buildService();
     await service.statusMany([{ platform: 'facebook', post_id: 'p1' }]);
 
@@ -228,7 +228,7 @@ describe('scoreVideo — chốt chặn trước khi gọi LLM', () => {
     expect(paast.analyzeContentV2).toHaveBeenCalledTimes(1);
   });
 
-  it('chấm xong thì nối bản phân tích vào bản recording kịch bản để lần sau dùng lại', async () => {
+  it('chấm xong thì nối bản phân tích vào bản ghi kịch bản để lần sau dùng lại', async () => {
     const { service, prisma } = buildService();
     stubScript(service, script({ id: 'ks9' }));
 
@@ -291,7 +291,7 @@ describe('scoreVideo — cắt kịch bản dài quá trần 3.000 ký tự', ()
     expect(paast.analyzeContentV2.mock.calls[0][1]).toHaveLength(3000);
   });
 
-  it('kịch bản đúng 3.000 ký tự thì gửi nguyên, không recording chú cắt', async () => {
+  it('kịch bản đúng 3.000 ký tự thì gửi nguyên, không ghi chú cắt', async () => {
     const { service, paast } = buildService();
     const content = 'a'.repeat(3000);
     stubScript(service, script({ noi_dung: content, so_ky_tu: 3000 }));

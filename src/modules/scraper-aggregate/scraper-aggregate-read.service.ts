@@ -73,7 +73,7 @@ function searchCondition(descriptionExpr: Prisma.Sql, hashtagsCol: Prisma.Sql | 
 }
 
 // post_id là khoá phụ phá hoà. Thiếu nó, các dòng hoà nhau (rất nhiều video cùng số tim,
-// cùng lượt xem) bị Postgres trả về theo thứ tự tuỳ ý ở mỗi lần gọi — lật tokenRow là thấy
+// cùng lượt xem) bị Postgres trả về theo thứ tự tuỳ ý ở mỗi lần gọi — lật trang là thấy
 // video lặp lại, và một số video khác thì không bao giờ hiện ra.
 function sortExpr(sort: string): Prisma.Sql {
   if (sort === 'plays') return Prisma.sql`play_count DESC, post_id DESC`;
@@ -82,7 +82,7 @@ function sortExpr(sort: string): Prisma.Sql {
 }
 
 // Port từ scraper_views.py::all_external_videos/owned_channel_videos (AI đã xóa) —
-// gom video từ nhiều bảng khác nhau, chỉ đọc, không recording.
+// gom video từ nhiều bảng khác nhau, chỉ đọc, không ghi.
 @Injectable()
 export class ScraperAggregateReadService {
   constructor(private readonly prisma: PrismaService) {}
@@ -170,7 +170,7 @@ export class ScraperAggregateReadService {
     }
 
     // ─── 5 nền tảng còn lại ─────────────────────────────────────────────────
-    // Trước đây tokenRow "Tất cả" chỉ gộp facebook/tiktok/instagram — tức nó KHÔNG hề "tất cả",
+    // Trước đây trang "Tất cả" chỉ gộp facebook/tiktok/instagram — tức nó KHÔNG hề "tất cả",
     // thiếu hẳn Douyin, Xiaohongshu, Kuaishou, Bilibili, YouTube (657 video trong khi thực tế
     // có ~9000). Mỗi nhánh phải trả ĐÚNG 14 cột theo đúng thứ tự để Postgres gộp UNION được.
     //

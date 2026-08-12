@@ -20,7 +20,7 @@ import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
  * Đã đo và LOẠI các đường khác: caption bài đăng chỉ 9,4% đạt mức tối thiểu 100 ký tự của
  * PAAST và vốn không phải kịch bản; video lấy từ Graph API luôn là bản CHỈ CÓ HÌNH (4/4 video
  * đo được `audio_stream=0`) nên Whisper không có gì để nghe — đó chính là lý do phải đi vòng
- * qua RapidAPI; yt-dlp trên link reel đòi đăng nhập, tải về 112 KB tokenRow login rồi bỏ cuộc
+ * qua RapidAPI; yt-dlp trên link reel đòi đăng nhập, tải về 112 KB trang login rồi bỏ cuộc
  * sau hơn 4 phút.
  */
 
@@ -41,7 +41,7 @@ export interface KetQuaPaastVideo {
   ngon_ngu?: string;
   so_ky_tu?: number;
   kich_ban?: string;
-  /** Bản recording PaastAnalysisHistory — FE đưa thẳng vào PaastScoreModal qua prop `cachedResult`. */
+  /** Bản ghi PaastAnalysisHistory — FE đưa thẳng vào PaastScoreModal qua prop `cachedResult`. */
   phan_tich?: unknown;
   ghi_chu?: string;
 }
@@ -60,7 +60,7 @@ export class OwnedScriptService {
   /**
    * Trạng thái kịch bản của nhiều video cùng lúc — để lưới 24 thẻ chỉ tốn MỘT lượt gọi.
    *
-   * Chỉ ĐỌC bảng đã lưu, tuyệt đối không kích hoạt lấy phụ đề: mở tokenRow mà tự động gọi
+   * Chỉ ĐỌC bảng đã lưu, tuyệt đối không kích hoạt lấy phụ đề: mở trang mà tự động gọi
    * Graph API 24 lần thì vừa chậm vừa tốn hạn mức, trong khi người dùng có thể không bấm
    * chấm điểm cái nào.
    */
@@ -293,7 +293,7 @@ export class OwnedScriptService {
   }
 
   /**
-   * Hỏi AI service lấy phụ đề tự sinh. Token của tokenRow đi qua dạng ĐÃ MÃ HOÁ — AI là nơi
+   * Hỏi AI service lấy phụ đề tự sinh. Token của trang đi qua dạng ĐÃ MÃ HOÁ — AI là nơi
    * duy nhất giữ FERNET_KEY, BE chỉ chuyển tiếp nguyên chuỗi.
    */
   private async getFacebookSubtitles(postId: string) {

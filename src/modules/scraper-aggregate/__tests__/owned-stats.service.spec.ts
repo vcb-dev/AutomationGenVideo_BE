@@ -286,7 +286,7 @@ describe('buildAlerts', () => {
     expect(ra[0].noi_dung).toBe('Lượt xem giảm 60% so với 90 ngày trước đó');
   });
 
-  /* Trần 12 dòng: khối "Cần chú ý" trên tokenRow chỉ hiển thị được ngần ấy.
+  /* Trần 12 dòng: khối "Cần chú ý" trên trang chỉ hiển thị được ngần ấy.
      Dùng 40 kênh IM LẶNG chứ không phải 40 kênh cùng một lỗi đồng bộ: nhiều kênh chung
      một thông báo lỗi nay gộp thành MỘT dòng (xem sync-error-alert-aggregation.spec.ts),
      nên đầu vào cũ không còn sinh nổi 40 dòng để mà kiểm tra chuyện cắt. */

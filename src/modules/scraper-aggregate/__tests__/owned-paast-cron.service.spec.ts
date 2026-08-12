@@ -77,10 +77,10 @@ describe('phạm vi và trần của mỗi lượt', () => {
   });
 
   /*
-   * Loại video ĐÃ CÓ bản recording — kể cả bản recording đánh dấu "không có phụ đề". Nhờ vậy chạy đi chạy
+   * Loại video ĐÃ CÓ bản ghi — kể cả bản ghi đánh dấu "không có phụ đề". Nhờ vậy chạy đi chạy
    * lại nhiều đêm là tự tiến chứ không giẫm chân lên cùng một nhóm video.
    */
-  it('bỏ qua video đã có bản recording kịch bản', async () => {
+  it('bỏ qua video đã có bản ghi kịch bản', async () => {
     const { service, prisma } = buildService();
     await service.phuNguoc();
 
@@ -89,7 +89,7 @@ describe('phạm vi và trần của mỗi lượt', () => {
     expect(sql).toContain('owned_video_scripts');
   });
 
-  it('chỉ lấy tokenRow đang bật và còn token', async () => {
+  it('chỉ lấy trang đang bật và còn token', async () => {
     const { service, prisma } = buildService();
     await service.phuNguoc();
 
