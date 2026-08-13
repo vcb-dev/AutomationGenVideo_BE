@@ -2,7 +2,7 @@ import {
   Controller, Post, Body, UseGuards, Request, BadRequestException, Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { UploadService } from './upload.service';
 import { MediaLibraryService } from './media-library.service';
 import { GoogleDriveStorageService } from './google-drive-storage.service';

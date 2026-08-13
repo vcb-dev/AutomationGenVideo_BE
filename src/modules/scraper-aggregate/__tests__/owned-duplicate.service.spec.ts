@@ -1,10 +1,10 @@
 import {
   DongNhomTrung,
   DongVideoKenh,
-  dungCanhBaoTrung,
-  gopNhom,
+  buildDuplicateAlerts,
+  mergeGroups,
   rutGonNoiDung,
-  tinhTheoKenh,
+  computeByChannel,
 } from '../owned-duplicate.service';
 
 /**
@@ -38,9 +38,9 @@ const kenh = (p: Partial<DongVideoKenh>): DongVideoKenh => ({
   ...p,
 });
 
-describe('gopNhom — dựng danh sách nhóm trùng', () => {
+describe('mergeGroups — dựng danh sách nhóm trùng', () => {
   it('xếp nhóm phủ nhiều kênh lên trước, cùng số kênh thì lượt xem cao trước', () => {
-    const ra = gopNhom([
+    const ra = mergeGroups([
       nhom({ cap: 'ít kênh nhưng nhiều xem', so_kenh: BigInt(2), views: BigInt(900_000) }),
       nhom({ cap: 'nhiều kênh', so_kenh: BigInt(4), views: BigInt(10) }),
       nhom({ cap: 'ba kênh xem thấp', so_kenh: BigInt(3), views: BigInt(5) }),
@@ -55,14 +55,14 @@ describe('gopNhom — dựng danh sách nhóm trùng', () => {
   });
 
   it('trả ngày dạng chuỗi ISO chứ không phải Date — qua Redis Date đã thành chuỗi', () => {
-    const [ra] = gopNhom([nhom({})]);
+    const [ra] = mergeGroups([nhom({})]);
     expect(typeof ra.ngay_dau).toBe('string');
     expect(typeof ra.ngay_cuoi).toBe('string');
     expect(ra.ngay_dau).toBe('2026-07-10T03:00:00.000Z');
   });
 
   it('ghép kenh_id với kenh_ten theo đúng cặp, giữ nguyên thứ tự SQL trả về', () => {
-    const [ra] = gopNhom([
+    const [ra] = mergeGroups([
       nhom({ kenh_id: ['x', 'y', 'z'], kenh_ten: ['Page X', 'Page Y', 'Page Z'], so_kenh: BigInt(3) }),
     ]);
     expect(ra.kenh).toEqual([
@@ -73,15 +73,15 @@ describe('gopNhom — dựng danh sách nhóm trùng', () => {
   });
 
   it('giay = null (YouTube Shorts không có trường độ dài) vẫn ra nhóm hợp lệ', () => {
-    const [ra] = gopNhom([nhom({ platform: 'youtube', giay: null })]);
+    const [ra] = mergeGroups([nhom({ platform: 'youtube', giay: null })]);
     expect(ra.giay).toBeNull();
     expect(ra.platform).toBe('youtube');
   });
 });
 
-describe('tinhTheoKenh — tỷ lệ trùng mỗi kênh', () => {
+describe('computeByChannel — tỷ lệ trùng mỗi kênh', () => {
   it('tính đúng tỷ lệ và xếp giảm dần', () => {
-    const ra = tinhTheoKenh([
+    const ra = computeByChannel([
       kenh({ kenh_id: 'k1', kenh_ten: 'Huyk - Mê Chế Tác', video_trung: BigInt(69), tong_video: BigInt(69) }),
       kenh({ kenh_id: 'k2', kenh_ten: 'HuyK Trang Sức Đá Quý', video_trung: BigInt(35), tong_video: BigInt(85) }),
       kenh({ kenh_id: 'k3', kenh_ten: 'HuyK Chế Tác', video_trung: BigInt(71), tong_video: BigInt(72) }),
@@ -93,13 +93,13 @@ describe('tinhTheoKenh — tỷ lệ trùng mỗi kênh', () => {
   });
 
   it('kênh 0 video không chia cho 0', () => {
-    const [ra] = tinhTheoKenh([kenh({ video_trung: BigInt(0), tong_video: BigInt(0) })]);
+    const [ra] = computeByChannel([kenh({ video_trung: BigInt(0), tong_video: BigInt(0) })]);
     expect(ra.ty_le).toBe(0);
     expect(Number.isFinite(ra.ty_le)).toBe(true);
   });
 });
 
-describe('dungCanhBaoTrung — chỉ cảnh báo cấp KÊNH', () => {
+describe('buildDuplicateAlerts — chỉ cảnh báo cấp KÊNH', () => {
   /**
    * Ngưỡng ≥3 kênh cho 75 cảnh báo ở kỳ 28 ngày và 333 ở kỳ 90 ngày, trong khi khối
    * "Cần chú ý" cắt ở 12 mục — cảnh báo trùng lặp sẽ đẩy hết lỗi đồng bộ và kênh im lặng
@@ -107,15 +107,15 @@ describe('dungCanhBaoTrung — chỉ cảnh báo cấp KÊNH', () => {
    * không có MỘT kênh nào để gắn.
    */
   it('nhóm nội dung KHÔNG bao giờ sinh cảnh báo, dù phủ 4 kênh', () => {
-    const ra = dungCanhBaoTrung(
-      tinhTheoKenh([kenh({ video_trung: BigInt(1), tong_video: BigInt(100) })]),
+    const ra = buildDuplicateAlerts(
+      computeByChannel([kenh({ video_trung: BigInt(1), tong_video: BigInt(100) })]),
     );
     expect(ra).toEqual([]);
   });
 
   it('kênh ≥20 video và ≥90% trùng thì báo, mức nặng', () => {
-    const ra = dungCanhBaoTrung(
-      tinhTheoKenh([
+    const ra = buildDuplicateAlerts(
+      computeByChannel([
         kenh({ kenh_ten: 'Huyk - Mê Chế Tác', video_trung: BigInt(69), tong_video: BigInt(69) }),
       ]),
     );
@@ -128,32 +128,32 @@ describe('dungCanhBaoTrung — chỉ cảnh báo cấp KÊNH', () => {
   });
 
   it('sàn 20 video: 19 video trùng 100% KHÔNG báo, 20 video trùng 100% CÓ báo', () => {
-    const duoiSan = dungCanhBaoTrung(
-      tinhTheoKenh([kenh({ video_trung: BigInt(19), tong_video: BigInt(19) })]),
+    const duoiSan = buildDuplicateAlerts(
+      computeByChannel([kenh({ video_trung: BigInt(19), tong_video: BigInt(19) })]),
     );
     expect(duoiSan).toEqual([]);
 
-    const dungSan = dungCanhBaoTrung(
-      tinhTheoKenh([kenh({ video_trung: BigInt(20), tong_video: BigInt(20) })]),
+    const alertsFromReady = buildDuplicateAlerts(
+      computeByChannel([kenh({ video_trung: BigInt(20), tong_video: BigInt(20) })]),
     );
-    expect(dungSan).toHaveLength(1);
+    expect(alertsFromReady).toHaveLength(1);
   });
 
   it('ngưỡng 90%: đúng 90% thì báo, 89,9% thì không', () => {
-    const dungNguong = dungCanhBaoTrung(
-      tinhTheoKenh([kenh({ video_trung: BigInt(90), tong_video: BigInt(100) })]),
+    const alertsAtThreshold = buildDuplicateAlerts(
+      computeByChannel([kenh({ video_trung: BigInt(90), tong_video: BigInt(100) })]),
     );
-    expect(dungNguong).toHaveLength(1);
+    expect(alertsAtThreshold).toHaveLength(1);
 
-    const duoiNguong = dungCanhBaoTrung(
-      tinhTheoKenh([kenh({ video_trung: BigInt(89), tong_video: BigInt(100) })]),
+    const duoiNguong = buildDuplicateAlerts(
+      computeByChannel([kenh({ video_trung: BigInt(89), tong_video: BigInt(100) })]),
     );
     expect(duoiNguong).toEqual([]);
   });
 
   it('xếp kênh trùng nặng nhất lên trước', () => {
-    const ra = dungCanhBaoTrung(
-      tinhTheoKenh([
+    const ra = buildDuplicateAlerts(
+      computeByChannel([
         kenh({ kenh_id: 'a', kenh_ten: 'Chín mươi phần trăm', video_trung: BigInt(90), tong_video: BigInt(100) }),
         kenh({ kenh_id: 'b', kenh_ten: 'Trăm phần trăm', video_trung: BigInt(50), tong_video: BigInt(50) }),
       ]),
@@ -168,8 +168,8 @@ describe('rutGonNoiDung', () => {
   });
 
   it('cắt caption dài và thêm dấu lược', () => {
-    const dai = 'a'.repeat(200);
-    const ra = rutGonNoiDung(dai, 80);
+    const longText = 'a'.repeat(200);
+    const ra = rutGonNoiDung(longText, 80);
     expect(ra).toHaveLength(81); // 80 ký tự + '…'
     expect(ra.endsWith('…')).toBe(true);
   });

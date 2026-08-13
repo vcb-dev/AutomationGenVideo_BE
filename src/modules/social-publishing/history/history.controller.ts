@@ -1,7 +1,7 @@
 import { Controller, Get, Query, Sse, MessageEvent, UseGuards, Request } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { HistoryService } from './history.service';
 

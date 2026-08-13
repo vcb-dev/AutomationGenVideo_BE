@@ -7,7 +7,7 @@ import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
 import { AnalyzeContentDto } from './dto/paast-analyze.dto';
 import { HistoryQueryDto } from './dto/paast-history-query.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('AI Integration')
 @Controller('ai')

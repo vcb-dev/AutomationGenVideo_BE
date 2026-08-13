@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Body, Param, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
 import { HeygenVideoService } from './heygen-video.service';
 import { GenerateVideoDto } from './dto/generate-video.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('heygen-video')
 export class HeygenVideoController {

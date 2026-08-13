@@ -55,7 +55,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 /**
  * Nhận diện caption tiếng Việt để chia thị trường VN / Global.
  *
- * Cùng lớp ký tự với dieuKienThiTruong() trong content-filters.ts — hai chỗ phải khớp nhau,
+ * Cùng lớp ký tự với marketFilter() trong content-filters.ts — hai chỗ phải khớp nhau,
  * lệch một ký tự là bộ lọc trên trang video và số liệu trên trang tổng quan đá nhau.
  * COALESCE vì `~*` gặp NULL trả NULL, video sẽ rơi khỏi CẢ HAI nhóm và tổng bị hụt.
  */
@@ -82,7 +82,7 @@ interface DongNgay {
   shares: bigint;
 }
 
-export interface DongKenh {
+export interface ChannelRow {
   platform: string;
   kenh_id: string;
   ky: string;
@@ -93,7 +93,7 @@ export interface DongKenh {
   shares: bigint;
 }
 
-export interface DongDanhSachKenh {
+export interface ChannelListRow {
   platform: string;
   kenh_id: string;
   ten: string;
@@ -145,7 +145,7 @@ function ngayVN(d: Date): string {
   return d.toLocaleDateString('sv-SE', { timeZone: VN_TZ });
 }
 
-function dauNgay(ngay: string): Date {
+function startOfDay(ngay: string): Date {
   return new Date(`${ngay}T00:00:00.000${VN_OFFSET}`);
 }
 
@@ -179,21 +179,21 @@ export class OwnedStatsService {
 
   private async tinh(platform: string, tu: string, den: string) {
     // Kỳ trước là đúng ngần ấy ngày liền ngay trước kỳ đang xem, để hai kỳ so được với nhau.
-    const soNgay = soNgayGiua(tu, den);
-    const truocTu = congNgay(tu, -soNgay);
-    const mocTu = dauNgay(tu);
+    const dayCount = daysBetween(tu, den);
+    const truocTu = congNgay(tu, -dayCount);
+    const mocTu = startOfDay(tu);
     const mocDen = cuoiNgay(den);
-    const mocTruocTu = dauNgay(truocTu);
+    const mocTruocTu = startOfDay(truocTu);
 
     const nguon = this.nguonVideo(platform, mocTruocTu, mocDen);
     // Video của kỳ hiện tại — dùng lại cho top video / thị trường / tuyến / hashtag.
     const trongKy = Prisma.sql`SELECT * FROM ${nguon} AS v WHERE v.ngay >= ${mocTu}`;
-    const nhanKy = Prisma.sql`CASE WHEN v.ngay >= ${mocTu} THEN 'nay' ELSE 'truoc' END`;
+    const periodLabel = Prisma.sql`CASE WHEN v.ngay >= ${mocTu} THEN 'nay' ELSE 'truoc' END`;
 
-    const [tong, theoNgay, theoKenh, danhSachKenh, topVideo, thiTruong, tuyen, hashtag] =
+    const [tong, byDate, byChannel, channelList, topVideo, thiTruong, tuyen, hashtag] =
       await Promise.all([
         this.prisma.$queryRaw<DongTong[]>`
-          SELECT v.platform, ${nhanKy} AS ky,
+          SELECT v.platform, ${periodLabel} AS ky,
                  COUNT(*)::bigint AS posts,
                  COALESCE(SUM(v.views), 0)::bigint AS views,
                  COALESCE(SUM(v.likes), 0)::bigint AS likes,
@@ -214,8 +214,8 @@ export class OwnedStatsService {
           FROM (${trongKy}) AS v
           GROUP BY 1, 2
         `,
-        this.prisma.$queryRaw<DongKenh[]>`
-          SELECT v.platform, v.kenh_id, ${nhanKy} AS ky,
+        this.prisma.$queryRaw<ChannelRow[]>`
+          SELECT v.platform, v.kenh_id, ${periodLabel} AS ky,
                  COUNT(*)::bigint AS posts,
                  COALESCE(SUM(v.views), 0)::bigint AS views,
                  COALESCE(SUM(v.likes), 0)::bigint AS likes,
@@ -224,7 +224,7 @@ export class OwnedStatsService {
           FROM ${nguon} AS v
           GROUP BY 1, 2, 3
         `,
-        this.prisma.$queryRaw<DongDanhSachKenh[]>(this.nguonKenh(platform)),
+        this.prisma.$queryRaw<ChannelListRow[]>(this.nguonKenh(platform)),
         this.prisma.$queryRaw<DongVideo[]>`
           SELECT v.platform, v.post_id, v.url, v.mo_ta, v.thumbnail,
                  v.views, v.likes, v.comments, v.ngay, v.kenh_ten
@@ -269,14 +269,14 @@ export class OwnedStatsService {
         `,
       ]);
 
-    const cacNgay = danhSachNgay(tu, den);
-    const tenKenh = new Map(danhSachKenh.map((k) => [`${k.platform}|${k.kenh_id}`, k]));
+    const cacNgay = dateList(tu, den);
+    const tenKenh = new Map(channelList.map((k) => [`${k.platform}|${k.kenh_id}`, k]));
 
     return {
       status: 'ok',
-      ky: { tu, den, so_ngay: soNgay },
-      nen_tang: this.gopNenTang(tong, theoNgay, danhSachKenh, cacNgay, platform),
-      kenh: this.gopKenh(theoKenh, tenKenh),
+      ky: { tu, den, so_ngay: dayCount },
+      nen_tang: this.mergePlatforms(tong, byDate, channelList, cacNgay, platform),
+      kenh: this.mergeChannels(byChannel, tenKenh),
       top_video: topVideo.map((v) => ({
         platform: v.platform,
         post_id: v.post_id,
@@ -292,11 +292,11 @@ export class OwnedStatsService {
         // hay không, một lỗi chỉ lộ ra trên máy chủ thật.
         ngay: v.ngay.toISOString(),
       })),
-      thi_truong: this.gopThiTruong(thiTruong),
-      tuyen_noi_dung: this.gopTuyen(tuyen),
+      thi_truong: this.mergeMarkets(thiTruong),
+      tuyen_noi_dung: this.mergeContentLines(tuyen),
       hashtag: hashtag.map((h) => ({ the: h.the, posts: n(h.posts), views: n(h.views) })),
-      canh_bao: this.dungCanhBao(danhSachKenh, theoKenh, soNgay),
-      tong_kenh: danhSachKenh.length,
+      canh_bao: this.buildAlerts(channelList, byChannel, dayCount),
+      tong_kenh: channelList.length,
     };
   }
 
@@ -314,10 +314,10 @@ export class OwnedStatsService {
    * lượt chia sẻ, YouTube Shorts không lưu lượt thích/bình luận.
    */
   private nguonVideo(platform: string, tu: Date, den: Date): Prisma.Sql {
-    const nhanh: Prisma.Sql[] = [];
+    const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'facebook'::text AS platform,
                COALESCE(mp.page_id, '')::text AS kenh_id,
                COALESCE(mp.name, '')::text AS kenh_ten,
@@ -337,7 +337,7 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'tiktok') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'tiktok'::text AS platform,
                p.username::text AS kenh_id,
                COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
@@ -357,7 +357,7 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'instagram') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'instagram'::text AS platform,
                p.username::text AS kenh_id,
                p.username::text AS kenh_ten,
@@ -379,7 +379,7 @@ export class OwnedStatsService {
     if (!platform || platform === 'youtube') {
       // Bảng Shorts KHÔNG có ngày đăng — created_at là ngày CÀO VỀ. Số liệu YouTube theo
       // ngày vì thế là theo ngày cào, giống hệt cách /owned/videos đang xử lý.
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'youtube'::text AS platform,
                p.channel_id::text AS kenh_id,
                COALESCE(NULLIF(p.title, ''), p.channel_id)::text AS kenh_ten,
@@ -398,7 +398,7 @@ export class OwnedStatsService {
       `);
     }
 
-    return Prisma.sql`(${Prisma.join(nhanh, ' UNION ALL ')})`;
+    return Prisma.sql`(${Prisma.join(branches, ' UNION ALL ')})`;
   }
 
   /**
@@ -408,10 +408,10 @@ export class OwnedStatsService {
    * video nào trong kỳ — đúng những kênh mà truy vấn theo video không bao giờ trả về.
    */
   private nguonKenh(platform: string): Prisma.Sql {
-    const nhanh: Prisma.Sql[] = [];
+    const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'facebook'::text AS platform, mp.page_id::text AS kenh_id, mp.name::text AS ten,
                COALESCE(NULLIF(mp.avatar_drive_url, ''), mp.avatar_url, '')::text AS avatar,
                mp.followers_count::bigint AS followers,
@@ -425,7 +425,7 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'tiktok') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'tiktok'::text AS platform, p.username::text AS kenh_id,
                COALESCE(NULLIF(p.nickname, ''), p.username)::text AS ten,
                COALESCE(p.avatar_url, '')::text AS avatar, p.followers_count::bigint AS followers,
@@ -437,7 +437,7 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'instagram') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'instagram'::text AS platform, p.username::text AS kenh_id, p.username::text AS ten,
                COALESCE(p.avatar_url, '')::text AS avatar, p.followers_count::bigint AS followers,
                p.last_scraped_at AS dong_bo, NULLIF(p.scrape_error, '')::text AS loi,
@@ -448,7 +448,7 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'youtube') {
-      nhanh.push(Prisma.sql`
+      branches.push(Prisma.sql`
         SELECT 'youtube'::text AS platform, p.channel_id::text AS kenh_id,
                COALESCE(NULLIF(p.title, ''), p.channel_id)::text AS ten,
                COALESCE(p.avatar_url, '')::text AS avatar, p.subscriber_count::bigint AS followers,
@@ -459,15 +459,15 @@ export class OwnedStatsService {
       `);
     }
 
-    return Prisma.sql`${Prisma.join(nhanh, ' UNION ALL ')}`;
+    return Prisma.sql`${Prisma.join(branches, ' UNION ALL ')}`;
   }
 
   // ── Gộp kết quả ──────────────────────────────────────────────────────────────
 
-  private gopNenTang(
+  private mergePlatforms(
     tong: DongTong[],
-    theoNgay: DongNgay[],
-    danhSachKenh: DongDanhSachKenh[],
+    byDate: DongNgay[],
+    channelList: ChannelListRow[],
     cacNgay: string[],
     platform: string,
   ) {
@@ -477,7 +477,7 @@ export class OwnedStatsService {
       .map((p) => {
         const nay = tong.find((t) => t.platform === p && t.ky === 'nay');
         const truoc = tong.find((t) => t.platform === p && t.ky === 'truoc');
-        const ngayCuaP = new Map(theoNgay.filter((d) => d.platform === p).map((d) => [d.ngay, d]));
+        const ngayCuaP = new Map(byDate.filter((d) => d.platform === p).map((d) => [d.ngay, d]));
 
         return {
           platform: p,
@@ -493,11 +493,11 @@ export class OwnedStatsService {
             shares: n(truoc?.shares),
             posts: n(truoc?.posts),
           },
-          followers: danhSachKenh
+          followers: channelList
             .filter((k) => k.platform === p)
             .reduce((s, k) => s + n(k.followers), 0),
           so_kenh: n(nay?.so_kenh),
-          tong_kenh: danhSachKenh.filter((k) => k.platform === p).length,
+          tong_kenh: channelList.filter((k) => k.platform === p).length,
           // Ngày không có bài phải là 0 chứ không được thiếu — thiếu thì đường biểu đồ nối
           // tắt qua chỗ trống, nhìn như ngày đó vẫn có lượt xem.
           theo_ngay: cacNgay.map((ngay) => {
@@ -516,13 +516,13 @@ export class OwnedStatsService {
       .filter((x) => x.tong_kenh > 0);
   }
 
-  private gopKenh(theoKenh: DongKenh[], tenKenh: Map<string, DongDanhSachKenh>) {
-    const nay = theoKenh.filter((k) => k.ky === 'nay');
+  private mergeChannels(byChannel: ChannelRow[], tenKenh: Map<string, ChannelListRow>) {
+    const nay = byChannel.filter((k) => k.ky === 'nay');
     return nay
       .map((k) => {
         const khoa = `${k.platform}|${k.kenh_id}`;
         const meta = tenKenh.get(khoa);
-        const truoc = theoKenh.find(
+        const truoc = byChannel.find(
           (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
         );
         return {
@@ -543,11 +543,11 @@ export class OwnedStatsService {
       .sort((a, b) => b.views - a.views);
   }
 
-  private gopThiTruong(rows: DongThiTruong[]) {
-    const theoP = new Map<string, { platform: string; vn: number; global: number; posts_vn: number; posts_global: number }>();
+  private mergeMarkets(rows: DongThiTruong[]) {
+    const byPlatform = new Map<string, { platform: string; vn: number; global: number; posts_vn: number; posts_global: number }>();
     for (const r of rows) {
       const cur =
-        theoP.get(r.platform) ??
+        byPlatform.get(r.platform) ??
         { platform: r.platform, vn: 0, global: 0, posts_vn: 0, posts_global: 0 };
       if (r.vn) {
         cur.vn += n(r.views);
@@ -556,22 +556,22 @@ export class OwnedStatsService {
         cur.global += n(r.views);
         cur.posts_global += n(r.posts);
       }
-      theoP.set(r.platform, cur);
+      byPlatform.set(r.platform, cur);
     }
-    return [...theoP.values()].sort((a, b) => b.vn + b.global - (a.vn + a.global));
+    return [...byPlatform.values()].sort((a, b) => b.vn + b.global - (a.vn + a.global));
   }
 
-  private gopTuyen(rows: DongTuyen[]) {
-    const theoMa = new Map<string, { ma: string; posts: number; views: number; views_vn: number; views_global: number }>();
+  private mergeContentLines(rows: DongTuyen[]) {
+    const byCode = new Map<string, { ma: string; posts: number; views: number; views_vn: number; views_global: number }>();
     for (const r of rows) {
-      const cur = theoMa.get(r.ma) ?? { ma: r.ma, posts: 0, views: 0, views_vn: 0, views_global: 0 };
+      const cur = byCode.get(r.ma) ?? { ma: r.ma, posts: 0, views: 0, views_vn: 0, views_global: 0 };
       cur.posts += n(r.posts);
       cur.views += n(r.views);
       if (r.vn) cur.views_vn += n(r.views);
       else cur.views_global += n(r.views);
-      theoMa.set(r.ma, cur);
+      byCode.set(r.ma, cur);
     }
-    return [...theoMa.values()].sort((a, b) => b.views - a.views);
+    return [...byCode.values()].sort((a, b) => b.views - a.views);
   }
 
   /**
@@ -580,8 +580,8 @@ export class OwnedStatsService {
    * Ba loại, xếp nặng trước nhẹ sau: lỗi đồng bộ → tụt lượt xem → im lặng. Chỉ xét kênh
    * đang hoạt động; kênh đã tắt im lặng là chuyện đương nhiên, báo lên chỉ làm nhiễu.
    */
-  private dungCanhBao(danhSachKenh: DongDanhSachKenh[], theoKenh: DongKenh[], soNgay: number) {
-    return dungCanhBao(danhSachKenh, theoKenh, soNgay);
+  private buildAlerts(channelList: ChannelListRow[], byChannel: ChannelRow[], dayCount: number) {
+    return buildAlerts(channelList, byChannel, dayCount);
   }
 }
 
@@ -617,19 +617,19 @@ const NGUONG_GOP_LOI = 3;
  * Kèm theo đó, 12 chỗ bị lỗi đồng bộ chiếm sạch nên cảnh báo "Tụt" và "Im lặng" không bao
  * giờ hiện ra được nữa — đúng lúc cần chúng nhất.
  */
-export function dungCanhBao(
-  danhSachKenh: DongDanhSachKenh[],
-  theoKenh: DongKenh[],
-  soNgay: number,
+export function buildAlerts(
+  channelList: ChannelListRow[],
+  byChannel: ChannelRow[],
+  dayCount: number,
 ): CanhBaoKenh[] {
   const canhBao: CanhBaoKenh[] = [];
   const bayGio = Date.now();
 
-  const dangBat = danhSachKenh.filter((k) => k.hoat_dong);
+  const dangBat = channelList.filter((k) => k.hoat_dong);
 
   // Gộp theo (nền tảng + nguyên văn lỗi): hai nguyên nhân khác nhau là hai sự cố khác nhau,
   // trộn làm một thì lại giấu mất một cái.
-  const theoLoi = new Map<string, DongDanhSachKenh[]>();
+  const theoLoi = new Map<string, ChannelListRow[]>();
   for (const k of dangBat) {
     if (!k.loi) continue;
     const khoa = `${k.platform}|${k.loi.slice(0, 120)}`;
@@ -659,8 +659,8 @@ export function dungCanhBao(
     });
   }
 
-  for (const k of theoKenh.filter((x) => x.ky === 'nay')) {
-    const truoc = theoKenh.find(
+  for (const k of byChannel.filter((x) => x.ky === 'nay')) {
+    const truoc = byChannel.find(
       (x) => x.ky === 'truoc' && x.platform === k.platform && x.kenh_id === k.kenh_id,
     );
     const vTruoc = n(truoc?.views);
@@ -669,12 +669,12 @@ export function dungCanhBao(
     if (vTruoc < 10_000) continue;
     const delta = Math.round(((n(k.views) - vTruoc) / vTruoc) * 100);
     if (delta > NGUONG_TUT) continue;
-    const meta = danhSachKenh.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
+    const meta = channelList.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
     if (meta && !meta.hoat_dong) continue;
     canhBao.push({
       platform: k.platform,
       kenh: meta?.ten || k.kenh_id,
-      noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${soNgay} ngày trước đó`,
+      noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${dayCount} ngày trước đó`,
       muc: 'b',
       nhan: 'Tụt',
     });
@@ -691,12 +691,12 @@ export function dungCanhBao(
       });
       continue;
     }
-    const soNgayIm = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
-    if (soNgayIm < NGUONG_IM_LANG) continue;
+    const silentDays = Math.floor((bayGio - k.ngay_cuoi.getTime()) / 86_400_000);
+    if (silentDays < NGUONG_IM_LANG) continue;
     canhBao.push({
       platform: k.platform,
       kenh: k.ten,
-      noi_dung: `Chưa đăng bài trong ${soNgayIm} ngày`,
+      noi_dung: `Chưa đăng bài trong ${silentDays} ngày`,
       muc: 'w',
       nhan: 'Im lặng',
     });
@@ -723,7 +723,7 @@ function laNgayHopLe(s?: string): s is string {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
-export function soNgayGiua(tu: string, den: string): number {
+export function daysBetween(tu: string, den: string): number {
   const a = Date.parse(`${tu}T00:00:00.000Z`);
   const b = Date.parse(`${den}T00:00:00.000Z`);
   return Math.floor((b - a) / 86_400_000) + 1;
@@ -750,21 +750,21 @@ export function chuanHoaKhoang(rawTu?: string, rawDen?: string, rawDays?: string
   if (laNgayHopLe(rawTu)) {
     tu = rawTu;
   } else {
-    const soNgay = SO_NGAY_HOP_LE.includes(parseInt(rawDays || '', 10))
+    const dayCount = SO_NGAY_HOP_LE.includes(parseInt(rawDays || '', 10))
       ? parseInt(rawDays!, 10)
       : SO_NGAY_MAC_DINH;
-    tu = congNgay(den, -(soNgay - 1));
+    tu = congNgay(den, -(dayCount - 1));
   }
 
   if (tu > den) [tu, den] = [den, tu];
   if (den > homNay) den = homNay;
   if (tu > den) tu = den;
-  if (soNgayGiua(tu, den) > SO_NGAY_TOI_DA) tu = congNgay(den, -(SO_NGAY_TOI_DA - 1));
+  if (daysBetween(tu, den) > SO_NGAY_TOI_DA) tu = congNgay(den, -(SO_NGAY_TOI_DA - 1));
 
   return { tu, den };
 }
 
-function danhSachNgay(tu: string, den: string): string[] {
+function dateList(tu: string, den: string): string[] {
   const out: string[] = [];
   let cur = tu;
   while (cur <= den) {

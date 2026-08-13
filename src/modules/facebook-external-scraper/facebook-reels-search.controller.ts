@@ -1,5 +1,5 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { FacebookExternalScraperReadService } from './facebook-external-scraper-read.service';
 
 // Thay thế search_reels bên AI (đã xóa). Path riêng (scraper/reels/search) khác prefix

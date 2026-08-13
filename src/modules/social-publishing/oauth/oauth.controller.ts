@@ -1,7 +1,7 @@
 import { Controller, Get, Query, Param, Res, UseGuards, Request, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { OAuthService } from './oauth.service';
 
 @ApiTags('Social OAuth')

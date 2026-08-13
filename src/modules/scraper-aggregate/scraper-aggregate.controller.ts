@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ScraperAggregateReadService } from './scraper-aggregate-read.service';
 import { OwnedStatsService } from './owned-stats.service';
 import { OwnedScriptService } from './owned-script.service';
@@ -93,13 +93,13 @@ export class ScraperAggregateController {
         return { platform: s.slice(0, i), post_id: s.slice(i + 1) };
       })
       .filter((k) => k.platform && k.post_id);
-    return this.scriptService.trangThaiNhieu(khoas);
+    return this.scriptService.statusMany(khoas);
   }
 
   /** Lấy kịch bản + chấm điểm PAAST một video. Có thể tốn một lượt LLM — chỉ gọi khi người dùng bấm. */
   @Post('owned/paast')
   async paastVideo(@Request() req: any, @Body() body: { platform: string; post_id: string }) {
-    return this.scriptService.chamDiem(
+    return this.scriptService.scoreVideo(
       (body?.platform || '').trim(),
       (body?.post_id || '').trim(),
       req.user.id,
