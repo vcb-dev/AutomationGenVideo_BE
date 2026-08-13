@@ -379,6 +379,13 @@ export class LuckySpinService {
    *
    * Bánh xe vẫn hiện đủ tên: chỉ tập ô THẮNG bị chi phối, `pool` giữ nguyên.
    * Vòng quay team không áp — pool là tên team, không phải tên người.
+   *
+   * THỨ TỰ trả về phải trộn lại ở cuối, không được để nguyên: FE tiết lộ người trúng lần lượt
+   * theo đúng thứ tự mảng này (`winnerIndexes.slice(0, revealed)` trong MemberSpinTab), mà
+   * vòng tung cho người hạn chế chạy TRƯỚC vòng bốc người thường. Đo trên 200.000 lượt bốc 3
+   * người: khi người hạn chế trúng thì 99,5% số lần họ đứng ngay vị trí đầu. Cả hội trường
+   * nhìn ra quy luật đó, và như vậy thì mức 1% mất sạch ý nghĩa — nó tồn tại để trông tự
+   * nhiên, chứ chặn hẳn thì đã có sẵn cách đơn giản hơn nhiều.
    */
   private pickWinners(
     pool: { name: string }[],
@@ -416,7 +423,9 @@ export class LuckySpinService {
       const leftover = restricted.filter((i) => !winners.includes(i));
       winners.push(...this.pickDistinctIndexes(leftover, remaining));
     }
-    return winners;
+
+    // Trộn toàn bộ: pickDistinctIndexes với count = độ dài chính là Fisher-Yates đầy đủ.
+    return this.pickDistinctIndexes(winners, winners.length);
   }
 
   /** Số thực trong [0, 1) lấy từ crypto — không dùng Math.random để kết quả không đoán được. */
