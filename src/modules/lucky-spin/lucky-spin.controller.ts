@@ -20,10 +20,13 @@ import {
 } from './dto';
 
 /**
- * Vòng quay may mắn — dữ liệu dùng chung toàn công ty.
+ * Vòng quay may mắn — mỗi tài khoản một bộ dữ liệu riêng.
  *
- * Chỉ yêu cầu đăng nhập, không phân quyền theo role: đây là công cụ sự kiện nội bộ, ai cũng
- * cần mở xem và thao tác được. Bù lại, mọi thao tác ghi lịch sử đều lưu lại người thực hiện.
+ * Chỉ yêu cầu đăng nhập, không phân quyền theo role: người dùng chỉ thấy vòng quay của chính
+ * mình nên không có gì để phân quyền. Mọi thao tác ghi lịch sử vẫn lưu lại người thực hiện.
+ *
+ * Mọi endpoint đều lấy `req.user.id` làm chủ sở hữu — kể cả các endpoint chỉ đọc, vì "đọc"
+ * ở đây nghĩa là đọc kho dữ liệu của ai.
  */
 @ApiTags('Lucky Spin')
 @ApiBearerAuth()
@@ -43,15 +46,19 @@ export class LuckySpinController {
   }
 
   @Get(':workspace/state')
-  @ApiOperation({ summary: 'Toàn bộ dữ liệu của một vòng quay (FE poll endpoint này)' })
-  getState(@Param('workspace') workspace: string) {
-    return this.service.getState(workspace);
+  @ApiOperation({ summary: 'Toàn bộ dữ liệu vòng quay của chính tài khoản đang đăng nhập (FE poll endpoint này)' })
+  getState(@Request() req: any, @Param('workspace') workspace: string) {
+    return this.service.getState(workspace, this.actorOf(req).id);
   }
 
   @Get(':workspace/history/:kind')
   @ApiOperation({ summary: 'Toàn bộ lịch sử một loại — dùng khi xuất Excel/PDF' })
-  listFullHistory(@Param('workspace') workspace: string, @Param('kind') kind: 'members' | 'teams' | 'gifts') {
-    return this.service.listFullHistory(workspace, kind);
+  listFullHistory(
+    @Request() req: any,
+    @Param('workspace') workspace: string,
+    @Param('kind') kind: 'members' | 'teams' | 'gifts',
+  ) {
+    return this.service.listFullHistory(workspace, kind, this.actorOf(req).id);
   }
 
   /* ──────────────────────── Khóa điều khiển ──────────────────────── */
