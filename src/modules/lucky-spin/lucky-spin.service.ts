@@ -371,7 +371,7 @@ export class LuckySpinService {
    *
    * Người trong REDUCED_ODDS_NAMES không bị loại hẳn nữa: mỗi người được tung riêng một lần,
    * trúng dưới REDUCED_ODDS_RATE thì chiếm luôn một suất thắng. Suất còn lại bốc đều trong số
-   * người thường.
+   * người thường — hết người thường thì quay lại bốc đều trong số người hạn chế chưa trúng.
    *
    * Vì sao tung riêng thay vì hạ trọng số trong tập bốc chung: hạ trọng số thì xác suất thật
    * phụ thuộc danh sách dài bao nhiêu — với 50 người, "1% trọng số" thành khoảng 0,02% cơ hội
@@ -399,14 +399,22 @@ export class LuckySpinService {
       if (this.nextUnitRandom() < REDUCED_ODDS_RATE) winners.push(i);
     }
 
-    const remaining = count - winners.length;
+    let remaining = count - winners.length;
     if (remaining > 0) {
-      if (normal.length < remaining) {
-        throw new BadRequestException(
-          `Chỉ còn ${normal.length} mục hợp lệ, không bốc được ${remaining}.`,
-        );
-      }
-      winners.push(...this.pickDistinctIndexes(normal, remaining));
+      const fromNormal = Math.min(normal.length, remaining);
+      winners.push(...this.pickDistinctIndexes(normal, fromNormal));
+      remaining -= fromNormal;
+    }
+
+    // Hết người thường mà vẫn thiếu suất: chia đều cho những người hạn chế chưa trúng.
+    //
+    // 1% có nghĩa là họ ÍT cơ hội hơn người khác — không còn người khác thì không còn gì để giảm.
+    // Trước đây nhánh này ném lỗi, nên cuối buổi khi danh sách chỉ còn hai người trong
+    // REDUCED_ODDS_NAMES thì 99% số lượt MC bấm quay là bánh xe đứng im kèm lỗi "Chỉ còn 0 mục
+    // hợp lệ". `drawRound` đã chặn count > pool.length nên tới đây chắc chắn đủ người để lấp.
+    if (remaining > 0) {
+      const leftover = restricted.filter((i) => !winners.includes(i));
+      winners.push(...this.pickDistinctIndexes(leftover, remaining));
     }
     return winners;
   }
