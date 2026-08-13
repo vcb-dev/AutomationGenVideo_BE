@@ -3972,17 +3972,25 @@ enum SpinEntryStatus {
   DONE   // đã trúng, bị loại khỏi các lượt sau cho tới khi đặt lại
 }
 
-/// Mỗi vòng quay là một bộ dữ liệu tách biệt (SECI, Đào tạo cán bộ nguồn...)
+/// Mỗi vòng quay là một bộ dữ liệu tách biệt (SECI, Đào tạo cán bộ nguồn...) của MỘT tài khoản
 model SpinWorkspace {
-  id          String   @id @default(uuid())
-  slug        String   @unique // "seci" — key ổn định dùng trên URL và FE
-  name        String
+  id   String @id @default(uuid())
+  slug String // "seci" — key ổn định dùng trên URL và FE
+  name String
+
+  /// Chủ sở hữu: tài khoản nào đăng nhập thì dùng vòng quay của tài khoản đó, không dùng chung
+  /// nữa. Không đặt khoá ngoại sang User, giống created_by_id ở các bảng lịch sử bên dưới.
+  owner_id String @db.Uuid
+
   order_index Int      @default(0)
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 
   // Khóa điều khiển: giữa buổi sự kiện chỉ một người được quay và sửa dữ liệu, những người
   // khác vẫn xem trực tiếp được. Khóa tự hết hạn để không ai bị kẹt khi MC đóng máy.
+  //
+  // Từ khi mỗi tài khoản có vòng quay riêng thì khóa chỉ có thể do chính chủ giữ, nên nó không
+  // còn tác dụng gì. Giữ lại cột thay vì bỏ để khỏi tốn thêm một migration cho thứ vô hại.
   controller_id      String?   @db.Uuid
   controller_name    String?
   control_expires_at DateTime?
@@ -3995,6 +4003,8 @@ model SpinWorkspace {
   team_wins   SpinTeamWin[]
   gift_awards SpinGiftAward[]
 
+  // Mỗi tài khoản một bản riêng của từng slug: slug một mình không còn là duy nhất.
+  @@unique([slug, owner_id])
   @@map("spin_workspaces")
 }
 
