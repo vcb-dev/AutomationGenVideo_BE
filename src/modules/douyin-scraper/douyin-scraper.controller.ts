@@ -75,9 +75,13 @@ export class DouyinScraperController {
     const count = Math.min(200, Math.max(1, Number(body?.num_of_posts) || 30));
     const { created, updated } = await this.service.searchKeyword(keyword, count, displayKeyword);
 
+    // Tới dòng này là việc đã XONG (đã await ở trên) — câu báo phải nói kết quả, không nói là
+    // đang chạy. FE chỉ `toast.success(message)` một lần rồi thôi, không poll gì thêm, nên câu
+    // "Đang tìm kiếm..." khiến người dùng tưởng còn phải chờ và không biết cào được bao nhiêu.
+    // Cùng lối diễn đạt với TikTok/Kuaishou/Bilibili/Xiaohongshu.
     return {
       status: 'ok',
-      message: `Đang tìm kiếm "${displayKeyword || keyword}" trên Douyin...`,
+      message: `Đã tìm thấy ${created} video mới cho "${displayKeyword || keyword}".`,
       created,
       updated,
     };
