@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Query, UseGuards, Request } from '@nestjs/common';
 import { SearchRecommendationService } from './search-recommendations.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 @ApiTags('Search Recommendations')

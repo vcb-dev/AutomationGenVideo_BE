@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 export interface FetchedManagedPage {
   page_id: string;
@@ -45,7 +46,7 @@ export interface FetchedPageMetadata {
 // không bao giờ tự mã hóa/giải mã (AI giữ FERNET_KEY, là nơi duy nhất biết mã hóa).
 @Injectable()
 export class FacebookAiClientService {
-  private readonly aiServiceUrl = (process.env.AI_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+  private readonly aiServiceUrl = resolveAiServiceUrlFromEnv();
 
   constructor(private readonly jwtService: JwtService) {}
 
@@ -103,7 +104,7 @@ export class FacebookAiClientService {
   async fetchMetricsRefresh(
     tokenEncrypted: string,
     postIds: string[],
-  ): Promise<{ metrics: Record<string, { view_count: number; like_count: number; comment_count: number; share_count: number }> }> {
+  ): Promise<{ metrics: Record<string, { view_count: number | null; like_count: number; comment_count: number; share_count: number }> }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/facebook/fetch/metrics-refresh/`,
       { page_access_token_encrypted: tokenEncrypted, post_ids: postIds },
@@ -118,7 +119,7 @@ export class FacebookAiClientService {
   async fetchVideoNodeMetrics(
     tokenEncrypted: string,
     videoIds: string[],
-  ): Promise<{ metrics: Record<string, { view_count: number; like_count: number; comment_count: number; share_count: number }> }> {
+  ): Promise<{ metrics: Record<string, { view_count: number | null; like_count: number; comment_count: number; share_count: number }> }> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/facebook/fetch/video-metrics-refresh/`,
       { page_access_token_encrypted: tokenEncrypted, video_ids: videoIds },

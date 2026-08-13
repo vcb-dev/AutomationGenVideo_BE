@@ -5,6 +5,8 @@ import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
+import { CookieAuthService } from "./cookie-auth.service";
+import { RefreshTokenService, SessionContext } from "./refresh-token.service";
 import * as bcrypt from "bcrypt";
 
 function isBcryptPasswordHash(stored: string): boolean {
@@ -26,9 +28,12 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private refreshTokenService: RefreshTokenService,
+    private cookieAuthService: CookieAuthService,
   ) { }
 
-  async login(loginDto: LoginDto): Promise<TokenResponseDto> {
+  /** Kiểm tra thông tin đăng nhập, trả về user. Việc cấp token do issueSession lo. */
+  async validateLoginOrThrow(loginDto: LoginDto) {
     const user = await this.validateUser(loginDto.email, loginDto.password);
 
     if (!user) {
@@ -39,7 +44,25 @@ export class AuthService {
       throw new UnauthorizedException("User account is inactive");
     }
 
-    return this.generateToken(user);
+    return user;
+  }
+
+  /**
+   * Cấp một phiên hoàn chỉnh: access token (JWT, stateless) + refresh token (ngẫu nhiên, có trạng
+   * thái trong DB). Refresh token thô chỉ đi ra ngoài qua cookie HttpOnly — người gọi KHÔNG được
+   * đưa nó vào body response.
+   */
+  async issueSession(
+    user: any,
+    ctx: SessionContext = {},
+  ): Promise<{ tokenResponse: TokenResponseDto; refreshToken: string }> {
+    const tokenResponse = await this.generateToken(user);
+    const issued = await this.refreshTokenService.issue(
+      user.id,
+      this.cookieAuthService.refreshMaxAge(),
+      ctx,
+    );
+    return { tokenResponse, refreshToken: issued.rawToken };
   }
 
   async validateUser(email: string, password: string) {
@@ -108,8 +131,9 @@ export class AuthService {
     };
 
     const access_token = this.jwtService.sign(payload);
-    // Default session lifetime: 5 hours
-    const expiresIn = this.configService.get<string>("JWT_EXPIRES_IN") || "5h";
+    // Một biến duy nhất chi phối hạn access token. Trước đây là JWT_EXPIRES_IN; để hai biến cùng
+    // điều khiển một thứ là mời gọi sự cố khi hai chỗ lệch nhau.
+    const expiresIn = this.configService.get<string>("JWT_ACCESS_EXPIRES") || "15m";
 
     // Remove password_hash from response
     // eslint-disable-next-line @typescript-eslint/no-unused-vars

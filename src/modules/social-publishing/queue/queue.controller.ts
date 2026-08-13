@@ -2,7 +2,7 @@ import { Controller, Post, Get, Body, Query, Request, UseGuards, Logger } from '
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { IsString, IsArray, IsOptional, IsEnum, ValidateNested, ArrayMaxSize, ArrayMinSize } from 'class-validator';
 import { Type } from 'class-transformer';
-import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { QueueService } from './queue.service';
 import { ScheduleService } from '../schedule/schedule.service';
 import { SocialPlatform } from '@prisma/client';

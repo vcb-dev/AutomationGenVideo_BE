@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
@@ -75,9 +75,13 @@ export class DouyinScraperController {
     const count = Math.min(200, Math.max(1, Number(body?.num_of_posts) || 30));
     const { created, updated } = await this.service.searchKeyword(keyword, count, displayKeyword);
 
+    // Tới dòng này là việc đã XONG (đã await ở trên) — câu báo phải nói kết quả, không nói là
+    // đang chạy. FE chỉ `toast.success(message)` một lần rồi thôi, không poll gì thêm, nên câu
+    // "Đang tìm kiếm..." khiến người dùng tưởng còn phải chờ và không biết cào được bao nhiêu.
+    // Cùng lối diễn đạt với TikTok/Kuaishou/Bilibili/Xiaohongshu.
     return {
       status: 'ok',
-      message: `Đang tìm kiếm "${displayKeyword || keyword}" trên Douyin...`,
+      message: `Đã tìm thấy ${created} video mới cho "${displayKeyword || keyword}".`,
       created,
       updated,
     };

@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, catchError } from 'rxjs';
 import { AxiosError } from 'axios';
 import { XhsSearchDto, XhsSearchResponse } from './dto/search-xhs.dto';
+import { resolveAiServiceUrl } from '../common/config/ai-service-url';
 
 @Injectable()
 export class XiaohongshuService {
@@ -14,7 +15,7 @@ export class XiaohongshuService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8001';
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
   }
 
   async searchNotes(searchDto: XhsSearchDto): Promise<XhsSearchResponse> {

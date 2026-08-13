@@ -7,6 +7,7 @@ import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { TransformStatus, UserRole, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 import { AnalyzeContentDto } from './dto/paast-analyze.dto';
 import { HistoryQueryDto } from './dto/paast-history-query.dto';
@@ -131,7 +132,7 @@ export class AiIntegrationService {
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
     this.voiceAiServiceUrl = this.configService.get<string>(
       'AI_SERVICE_URL_VOICE',

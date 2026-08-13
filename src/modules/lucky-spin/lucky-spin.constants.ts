@@ -41,20 +41,28 @@ export const SPIN_DURATION_MS = 5000;
 export const MAX_DRAW_COUNT = 20;
 
 /**
- * Những người không bao giờ được bốc trúng ở vòng quay cá nhân — quyết định của ban tổ chức.
+ * Những người bị giảm mạnh cơ hội thắng ở vòng quay cá nhân — quyết định của ban tổ chức.
  *
- * Họ vẫn nằm trong danh sách nhân sự và vẫn hiện đủ trên bánh xe; chỉ có ô thắng là không bao
- * giờ rơi vào họ. Danh sách so theo TÊN nên nếu công ty có người thứ hai trùng tên thì người đó
- * cũng bị chặn oan — chưa có cách nào tránh vì file Excel nhập vào chỉ có cột Tên và Team.
+ * Trước đây họ bị chặn hẳn (0%). Từ 2026-08-11 đổi thành CÓ cơ hội nhưng rất thấp: mỗi lượt
+ * quay đúng REDUCED_ODDS_RATE, xem cách áp ở LuckySpinService.drawRound.
  *
- * TẠM TẮT (07/08/2026, theo yêu cầu người dùng) — danh sách để rỗng nên `laTenKhongDuocTrung`
- * luôn trả về false và mọi người đều có thể trúng. BẬT LẠI: bỏ comment hai dòng tên bên dưới,
- * đồng thời bỏ `.skip` ở hai `describe` trong __tests__/lucky-spin.service.draw.spec.ts.
+ * Họ vẫn nằm trong danh sách nhân sự và vẫn hiện đủ trên bánh xe. Danh sách so theo TÊN nên
+ * nếu công ty có người thứ hai trùng tên thì người đó cũng bị giảm theo — chưa có cách nào
+ * tránh vì file Excel nhập vào chỉ có cột Tên và Team.
  */
-export const TEN_KHONG_DUOC_TRUNG: string[] = [
-  // 'Trần Trung Hiếu',
-  // 'Nguyễn Văn Toán',
+export const REDUCED_ODDS_NAMES: string[] = [
+  'Trần Trung Hiếu',
+  'Nguyễn Văn Toán',
 ];
+
+/**
+ * Cơ hội thắng mỗi lượt của người trong danh sách trên: 1%.
+ *
+ * Đây là xác suất TUYỆT ĐỐI, không phải trọng số. Nếu chỉ hạ trọng số trong tập bốc chung thì
+ * với danh sách 50 người, xác suất thực của họ tụt còn khoảng 0,02% — khác hẳn con số ban tổ
+ * chức muốn.
+ */
+export const REDUCED_ODDS_RATE = 0.01;
 
 /**
  * Chuẩn hoá tên để so khớp: bỏ dấu, thường hoá, gộp khoảng trắng thừa.
@@ -62,7 +70,7 @@ export const TEN_KHONG_DUOC_TRUNG: string[] = [
  * Bỏ dấu là yêu cầu rõ ràng của ban tổ chức — file nhân sự mỗi nơi xuất một kiểu ("TRAN TRUNG
  * HIEU", "Tran Trung Hieu"), giữ dấu thì những bản không dấu lọt hết.
  *
- * ĐÁNH ĐỔI ĐÃ BIẾT VÀ ĐÃ CHẤP NHẬN: mọi cái tên bỏ dấu ra cùng chuỗi cũng bị chặn theo. Cụ thể
+ * ĐÁNH ĐỔI ĐÃ BIẾT VÀ ĐÃ CHẤP NHẬN: mọi cái tên bỏ dấu ra cùng chuỗi cũng bị giảm theo. Cụ thể
  * "Nguyễn Văn Toàn"/"Toản" và "Trần Trung Hiệu"/"Hiều" — những tên khác người — đều thành
  * "nguyen van toan"/"tran trung hieu". Có người như vậy trong danh sách thì phải phân biệt bằng
  * thứ khác chứ không sửa được ở đây; file Excel nhập vào chỉ có cột Tên và Team.
@@ -70,8 +78,8 @@ export const TEN_KHONG_DUOC_TRUNG: string[] = [
  * NFD rồi cắt dải U+0300–U+036F là cách bỏ dấu: tách "ế" thành "e" + dấu rời rồi vứt dấu đi.
  * Riêng "đ" không phải chữ có dấu tổ hợp nên NFD không đụng tới, phải thay tay.
  */
-function chuanHoaTen(ten: string): string {
-  return ten
+function normalizeName(name: string): string {
+  return name
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -80,8 +88,8 @@ function chuanHoaTen(ten: string): string {
     .trim();
 }
 
-const TEN_CHAN = new Set(TEN_KHONG_DUOC_TRUNG.map(chuanHoaTen));
+const REDUCED_ODDS_SET = new Set(REDUCED_ODDS_NAMES.map(normalizeName));
 
-export function laTenKhongDuocTrung(ten: string): boolean {
-  return TEN_CHAN.has(chuanHoaTen(ten));
+export function hasReducedOdds(name: string): boolean {
+  return REDUCED_ODDS_SET.has(normalizeName(name));
 }

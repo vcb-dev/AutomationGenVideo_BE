@@ -1,4 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { randomInt } from 'crypto';
 import { Prisma, SpinEntryStatus, SpinRoundKind } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -9,7 +15,8 @@ import {
   NO_TEAM_LABEL,
   SPIN_DURATION_MS,
   SPIN_WORKSPACES,
-  laTenKhongDuocTrung,
+  hasReducedOdds,
+  REDUCED_ODDS_RATE,
 } from './lucky-spin.constants';
 import {
   AwardGiftDto,
@@ -28,9 +35,14 @@ import {
   UpdateTeamDto,
 } from './dto';
 
-/** User đang thao tác — dùng để ghi vào lịch sử ai đã bấm xác nhận. */
+/**
+ * User đang thao tác — vừa để ghi lịch sử ai bấm xác nhận, vừa để chọn đúng vòng quay của họ.
+ *
+ * `id` bắt buộc từ khi mỗi tài khoản có vòng quay riêng: thiếu id thì không biết mở kho dữ liệu
+ * của ai. Mọi endpoint đều đứng sau JwtAuthGuard nên chỗ này luôn có giá trị.
+ */
 export interface SpinActor {
-  id?: string;
+  id: string;
   name?: string;
 }
 
@@ -41,19 +53,27 @@ export class LuckySpinService {
   /* ─────────────────────────── Workspace ─────────────────────────── */
 
   /**
-   * Lấy id vòng quay theo slug, tự tạo nếu chưa có.
+   * Lấy id vòng quay của MỘT tài khoản theo slug, tự tạo nếu chưa có.
    *
-   * Nhờ vậy môi trường mới không cần chạy seed, và không có đường nào tạo ra vòng quay lạ
-   * ngoài danh sách đã khai báo trong code.
+   * Đây là chốt chặn duy nhất của toàn module: bảy bảng con đều tham chiếu `workspace_id`, nên
+   * khoá theo cặp (slug, tài khoản) ở đây là dữ liệu tự động tách theo từng người. Trước đây
+   * khoá theo mỗi slug, tức là cả công ty ghi đè lên nhau trong cùng một kho.
+   *
+   * Vẫn giữ lối tự tạo khi chưa có: tài khoản mới mở trang lần đầu là có ngay vòng quay rỗng
+   * của mình, môi trường mới không cần seed, và không có đường nào tạo ra slug lạ ngoài danh
+   * sách khai trong code.
    */
-  private async resolveWorkspaceId(slug: string): Promise<string> {
+  private async resolveWorkspaceId(slug: string, ownerId: string): Promise<string> {
     const known = SPIN_WORKSPACES.find((w) => w.slug === slug);
     if (!known) throw new NotFoundException(`Không có vòng quay "${slug}"`);
+    // Không có tài khoản thì dừng hẳn. Rơi về một vòng quay không chủ nghĩa là mở lại đúng cái
+    // kho dùng chung mà thay đổi này sinh ra để dẹp.
+    if (!ownerId) throw new UnauthorizedException('Không xác định được tài khoản đang đăng nhập.');
 
     const ws = await this.prisma.spinWorkspace.upsert({
-      where: { slug: known.slug },
+      where: { slug_owner_id: { slug: known.slug, owner_id: ownerId } },
       update: {},
-      create: { slug: known.slug, name: known.name, order_index: known.orderIndex },
+      create: { slug: known.slug, name: known.name, order_index: known.orderIndex, owner_id: ownerId },
       select: { id: true },
     });
     return ws.id;
@@ -92,7 +112,7 @@ export class LuckySpinService {
    * chờ hết 3 phút giữa buổi sự kiện là quá lâu.
    */
   async claimControl(slug: string, actor: SpinActor, force = false) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+    const workspaceId = await this.resolveWorkspaceId(slug, actor.id);
     const ws = await this.prisma.spinWorkspace.findUniqueOrThrow({ where: { id: workspaceId } });
     const current = this.controlStateOf(ws);
 
@@ -113,7 +133,7 @@ export class LuckySpinService {
 
   /** Nhả quyền để người khác dùng ngay, không phải chờ hết hạn. */
   async releaseControl(slug: string, actor: SpinActor) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+    const workspaceId = await this.resolveWorkspaceId(slug, actor.id);
     const ws = await this.prisma.spinWorkspace.findUniqueOrThrow({ where: { id: workspaceId } });
     const current = this.controlStateOf(ws);
 
@@ -135,7 +155,7 @@ export class LuckySpinService {
    * thay vì tưởng hệ thống lỗi.
    */
   private async assertControl(slug: string, actor: SpinActor) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+    const workspaceId = await this.resolveWorkspaceId(slug, actor.id);
     const ws = await this.prisma.spinWorkspace.findUniqueOrThrow({ where: { id: workspaceId } });
     const current = this.controlStateOf(ws);
 
@@ -165,8 +185,8 @@ export class LuckySpinService {
    * FE poll hàm này vài giây một lần nên mọi thứ phải nằm trong một lần gọi; tách nhỏ thành
    * nhiều endpoint sẽ khiến các phần dữ liệu lệch nhau giữa hai lần poll.
    */
-  async getState(slug: string) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+  async getState(slug: string, ownerId: string) {
+    const workspaceId = await this.resolveWorkspaceId(slug, ownerId);
     const ws = await this.prisma.spinWorkspace.findUniqueOrThrow({ where: { id: workspaceId } });
 
     const [teams, members, gifts, memberWins, teamWins, giftAwards, counts, activeRound] = await Promise.all([
@@ -253,8 +273,8 @@ export class LuckySpinService {
    *
    * Tách khỏi getState để đường poll 5 giây không phải gánh dữ liệu mà màn hình không hiển thị.
    */
-  async listFullHistory(slug: string, kind: 'members' | 'teams' | 'gifts') {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+  async listFullHistory(slug: string, kind: 'members' | 'teams' | 'gifts', ownerId: string) {
+    const workspaceId = await this.resolveWorkspaceId(slug, ownerId);
     const where = { workspace_id: workspaceId };
     const orderBy = { created_at: 'desc' as const };
 
@@ -346,24 +366,7 @@ export class LuckySpinService {
 
     const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
 
-    /*
-     * Vòng quay cá nhân: loại người trong danh sách chặn ra khỏi tập ô CÓ THỂ THẮNG, không phải
-     * ra khỏi `pool`. Bánh xe vẫn hiện đủ tên như file nhân sự đã nhập, chỉ ô thắng là không bao
-     * giờ rơi vào họ. Lọc ở đây chứ không lọc trong câu findMany vì `pool` còn được dùng để dựng
-     * bánh xe cho mọi màn hình đang xem.
-     *
-     * Vòng quay team không lọc: pool là tên team, không phải tên người.
-     */
-    const oCoTheThang = pool
-      .map((_, i) => i)
-      .filter((i) => kind !== SpinRoundKind.MEMBER || !laTenKhongDuocTrung(pool[i].name));
-
-    // Không đủ người hợp lệ thì báo lỗi chứ không hạ chuẩn: để lọt một lượt là hỏng cả yêu cầu.
-    if (oCoTheThang.length < soLuongBoc) {
-      throw new BadRequestException(`Chỉ còn ${oCoTheThang.length} mục hợp lệ, không bốc được ${soLuongBoc}.`);
-    }
-
-    const winnerIndexes = this.pickDistinctIndexes(oCoTheThang, soLuongBoc);
+    const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind);
 
     const round = await this.prisma.spinRound.create({
       data: {
@@ -383,10 +386,77 @@ export class LuckySpinService {
   }
 
   /**
+   * Chọn người thắng, có tính danh sách hạn chế.
+   *
+   * Người trong REDUCED_ODDS_NAMES không bị loại hẳn nữa: mỗi người được tung riêng một lần,
+   * trúng dưới REDUCED_ODDS_RATE thì chiếm luôn một suất thắng. Suất còn lại bốc đều trong số
+   * người thường — hết người thường thì quay lại bốc đều trong số người hạn chế chưa trúng.
+   *
+   * Vì sao tung riêng thay vì hạ trọng số trong tập bốc chung: hạ trọng số thì xác suất thật
+   * phụ thuộc danh sách dài bao nhiêu — với 50 người, "1% trọng số" thành khoảng 0,02% cơ hội
+   * thật. Tung riêng cho đúng 1% mỗi lượt như ban tổ chức yêu cầu, bất kể danh sách bao nhiêu.
+   *
+   * Bánh xe vẫn hiện đủ tên: chỉ tập ô THẮNG bị chi phối, `pool` giữ nguyên.
+   * Vòng quay team không áp — pool là tên team, không phải tên người.
+   *
+   * THỨ TỰ trả về phải trộn lại ở cuối, không được để nguyên: FE tiết lộ người trúng lần lượt
+   * theo đúng thứ tự mảng này (`winnerIndexes.slice(0, revealed)` trong MemberSpinTab), mà
+   * vòng tung cho người hạn chế chạy TRƯỚC vòng bốc người thường. Đo trên 200.000 lượt bốc 3
+   * người: khi người hạn chế trúng thì 99,5% số lần họ đứng ngay vị trí đầu. Cả hội trường
+   * nhìn ra quy luật đó, và như vậy thì mức 1% mất sạch ý nghĩa — nó tồn tại để trông tự
+   * nhiên, chứ chặn hẳn thì đã có sẵn cách đơn giản hơn nhiều.
+   */
+  private pickWinners(
+    pool: { name: string }[],
+    count: number,
+    kind: SpinRoundKind,
+  ): number[] {
+    const allIndexes = pool.map((_, i) => i);
+    if (kind !== SpinRoundKind.MEMBER) {
+      return this.pickDistinctIndexes(allIndexes, count);
+    }
+
+    const restricted = allIndexes.filter((i) => hasReducedOdds(pool[i].name));
+    const normal = allIndexes.filter((i) => !hasReducedOdds(pool[i].name));
+
+    const winners: number[] = [];
+    for (const i of restricted) {
+      if (winners.length >= count) break;
+      if (this.nextUnitRandom() < REDUCED_ODDS_RATE) winners.push(i);
+    }
+
+    let remaining = count - winners.length;
+    if (remaining > 0) {
+      const fromNormal = Math.min(normal.length, remaining);
+      winners.push(...this.pickDistinctIndexes(normal, fromNormal));
+      remaining -= fromNormal;
+    }
+
+    // Hết người thường mà vẫn thiếu suất: chia đều cho những người hạn chế chưa trúng.
+    //
+    // 1% có nghĩa là họ ÍT cơ hội hơn người khác — không còn người khác thì không còn gì để giảm.
+    // Trước đây nhánh này ném lỗi, nên cuối buổi khi danh sách chỉ còn hai người trong
+    // REDUCED_ODDS_NAMES thì 99% số lượt MC bấm quay là bánh xe đứng im kèm lỗi "Chỉ còn 0 mục
+    // hợp lệ". `drawRound` đã chặn count > pool.length nên tới đây chắc chắn đủ người để lấp.
+    if (remaining > 0) {
+      const leftover = restricted.filter((i) => !winners.includes(i));
+      winners.push(...this.pickDistinctIndexes(leftover, remaining));
+    }
+
+    // Trộn toàn bộ: pickDistinctIndexes với count = độ dài chính là Fisher-Yates đầy đủ.
+    return this.pickDistinctIndexes(winners, winners.length);
+  }
+
+  /** Số thực trong [0, 1) lấy từ crypto — không dùng Math.random để kết quả không đoán được. */
+  private nextUnitRandom(): number {
+    return randomInt(0, 2 ** 30) / 2 ** 30;
+  }
+
+  /**
    * Fisher-Yates một phần bằng crypto — không lặp người, không lệch phân phối.
    *
    * Nhận sẵn danh sách ô được phép thắng thay vì kích thước bánh xe, vì hai con số này không
-   * còn bằng nhau từ khi có danh sách chặn: người bị chặn vẫn chiếm một ô trên bánh xe.
+   * còn bằng nhau từ khi có danh sách hạn chế.
    */
   private pickDistinctIndexes(oCoTheThang: number[], count: number): number[] {
     const idx = [...oCoTheThang];
@@ -494,7 +564,7 @@ export class LuckySpinService {
 
   async updateTeam(slug: string, teamId: string, dto: UpdateTeamDto, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    await this.assertTeamInWorkspace(slug, teamId);
+    await this.assertTeamInWorkspace(slug, teamId, actor.id);
     return this.prisma.spinTeam.update({
       where: { id: teamId },
       data: { ...(dto.name !== undefined && { name: dto.name.trim() }) },
@@ -503,7 +573,7 @@ export class LuckySpinService {
 
   async deleteTeam(slug: string, teamId: string, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    await this.assertTeamInWorkspace(slug, teamId);
+    await this.assertTeamInWorkspace(slug, teamId, actor.id);
     const memberCount = await this.prisma.spinMember.count({ where: { team_id: teamId } });
     if (memberCount > 0) {
       throw new BadRequestException('Không thể xóa team còn thành viên. Hãy xóa hoặc chuyển thành viên trước.');
@@ -516,55 +586,75 @@ export class LuckySpinService {
 
   async createMember(slug: string, dto: CreateMemberDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
-    await this.assertTeamInWorkspace(slug, dto.teamId);
+    await this.assertTeamInWorkspace(slug, dto.teamId, actor.id);
     return this.prisma.spinMember.create({
       data: { workspace_id: workspaceId, team_id: dto.teamId, name: dto.name.trim() },
     });
   }
 
   /**
-   * Nhập hàng loạt từ file Excel.
+   * Nhập hàng loạt từ file Excel — THAY danh sách cũ, không cộng dồn.
    *
-   * Chạy trong một transaction: file 500 dòng mà hỏng ở dòng 300 thì không được để lại 299
-   * thành viên nửa vời cho người dùng phải tự dọn.
+   * Bản đầu chỉ createMany nên nhập lại đúng file vừa nhập là danh sách nhân đôi: mỗi người
+   * hiện hai lần trên bánh xe và có gấp đôi cơ hội trúng. Mà sửa vài dòng Excel rồi nhập lại
+   * chính là thao tác hay dùng nhất giữa buổi sự kiện.
+   *
+   * Xoá được vì lược đồ đã tính trước: spin_member_wins chụp sẵn member_name/team_name và FK
+   * để onDelete SetNull, nên biên bản buổi đã quay không đổi.
+   *
+   * Team bị xoá theo (chốt với ban tổ chức 12/08/2026): team vốn TỰ SINH từ chính file này,
+   * giữ lại thì team rỗng không còn ai vẫn nằm trong vòng quay team và vẫn bốc trúng được.
+   *
+   * Chạy trong một transaction: đã xoá xong mà phần ghi hỏng giữa chừng thì sự kiện mất sạch
+   * danh sách, không có đường lùi.
    */
   async bulkCreateMembers(slug: string, dto: BulkCreateMembersDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
 
-    return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.spinTeam.findMany({ where: { workspace_id: workspaceId } });
-      const teamIdByLowerName = new Map(existing.map((t) => [t.name.toLowerCase(), t.id]));
+    // Lọc TRƯỚC khi đụng vào DB: file trắng hoặc file toàn dòng thiếu cột không được phép
+    // quét sạch danh sách đang chạy. Chọn nhầm file giữa buổi là chuyện có thật.
+    const rows = dto.members
+      .map((r) => ({ name: r.name.trim(), teamName: r.teamName.trim() }))
+      .filter((r) => r.name && r.teamName);
 
+    if (rows.length === 0) {
+      return { createdMembers: 0, createdTeams: 0, deletedMembers: 0, deletedTeams: 0 };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Member trước, team sau: team_id là SetNull nên đảo lại vẫn chạy, nhưng xoá member
+      // trước thì không có khoảnh khắc nào tồn tại member mồ côi giữa hai lệnh.
+      const { count: deletedMembers } = await tx.spinMember.deleteMany({ where: { workspace_id: workspaceId } });
+      const { count: deletedTeams } = await tx.spinTeam.deleteMany({ where: { workspace_id: workspaceId } });
+
+      // Dựng lại bảng tên từ ĐẦU, không đọc lại team cũ: chúng vừa bị xoá ngay trên.
+      const teamIdByLowerName = new Map<string, string>();
       let createdTeams = 0;
       const membersData: Prisma.SpinMemberCreateManyInput[] = [];
 
-      for (const row of dto.members) {
-        const name = row.name.trim();
-        const teamName = row.teamName.trim();
-        if (!name || !teamName) continue;
-
-        let teamId = teamIdByLowerName.get(teamName.toLowerCase());
+      for (const row of rows) {
+        let teamId = teamIdByLowerName.get(row.teamName.toLowerCase());
         if (!teamId) {
           const created = await tx.spinTeam.create({
-            data: { workspace_id: workspaceId, name: teamName },
+            data: { workspace_id: workspaceId, name: row.teamName },
             select: { id: true },
           });
           teamId = created.id;
-          teamIdByLowerName.set(teamName.toLowerCase(), teamId);
+          teamIdByLowerName.set(row.teamName.toLowerCase(), teamId);
           createdTeams++;
         }
-        membersData.push({ workspace_id: workspaceId, team_id: teamId, name });
+        membersData.push({ workspace_id: workspaceId, team_id: teamId, name: row.name });
       }
 
-      if (membersData.length > 0) await tx.spinMember.createMany({ data: membersData });
-      return { createdMembers: membersData.length, createdTeams };
+      await tx.spinMember.createMany({ data: membersData });
+      return { createdMembers: membersData.length, createdTeams, deletedMembers, deletedTeams };
     });
   }
 
   async updateMember(slug: string, memberId: string, dto: UpdateMemberDto, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    await this.assertMemberInWorkspace(slug, memberId);
-    if (dto.teamId) await this.assertTeamInWorkspace(slug, dto.teamId);
+    await this.assertMemberInWorkspace(slug, memberId, actor.id);
+    if (dto.teamId) await this.assertTeamInWorkspace(slug, dto.teamId, actor.id);
     return this.prisma.spinMember.update({
       where: { id: memberId },
       data: {
@@ -576,7 +666,7 @@ export class LuckySpinService {
 
   async deleteMember(slug: string, memberId: string, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    await this.assertMemberInWorkspace(slug, memberId);
+    await this.assertMemberInWorkspace(slug, memberId, actor.id);
     // Lịch sử giữ lại: member_id chuyển thành null nhờ onDelete SetNull, tên đã được chụp sẵn.
     await this.prisma.spinMember.delete({ where: { id: memberId } });
     return { deleted: true };
@@ -591,19 +681,30 @@ export class LuckySpinService {
     });
   }
 
+  /**
+   * Nhập quà từ Excel — THAY danh sách cũ, cùng lý do đã ghi ở bulkCreateMembers.
+   *
+   * Lịch sử trao quà an toàn: spin_gift_awards chụp sẵn gift_name và FK là SetNull.
+   */
   async bulkCreateGifts(slug: string, dto: BulkCreateGiftsDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
     const data = dto.gifts
       .filter((g) => g.name.trim() && g.total > 0)
       .map((g) => ({ workspace_id: workspaceId, name: g.name.trim(), total: g.total, remaining: g.total }));
 
-    if (data.length > 0) await this.prisma.spinGift.createMany({ data });
-    return { createdGifts: data.length };
+    // File trắng / toàn dòng hỏng thì giữ nguyên danh sách đang chạy — xem ghi chú ở bulkCreateMembers.
+    if (data.length === 0) return { createdGifts: 0, deletedGifts: 0 };
+
+    return this.prisma.$transaction(async (tx) => {
+      const { count: deletedGifts } = await tx.spinGift.deleteMany({ where: { workspace_id: workspaceId } });
+      await tx.spinGift.createMany({ data });
+      return { createdGifts: data.length, deletedGifts };
+    });
   }
 
   async updateGift(slug: string, giftId: string, dto: UpdateGiftDto, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    const gift = await this.assertGiftInWorkspace(slug, giftId);
+    const gift = await this.assertGiftInWorkspace(slug, giftId, actor.id);
     const total = dto.total ?? gift.total;
     // Còn lại không bao giờ vượt tổng, kể cả khi người dùng sửa tổng xuống thấp hơn.
     const remaining = Math.min(dto.remaining ?? gift.remaining, total);
@@ -616,7 +717,7 @@ export class LuckySpinService {
 
   async deleteGift(slug: string, giftId: string, actor: SpinActor) {
     await this.assertControl(slug, actor);
-    await this.assertGiftInWorkspace(slug, giftId);
+    await this.assertGiftInWorkspace(slug, giftId, actor.id);
     await this.prisma.spinGift.delete({ where: { id: giftId } });
     return { deleted: true };
   }
@@ -685,7 +786,7 @@ export class LuckySpinService {
    */
   async awardGift(slug: string, dto: AwardGiftDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
-    const gift = await this.assertGiftInWorkspace(slug, dto.giftId);
+    const gift = await this.assertGiftInWorkspace(slug, dto.giftId, actor.id);
 
     return this.prisma.$transaction(async (tx) => {
       const taken = await tx.spinGift.updateMany({
@@ -858,22 +959,25 @@ export class LuckySpinService {
 
   /* ──────────────────────────── Nội bộ ───────────────────────────── */
 
-  private async assertTeamInWorkspace(slug: string, teamId: string) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+  // Ba hàm dưới đây là chỗ chặn cách ly quan trọng nhất: chúng ngăn tài khoản này sửa hay xoá
+  // dữ liệu của tài khoản kia bằng cách đoán id. Bỏ sót `ownerId` ở một hàm là thủng cả module.
+
+  private async assertTeamInWorkspace(slug: string, teamId: string, ownerId: string) {
+    const workspaceId = await this.resolveWorkspaceId(slug, ownerId);
     const team = await this.prisma.spinTeam.findFirst({ where: { id: teamId, workspace_id: workspaceId } });
     if (!team) throw new NotFoundException('Team không thuộc vòng quay này');
     return team;
   }
 
-  private async assertMemberInWorkspace(slug: string, memberId: string) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+  private async assertMemberInWorkspace(slug: string, memberId: string, ownerId: string) {
+    const workspaceId = await this.resolveWorkspaceId(slug, ownerId);
     const member = await this.prisma.spinMember.findFirst({ where: { id: memberId, workspace_id: workspaceId } });
     if (!member) throw new NotFoundException('Thành viên không thuộc vòng quay này');
     return member;
   }
 
-  private async assertGiftInWorkspace(slug: string, giftId: string) {
-    const workspaceId = await this.resolveWorkspaceId(slug);
+  private async assertGiftInWorkspace(slug: string, giftId: string, ownerId: string) {
+    const workspaceId = await this.resolveWorkspaceId(slug, ownerId);
     const gift = await this.prisma.spinGift.findFirst({ where: { id: giftId, workspace_id: workspaceId } });
     if (!gift) throw new NotFoundException('Quà không thuộc vòng quay này');
     return gift;

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookAiClientService } from './facebook-ai-client.service';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { resolveViewCount } from './resolve-view-count';
 import { extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
 
 const STALE_LOCK_MINUTES = 30;
@@ -121,7 +122,7 @@ export class FacebookOwnedPagesService {
 
   // ─── Upsert 1 batch video vào OwnedVideoContent ──────────────────────────
 
-  private async upsertVideos(managedPageId: bigint, videos: { post_id: string; caption: string; published_at: string; permalink_url: string; thumbnail_url: string; video_url: string; view_count: number; like_count: number; comment_count: number; share_count: number; raw_data: any }[]): Promise<{ created: number; updated: number }> {
+  private async upsertVideos(managedPageId: bigint, videos: { post_id: string; caption: string; published_at: string; permalink_url: string; thumbnail_url: string; video_url: string; view_count: number | null; like_count: number; comment_count: number; share_count: number; raw_data: any }[]): Promise<{ created: number; updated: number }> {
     let created = 0;
     let updated = 0;
     const now = new Date();
@@ -139,7 +140,10 @@ export class FacebookOwnedPagesService {
         permalink_url: v.permalink_url || '',
         thumbnail_url: v.thumbnail_url || '',
         video_url: v.video_url || '',
-        view_count: BigInt(v.view_count || 0),
+        // null từ AI = không lấy được lượt xem, KHÁC 0 = thật sự không ai xem. Giữ số cũ thay vì
+        // ghi 0 đè lên — xem resolve-view-count.ts. Trước đây `v.view_count || 0` gộp hai thứ
+        // làm một và sync mỗi sáng xoá sạch view của cả kho.
+        view_count: resolveViewCount(v.view_count, existing?.view_count),
         like_count: v.like_count || 0,
         comment_count: v.comment_count || 0,
         share_count: v.share_count || 0,
@@ -329,6 +333,7 @@ export class FacebookOwnedPagesService {
     }
 
     let totalUpdated = 0;
+    let failed = 0;
     for (const { page, videos } of pageGroups.values()) {
       if (!page.page_access_token) {
         this.logger.warn(`⚠️ Page ${page.name} chưa có access token`);
@@ -336,27 +341,38 @@ export class FacebookOwnedPagesService {
       }
 
       const postIds = videos.map((v) => v.post_id);
-      const { metrics } = await this.aiClient.fetchMetricsRefresh(page.page_access_token, postIds);
 
-      for (const v of videos) {
-        const m = metrics[v.post_id];
-        if (!m) continue;
-        await this.prisma.video_management_ownedvideocontent.update({
-          where: { id: v.id },
-          data: {
-            view_count: BigInt(m.view_count ?? Number(v.view_count)),
-            like_count: m.like_count ?? v.like_count,
-            comment_count: m.comment_count ?? v.comment_count,
-            share_count: m.share_count ?? v.share_count,
-            updated_at: new Date(),
-          },
-        });
-        totalUpdated++;
+      // Bọc TỪNG page, giống backfillAllPages/deltaSyncAllPages ngay phía trên.
+      // Thiếu try/catch ở đây thì một token hỏng (hay một cú 502 của AI service) làm
+      // `throw` bay khỏi vòng lặp và mọi page phía sau không được cập nhật — bảng số
+      // trang tổng quan đứng im mà trông y như "kỳ này ít view", không ai biết là hỏng.
+      try {
+        const { metrics } = await this.aiClient.fetchMetricsRefresh(page.page_access_token, postIds);
+
+        for (const v of videos) {
+          const m = metrics[v.post_id];
+          if (!m) continue;
+          await this.prisma.video_management_ownedvideocontent.update({
+            where: { id: v.id },
+            data: {
+              view_count: BigInt(m.view_count ?? Number(v.view_count)),
+              like_count: m.like_count ?? v.like_count,
+              comment_count: m.comment_count ?? v.comment_count,
+              share_count: m.share_count ?? v.share_count,
+              updated_at: new Date(),
+            },
+          });
+          totalUpdated++;
+        }
+        this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
+      } catch (err: any) {
+        failed++;
+        this.logger.error(`❌ [METRICS] ${page.name}: ${err.message}`);
       }
-      this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
     }
 
-    this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics`);
+    const phanLoi = failed > 0 ? ` (${failed} page lỗi)` : '';
+    this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics${phanLoi}`);
     return { updated: totalUpdated, total: recentVideos.length };
   }
 
