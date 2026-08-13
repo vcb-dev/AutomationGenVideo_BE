@@ -11,6 +11,10 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
   function build(teamsLed: any[]) {
     const push: any = {};
     const videoService: any = {};
+    // linkStats chỉ được dùng ở nhánh refresh chỉ số link đã đăng, không nằm trong đường
+    // đi của getDashboard — nhưng vẫn PHẢI truyền vì nó là tham số constructor thứ 4.
+    // Thiếu nó thì suite hỏng ngay từ khâu biên dịch (TS2554), không phải lúc chạy.
+    const linkStats: any = {};
     const prisma: any = {
       team: { findMany: jest.fn(async () => teamsLed) },
       task: {
@@ -18,8 +22,12 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
         count: jest.fn(async () => 0),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
+      trafficReport: { groupBy: jest.fn(async () => []) },
+      revenueReport: { groupBy: jest.fn(async () => []) },
+      contentLine: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, videoService, push);
+    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats);
     return { service, prisma };
   }
 
@@ -69,6 +77,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       tasks: { total: 0 },
       members: [],
       kpi: null,
+      video_by_line: [],
     });
   });
 

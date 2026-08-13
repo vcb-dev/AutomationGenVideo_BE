@@ -43,6 +43,55 @@ interface TiktokProfileVideoRow {
 export class TiktokScraperReadService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── Lookalike Creator: kênh khác trùng hashtag ────────────────────────────
+  private static readonly TOP_HASHTAGS_PER_PROFILE = 15;
+  private static readonly MIN_HASHTAG_OVERLAP = 2;
+  private static readonly MAX_LOOKALIKE_RESULTS = 10;
+
+  async lookalikes(profileId: bigint) {
+    const topTags = await this.prisma.$queryRaw<{ hashtag: string; cnt: bigint }[]>`
+      SELECT h AS hashtag, COUNT(*) AS cnt
+      FROM scraper_tiktok_profile_videos, unnest(hashtags) AS h
+      WHERE profile_id = ${profileId}
+      GROUP BY h ORDER BY cnt DESC LIMIT ${TiktokScraperReadService.TOP_HASHTAGS_PER_PROFILE}
+    `;
+    if (topTags.length === 0) return { lookalikes: [] };
+    const tagList = topTags.map((t) => t.hashtag);
+
+    const overlaps = await this.prisma.$queryRaw<{ profile_id: bigint; overlap_count: bigint }[]>`
+      SELECT v.profile_id AS profile_id, COUNT(DISTINCT h) AS overlap_count
+      FROM scraper_tiktok_profile_videos v, unnest(v.hashtags) AS h
+      WHERE h IN (${Prisma.join(tagList)}) AND v.profile_id <> ${profileId}
+      GROUP BY v.profile_id
+      HAVING COUNT(DISTINCT h) >= ${TiktokScraperReadService.MIN_HASHTAG_OVERLAP}
+      ORDER BY overlap_count DESC
+      LIMIT ${TiktokScraperReadService.MAX_LOOKALIKE_RESULTS}
+    `;
+    if (overlaps.length === 0) return { lookalikes: [] };
+
+    const profiles = await this.prisma.scraperTikTokProfile.findMany({
+      where: { id: { in: overlaps.map((o) => o.profile_id) } },
+    });
+    const profileMap = new Map(profiles.map((p) => [p.id.toString(), p]));
+
+    return {
+      lookalikes: overlaps
+        .map((o) => {
+          const p = profileMap.get(o.profile_id.toString());
+          if (!p) return null;
+          return {
+            id: Number(p.id),
+            username: p.username,
+            nickname: p.nickname,
+            avatar_url: p.avatar_drive_url || p.avatar_url || '',
+            followers_count: Number(p.followers_count),
+            overlap_count: Number(o.overlap_count),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null),
+    };
+  }
+
   async listVideos(params: {
     page?: string; page_size?: string; q?: string; min_plays?: string;
     date_from?: string; date_to?: string; sort?: string; search_keyword?: string;
@@ -163,7 +212,7 @@ export class TiktokScraperReadService {
     ];
 
     const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { followers_count: 'desc' as const };
-    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy];
+    const orderBy = [{ is_bookmarked: 'desc' as const }, secondaryOrderBy, { id: 'desc' as const }];
 
     const [total, paginated] = await Promise.all([
       this.prisma.scraperTikTokProfile.count({ where }),

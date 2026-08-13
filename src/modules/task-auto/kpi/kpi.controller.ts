@@ -14,7 +14,11 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { Roles } from "../../../common/decorators/roles.decorator";
 import { TaskAutoKpiService } from "./kpi.service";
-import { UpsertTeamKpiDto, UpsertEditorKpiDto } from "./kpi.dto";
+import {
+  UpsertTeamKpiDto,
+  UpsertEditorKpiDto,
+  UpsertEditorDailyKpiDto,
+} from "./kpi.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
@@ -45,6 +49,48 @@ export class TaskAutoKpiController {
   @ApiOperation({ summary: "Delete team KPI" })
   deleteTeamKpi(@Param("id") id: string) {
     return this.kpi.deleteTeamKpi(id);
+  }
+
+  // ── Editor Daily KPI ──────────────────────────────────────────────────────
+  // Khai báo trước "kpi/editors/:id" để path tĩnh "daily" không bị nuốt bởi :id.
+
+  @Get("kpi/editors/daily")
+  @ApiOperation({ summary: "Get editor daily KPIs (lọc theo ngày/khoảng/team/user)" })
+  getEditorDailyKpis(
+    @Query("date") date?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("team_id") teamId?: string,
+    @Query("user_id") userId?: string,
+  ) {
+    return this.kpi.getEditorDailyKpis({
+      date,
+      from,
+      to,
+      team_id: teamId,
+      user_id: userId,
+    });
+  }
+
+  @Post("kpi/editors/daily")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({
+    summary: "Upsert editor daily KPIs theo lô (team + ngày; LEADER: team mình)",
+  })
+  upsertEditorDailyKpis(
+    @Body() dto: UpsertEditorDailyKpiDto,
+    @Request() req: any,
+  ) {
+    return this.kpi.upsertEditorDailyKpis(dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("kpi/editors/daily/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Delete editor daily KPI" })
+  deleteEditorDailyKpi(@Param("id") id: string) {
+    return this.kpi.deleteEditorDailyKpi(id);
   }
 
   // ── Editor KPI ────────────────────────────────────────────────────────────

@@ -293,6 +293,12 @@ export class LarkController {
         return this.larkService.submitTrafficReport({ ...data, email: req.user.email, name: req.user.full_name });
     }
 
+    @Post('revenue-report')
+    @ApiOperation({ summary: 'Submit daily revenue report' })
+    async submitRevenueReport(@Body() data: any, @Request() req: any) {
+        return this.larkService.submitRevenueReport({ ...data, email: req.user.email, name: req.user.full_name });
+    }
+
     @Post('upload-evidence')
     @ApiOperation({ summary: 'Upload evidence images to Lark Drive and return file tokens' })
     @UseInterceptors(FilesInterceptor('files', 5, {

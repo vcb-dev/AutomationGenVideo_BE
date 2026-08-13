@@ -37,6 +37,7 @@ import {
   UpdateVideoScriptDto,
   TranslateVideoScriptDto,
   ReviewContentApprovalDto,
+  QueryContentApprovalDto,
 } from "./task.dto";
 
 @ApiTags("task-auto")
@@ -119,6 +120,24 @@ export class TaskAutoTasksController {
     return this.tasks.updatePublishedLinks(
       id,
       dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
+  }
+
+  @Post("tasks/:id/published-links/:linkId/refresh-stats")
+  @ApiOperation({
+    summary:
+      "Làm mới thủ công số liệu tương tác (views/likes/comments/shares) cho 1 link đã nộp",
+  })
+  refreshPublishedLinkStats(
+    @Param("id") id: string,
+    @Param("linkId") linkId: string,
+    @Request() req: any,
+  ) {
+    return this.tasks.refreshPublishedLinkStats(
+      id,
+      linkId,
       req.user.id,
       req.user.roles ?? [],
     );
@@ -251,6 +270,14 @@ export class TaskAutoTasksController {
   }
 
   // ── Content Approval ─────────────────────────────────────────────────────
+
+  @Get("content-approvals")
+  @ApiOperation({
+    summary: "List content-approval requests (mặc định PENDING) — tab 'Content chờ duyệt'",
+  })
+  listContentApprovals(@Query() q: QueryContentApprovalDto) {
+    return this.contentApproval.list(q);
+  }
 
   @Get("tasks/:id/content-approval")
   @ApiOperation({

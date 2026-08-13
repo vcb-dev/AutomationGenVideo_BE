@@ -6,6 +6,8 @@ import {
   IsArray,
   ValidateNested,
   IsEnum,
+  Matches,
+  ArrayNotEmpty,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -125,4 +127,37 @@ export class UpsertEditorKpiDto {
   @ValidateNested({ each: true })
   @Type(() => EditorKpiAllocationDto)
   allocations: EditorKpiAllocationDto[];
+}
+
+// ─── Editor Daily KPI ─────────────────────────────────────────────────────────
+
+export class EditorDailyKpiEntryDto {
+  @ApiProperty() @IsString() user_id: string;
+
+  @ApiProperty({
+    minimum: 0,
+    description: "KPI ngày (số video); 0 = chưa set → fallback logic cũ",
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  target: number;
+
+  @ApiPropertyOptional() @IsString() @IsOptional() note?: string;
+}
+
+export class UpsertEditorDailyKpiDto {
+  @ApiProperty() @IsString() team_id: string;
+
+  @ApiProperty({ description: "Ngày áp dụng, định dạng YYYY-MM-DD" })
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: "date phải có dạng YYYY-MM-DD" })
+  date: string;
+
+  @ApiProperty({ type: [EditorDailyKpiEntryDto] })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ValidateNested({ each: true })
+  @Type(() => EditorDailyKpiEntryDto)
+  entries: EditorDailyKpiEntryDto[];
 }

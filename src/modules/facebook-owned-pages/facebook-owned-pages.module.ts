@@ -23,5 +23,8 @@ import { FacebookOwnedPagesCronService } from './facebook-owned-pages-cron.servi
   ],
   controllers: [FacebookOwnedPagesController],
   providers: [FacebookOwnedPagesService, FacebookOwnedPagesReadService, FacebookAiClientService, FacebookOwnedPagesCronService],
+  // FacebookAiClientService được export để module owned-video-weekly-report làm mới chỉ số cho
+  // đúng lô video sắp báo cáo (fetchMetricsRefresh) mà không phải dựng lại client riêng.
+  exports: [FacebookOwnedPagesService, FacebookAiClientService],
 })
 export class FacebookOwnedPagesModule {}

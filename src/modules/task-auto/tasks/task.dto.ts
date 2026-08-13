@@ -72,9 +72,16 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string
   @ApiPropertyOptional() @IsString() @IsOptional() month?: string        // format: 2025-06
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_date?: string // format: 2025-06-17
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_from?: string // format: 2025-06-17
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string   // format: 2025-06-17
 
   @ApiPropertyOptional({ enum: ['auto', 'extra'] })
   @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
+
+  // Kanban cần task vừa đổi cột (đổi status) nổi lên đầu danh sách thay vì kẹt theo created_at
+  // như view bảng — mặc định giữ nguyên created_at để không đổi hành vi Table view hiện có.
+  @ApiPropertyOptional({ enum: ['created_at', 'updated_at'] })
+  @IsIn(['created_at', 'updated_at']) @IsOptional() sort?: 'created_at' | 'updated_at'
 
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
@@ -140,6 +147,20 @@ export class ReviewContentApprovalDto {
   @IsEnum(['APPROVED', 'REJECTED']) action: 'APPROVED' | 'REJECTED'
 
   @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
+}
+
+export class QueryContentApprovalDto {
+  @ApiPropertyOptional({ enum: ['PENDING', 'APPROVED', 'REJECTED'] })
+  @IsIn(['PENDING', 'APPROVED', 'REJECTED']) @IsOptional() status?: 'PENDING' | 'APPROVED' | 'REJECTED'
+  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
+
+  @ApiPropertyOptional({ default: 1 })
+  @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
+
+  @ApiPropertyOptional({ default: 10 })
+  @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 10
 }
 
 export class TranslateVideoScriptDto {

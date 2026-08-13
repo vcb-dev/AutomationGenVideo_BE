@@ -5,9 +5,11 @@ import {
   BadRequestException,
   Logger,
 } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
+import { TaskPublishedLinkStatsService } from "./task-published-link-stats.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -16,6 +18,7 @@ import {
   ReviewTaskDto,
   UpdatePublishedLinksDto,
 } from "./task.dto";
+import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -58,6 +61,7 @@ export class TaskAutoTasksService {
     private prisma: PrismaService,
     private videoService: TaskAutoVideoService,
     private push: PushService,
+    private linkStats: TaskPublishedLinkStatsService,
   ) {}
 
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
@@ -552,11 +556,30 @@ export class TaskAutoTasksService {
     if (q.assignee_id) where.assignee_id = q.assignee_id;
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
-    if (q.deadline_date) {
-      where.deadline = {
-        gte: new Date(`${q.deadline_date}T00:00:00+07:00`),
-        lte: new Date(`${q.deadline_date}T23:59:59.999+07:00`),
-      };
+    if (q.deadline_from || q.deadline_to) {
+      // Khoảng ngày: mặc định mở về quá khứ/tương lai nếu chỉ truyền 1 đầu mốc.
+      const rangeStart = q.deadline_from
+        ? new Date(`${q.deadline_from}T00:00:00+07:00`)
+        : undefined;
+      const rangeEnd = q.deadline_to
+        ? new Date(`${q.deadline_to}T23:59:59.999+07:00`)
+        : undefined;
+      const bounds: { gte?: Date; lte?: Date } = {};
+      if (rangeStart) bounds.gte = rangeStart;
+      if (rangeEnd) bounds.lte = rangeEnd;
+      // Task có deadline rơi vào khoảng lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+      where.OR = [
+        { deadline: bounds },
+        { deadline: null, created_at: bounds },
+      ];
+    } else if (q.deadline_date) {
+      const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
+      const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
+      // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+      where.OR = [
+        { deadline: { gte: dayStart, lte: dayEnd } },
+        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+      ];
     } else if (q.month) {
       const start = new Date(`${q.month}-01`);
       const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
@@ -574,7 +597,7 @@ export class TaskAutoTasksService {
       this.prisma.task.findMany({
         where,
         include: this.taskListInclude,
-        orderBy: [{ created_at: "desc" }],
+        orderBy: [{ [q.sort ?? "created_at"]: "desc" }],
         skip,
         take: limit,
       }),
@@ -987,7 +1010,7 @@ export class TaskAutoTasksService {
   ) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { status: true, assignee_id: true },
+      select: { status: true, assignee_id: true, published_links: true },
     });
     if (!task) throw new NotFoundException("Task not found");
     if (task.status !== "APPROVED") {
@@ -1009,11 +1032,136 @@ export class TaskAutoTasksService {
       }))
       .filter((l) => l.platform && l.url);
 
+    // stats là dữ liệu do server tính (không nhận từ client) — chỉ giữ lại stats cũ
+    // nếu link không đổi (cùng id, platform, url); link mới hoặc bị sửa url/platform
+    // thì fetch lại ngay để hiển thị số liệu mới nhất cạnh link.
+    const oldLinks = Array.isArray(task.published_links)
+      ? (task.published_links as any[])
+      : [];
+    const oldById = new Map(oldLinks.map((l) => [l.id, l]));
+
+    const linksWithStats = await Promise.all(
+      links.map(async (l) => {
+        const prev = oldById.get(l.id);
+        if (prev && prev.url === l.url && prev.platform === l.platform && prev.stats) {
+          return { ...l, stats: prev.stats };
+        }
+        const stats = await this.linkStats.fetchStatsForLink(l.platform, l.url);
+        return { ...l, stats };
+      }),
+    );
+
     return this.prisma.task.update({
       where: { id },
-      data: { published_links: links },
+      data: { published_links: linksWithStats },
       include: this.taskDetailInclude,
     });
+  }
+
+  // Làm mới thủ công số liệu tương tác cho 1 link đã nộp (nút "Làm mới" ở FE).
+  async refreshPublishedLinkStats(
+    id: string,
+    linkId: string,
+    userId: string,
+    roles: string[],
+  ) {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { assignee_id: true, published_links: true },
+    });
+    if (!task) throw new NotFoundException("Task not found");
+
+    const isPrivileged = roles.some((r) =>
+      ["ADMIN", "MANAGER", "LEADER"].includes(r),
+    );
+    if (task.assignee_id !== userId && !isPrivileged) {
+      throw new ForbiddenException("Không có quyền làm mới số liệu cho task này");
+    }
+
+    const links = Array.isArray(task.published_links)
+      ? (task.published_links as any[])
+      : [];
+    const target = links.find((l) => l.id === linkId);
+    if (!target) throw new NotFoundException("Không tìm thấy link");
+
+    const stats = await this.linkStats.fetchStatsForLink(target.platform, target.url);
+    const next = links.map((l) => (l.id === linkId ? { ...l, stats } : l));
+
+    return this.prisma.task.update({
+      where: { id },
+      data: { published_links: next },
+      include: this.taskDetailInclude,
+    });
+  }
+
+  // Tự động refresh số liệu tương tác (views/likes/comments/shares) mỗi sáng cho các
+  // link bài đăng thuộc task được tạo trong tháng hiện tại. Lệch giờ 8:15 (thay vì
+  // đúng 8:00) để tránh dồn tải cùng lúc với cron Douyin/Xiaohongshu (cũng 8h sáng)
+  // — 2 cron độc lập, không chia sẻ resource nên chỉ là tránh dồn tải, không bắt buộc.
+  // Platform chưa hỗ trợ (chưa qua TaskPublishedLinkStatsService) trả 'unsupported'
+  // và bị bỏ qua êm — thêm platform mới sau này không cần sửa gì ở đây.
+  @Cron("0 15 8 * * *", {
+    name: "task-published-link-stats-refresh",
+    timeZone: "Asia/Ho_Chi_Minh",
+  })
+  async refreshMonthlyPublishedLinkStats() {
+    try {
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+      const tasks = await this.prisma.task.findMany({
+        where: { created_at: { gte: monthStart, lt: monthEnd } },
+        select: { id: true, published_links: true },
+      });
+
+      const withLinks = tasks.filter(
+        (t) => Array.isArray(t.published_links) && t.published_links.length > 0,
+      );
+      if (!withLinks.length) {
+        this.logger.log(
+          "[LINK-STATS-CRON] Không có task nào trong tháng có link cần refresh",
+        );
+        return;
+      }
+
+      let linkCount = 0;
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const task of withLinks) {
+        const links = task.published_links as any[];
+        const next: any[] = [];
+        for (const link of links) {
+          linkCount++;
+          try {
+            const stats = await this.linkStats.fetchStatsForLink(
+              link.platform,
+              link.url,
+            );
+            next.push({ ...link, stats });
+            if (stats.status === "success") successCount++;
+            else if (stats.status === "failed") failCount++;
+          } catch (err: any) {
+            next.push(link);
+            failCount++;
+            this.logger.warn(
+              `[LINK-STATS-CRON] Task ${task.id} link ${link.id} lỗi: ${err.message}`,
+            );
+          }
+        }
+        await this.prisma.task.update({
+          where: { id: task.id },
+          data: { published_links: next },
+        });
+      }
+
+      this.logger.log(
+        `[LINK-STATS-CRON] Xong: ${withLinks.length} task, ${linkCount} link (${successCount} OK, ${failCount} lỗi/unsupported)`,
+      );
+    } catch (err: any) {
+      this.logger.warn(`[LINK-STATS-CRON] failed: ${err.message}`);
+    }
   }
 
   /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
@@ -1036,13 +1184,15 @@ export class TaskAutoTasksService {
     roles: string[],
     dateFrom?: string,
     dateTo?: string,
+    /** "YYYY-MM" — tháng báo cáo cho leader dashboard (mặc định tháng hiện tại nếu bỏ trống/sai định dạng). */
+    month?: string,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard(range);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month);
     return this.getPersonalDashboard(userId);
   }
 
@@ -1080,8 +1230,11 @@ export class TaskAutoTasksService {
       }),
       this.prisma.task.count({
         where: {
-          deadline: { gte: todayStart, lt: todayEnd },
           status: { notIn: ["APPROVED", "CANCELLED"] },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
         },
       }),
       this.prisma.task.count({
@@ -1120,11 +1273,19 @@ export class TaskAutoTasksService {
   private async getLeaderDashboard(
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
+    month?: string,
   ) {
     const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // Tháng báo cáo do leader chọn (bộ lọc tháng) — mặc định về tháng thực tế nếu bỏ trống/sai định dạng.
+    const currentMonth = month && /^\d{4}-\d{2}$/.test(month) ? month : realCurrentMonth;
+    const [selYear, selMonthNum] = currentMonth.split("-").map(Number);
+    const monthStart = new Date(selYear, selMonthNum - 1, 1);
+    const monthEnd = new Date(selYear, selMonthNum, 1);
+    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc tháng, vì đây là
+    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một tháng đã qua.
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
     // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
@@ -1148,6 +1309,7 @@ export class TaskAutoTasksService {
         tasks: { total: 0 },
         members: [],
         kpi: null,
+        video_by_line: [],
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1158,6 +1320,9 @@ export class TaskAutoTasksService {
     }
     const memberRows = Array.from(memberByUserId.values());
     const memberIds = memberRows.map((m) => m.user_id);
+    const memberEmails = memberRows
+      .map((m) => m.user?.email?.toLowerCase().trim())
+      .filter((e): e is string => !!e);
 
     const [
       tasksByStatus,
@@ -1165,6 +1330,13 @@ export class TaskAutoTasksService {
       editorKpis,
       monthlyTeamApproved,
       monthlyMemberApproved,
+      memberAssignedToday,
+      memberApprovedToday,
+      memberTrafficMonth,
+      memberRevenueMonth,
+      teamApprovedByContentLine,
+      contentLines,
+      manualDailyKpis,
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
@@ -1202,6 +1374,76 @@ export class TaskAutoTasksService {
         },
         _count: { id: true },
       }),
+      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào hôm nay; task chưa có deadline thì
+      // tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal Dashboard.
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: { notIn: ["CANCELLED"] },
+          OR: [
+            { deadline: { gte: todayStart, lt: todayEnd } },
+            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+          ],
+        },
+        _count: { id: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      // Traffic báo cáo hằng ngày (TrafficReport, tách biệt task-auto) — khớp theo email vì field
+      // `team` trên TrafficReport là text tự do, không đảm bảo khớp tên với Team.name của task-auto.
+      memberEmails.length > 0
+        ? this.prisma.trafficReport.groupBy({
+            by: ["email"],
+            where: {
+              email: { in: memberEmails, mode: "insensitive" as any },
+              date: { gte: monthStart, lt: monthEnd },
+            },
+            _sum: { total_traffic: true },
+          })
+        : Promise.resolve([]),
+      // Doanh thu báo cáo hằng ngày (RevenueReport, cùng cơ chế với TrafficReport) — khớp theo email.
+      memberEmails.length > 0
+        ? this.prisma.revenueReport.groupBy({
+            by: ["email"],
+            where: {
+              email: { in: memberEmails, mode: "insensitive" as any },
+              date: { gte: monthStart, lt: monthEnd },
+            },
+            _sum: { total_revenue: true },
+          })
+        : Promise.resolve([]),
+      // "TEAM - Số video theo tuyến": số task đã duyệt trong tháng của cả team, gộp theo tuyến
+      // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
+      // không thuộc tuyến nào.
+      this.prisma.task.groupBy({
+        by: ["content_line_id"],
+        where: {
+          team_id: { in: teamIds },
+          content_line_id: { not: null },
+          status: "APPROVED",
+          reviewed_at: { gte: monthStart, lt: monthEnd },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
+      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      this.prisma.editorDailyKpi.findMany({
+        where: {
+          user_id: { in: memberIds },
+          team_id: { in: teamIds },
+          date: dailyKpiDate(vietnamDateString(now)),
+          target: { gt: 0 },
+        },
+        select: { user_id: true, target: true },
+      }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1216,14 +1458,49 @@ export class TaskAutoTasksService {
     const kpiApprovedByUser = Object.fromEntries(
       monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
     );
+    const assignedTodayByUser = Object.fromEntries(
+      memberAssignedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const approvedTodayByUser = Object.fromEntries(
+      memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    // user → KPI ngày set tay hôm nay (cộng dồn nếu thuộc nhiều team của cùng leader)
+    const manualDayTargetByUser: Record<string, number> = {};
+    for (const dk of manualDailyKpis) {
+      manualDayTargetByUser[dk.user_id] =
+        (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
+    }
+    const trafficMonthByEmail = Object.fromEntries(
+      memberTrafficMonth.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_traffic ?? 0n),
+      ]),
+    );
+    const revenueMonthByEmail = Object.fromEntries(
+      memberRevenueMonth.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_revenue ?? 0n),
+      ]),
+    );
+
+    const approvedCountByContentLineId = Object.fromEntries(
+      teamApprovedByContentLine.map((r) => [r.content_line_id as string, r._count.id]),
+    );
+    // Chỉ liệt kê tuyến A1-A5 (đúng thứ tự tên) — bỏ qua các ContentLine khác không thuộc mô hình
+    // này để không làm loãng biểu đồ "Số video theo tuyến".
+    const videoByLine = contentLines
+      .filter((cl) => /^A[1-5]$/.test(cl.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((cl) => ({ line: cl.name, count: approvedCountByContentLineId[cl.id] ?? 0 }));
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
     const members = memberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
+      const email = m.user?.email ?? "";
       return {
         user_id: m.user_id,
         full_name: m.user?.full_name ?? "",
-        email: m.user?.email ?? "",
+        email,
         pending: memberStats[m.user_id]?.["pending"] ?? 0,
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
@@ -1233,6 +1510,18 @@ export class TaskAutoTasksService {
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
+        /** KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task có
+         * deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) như cũ. */
+        kpi_day_target:
+          manualDayTargetByUser[m.user_id] ??
+          assignedTodayByUser[m.user_id] ??
+          0,
+        /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
+        kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
+        /** Tổng traffic tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
+        traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
+        /** Tổng doanh thu tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
+        revenue_month: revenueMonthByEmail[email.toLowerCase().trim()] ?? 0,
       };
     });
 
@@ -1267,6 +1556,267 @@ export class TaskAutoTasksService {
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
       },
+      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo tuyến nội dung A1-A5. */
+      video_by_line: videoByLine,
+    };
+  }
+
+  /** "YYYY-MM" của mọi tháng bị [start, end] chạm tới — dùng để gộp EditorKpi (chỉ lưu theo THÁNG
+   * trọn vẹn, không chia nhỏ theo ngày) khi khoảng ngày báo cáo là tự do, có thể xuyên nhiều tháng. */
+  private monthsBetween(start: Date, end: Date): string[] {
+    const months: string[] = [];
+    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
+    const last = new Date(end.getFullYear(), end.getMonth(), 1);
+    while (cur <= last) {
+      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    return months;
+  }
+
+  /**
+   * Báo cáo kiểu leader dashboard nhưng cho ADMIN/MANAGER xem theo TEAM bất kỳ (hoặc tổng hợp tất
+   * cả team khi bỏ trống/`team === "all"`), theo khoảng ngày tự do (mặc định tháng hiện tại) —
+   * khác với getLeaderDashboard vốn luôn khoá theo leader_id JWT và chỉ theo THÁNG trọn vẹn.
+   * "KPI ngày" vẫn luôn tính theo NGÀY THỰC TẾ (hôm nay), không phụ thuộc khoảng ngày đã chọn.
+   * `team` khớp theo Team.name (unique) — cùng quy ước với bộ lọc team hiện có ở AdminOverviewFiltersContext (FE).
+   */
+  async getTeamReport(team?: string, dateFrom?: string, dateTo?: string) {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+
+    const range = this.parseDateRange(dateFrom, dateTo) ?? {
+      gte: new Date(now.getFullYear(), now.getMonth(), 1),
+      lt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+    };
+    const monthsTouched = this.monthsBetween(range.gte, new Date(range.lt.getTime() - 1));
+
+    const isAllTeams = !team || team === "all";
+
+    const teams = await this.prisma.team.findMany({
+      where: isAllTeams ? { is_active: true } : { name: team },
+      include: {
+        leader: { select: { full_name: true } },
+        members: {
+          where: { user: { is_active: true } },
+          include: { user: { select: { id: true, full_name: true, email: true } } },
+        },
+      },
+    });
+
+    if (teams.length === 0) {
+      return {
+        scope: isAllTeams ? ("all_teams" as const) : ("single_team" as const),
+        team: null,
+        rows: [],
+        video_by_line: [],
+      };
+    }
+
+    const teamIds = teams.map((t) => t.id);
+    const memberByUserId = new Map<
+      string,
+      { user_id: string; team_id: string; full_name: string; email: string }
+    >();
+    for (const t of teams) {
+      for (const m of t.members) {
+        memberByUserId.set(m.user_id, {
+          user_id: m.user_id,
+          team_id: t.id,
+          full_name: m.user?.full_name ?? "",
+          email: (m.user?.email ?? "").toLowerCase().trim(),
+        });
+      }
+    }
+    const memberRows = Array.from(memberByUserId.values());
+    const memberIds = memberRows.map((m) => m.user_id);
+    const memberEmails = memberRows.map((m) => m.email).filter((e): e is string => !!e);
+
+    const [
+      editorKpis,
+      memberApprovedInRange,
+      memberAssignedToday,
+      memberApprovedToday,
+      memberTrafficInRange,
+      memberRevenueInRange,
+      approvedByContentLine,
+      contentLines,
+      manualDailyKpis,
+    ] = await Promise.all([
+      this.prisma.editorKpi.findMany({
+        where: { user_id: { in: memberIds }, month: { in: monthsTouched } },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: { assignee_id: { in: memberIds }, status: "APPROVED", reviewed_at: range },
+        _count: { id: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: { notIn: ["CANCELLED"] },
+          assigned_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ["assignee_id"],
+        where: {
+          assignee_id: { in: memberIds },
+          status: "APPROVED",
+          reviewed_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      memberEmails.length > 0
+        ? this.prisma.trafficReport.groupBy({
+            by: ["email"],
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            _sum: { total_traffic: true },
+          })
+        : Promise.resolve([]),
+      memberEmails.length > 0
+        ? this.prisma.revenueReport.groupBy({
+            by: ["email"],
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            _sum: { total_revenue: true },
+          })
+        : Promise.resolve([]),
+      this.prisma.task.groupBy({
+        by: ["content_line_id"],
+        where: {
+          team_id: { in: teamIds },
+          content_line_id: { not: null },
+          status: "APPROVED",
+          reviewed_at: range,
+        },
+        _count: { id: true },
+      }),
+      this.prisma.contentLine.findMany({ select: { id: true, name: true } }),
+      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      this.prisma.editorDailyKpi.findMany({
+        where: {
+          user_id: { in: memberIds },
+          team_id: { in: teamIds },
+          date: dailyKpiDate(vietnamDateString(now)),
+          target: { gt: 0 },
+        },
+        select: { user_id: true, target: true },
+      }),
+    ]);
+
+    const kpiTargetByUser: Record<string, number> = {};
+    for (const k of editorKpis) {
+      kpiTargetByUser[k.user_id] = (kpiTargetByUser[k.user_id] ?? 0) + k.total_target;
+    }
+    const approvedByUser = Object.fromEntries(
+      memberApprovedInRange.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const assignedTodayByUser = Object.fromEntries(
+      memberAssignedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const approvedTodayByUser = Object.fromEntries(
+      memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
+    );
+    const trafficByEmail = Object.fromEntries(
+      memberTrafficInRange.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_traffic ?? 0n),
+      ]),
+    );
+    const revenueByEmail = Object.fromEntries(
+      memberRevenueInRange.map((r) => [
+        (r.email ?? "").toLowerCase().trim(),
+        Number(r._sum.total_revenue ?? 0n),
+      ]),
+    );
+
+    // user → KPI ngày set tay hôm nay (cộng dồn nếu 1 người thuộc nhiều team trong phạm vi xem)
+    const manualDayTargetByUser: Record<string, number> = {};
+    for (const dk of manualDailyKpis) {
+      manualDayTargetByUser[dk.user_id] =
+        (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
+    }
+
+    const perMember = memberRows.map((m) => ({
+      id: m.user_id,
+      team_id: m.team_id,
+      name: m.full_name || m.email,
+      kpi_completed: approvedByUser[m.user_id] ?? 0,
+      kpi_target: kpiTargetByUser[m.user_id] ?? 0,
+      kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
+      // KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task giao hôm nay.
+      kpi_day_target:
+        manualDayTargetByUser[m.user_id] ??
+        assignedTodayByUser[m.user_id] ??
+        0,
+      traffic_month: trafficByEmail[m.email] ?? 0,
+      revenue_month: revenueByEmail[m.email] ?? 0,
+    }));
+
+    const approvedCountByContentLineId = Object.fromEntries(
+      approvedByContentLine.map((r) => [r.content_line_id as string, r._count.id]),
+    );
+    const videoByLine = contentLines
+      .filter((cl) => /^A[1-5]$/.test(cl.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((cl) => ({ line: cl.name, count: approvedCountByContentLineId[cl.id] ?? 0 }));
+
+    if (!isAllTeams) {
+      return {
+        scope: "single_team" as const,
+        team: { id: teams[0].id, name: teams[0].name, member_count: memberRows.length },
+        rows: perMember,
+        video_by_line: videoByLine,
+      };
+    }
+
+    // Chế độ "Tất cả Team" — gộp số liệu từng người về đúng team của họ.
+    const teamAgg = new Map<
+      string,
+      {
+        id: string;
+        team_id: string;
+        name: string;
+        kpi_completed: number;
+        kpi_target: number;
+        kpi_day_completed: number;
+        kpi_day_target: number;
+        traffic_month: number;
+        revenue_month: number;
+      }
+    >();
+    for (const t of teams) {
+      teamAgg.set(t.id, {
+        id: t.id,
+        team_id: t.id,
+        name: t.leader?.full_name ? `${t.name} (${t.leader.full_name})` : t.name,
+        kpi_completed: 0,
+        kpi_target: 0,
+        kpi_day_completed: 0,
+        kpi_day_target: 0,
+        traffic_month: 0,
+        revenue_month: 0,
+      });
+    }
+    for (const pm of perMember) {
+      const agg = teamAgg.get(pm.team_id);
+      if (!agg) continue;
+      agg.kpi_completed += pm.kpi_completed;
+      agg.kpi_target += pm.kpi_target;
+      agg.kpi_day_completed += pm.kpi_day_completed;
+      agg.kpi_day_target += pm.kpi_day_target;
+      agg.traffic_month += pm.traffic_month;
+      agg.revenue_month += pm.revenue_month;
+    }
+
+    return {
+      scope: "all_teams" as const,
+      team: null,
+      rows: Array.from(teamAgg.values()),
+      video_by_line: videoByLine,
     };
   }
 
@@ -1282,8 +1832,14 @@ export class TaskAutoTasksService {
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [tasksByStatus, todayDeadline, overdue, monthlyApproved, myKpiRows] =
-      await Promise.all([
+    const [
+      tasksByStatus,
+      todayDeadline,
+      overdue,
+      monthlyApproved,
+      myKpiRows,
+      myDailyKpiAgg,
+    ] = await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
           where: { assignee_id: userId },
@@ -1292,8 +1848,11 @@ export class TaskAutoTasksService {
         this.prisma.task.count({
           where: {
             assignee_id: userId,
-            deadline: { gte: todayStart, lt: todayEnd },
             status: { notIn: ["APPROVED", "CANCELLED"] },
+            OR: [
+              { deadline: { gte: todayStart, lt: todayEnd } },
+              { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+            ],
           },
         }),
         this.prisma.task.count({
@@ -1320,6 +1879,15 @@ export class TaskAutoTasksService {
               },
             },
           },
+        }),
+        // KPI ngày set tay của chính editor cho hôm nay (cộng dồn nếu thuộc nhiều team)
+        this.prisma.editorDailyKpi.aggregate({
+          where: {
+            user_id: userId,
+            date: dailyKpiDate(vietnamDateString(now)),
+            target: { gt: 0 },
+          },
+          _sum: { target: true },
         }),
       ]);
 
@@ -1379,6 +1947,8 @@ export class TaskAutoTasksService {
       },
       today_deadline: todayDeadline,
       overdue,
+      /** KPI ngày set tay cho hôm nay (0 = chưa set) — hiển thị "Mục tiêu hôm nay" cá nhân. */
+      daily_kpi_target: myDailyKpiAgg._sum.target ?? 0,
       kpi: myKpi
         ? {
             month: myKpi.month,
@@ -1438,7 +2008,7 @@ export class TaskAutoTasksService {
     const TRANSITIONS: Record<string, string[]> = {
       PENDING: ["ASSIGNED", "CANCELLED"],
       ASSIGNED: ["IN_PROGRESS", "SUBMITTED", "CANCELLED"],
-      IN_PROGRESS: ["SUBMITTED", "CANCELLED"],
+      IN_PROGRESS: ["ASSIGNED", "SUBMITTED", "CANCELLED"],
       SUBMITTED: ["APPROVED", "REJECTED"],
       REJECTED: ["ASSIGNED", "IN_PROGRESS", "CANCELLED"],
       APPROVED: [],

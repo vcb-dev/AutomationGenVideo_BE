@@ -1,8 +1,14 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../task-auto/notifications/notifications.service';
+import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { readAiServiceError } from '../../common/utils/ai-service-error.util';
 import { YoutubeAiClientService, ParsedYoutubeChannel, ParsedYoutubeShort } from './youtube-ai-client.service';
 
 const STALE_LOCK_MINUTES = 30;
+
+// Lô đầu chạy đồng bộ để trả kết quả ngay cho user; phần còn lại chạy nền.
+const FIRST_BATCH_SIZE = 20;
 
 // Nền tảng mới — BE sở hữu DB hoàn toàn từ đầu (không có code AI cũ để migrate).
 // AI chỉ fetch + parse (youtube_fetch_views.py), BE là nơi duy nhất ghi
@@ -15,7 +21,40 @@ export class YoutubeScraperService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClient: YoutubeAiClientService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  // ─── Growth Alert: snapshot subscriber + báo động nếu tăng đột biến ───────
+  private static readonly GROWTH_ALERT_THRESHOLD_PCT = 0.2;
+
+  private async recordMetricsAndMaybeAlert(profileId: bigint, profileName: string): Promise<void> {
+    const fresh = await this.prisma.scraperYoutubeProfile.findUniqueOrThrow({ where: { id: profileId } });
+    const previous = await this.prisma.scraperYoutubeProfileMetrics.findFirst({
+      where: { profile_id: profileId },
+      orderBy: { captured_at: 'desc' },
+    });
+
+    await this.prisma.scraperYoutubeProfileMetrics.create({
+      data: {
+        profile_id: profileId,
+        subscriber_count: fresh.subscriber_count,
+        video_count: fresh.video_count,
+        view_count: fresh.view_count,
+      },
+    });
+
+    if (!previous || previous.subscriber_count <= 0n) return;
+    const growth = Number(fresh.subscriber_count - previous.subscriber_count) / Number(previous.subscriber_count);
+    if (growth < YoutubeScraperService.GROWTH_ALERT_THRESHOLD_PCT) return;
+
+    const pct = Math.round(growth * 100);
+    await this.notifications.broadcastToActiveUsers(
+      'GROWTH_ALERT',
+      `Kênh YouTube ${profileName} tăng trưởng đột biến`,
+      `Subscriber tăng ${pct}% (${previous.subscriber_count} → ${fresh.subscriber_count}) kể từ lần cào trước.`,
+      { platform: 'youtube', profile_id: Number(profileId) },
+    );
+  }
 
   private async upsertShort(profileId: bigint, s: ParsedYoutubeShort): Promise<{ created: boolean }> {
     const existing = await this.prisma.scraperYoutubeShort.findUnique({ where: { video_id: s.video_id } });
@@ -137,6 +176,11 @@ export class YoutubeScraperService {
         data: { scraping_status: 'completed', scrape_error: null, last_scraped_at: new Date() },
       });
 
+      const profileLabel = profile.title || profile.channel_id;
+      this.recordMetricsAndMaybeAlert(profileId, profileLabel).catch((err) => {
+        this.logger.error(`[YT-GROWTH-ALERT] ${profileLabel}: ${err.message}`);
+      });
+
       this.logger.log(`[YT-CHANNEL] ${profile.title || profile.channel_id}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated, items_returned: shorts.length };
     } catch (err: any) {
@@ -148,12 +192,58 @@ export class YoutubeScraperService {
     }
   }
 
-  async scrapeChannel(channelId: string, isOwned?: boolean): Promise<any> {
+  // TikHub get_channel_info chấp nhận @handle/username trần làm channel_id (chỉ để
+  // hiển thị info), nhưng get_channel_shorts (endpoint cào Shorts thật) BẮT BUỘC
+  // id chuẩn dạng UC... — nếu không sẽ luôn trả 0 kết quả. Vì vậy mọi input không
+  // phải UC... phải resolve ra UC... thật bằng cách đọc thẳng HTML trang kênh công khai
+  // (YouTube luôn nhúng "channelId":"UC..." trong initial data, không cần API key).
+  private async resolveToChannelId(candidate: string): Promise<string> {
+    if (/^UC[\w-]{20,}$/i.test(candidate)) return candidate;
+
+    const tryFetch = async (url: string): Promise<string | null> => {
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        });
+        if (!res.ok) return null;
+        const html = await res.text();
+        // Ưu tiên canonical link (duy nhất, chắc chắn là kênh đang xem) hơn regex
+        // "channelId" thô (xuất hiện lặp lại nhiều lần trong trang cho các kênh khác
+        // được nhắc tới — dễ bắt nhầm). Với trang video (watch?v=) thì canonical trỏ
+        // tới chính video nên không khớp, fallback "channelId" sẽ bắt được chủ video.
+        const canonicalMatch = html.match(/rel="canonical"\s+href="https:\/\/www\.youtube\.com\/channel\/(UC[\w-]{10,})"/);
+        if (canonicalMatch) return canonicalMatch[1];
+        const fallbackMatch = html.match(/"channelId":"(UC[\w-]{10,})"/);
+        return fallbackMatch ? fallbackMatch[1] : null;
+      } catch {
+        return null;
+      }
+    };
+
+    // Nếu candidate đã là URL đầy đủ (vd trang video watch?v=...) thì fetch thẳng;
+    // ngược lại thử theo thứ tự /@handle rồi /username (dạng kênh cũ).
+    const isFullUrl = /^https?:\/\//i.test(candidate);
+    const resolved = isFullUrl
+      ? await tryFetch(candidate)
+      : (await tryFetch(`https://www.youtube.com/@${candidate}`)) ||
+        (await tryFetch(`https://www.youtube.com/${candidate}`));
+    if (!resolved) {
+      throw new HttpException(
+        { error: `Không tìm thấy kênh YouTube với "${candidate}". Kiểm tra lại URL/handle.` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return resolved;
+  }
+
+  async scrapeChannel(candidate: string, isOwned?: boolean, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
+    const channelId = await this.resolveToChannelId(candidate);
+    const channelUrl = `https://www.youtube.com/channel/${channelId}`;
     let profile = await this.prisma.scraperYoutubeProfile.findUnique({ where: { channel_id: channelId } });
     const wasCreated = !profile;
     if (!profile) {
       profile = await this.prisma.scraperYoutubeProfile.create({
-        data: { channel_id: channelId, url: `https://www.youtube.com/channel/${channelId}`, is_owned: !!isOwned },
+        data: { channel_id: channelId, url: channelUrl, is_owned: !!isOwned },
       });
     }
 
@@ -172,23 +262,24 @@ export class YoutubeScraperService {
     await this.prisma.scraperYoutubeProfile.update({ where: { id: profile.id }, data: updateData });
 
     if (needsDeltaScrape) {
-      // Delta: chỉ cào 20 shorts mới nhất, fully async
-      this.scrapeChannelShorts(profile.id, 20).catch((err) => {
+      // Delta: kênh đã cào rồi, lấy thêm tới targetCount shorts mới nhất, fully async
+      this.scrapeChannelShorts(profile.id, targetCount).catch((err) => {
         this.logger.error(`[YT-CHANNEL] ${channelId} thất bại: ${err.message}`);
       });
       return {
         status: 'ok',
-        message: `Đang cập nhật Shorts mới cho kênh ${profile.title || channelId}...`,
+        message: `Đang cập nhật tới ${targetCount} Shorts mới nhất cho kênh ${profile.title || channelId}...`,
         already_exists: true,
         profile_id: Number(profile.id),
       };
     }
 
-    // Batch đầu SYNCHRONOUS (~20 shorts, rất nhanh) — trả data ngay cho user
+    // Batch đầu SYNCHRONOUS (nhỏ, rất nhanh) — trả data ngay cho user, phần còn lại chạy nền
+    const firstBatch = Math.min(FIRST_BATCH_SIZE, targetCount);
     const freshProfile = await this.prisma.scraperYoutubeProfile.findUniqueOrThrow({ where: { id: profile.id } });
     let result: { created: number; updated: number; items_returned: number };
     try {
-      result = await this.ingestShortsSync(freshProfile, 20);
+      result = await this.ingestShortsSync(freshProfile, firstBatch);
     } catch (err: any) {
       await this.prisma.scraperYoutubeProfile.update({
         where: { id: profile.id },
@@ -198,6 +289,10 @@ export class YoutubeScraperService {
       if (wasCreated) {
         await this.prisma.scraperYoutubeProfile.delete({ where: { id: profile.id } }).catch(() => {});
       }
+      // AI service đã nói rõ nguyên nhân (vd token TikHub hết hạn) → ném NGUYÊN VĂN cho
+      // AllExceptionsFilter dịch lại. Bọc thành 400 ở đây vừa nuốt mất lý do thật, vừa
+      // đổi "hỏng ở nhà cung cấp" thành "người dùng nhập sai".
+      if (readAiServiceError(err)) throw err;
       throw new HttpException({ error: err.message || 'Không cào được channel này' }, HttpStatus.BAD_REQUEST);
     }
 
@@ -215,16 +310,37 @@ export class YoutubeScraperService {
       throw new HttpException({ error: 'Không tìm thấy Shorts cho channel_id này' }, HttpStatus.NOT_FOUND);
     }
 
-    // Dispatch cào tiếp tới tổng 300 Shorts (fire-and-forget) — sẽ tự set scraping_status='completed'
-    this.scrapeChannelShorts(profile.id, 300).catch((err) => {
-      this.logger.error(`[YT-CHANNEL] ${channelId} continuation thất bại: ${err.message}`);
-    });
+    // Dispatch cào tiếp tới tổng targetCount Shorts (fire-and-forget) — tự set scraping_status='completed'
+    const continuationNeeded = targetCount > firstBatch;
+    if (continuationNeeded) {
+      this.scrapeChannelShorts(profile.id, targetCount).catch((err) => {
+        this.logger.error(`[YT-CHANNEL] ${channelId} continuation thất bại: ${err.message}`);
+      });
+    } else {
+      // ingestShortsSync cố ý KHÔNG đụng scraping_status (để phần nền tự chốt).
+      // Khi user đặt số nhỏ ≤ lô đầu thì không có phần nền → phải tự chốt ở đây,
+      // nếu không profile kẹt 'processing' cho tới khi resetStaleLocks dọn (30 phút).
+      await this.prisma.scraperYoutubeProfile.update({
+        where: { id: profile.id },
+        data: {
+          scraping_status: 'completed',
+          scrape_error: null,
+          is_initial_scraped: true,
+          last_scraped_at: new Date(),
+        },
+      });
+    }
 
     const updated = await this.prisma.scraperYoutubeProfile.findUniqueOrThrow({ where: { id: profile.id } });
 
+    // Hiển thị cả số tải về lẫn số mới: trước đây chỉ hiện `created` nên user tưởng
+    // bị cào thiếu khi phần lớn video đã có sẵn trong kho.
+    const batchInfo = `${result.items_returned} Shorts (${result.created} mới)`;
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} Shorts đầu cho kênh ${updated.title || channelId}. Đang tiếp tục cào thêm...`,
+      message: continuationNeeded
+        ? `Đã cào ${batchInfo} cho kênh ${updated.title || channelId}. Đang cào tiếp tới ${targetCount}...`
+        : `Đã cào ${batchInfo} cho kênh ${updated.title || channelId}.`,
       profile_id: Number(updated.id),
       newly_scraped: true,
       profile: {

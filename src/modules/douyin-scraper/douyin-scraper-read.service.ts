@@ -32,6 +32,67 @@ interface DouyinVideoRow {
 export class DouyinScraperReadService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── Lookalike Creator: kênh khác trùng hashtag ────────────────────────────
+  // Douyin KHÔNG có FK profile_id trên video (nhận diện qua search_keyword =
+  // '@username', xem profileVideos() bên dưới) — vì vậy bước gom overlap phải
+  // group theo author_username (không phải profile_id) rồi inner-join ngược
+  // sang ScraperDouyinProfile để lấy sec_user_id. Hệ quả: CHỈ trả về tác giả
+  // ĐÃ có profile tracked sẵn trong DB — không tự tạo mới, khác các platform
+  // còn lại (giới hạn kỹ thuật đã biết, không phải thiếu sót).
+  private static readonly TOP_HASHTAGS_PER_PROFILE = 15;
+  private static readonly MIN_HASHTAG_OVERLAP = 2;
+  private static readonly MAX_LOOKALIKE_RESULTS = 10;
+  private static readonly OVERLAP_CANDIDATE_POOL = 30;
+
+  async lookalikes(profileId: bigint) {
+    const profile = await this.prisma.scraperDouyinProfile.findUnique({ where: { id: profileId } });
+    if (!profile || !profile.username) return { lookalikes: [] };
+    const ownLabel = `@${profile.username}`;
+
+    const topTags = await this.prisma.$queryRaw<{ hashtag: string; cnt: bigint }[]>`
+      SELECT h AS hashtag, COUNT(*) AS cnt
+      FROM scraper_douyin_videos, unnest(hashtags) AS h
+      WHERE search_keyword = ${ownLabel}
+      GROUP BY h ORDER BY cnt DESC LIMIT ${DouyinScraperReadService.TOP_HASHTAGS_PER_PROFILE}
+    `;
+    if (topTags.length === 0) return { lookalikes: [] };
+    const tagList = topTags.map((t) => t.hashtag);
+
+    const overlaps = await this.prisma.$queryRaw<{ author_username: string; overlap_count: bigint }[]>`
+      SELECT v.author_username AS author_username, COUNT(DISTINCT h) AS overlap_count
+      FROM scraper_douyin_videos v, unnest(v.hashtags) AS h
+      WHERE h IN (${Prisma.join(tagList)}) AND v.author_username <> ${profile.username} AND v.author_username <> ''
+      GROUP BY v.author_username
+      HAVING COUNT(DISTINCT h) >= ${DouyinScraperReadService.MIN_HASHTAG_OVERLAP}
+      ORDER BY overlap_count DESC
+      LIMIT ${DouyinScraperReadService.OVERLAP_CANDIDATE_POOL}
+    `;
+    if (overlaps.length === 0) return { lookalikes: [] };
+
+    // Chỉ giữ tác giả ĐÃ có profile tracked (cần sec_user_id để nút "cào kênh
+    // này" hoạt động) — inner-join qua username, không tạo profile mới ở đây.
+    const usernames = overlaps.map((o) => o.author_username);
+    const trackedProfiles = await this.prisma.scraperDouyinProfile.findMany({
+      where: { username: { in: usernames } },
+    });
+    const overlapMap = new Map(overlaps.map((o) => [o.author_username, Number(o.overlap_count)]));
+
+    return {
+      lookalikes: trackedProfiles
+        .map((p) => ({
+          id: Number(p.id),
+          sec_user_id: p.sec_user_id,
+          username: p.username,
+          nickname: p.nickname,
+          avatar_url: p.avatar_drive_url || p.avatar_url || '',
+          followers_count: Number(p.followers_count),
+          overlap_count: overlapMap.get(p.username) || 0,
+        }))
+        .sort((a, b) => b.overlap_count - a.overlap_count)
+        .slice(0, DouyinScraperReadService.MAX_LOOKALIKE_RESULTS),
+    };
+  }
+
   async listVideos(params: {
     page?: string; page_size?: string; q?: string; min_digg?: string;
     date_from?: string; date_to?: string; sort?: string; search_keyword?: string;
@@ -176,7 +237,9 @@ export class DouyinScraperReadService {
 
     const profiles = await this.prisma.scraperDouyinProfile.findMany({
       where,
-      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy],
+      // { id: 'desc' } là khoá phụ phá hoà — thiếu nó thì các kênh cùng lượng follow bị
+      // Postgres trả về thứ tự tuỳ ý mỗi lần gọi, lật trang sẽ thấy kênh lặp lại.
+      orderBy: [{ is_bookmarked: 'desc' }, secondaryOrderBy, { id: 'desc' }],
       skip: offset,
       take: pageSize,
     });
@@ -251,7 +314,13 @@ export class DouyinScraperReadService {
     }
     if (minDigg !== undefined) where.digg_count = { gte: BigInt(minDigg) };
 
-    const orderBy: any = sort === 'likes' ? { digg_count: 'desc' } : { date_posted: 'desc' };
+    // Khoa phu: id la duy nhat nen thu tu luon xac dinh. Thieu no thi cac dong hoa
+    // nhau (530/853 video Douyin cung so tim) bi Postgres tra ve thu tu tuy y moi lan
+    // goi, lat trang se thay video lap lai.
+    const orderBy: any = [
+      sort === 'likes' ? { digg_count: 'desc' } : { date_posted: 'desc' },
+      { id: 'desc' },
+    ];
 
     const total = await this.prisma.scraperDouyinVideo.count({ where });
     const totalPages = Math.max(1, Math.ceil(total / pageSize));

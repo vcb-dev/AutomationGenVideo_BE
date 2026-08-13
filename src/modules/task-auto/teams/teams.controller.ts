@@ -73,8 +73,8 @@ export class TaskAutoTeamsController {
 
   @Delete("teams/:id")
   @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER")
-  @ApiOperation({ summary: "Delete a team" })
+  @Roles("ADMIN")
+  @ApiOperation({ summary: "Delete a team (ADMIN only)" })
   deleteTeam(@Param("id") id: string) {
     return this.teams.remove(id);
   }
@@ -347,12 +347,29 @@ export class TaskAutoTeamsController {
     @Request() req: any,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
+    @Query("month") month?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
       req.user.roles ?? [],
       dateFrom,
       dateTo,
+      month,
     );
+  }
+
+  @Get("team-report")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({
+    summary:
+      "Báo cáo kiểu leader dashboard cho ADMIN/MANAGER — xem 1 team cụ thể (team = Team.name, unique) hoặc tổng hợp tất cả team (bỏ trống/=all), theo khoảng ngày tự do (mặc định tháng hiện tại).",
+  })
+  getTeamReport(
+    @Query("team") team?: string,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+  ) {
+    return this.tasks.getTeamReport(team, dateFrom, dateTo);
   }
 }

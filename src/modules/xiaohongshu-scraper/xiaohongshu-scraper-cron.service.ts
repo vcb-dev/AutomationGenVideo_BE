@@ -20,4 +20,13 @@ export class XiaohongshuScraperCronService {
       this.logger.error(`❌ [XHS-PERIODIC] Lỗi: ${err.message}`);
     }
   }
+
+  @Cron('0 0 15 * * *', VN_TZ)
+  async cronAutoRerunKeywords(): Promise<void> {
+    try {
+      await this.service.autoRerunTopKeywords();
+    } catch (err: any) {
+      this.logger.error(`❌ [XHS-AUTO-RERUN] Lỗi: ${err.message}`);
+    }
+  }
 }

@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService, PushSubscriptionInput } from "../../../common/push/push.service";
 import { QueryNotificationDto } from "./notifications.dto";
@@ -91,6 +92,38 @@ export class NotificationsService {
       data: { is_read: true },
     });
     return { updated: result.count };
+  }
+
+  // Broadcast cho TẤT CẢ user active — dùng cho các thông báo không thuộc về
+  // riêng ai (vd Growth Alert của scraper: kênh không thuộc sở hữu 1 user cụ
+  // thể, dữ liệu dùng chung toàn hệ thống). Mirror đúng shape
+  // createEmptyWarehouseNotifications() (task-auto-assign.service.ts) — insert
+  // hàng loạt + push best-effort, không chặn nhau nếu 1 push lỗi.
+  async broadcastToActiveUsers(
+    type: string,
+    title: string,
+    body: string,
+    meta?: Prisma.InputJsonValue,
+  ): Promise<void> {
+    const users = await this.prisma.user.findMany({
+      where: { is_active: true },
+      select: { id: true },
+    });
+    if (users.length === 0) return;
+
+    await this.prisma.notification.createMany({
+      data: users.map((u) => ({
+        user_id: u.id,
+        type,
+        title,
+        body,
+        meta,
+      })),
+    });
+
+    for (const u of users) {
+      this.push.sendToUser(u.id, { title, body }).catch(() => {});
+    }
   }
 
   getVapidPublicKey() {
