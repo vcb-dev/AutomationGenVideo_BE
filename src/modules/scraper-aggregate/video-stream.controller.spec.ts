@@ -12,27 +12,27 @@ import { PlayUrlNoCreditError } from '../ai-integration/play-url-errors';
  *     ép mạng 150KB/s thì video 8.428.848 byte bị cắt ở giây 33 khi mới tải 5.077.749 byte.
  */
 
-type Ghi = { status?: number; body?: any; da: Buffer[]; ketThuc: boolean };
+type Recording = { status?: number; body?: any; chunks: Buffer[]; finished: boolean };
 
-function taoRes() {
-  const ghi: Ghi = { da: [], ketThuc: false };
+function buildResponse() {
+  const recording: Recording = { chunks: [], finished: false };
   const nghe = new Map<string, Function[]>();
   const res: any = {
-    status(code: number) { ghi.status = code; return res; },
-    json(payload: any) { ghi.body = payload; ghi.ketThuc = true; return res; },
+    status(code: number) { recording.status = code; return res; },
+    json(payload: any) { recording.body = payload; recording.finished = true; return res; },
     setHeader() { return res; },
-    write(chunk: Buffer) { ghi.da.push(chunk); return true; },
-    end() { ghi.ketThuc = true; },
-    destroy() { ghi.ketThuc = true; },
+    write(chunk: Buffer) { recording.chunks.push(chunk); return true; },
+    end() { recording.finished = true; },
+    destroy() { recording.finished = true; },
     on(ev: string, fn: Function) { nghe.set(ev, [...(nghe.get(ev) || []), fn]); return res; },
     once(ev: string, fn: Function) { return res.on(ev, fn); },
     off() { return res; },
   };
-  return { res, ghi };
+  return { res, recording };
 }
 
 /** Bộ đệm thật thu nhỏ — giữ đúng nét đã gây lỗi: đệm nguyên giá trị hàm trả về, kể cả null. */
-function taoCache() {
+function buildCache() {
   const kho = new Map<string, any>();
   return {
     kho,
@@ -73,7 +73,7 @@ describe('VideoStreamController — phát video qua trung gian', () => {
   afterEach(() => { global.fetch = fetchGoc; jest.useRealTimers(); });
 
   it('link trong bộ đệm hết hạn (403) thì xin link mới và phát được, không trả 502 cho người xem', async () => {
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn() } as any;
     ai.fetchVideoPlayUrl
       .mockResolvedValueOnce('https://cdn.example/het-han.mp4')
@@ -86,67 +86,67 @@ describe('VideoStreamController — phát video qua trung gian', () => {
     }) as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
-    const { res, ghi } = taoRes();
+    const { res, recording } = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, res);
 
     expect(goi).toEqual(['https://cdn.example/het-han.mp4', 'https://cdn.example/con-han.mp4']);
     expect(ai.fetchVideoPlayUrl).toHaveBeenCalledTimes(2);
-    expect(ghi.status).toBe(206);
-    expect(ghi.body).toBeUndefined();      // KHÔNG có thân báo lỗi
-    expect(Buffer.concat(ghi.da)).toHaveLength(3);
+    expect(recording.status).toBe(206);
+    expect(recording.body).toBeUndefined();      // KHÔNG có thân báo lỗi
+    expect(Buffer.concat(recording.chunks)).toHaveLength(3);
   });
 
   it('403 hai lần liên tiếp thì dừng, không thử lại vô tận', async () => {
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn().mockResolvedValue('https://cdn.example/hong.mp4') } as any;
     global.fetch = jest.fn(async () => hoiDap(403)) as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
-    const { res, ghi } = taoRes();
+    const { res, recording } = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, res);
 
     expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(ghi.status).toBe(502);
+    expect(recording.status).toBe(502);
   });
 
   it('lỗi khác 403 (vd 404) thì báo ngay, không tốn thêm một lượt xin link', async () => {
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn().mockResolvedValue('https://cdn.example/mat.mp4') } as any;
     global.fetch = jest.fn(async () => hoiDap(404)) as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
-    const { res, ghi } = taoRes();
+    const { res, recording } = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, res);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(ghi.status).toBe(502);
+    expect(recording.status).toBe(502);
   });
 
   it('lần xin link thất bại KHÔNG được đọng lại trong bộ đệm', async () => {
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn() } as any;
     ai.fetchVideoPlayUrl.mockResolvedValueOnce(null).mockResolvedValue('https://cdn.example/ok.mp4');
     global.fetch = jest.fn(async () => hoiDap(200)) as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
 
-    const a = taoRes();
+    const a = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, a.res);
-    expect(a.ghi.status).toBe(404);
+    expect(a.recording.status).toBe(404);
     expect(cache.kho.size).toBe(0);           // không đọng `null` lại
 
     // Lượt sau nền tảng bình thường trở lại → phải phát được ngay, không phải đợi hết TTL.
-    const b = taoRes();
+    const b = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, b.res);
-    expect(b.ghi.status).toBe(200);
+    expect(b.recording.status).toBe(200);
   });
 
   it('hạn 30 giây chỉ tính lúc chờ hồi đáp, KHÔNG cắt ngang lúc dữ liệu đang chảy', async () => {
     // KHÔNG dùng jest.useFakeTimers() ở đây: đồng hồ bên trong `AbortSignal.timeout` nằm
     // dưới lớp Node, jest không tua được — test kiểu đó xanh cả với code hỏng lẫn code đúng.
     // Thay vào đó kiểm THẲNG cái cơ chế đã gây lỗi.
-    const cache = taoCache();
-    const ai = { fetchVideoPlayUrl: jest.fn().mockResolvedValue('https://cdn.example/dai.mp4') } as any;
+    const cache = buildCache();
+    const ai = { fetchVideoPlayUrl: jest.fn().mockResolvedValue('https://cdn.example/longText.mp4') } as any;
 
     const timeoutGoc = AbortSignal.timeout;
     const doDemNguoc = jest.fn(timeoutGoc);
@@ -160,7 +160,7 @@ describe('VideoStreamController — phát video qua trung gian', () => {
 
     try {
       const ctl = new VideoStreamController(cache as any, ai);
-      const { res } = taoRes();
+      const { res } = buildResponse();
       await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, res);
 
       // 1. Cấm dùng AbortSignal.timeout: nó bấm giờ cho CẢ quá trình, kể cả lúc đang chảy dữ
@@ -184,16 +184,16 @@ describe('VideoStreamController — phát video qua trung gian', () => {
   it('hết số dư TikHub thì trả 402 kèm lý do, KHÔNG lẫn với 404 "video này hỏng"', async () => {
     // Đã xảy ra thật: TikHub trả HTTP 402 vì hết tiền → cả douyin/tiktok/xiaohongshu/kuaishou
     // cùng chết, nhưng người dùng chỉ thấy "Không phát được video này" nên đi tìm sai chỗ.
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn().mockRejectedValue(new PlayUrlNoCreditError()) } as any;
     global.fetch = jest.fn() as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
-    const { res, ghi } = taoRes();
+    const { res, recording } = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, res);
 
-    expect(ghi.status).toBe(402);
-    expect(ghi.body.reason).toBe('no_credit');
+    expect(recording.status).toBe(402);
+    expect(recording.body.reason).toBe('no_credit');
     expect(global.fetch).not.toHaveBeenCalled();   // khỏi phí một lượt gọi vô ích
     expect(cache.kho.size).toBe(0);                // không đọng lỗi lại trong bộ đệm
   });
@@ -204,28 +204,28 @@ describe('VideoStreamController — phát video qua trung gian', () => {
 
     // 1. Hết số dư → trang-thai phải báo 402.
     ai.fetchVideoPlayUrl.mockRejectedValueOnce(new PlayUrlNoCreditError());
-    const ctl = new VideoStreamController(taoCache() as any, ai);
-    await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, taoRes().res);
-    const a = taoRes();
+    const ctl = new VideoStreamController(buildCache() as any, ai);
+    await ctl.stream('douyin', 'v1', undefined, { headers: {} } as any, buildResponse().res);
+    const a = buildResponse();
     ctl.trangThai(a.res);
-    expect(a.ghi.status).toBe(402);
+    expect(a.recording.status).toBe(402);
 
     // 2. Nạp tiền xong, một video phát được → mốc phải được xoá NGAY.
     ai.fetchVideoPlayUrl.mockResolvedValue('https://cdn.example/ok.mp4');
-    await ctl.stream('douyin', 'v2', undefined, { headers: {} } as any, taoRes().res);
-    const b = taoRes();
+    await ctl.stream('douyin', 'v2', undefined, { headers: {} } as any, buildResponse().res);
+    const b = buildResponse();
     ctl.trangThai(b.res);
-    expect(b.ghi.body).toEqual({ ok: true });
+    expect(b.recording.body).toEqual({ ok: true });
   });
 
   it('chuyển tiếp header Range để thẻ <video> tua được', async () => {
-    const cache = taoCache();
+    const cache = buildCache();
     const ai = { fetchVideoPlayUrl: jest.fn().mockResolvedValue('https://cdn.example/ok.mp4') } as any;
     let guiDi: any;
     global.fetch = jest.fn(async (_u: any, opt: any) => { guiDi = opt.headers; return hoiDap(206); }) as any;
 
     const ctl = new VideoStreamController(cache as any, ai);
-    const { res } = taoRes();
+    const { res } = buildResponse();
     await ctl.stream('douyin', 'v1', undefined, { headers: { range: 'bytes=1000-2000' } } as any, res);
 
     expect(guiDi.Range).toBe('bytes=1000-2000');

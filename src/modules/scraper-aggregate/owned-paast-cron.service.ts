@@ -25,13 +25,13 @@ const VN_TZ = { timeZone: 'Asia/Ho_Chi_Minh' };
 /** Trần mỗi lần chạy — chặn để một đêm lỗi dây chuyền không đốt hết hạn mức LLM. */
 const TRAN_MOI_LAN = { moi: 300, phuNguoc: 400 };
 
-/** Nghỉ giữa hai video, tránh dí DeepSeek quá nhanh. */
+/** Nghỉ giữa hai video, tránh dí DeepSeek quá branches. */
 const NGHI_MS = 1_000;
 
 @Injectable()
 export class OwnedPaastCronService {
   private readonly logger = new Logger(OwnedPaastCronService.name);
-  private dangChay = false;
+  private isRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -44,7 +44,7 @@ export class OwnedPaastCronService {
    * Khối lượng thật: ~130 video mới/ngày, trong đó ~1/3 có phụ đề → khoảng 12 phút.
    */
   @Cron('0 30 7 * * *', VN_TZ)
-  async chamVideoMoi(): Promise<void> {
+  async scoreNewVideos(): Promise<void> {
     await this.chay('MOI', TRAN_MOI_LAN.moi, "v.published_at >= now() - interval '3 days'");
   }
 
@@ -60,21 +60,21 @@ export class OwnedPaastCronService {
     await this.chay('PHU_NGUOC', TRAN_MOI_LAN.phuNguoc, '1 = 1');
   }
 
-  private async chay(nhan: string, tran: number, dieuKienNgay: string): Promise<void> {
+  private async chay(nhan: string, tran: number, dateFilter: string): Promise<void> {
     // Hai cron có thể chồng nhau nếu lần trước chạy quá lâu — bỏ qua lần này thay vì chạy đè.
-    if (this.dangChay) {
+    if (this.isRunning) {
       this.logger.warn(`[${nhan}] Bỏ qua: lượt trước chưa xong`);
       return;
     }
-    this.dangChay = true;
+    this.isRunning = true;
 
     try {
-      const nguoiDung = await this.prisma.user.findFirst({
+      const userId = await this.prisma.user.findFirst({
         where: { is_active: true },
         orderBy: { created_at: 'asc' },
         select: { id: true },
       });
-      if (!nguoiDung) {
+      if (!userId) {
         this.logger.warn(`[${nhan}] Không có user nào để gán bản phân tích`);
         return;
       }
@@ -86,7 +86,7 @@ export class OwnedPaastCronService {
         FROM video_management_ownedvideocontent v
         JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
         WHERE mp.is_active AND mp.page_access_token <> ''
-          AND ${dieuKienNgay}
+          AND ${dateFilter}
           AND NOT EXISTS (
             SELECT 1 FROM owned_video_scripts s
             WHERE s.platform = 'facebook' AND s.post_id = v.post_id
@@ -101,15 +101,15 @@ export class OwnedPaastCronService {
       }
 
       const batDau = Date.now();
-      let daCham = 0;
+      let alreadyScored = 0;
       let khongCoKichBan = 0;
       let loi = 0;
 
       for (const { post_id } of canCham) {
         try {
           // `true` = chỉ phụ đề, tuyệt đối không gọi Whisper — xem ghi chú đầu file.
-          const kq = await this.script.chamDiem('facebook', post_id, nguoiDung.id, true);
-          if (kq.trang_thai === 'da_cham') daCham++;
+          const kq = await this.script.scoreVideo('facebook', post_id, userId.id, true);
+          if (kq.trang_thai === 'da_cham') alreadyScored++;
           else khongCoKichBan++;
         } catch (e: any) {
           loi++;
@@ -121,10 +121,10 @@ export class OwnedPaastCronService {
       const phut = Math.round((Date.now() - batDau) / 60_000);
       this.logger.log(
         `[${nhan}] Xong ${canCham.length} video trong ${phut} phút — ` +
-          `${daCham} đã chấm, ${khongCoKichBan} chưa có phụ đề, ${loi} lỗi`,
+          `${alreadyScored} đã chấm, ${khongCoKichBan} chưa có phụ đề, ${loi} lỗi`,
       );
     } finally {
-      this.dangChay = false;
+      this.isRunning = false;
     }
   }
 }
