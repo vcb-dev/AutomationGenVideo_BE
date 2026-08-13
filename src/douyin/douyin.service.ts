@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { catchError, firstValueFrom, of } from 'rxjs';
 import { AxiosError } from 'axios';
+import { resolveAiServiceUrl } from '../common/config/ai-service-url';
 
 export interface DouyinSearchDto {
   searchTerm: string;
@@ -74,7 +75,7 @@ export class DouyinService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>('AI_SERVICE_URL', 'http://localhost:8001');
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
   }
 

@@ -8,6 +8,7 @@ import * as fsLegacy from 'fs';
 import * as FormData from 'form-data';
 import * as path from 'path';
 import { UploadVideoDto, CheckDuplicateResponseDto } from './dto/upload-video.dto';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 @Injectable()
 export class VideosService {
@@ -20,7 +21,7 @@ export class VideosService {
     private httpService: HttpService,
     private configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get('AI_SERVICE_URL') || 'http://localhost:8001';
+    this.aiServiceUrl = resolveAiServiceUrl(this.configService);
 
     // Convert relative path to absolute path
     const configPath = this.configService.get('VIDEO_STORAGE_PATH') || './storage/videos';

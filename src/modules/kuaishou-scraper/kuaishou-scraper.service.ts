@@ -2,6 +2,7 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../task-auto/notifications/notifications.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { readAiServiceError } from '../../common/utils/ai-service-error.util';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import {
   KuaishouAiClientService, ParsedKuaishouProfile, ParsedKuaishouVideo, ParsedKuaishouSearchVideo,
@@ -379,6 +380,10 @@ export class KuaishouScraperService {
       if (wasCreated) {
         await this.prisma.scraperKuaishouProfile.delete({ where: { id: profile.id } }).catch(() => {});
       }
+      // AI service đã nói rõ nguyên nhân (vd token TikHub hết hạn) → ném NGUYÊN VĂN cho
+      // AllExceptionsFilter dịch lại. Bọc thành 400 ở đây vừa nuốt mất lý do thật, vừa
+      // đổi "hỏng ở nhà cung cấp" thành "người dùng nhập sai".
+      if (readAiServiceError(err)) throw err;
       throw new HttpException({ error: err.message || 'Không cào được profile này' }, HttpStatus.BAD_REQUEST);
     }
 

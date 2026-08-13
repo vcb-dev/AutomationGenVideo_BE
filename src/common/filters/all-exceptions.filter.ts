@@ -2,6 +2,7 @@ import { ExceptionFilter, Catch, ArgumentsHost, HttpException, HttpStatus, Logge
 import { HttpAdapterHost } from '@nestjs/core';
 import * as fs from 'fs';
 import * as path from 'path';
+import { readAiServiceError } from '../utils/ai-service-error.util';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -13,12 +14,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const { httpAdapter } = this.httpAdapterHost;
     const ctx = host.switchToHttp();
 
-    const httpStatus =
-      exception instanceof HttpException
+    const loiAi = readAiServiceError(exception);
+
+    const httpStatus = loiAi
+      ? loiAi.status
+      : exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const message = exception?.message || 'Internal server error';
+    const message = loiAi?.error || exception?.message || 'Internal server error';
     const stack = exception?.stack || '';
 
     // Log to console
@@ -42,8 +46,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       statusCode: httpStatus,
       timestamp: new Date().toISOString(),
       path: httpAdapter.getRequestUrl(ctx.getRequest()),
-      message: exception?.response?.message || message,
-      error: exception?.response?.error || (exception instanceof HttpException ? exception.name : 'InternalServerError'),
+      message: loiAi?.error || exception?.response?.message || message,
+      error:
+        loiAi?.error ||
+        exception?.response?.error ||
+        (exception instanceof HttpException ? exception.name : 'InternalServerError'),
     };
 
     httpAdapter.reply(ctx.getResponse(), responseBody, httpStatus);

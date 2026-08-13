@@ -2,6 +2,7 @@ import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import axios from 'axios';
+import { resolveAiServiceUrlFromEnv } from '../../../common/config/ai-service-url';
 
 const KEYWORD_MAP: Record<string, string[]> = {
   vàng:   ['#VangBac','#TrangSuc','#NuTrang','#Vang'],
@@ -53,7 +54,7 @@ export class HashtagController {
     // Giới hạn 5000 ký tự để tránh DoS qua AI service
     const safeMessage = message.slice(0, 5000);
 
-    const aiUrl = process.env.AI_SERVICE_URL;
+    const aiUrl = resolveAiServiceUrlFromEnv();
     if (aiUrl) {
       try {
         const res = await axios.post(`${aiUrl}/api/content/generate/`, {

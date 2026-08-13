@@ -4,6 +4,7 @@ import { CreateTrackedChannelDto, UpdateTrackedChannelDto } from './dto/tracked-
 import { ManagerDashboardDto, PlatformStatsDto, PlatformTrendDto, TrendDataDto } from './dto/manager-dashboard.dto';
 import { Platform } from '@prisma/client';
 import { ChannelStatsEnrichmentService } from '../channel-enrichment/channel-stats-enrichment.service';
+import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 @Injectable()
 export class TrackedChannelsService {
@@ -293,7 +294,7 @@ export class TrackedChannelsService {
 
     try {
       // Call AI service to check channel using username (since IDs might differ)
-      const url = `${process.env.AI_SERVICE_URL}/api/channels/check-by-username/`;
+      const url = `${resolveAiServiceUrlFromEnv()}/api/channels/check-by-username/`;
 
       console.log(`[TrackedChannels] Calling AI Service (Check): POST ${url}`);
 
@@ -566,7 +567,7 @@ export class TrackedChannelsService {
       // Use POST if forceRefresh is true to trigger video fetch
       const method = forceRefresh ? 'POST' : 'GET';
       // URL no longer includes ID
-      const url = `${process.env.AI_SERVICE_URL}/api/videos/channel-hashtag-stats/`;
+      const url = `${resolveAiServiceUrlFromEnv()}/api/videos/channel-hashtag-stats/`;
 
       console.log(`[TrackedChannels] Calling AI Service: ${method} ${url} for ${channel.username}`);
 

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 
 export interface SuggestionResult {
     suggestions: string[];
@@ -18,7 +19,7 @@ export class SearchRecommendationService {
 
     constructor(private configService: ConfigService) {
         this.aiServiceUrl =
-            this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8001';
+            resolveAiServiceUrl(this.configService);
         this.logger.log(`SearchRecommendationService init | AI URL: ${this.aiServiceUrl}`);
     }
 

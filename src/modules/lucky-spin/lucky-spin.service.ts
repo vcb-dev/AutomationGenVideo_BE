@@ -9,7 +9,8 @@ import {
   NO_TEAM_LABEL,
   SPIN_DURATION_MS,
   SPIN_WORKSPACES,
-  laTenKhongDuocTrung,
+  hasReducedOdds,
+  REDUCED_ODDS_RATE,
 } from './lucky-spin.constants';
 import {
   AwardGiftDto,
@@ -346,24 +347,7 @@ export class LuckySpinService {
 
     const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
 
-    /*
-     * Vòng quay cá nhân: loại người trong danh sách chặn ra khỏi tập ô CÓ THỂ THẮNG, không phải
-     * ra khỏi `pool`. Bánh xe vẫn hiện đủ tên như file nhân sự đã nhập, chỉ ô thắng là không bao
-     * giờ rơi vào họ. Lọc ở đây chứ không lọc trong câu findMany vì `pool` còn được dùng để dựng
-     * bánh xe cho mọi màn hình đang xem.
-     *
-     * Vòng quay team không lọc: pool là tên team, không phải tên người.
-     */
-    const oCoTheThang = pool
-      .map((_, i) => i)
-      .filter((i) => kind !== SpinRoundKind.MEMBER || !laTenKhongDuocTrung(pool[i].name));
-
-    // Không đủ người hợp lệ thì báo lỗi chứ không hạ chuẩn: để lọt một lượt là hỏng cả yêu cầu.
-    if (oCoTheThang.length < soLuongBoc) {
-      throw new BadRequestException(`Chỉ còn ${oCoTheThang.length} mục hợp lệ, không bốc được ${soLuongBoc}.`);
-    }
-
-    const winnerIndexes = this.pickDistinctIndexes(oCoTheThang, soLuongBoc);
+    const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind);
 
     const round = await this.prisma.spinRound.create({
       data: {
@@ -383,10 +367,68 @@ export class LuckySpinService {
   }
 
   /**
+   * Chọn người thắng, có tính danh sách hạn chế.
+   *
+   * Người trong REDUCED_ODDS_NAMES không bị loại hẳn nữa: mỗi người được tung riêng một lần,
+   * trúng dưới REDUCED_ODDS_RATE thì chiếm luôn một suất thắng. Suất còn lại bốc đều trong số
+   * người thường — hết người thường thì quay lại bốc đều trong số người hạn chế chưa trúng.
+   *
+   * Vì sao tung riêng thay vì hạ trọng số trong tập bốc chung: hạ trọng số thì xác suất thật
+   * phụ thuộc danh sách dài bao nhiêu — với 50 người, "1% trọng số" thành khoảng 0,02% cơ hội
+   * thật. Tung riêng cho đúng 1% mỗi lượt như ban tổ chức yêu cầu, bất kể danh sách bao nhiêu.
+   *
+   * Bánh xe vẫn hiện đủ tên: chỉ tập ô THẮNG bị chi phối, `pool` giữ nguyên.
+   * Vòng quay team không áp — pool là tên team, không phải tên người.
+   */
+  private pickWinners(
+    pool: { name: string }[],
+    count: number,
+    kind: SpinRoundKind,
+  ): number[] {
+    const allIndexes = pool.map((_, i) => i);
+    if (kind !== SpinRoundKind.MEMBER) {
+      return this.pickDistinctIndexes(allIndexes, count);
+    }
+
+    const restricted = allIndexes.filter((i) => hasReducedOdds(pool[i].name));
+    const normal = allIndexes.filter((i) => !hasReducedOdds(pool[i].name));
+
+    const winners: number[] = [];
+    for (const i of restricted) {
+      if (winners.length >= count) break;
+      if (this.nextUnitRandom() < REDUCED_ODDS_RATE) winners.push(i);
+    }
+
+    let remaining = count - winners.length;
+    if (remaining > 0) {
+      const fromNormal = Math.min(normal.length, remaining);
+      winners.push(...this.pickDistinctIndexes(normal, fromNormal));
+      remaining -= fromNormal;
+    }
+
+    // Hết người thường mà vẫn thiếu suất: chia đều cho những người hạn chế chưa trúng.
+    //
+    // 1% có nghĩa là họ ÍT cơ hội hơn người khác — không còn người khác thì không còn gì để giảm.
+    // Trước đây nhánh này ném lỗi, nên cuối buổi khi danh sách chỉ còn hai người trong
+    // REDUCED_ODDS_NAMES thì 99% số lượt MC bấm quay là bánh xe đứng im kèm lỗi "Chỉ còn 0 mục
+    // hợp lệ". `drawRound` đã chặn count > pool.length nên tới đây chắc chắn đủ người để lấp.
+    if (remaining > 0) {
+      const leftover = restricted.filter((i) => !winners.includes(i));
+      winners.push(...this.pickDistinctIndexes(leftover, remaining));
+    }
+    return winners;
+  }
+
+  /** Số thực trong [0, 1) lấy từ crypto — không dùng Math.random để kết quả không đoán được. */
+  private nextUnitRandom(): number {
+    return randomInt(0, 2 ** 30) / 2 ** 30;
+  }
+
+  /**
    * Fisher-Yates một phần bằng crypto — không lặp người, không lệch phân phối.
    *
    * Nhận sẵn danh sách ô được phép thắng thay vì kích thước bánh xe, vì hai con số này không
-   * còn bằng nhau từ khi có danh sách chặn: người bị chặn vẫn chiếm một ô trên bánh xe.
+   * còn bằng nhau từ khi có danh sách hạn chế.
    */
   private pickDistinctIndexes(oCoTheThang: number[], count: number): number[] {
     const idx = [...oCoTheThang];
@@ -523,41 +565,61 @@ export class LuckySpinService {
   }
 
   /**
-   * Nhập hàng loạt từ file Excel.
+   * Nhập hàng loạt từ file Excel — THAY danh sách cũ, không cộng dồn.
    *
-   * Chạy trong một transaction: file 500 dòng mà hỏng ở dòng 300 thì không được để lại 299
-   * thành viên nửa vời cho người dùng phải tự dọn.
+   * Bản đầu chỉ createMany nên nhập lại đúng file vừa nhập là danh sách nhân đôi: mỗi người
+   * hiện hai lần trên bánh xe và có gấp đôi cơ hội trúng. Mà sửa vài dòng Excel rồi nhập lại
+   * chính là thao tác hay dùng nhất giữa buổi sự kiện.
+   *
+   * Xoá được vì lược đồ đã tính trước: spin_member_wins chụp sẵn member_name/team_name và FK
+   * để onDelete SetNull, nên biên bản buổi đã quay không đổi.
+   *
+   * Team bị xoá theo (chốt với ban tổ chức 12/08/2026): team vốn TỰ SINH từ chính file này,
+   * giữ lại thì team rỗng không còn ai vẫn nằm trong vòng quay team và vẫn bốc trúng được.
+   *
+   * Chạy trong một transaction: đã xoá xong mà phần ghi hỏng giữa chừng thì sự kiện mất sạch
+   * danh sách, không có đường lùi.
    */
   async bulkCreateMembers(slug: string, dto: BulkCreateMembersDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
 
-    return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.spinTeam.findMany({ where: { workspace_id: workspaceId } });
-      const teamIdByLowerName = new Map(existing.map((t) => [t.name.toLowerCase(), t.id]));
+    // Lọc TRƯỚC khi đụng vào DB: file trắng hoặc file toàn dòng thiếu cột không được phép
+    // quét sạch danh sách đang chạy. Chọn nhầm file giữa buổi là chuyện có thật.
+    const rows = dto.members
+      .map((r) => ({ name: r.name.trim(), teamName: r.teamName.trim() }))
+      .filter((r) => r.name && r.teamName);
 
+    if (rows.length === 0) {
+      return { createdMembers: 0, createdTeams: 0, deletedMembers: 0, deletedTeams: 0 };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Member trước, team sau: team_id là SetNull nên đảo lại vẫn chạy, nhưng xoá member
+      // trước thì không có khoảnh khắc nào tồn tại member mồ côi giữa hai lệnh.
+      const { count: deletedMembers } = await tx.spinMember.deleteMany({ where: { workspace_id: workspaceId } });
+      const { count: deletedTeams } = await tx.spinTeam.deleteMany({ where: { workspace_id: workspaceId } });
+
+      // Dựng lại bảng tên từ ĐẦU, không đọc lại team cũ: chúng vừa bị xoá ngay trên.
+      const teamIdByLowerName = new Map<string, string>();
       let createdTeams = 0;
       const membersData: Prisma.SpinMemberCreateManyInput[] = [];
 
-      for (const row of dto.members) {
-        const name = row.name.trim();
-        const teamName = row.teamName.trim();
-        if (!name || !teamName) continue;
-
-        let teamId = teamIdByLowerName.get(teamName.toLowerCase());
+      for (const row of rows) {
+        let teamId = teamIdByLowerName.get(row.teamName.toLowerCase());
         if (!teamId) {
           const created = await tx.spinTeam.create({
-            data: { workspace_id: workspaceId, name: teamName },
+            data: { workspace_id: workspaceId, name: row.teamName },
             select: { id: true },
           });
           teamId = created.id;
-          teamIdByLowerName.set(teamName.toLowerCase(), teamId);
+          teamIdByLowerName.set(row.teamName.toLowerCase(), teamId);
           createdTeams++;
         }
-        membersData.push({ workspace_id: workspaceId, team_id: teamId, name });
+        membersData.push({ workspace_id: workspaceId, team_id: teamId, name: row.name });
       }
 
-      if (membersData.length > 0) await tx.spinMember.createMany({ data: membersData });
-      return { createdMembers: membersData.length, createdTeams };
+      await tx.spinMember.createMany({ data: membersData });
+      return { createdMembers: membersData.length, createdTeams, deletedMembers, deletedTeams };
     });
   }
 
@@ -591,14 +653,25 @@ export class LuckySpinService {
     });
   }
 
+  /**
+   * Nhập quà từ Excel — THAY danh sách cũ, cùng lý do đã ghi ở bulkCreateMembers.
+   *
+   * Lịch sử trao quà an toàn: spin_gift_awards chụp sẵn gift_name và FK là SetNull.
+   */
   async bulkCreateGifts(slug: string, dto: BulkCreateGiftsDto, actor: SpinActor) {
     const workspaceId = await this.assertControl(slug, actor);
     const data = dto.gifts
       .filter((g) => g.name.trim() && g.total > 0)
       .map((g) => ({ workspace_id: workspaceId, name: g.name.trim(), total: g.total, remaining: g.total }));
 
-    if (data.length > 0) await this.prisma.spinGift.createMany({ data });
-    return { createdGifts: data.length };
+    // File trắng / toàn dòng hỏng thì giữ nguyên danh sách đang chạy — xem ghi chú ở bulkCreateMembers.
+    if (data.length === 0) return { createdGifts: 0, deletedGifts: 0 };
+
+    return this.prisma.$transaction(async (tx) => {
+      const { count: deletedGifts } = await tx.spinGift.deleteMany({ where: { workspace_id: workspaceId } });
+      await tx.spinGift.createMany({ data });
+      return { createdGifts: data.length, deletedGifts };
+    });
   }
 
   async updateGift(slug: string, giftId: string, dto: UpdateGiftDto, actor: SpinActor) {
