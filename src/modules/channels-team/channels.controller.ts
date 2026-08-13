@@ -23,7 +23,7 @@ import { CreateChannelDto } from "./dto/create-channel.dto";
 import { UpdateChannelDto } from "./dto/update-channel.dto";
 import { ChannelsService } from "./channels.service";
 import { ChannelResponseDto } from "./dto/response-channel.dto";
-import { JwtAuthGuard } from "@/common/guards/jwt-auth.guard";
+import { JwtAuthGuard } from "@/modules/auth/guards/jwt-auth.guard";
 
 @ApiTags("channels")
 @Controller("channels")

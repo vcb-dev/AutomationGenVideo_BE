@@ -5,7 +5,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody, Api
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('AI Integration')
 @Controller('ai')

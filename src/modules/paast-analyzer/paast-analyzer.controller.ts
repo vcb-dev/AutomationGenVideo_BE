@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { PaastAnalyzerService } from './paast-analyzer.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AnalyzeContentDto, HistoryQueryDto } from './dto';
 
 @ApiTags('PAAST Analyzer')

@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ScraperAggregateReadService } from './scraper-aggregate-read.service';
 import { OwnedStatsService } from './owned-stats.service';
 import { OwnedScriptService } from './owned-script.service';

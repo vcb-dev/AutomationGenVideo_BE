@@ -3,7 +3,7 @@ import {
   Param, Body, Req, HttpCode, HttpStatus, UseGuards, HttpException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ChatHistoryService } from './chat-history.service';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 
