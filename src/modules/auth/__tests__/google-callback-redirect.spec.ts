@@ -1,136 +1,93 @@
 import { AuthController } from '../auth.controller';
 import { AuthService } from '../auth.service';
 import { CookieAuthService } from '../cookie-auth.service';
-import { RefreshTokenService } from '../refresh-token.service';
-import { UsersService } from '../../users/users.service';
 
-const FRONTEND = 'http://localhost:3001';
-
-// Jest tái sử dụng worker process giữa các file test, nên env đổi ở đây rò sang file chạy sau
-// trong cùng worker — kiểu hỏng chỉ hiện ra khi đổi thứ tự chạy, cực khó lần.
-const ORIGINAL_FRONTEND_URL = process.env.FRONTEND_URL;
-afterAll(() => {
-  if (ORIGINAL_FRONTEND_URL === undefined) delete process.env.FRONTEND_URL;
-  else process.env.FRONTEND_URL = ORIGINAL_FRONTEND_URL;
-});
+// Toàn bộ quyết định nghiệp vụ (thông điệp lỗi, ?token=, khi nào cấp phiên) đã chuyển xuống
+// AuthService.resolveGoogleLogin/googleErrorRedirect — xem auth-service.spec.ts. File này chỉ còn
+// kiểm tra phần orchestration của controller: gọi đúng service, áp dụng đúng cookie/redirect.
 
 type Redirect = { url: string };
 
 function fakeResponse() {
   const redirects: Redirect[] = [];
-  const jsonBodies: any[] = [];
-  let statusCode: number | null = null;
   const res: any = {
     redirect: (url: string) => redirects.push({ url }),
-    status: (code: number) => {
-      statusCode = code;
-      return res;
-    },
-    json: (body: any) => jsonBodies.push(body),
   };
-  return { res, redirects, jsonBodies, getStatus: () => statusCode };
-}
-
-function buildController(overrides: {
-  issueSession?: jest.Mock;
-} = {}) {
-  const setAuthCookies = jest.fn();
-  const issueSession =
-    overrides.issueSession ??
-    jest.fn(async () => ({
-      tokenResponse: { access_token: 'jwt.access.value' },
-      refreshToken: 'refresh-raw-value',
-    }));
-
-  const controller = new AuthController(
-    { issueSession } as unknown as AuthService,
-    { setAuthCookies } as unknown as CookieAuthService,
-    {} as unknown as RefreshTokenService,
-    {} as unknown as UsersService,
-  );
-
-  return { controller, setAuthCookies, issueSession };
+  return { res, redirects };
 }
 
 function fakeRequest(user: any) {
-  return { user, headers: { 'user-agent': 'Chrome/130' }, ip: '10.0.0.5' } as any;
+  return { user } as any;
 }
 
-describe('googleAuthRedirect — tài khoản không đăng nhập được', () => {
-  beforeEach(() => {
-    process.env.FRONTEND_URL = FRONTEND;
-  });
+function buildController(
+  opts: {
+    resolveGoogleLogin?: jest.Mock;
+    googleErrorRedirect?: jest.Mock;
+  } = {},
+) {
+  const setAuthCookies = jest.fn();
+  const resolveGoogleLogin =
+    opts.resolveGoogleLogin ??
+    jest.fn(async () => ({
+      redirectUrl: 'http://localhost:3001/auth/google/callback?token=jwt.access.value',
+      session: { accessToken: 'jwt.access.value', refreshToken: 'refresh-raw-value' },
+    }));
+  const googleErrorRedirect =
+    opts.googleErrorRedirect ?? jest.fn(() => 'http://localhost:3001/login?error=fallback');
 
-  it('tài khoản bị vô hiệu hoá → về /login kèm thông báo, KHÔNG đặt cookie', async () => {
+  const controller = new AuthController(
+    { resolveGoogleLogin, googleErrorRedirect } as unknown as AuthService,
+    { setAuthCookies } as unknown as CookieAuthService,
+  );
+
+  return { controller, setAuthCookies, resolveGoogleLogin, googleErrorRedirect };
+}
+
+describe('googleAuthRedirect — AuthService trả session (đăng nhập thành công)', () => {
+  it('đặt cookie từ session AuthService trả về, rồi redirect đúng URL đó', async () => {
     const { controller, setAuthCookies } = buildController();
     const { res, redirects } = fakeResponse();
 
-    await controller.googleAuthRedirect(fakeRequest({ isInactiveUser: true }), res);
-
-    expect(redirects).toHaveLength(1);
-    expect(redirects[0].url).toContain(`${FRONTEND}/login?error=`);
-    expect(decodeURIComponent(redirects[0].url)).toContain('vô hiệu hóa');
-    expect(setAuthCookies).not.toHaveBeenCalled();
-  });
-
-  it('email chưa được cấp tài khoản → về /login kèm thông báo, KHÔNG đặt cookie', async () => {
-    const { controller, setAuthCookies } = buildController();
-    const { res, redirects } = fakeResponse();
-
-    await controller.googleAuthRedirect(fakeRequest({ isNewUser: true }), res);
-
-    expect(decodeURIComponent(redirects[0].url)).toContain('chưa được tạo');
-    expect(setAuthCookies).not.toHaveBeenCalled();
-  });
-});
-
-describe('googleAuthRedirect — đăng nhập thành công', () => {
-  beforeEach(() => {
-    process.env.FRONTEND_URL = FRONTEND;
-  });
-
-  it('đặt cookie phiên từ access token và refresh token vừa cấp', async () => {
-    const { controller, setAuthCookies } = buildController();
-    const { res } = fakeResponse();
-
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
+    await controller.googleAuthRedirect(fakeRequest({ id: 'u1' }), res);
 
     expect(setAuthCookies).toHaveBeenCalledWith(res, {
       accessToken: 'jwt.access.value',
       refreshToken: 'refresh-raw-value',
     });
+    expect(redirects).toEqual([
+      { url: 'http://localhost:3001/auth/google/callback?token=jwt.access.value' },
+    ]);
   });
 
-  // Cookie là đường chính, nhưng FE ĐANG CHẠY vẫn đọc ?token= và thiếu nó là đá về /login.
-  // Test này canh đúng cái bẫy đó: bỏ ?token= mà quên FE là đăng nhập Google chết câm.
-  // GỠ test này ở bước deploy 3, cùng lúc gỡ ?token= khỏi controller.
-  it('vẫn kèm ?token= cho FE bản cũ, đúng bằng access token trong cookie', async () => {
-    const { controller } = buildController();
-    const { res, redirects } = fakeResponse();
-
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
-
-    const url = new URL(redirects[0].url);
-    expect(url.pathname).toBe('/auth/google/callback');
-    expect(url.searchParams.get('token')).toBe('jwt.access.value');
-  });
-
-  it('ghi lại user agent và IP vào phiên để lần ra token bị trộm từ đâu', async () => {
-    const { controller, issueSession } = buildController();
+  it('chuyển đúng user vừa xác thực qua Google cho resolveGoogleLogin', async () => {
+    const { controller, resolveGoogleLogin } = buildController();
     const { res } = fakeResponse();
 
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
+    await controller.googleAuthRedirect(fakeRequest({ id: 'u1' }), res);
 
-    expect(issueSession).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'u1' }),
-      { userAgent: 'Chrome/130', ipAddress: '10.0.0.5' },
-    );
+    expect(resolveGoogleLogin).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }));
   });
 });
 
-describe('googleAuthRedirect — khi có lỗi', () => {
+describe('googleAuthRedirect — AuthService KHÔNG trả session (tài khoản inactive/mới)', () => {
+  it('KHÔNG đặt cookie, chỉ redirect theo URL AuthService trả về', async () => {
+    const { controller, setAuthCookies } = buildController({
+      resolveGoogleLogin: jest.fn(async () => ({
+        redirectUrl: 'http://localhost:3001/login?error=abc',
+      })),
+    });
+    const { res, redirects } = fakeResponse();
+
+    await controller.googleAuthRedirect(fakeRequest({ isInactiveUser: true }), res);
+
+    expect(setAuthCookies).not.toHaveBeenCalled();
+    expect(redirects).toEqual([{ url: 'http://localhost:3001/login?error=abc' }]);
+  });
+});
+
+describe('googleAuthRedirect — khi AuthService ném lỗi', () => {
   beforeEach(() => {
-    process.env.FRONTEND_URL = FRONTEND;
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -138,58 +95,34 @@ describe('googleAuthRedirect — khi có lỗi', () => {
     jest.restoreAllMocks();
   });
 
-  // Đây là đích của một redirect từ Google — người dùng cuối nhìn thẳng vào response. Bản cũ trả
-  // 500 kèm err.stack, tức là phơi đường dẫn file và cấu trúc nội bộ cho bất kỳ ai bấm được nút
-  // "Đăng nhập với Google".
-  it('KHÔNG trả stack trace ra trình duyệt', async () => {
+  // Controller KHÔNG được tự dựng URL lỗi từ err (dễ lộ message/stack ra response) — phải luôn đi
+  // qua googleErrorRedirect(), vốn cố ý không nhận tham số lỗi.
+  it('redirect theo URL cố định của googleErrorRedirect(), không lồng nội dung lỗi gốc', async () => {
     const boom = new Error('kết nối DB hỏng');
-    const { controller } = buildController({
-      issueSession: jest.fn(async () => {
+    const { controller, googleErrorRedirect } = buildController({
+      resolveGoogleLogin: jest.fn(async () => {
         throw boom;
-      }),
-    });
-    const { res, redirects, jsonBodies, getStatus } = fakeResponse();
-
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
-
-    expect(jsonBodies).toHaveLength(0);
-    expect(getStatus()).toBeNull();
-
-    // Soi nguyên URL sau khi giải mã: thông điệp lỗi gốc, tên file, và chữ "at " của stack frame
-    // đều không được phép xuất hiện ở bất kỳ đâu trong thứ trả về trình duyệt.
-    const url = decodeURIComponent(redirects[0].url);
-    expect(url).not.toContain('kết nối DB hỏng');
-    expect(url).not.toContain('auth.controller');
-    expect(url).not.toContain('.ts:');
-    expect(url).not.toMatch(/\bat\s+\w/);
-  });
-
-  it('đưa người dùng về /login kèm thông báo đọc được', async () => {
-    const { controller } = buildController({
-      issueSession: jest.fn(async () => {
-        throw new Error('bất kỳ lỗi gì');
       }),
     });
     const { res, redirects } = fakeResponse();
 
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
+    await controller.googleAuthRedirect(fakeRequest({ id: 'u1' }), res);
 
-    expect(redirects).toHaveLength(1);
-    expect(redirects[0].url).toContain(`${FRONTEND}/login?error=`);
-    expect(decodeURIComponent(redirects[0].url)).toContain('Đăng nhập Google thất bại');
+    expect(googleErrorRedirect).toHaveBeenCalled();
+    expect(redirects).toEqual([{ url: 'http://localhost:3001/login?error=fallback' }]);
   });
 
   // Stack vẫn phải còn để điều tra — chỉ khác chỗ: trong log server, không phải trong response.
   it('vẫn ghi lỗi đầy đủ vào log server', async () => {
     const boom = new Error('kết nối DB hỏng');
     const { controller } = buildController({
-      issueSession: jest.fn(async () => {
+      resolveGoogleLogin: jest.fn(async () => {
         throw boom;
       }),
     });
     const { res } = fakeResponse();
 
-    await controller.googleAuthRedirect(fakeRequest({ id: 'u1', email: 'a@b.vn' }), res);
+    await controller.googleAuthRedirect(fakeRequest({ id: 'u1' }), res);
 
     expect(console.error).toHaveBeenCalledWith('[GoogleCallback] CRITICAL ERROR:', boom);
   });
