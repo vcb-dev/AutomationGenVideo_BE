@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsArray, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 
 export class CreateAssetDto {
   @ApiProperty()
@@ -49,4 +49,32 @@ export class CreateCategoryDto {
   @IsInt()
   @Min(0)
   bufferMinutes?: number;
+}
+
+export class CreateModelDto {
+  @ApiProperty()
+  @IsUUID()
+  categoryId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  manufacturer?: string;
+
+  @ApiPropertyOptional({ description: 'Giá tham chiếu, dùng để tính ngưỡng cấp duyệt (BR-22)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  referencePrice?: number;
+
+  @ApiPropertyOptional({ type: [String], description: 'Phụ kiện đi kèm, dùng khi bàn giao và khi trả' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  accessories?: string[];
 }
