@@ -1,15 +1,22 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { CreateAssetDto, CreateCategoryDto, CreateModelDto } from './dto';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { CreateAssetDto, CreateCategoryDto, CreateModelDto, InspectAssetDto } from './dto';
+import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
 
 @ApiTags('MEMS — Kho thiết bị')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('mems')
 export class MemsCatalogController {
-  constructor(private readonly service: MemsCatalogService) {}
+  constructor(
+    private readonly service: MemsCatalogService,
+    private readonly inspection: InspectionService,
+  ) {}
 
   @Get('assets')
   @ApiOperation({ summary: 'Danh sách thiết bị trong kho (MH-02)' })
@@ -23,6 +30,25 @@ export class MemsCatalogController {
     return this.service.assetDetail(assetCode);
   }
 
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Get('pending-inspection')
+  @ApiOperation({ summary: 'Máy đang chờ kết luận kiểm tra (NV-14)' })
+  pendingInspection() {
+    return this.inspection.listPending();
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Post('assets/:assetCode/inspect')
+  @ApiOperation({ summary: 'Kết luận kiểm tra, đưa máy ra khỏi bàn nhận (NV-14)' })
+  inspect(
+    @Request() req: any,
+    @Param('assetCode') assetCode: string,
+    @Body() dto: InspectAssetDto,
+  ) {
+    return this.inspection.inspect(assetCode, req.user.id, dto);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
   @Post('assets')
   @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01)' })
   createAsset(@Body() dto: CreateAssetDto) {
@@ -41,6 +67,7 @@ export class MemsCatalogController {
     return this.service.listModels({ categoryId });
   }
 
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
   @Post('models')
   @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03)' })
   createModel(@Body() dto: CreateModelDto) {
@@ -53,6 +80,7 @@ export class MemsCatalogController {
     return this.service.listLocations();
   }
 
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
   @Post('categories')
   @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02)' })
   createCategory(@Body() dto: CreateCategoryDto) {
