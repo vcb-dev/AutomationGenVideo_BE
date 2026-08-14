@@ -15,7 +15,11 @@ describe('AiIntegrationService — PAAST', () => {
       post: jest.fn(() => of({ data: {} })),
       get: jest.fn(() => of({ data: [] })),
     };
-    const configService: any = { get: jest.fn((_key: string, def?: string) => def) };
+    const configService: any = {
+      get: jest.fn((key: string, def?: string) =>
+        key === 'AI_SERVICE_URL' ? 'http://localhost:8001' : def,
+      ),
+    };
     const jwtService: any = { sign: jest.fn(() => 'fake.jwt.token') };
     const driveStorage: any = {};
     const prisma: any = {
