@@ -170,6 +170,36 @@ export class UsersService {
     });
   }
 
+  /**
+   * Chỉ dùng nội bộ cho auth flow (so khớp refresh token) — select riêng kèm refresh_token_hash,
+   * KHÔNG dùng findOne() công khai vì hash không được phép lộ ra UserResponseDto.
+   */
+  async findByIdForAuth(id: string) {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        is_active: true,
+        created_at: true,
+        updated_at: true,
+        refresh_token_hash: true,
+      },
+    });
+  }
+
+  /** Ghi hoặc xoá (null) bản băm refresh token hiện hành — token rotation single-session. */
+  async updateRefreshTokenHash(id: string, refreshTokenHash: string | null): Promise<void> {
+    await this.prisma.user.update({
+      where: { id },
+      data: { refresh_token_hash: refreshTokenHash },
+    });
+  }
+
   async update(id: string, updateUserDto: UpdateUserDto) {
     if (updateUserDto.email) {
       updateUserDto.email = updateUserDto.email.toLowerCase();
