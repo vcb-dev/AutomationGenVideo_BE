@@ -2,24 +2,13 @@ import { PrismaClient } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import { toTemplateLiteral } from '../src/common/utils/character-export.util';
 
 dotenv.config();
 
 const prisma = new PrismaClient();
 
 const OUTPUT_PATH = path.resolve(__dirname, '../prisma/scratch/characters-export.ts');
-
-// ECMAScript chuẩn hóa mọi CR/CRLF *literal* trong template string thành LF khi engine
-// parse/thực thi. Để giữ đúng \r\n gốc, escape \r thành chuỗi "\r" tường minh (backslash + r)
-// thay vì để byte CR thật trong backtick — escape sequence không bị chuẩn hóa.
-function toTemplateLiteral(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/\r/g, '\\r')
-    .replace(/`/g, '\\`')
-    .replace(/\$\{/g, '\\${');
-  return `\`${escaped}\``;
-}
 
 function formatValue(value: unknown, field: string): string {
   if (value === null) return 'null';

@@ -125,6 +125,14 @@ export class AiIntegrationService {
   // lần liên tiếp trong lúc lượt đầu còn đang chạy là có thật.
   private readonly contentTransformProcessingScores = new Set<string>();
 
+  // ── Timeout cho /upgrade — gọi endpoint gộp .../api/ai/transform-content/upgrade/ (viết lại
+  // RỒI chấm PAAST bản mới trong CÙNG 1 request Django, xem callContentTransformUpgradeAiService).
+  // Trước đây đây là 2 request riêng, mỗi request tự retry 3x120s = tối đa 720s cộng dồn. Giờ
+  // chỉ 1 request nhưng Django cần đủ ngân sách cho CẢ 2 lượt LLM nối tiếp bên trong (chia theo
+  // tỷ lệ 40% viết / 60% chấm, xem PaastAnalysisService.upgrade_scripted) — 420s (7 phút) đủ dư
+  // so với mức thường gặp (viết ~thực đo dưới 60s, chấm thường dưới 60s khi không phải retry).
+  private readonly CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS = 420_000;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -2945,12 +2953,18 @@ export class AiIntegrationService {
    * Gọi thẳng endpoint chấm điểm PAAST của AI service — cùng endpoint mà analyzeContent() ở
    * trên dùng, nhưng trả payload thô KHÔNG ghi lịch sử (paast_analysis_history), vì bản ghi
    * lịch sử ở luồng này là contentTransformHistory, không phải paastAnalysisHistory.
+   *
+   * `timeout_seconds` gửi kèm — trước đây thiếu field này (khác `callContentTransformAiService`
+   * đã làm đúng), nên Django rơi về DEFAULT_ANALYZE_TIMEOUT_S=120 hard-code riêng của nó thay vì
+   * đúng ngân sách BE thực sự chờ (timeoutMs). Hiện tại 2 mốc tình cờ trùng nhau (đều 120s) nên
+   * chưa gây lỗi, nhưng lệch âm thầm ngay khi timeoutMs đổi mà quên đổi theo phía Django — cùng
+   * loại bug đã từng xảy ra với transform-content (xem comment ở content_generation_views.py).
    */
   private async callPaastAnalyzeApi(content: string, timeoutMs: number): Promise<PaastAnalysisPayload> {
     const response = await firstValueFrom(
       this.httpService.post(
         `${this.aiServiceUrl}/api/ai/paast/analyze/`,
-        { content },
+        { content, timeout_seconds: Math.ceil(timeoutMs / 1000) },
         { timeout: timeoutMs },
       ),
     );
@@ -3306,6 +3320,52 @@ export class AiIntegrationService {
   }
 
   /**
+   * Gọi endpoint gộp .../api/ai/transform-content/upgrade/ — viết lại kịch bản (giữ giọng nhân
+   * vật) RỒI chấm PAAST bản mới, cả 2 lượt gọi LLM chạy TRONG 1 request Django duy nhất (Django
+   * tự chia ngân sách thời gian nội bộ 40% viết / 60% chấm — xem
+   * PaastAnalysisService.upgrade_scripted bên Django).
+   *
+   * Trước đây upgradeContent() tự gọi 2 request HTTP tuần tự (writeContentTransformWithRetry rồi
+   * scoreContentWithRetry), mỗi request lại tự retry riêng tới 3 lần — tối đa 6 round-trip cho 1
+   * lần bấm nút "Nâng cấp". Giờ dùng đúng 1 round-trip, khớp nguyên tắc mà /api/ai/paast/upgrade/
+   * (PAAST Analyzer độc lập) đã áp dụng từ trước — xem upgradeAnalysis() ở trên.
+   *
+   * KHÔNG tự retry ở tầng BE nữa (khác 2 hàm cũ): cả bước viết lẫn bước chấm giờ đã tự thử lại
+   * TẠI CHỖ bên trong Django (_write_scripted_upgrade, _classify_group) — nếu BE retry lại nguyên
+   * request này khi chỉ bước chấm lỗi, sẽ VIẾT LẠI TỪ ĐẦU dù bước viết đã xong, phá đúng nguyên
+   * tắc "lỗi chấm không được làm mất kết quả viết" mà luồng này cần giữ (xem cách hàm gọi hàm này
+   * xử lý `score_error` KHÔNG throw, chỉ trả kèm response — response 502/500 CHỈ xảy ra khi bước
+   * viết thất bại, tức là chưa có gì để mất).
+   */
+  private async callContentTransformUpgradeAiService(
+    writeSystemPrompt: string,
+    writeUserPrompt: string,
+    maxTokens: number,
+  ): Promise<{ outputText: string; scoreResult: ContentTransformScoreResult | null; scoreError: string | null }> {
+    const timeoutMs = this.CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS;
+    const response = await firstValueFrom(
+      this.httpService.post(
+        `${this.aiServiceUrl}/api/ai/transform-content/upgrade/`,
+        {
+          write_system_prompt: writeSystemPrompt,
+          write_user_prompt: writeUserPrompt,
+          max_tokens: maxTokens,
+          // Giây, không phải ms — cùng quy ước với callContentTransformAiService/callPaastAnalyzeApi.
+          timeout_seconds: Math.ceil(timeoutMs / 1000),
+        },
+        { timeout: timeoutMs },
+      ),
+    );
+
+    const { output_text, score, score_error } = response.data;
+    return {
+      outputText: output_text,
+      scoreResult: (score ?? null) as ContentTransformScoreResult | null,
+      scoreError: score_error ?? null,
+    };
+  }
+
+  /**
    * Sửa nâng cấp kịch bản: sửa các tiêu chí PAAST đang `miss` theo thứ tự ưu tiên lớp
    * (Prefer → Acknowledge → Trust → Action → Stick, xem paast-upgrade.util.ts).
    * Nhận id lịch sử (ưu tiên, tái dùng đúng permission check của getContentTransformHistoryDetail)
@@ -3384,20 +3444,42 @@ export class AiIntegrationService {
       const upgradeUserPrompt = buildPaastUpgradeUserPrompt(inputText, character.system_prompt, currentOutputText);
 
       const startTime = Date.now();
-      // Tự động thử lại tối đa 3 lần, cùng lý do với bước viết ở /transform (xem writeContentTransformWithRetry).
-      const newOutputText = await this.writeContentTransformWithRetry(upgradeSystemPrompt, upgradeUserPrompt, 16000, 'upgrade-write');
+      // 1 request HTTP DUY NHẤT — viết lại kịch bản RỒI chấm PAAST bản mới chạy nối tiếp bên
+      // trong Django (xem callContentTransformUpgradeAiService). Trước đây đây là 2 lượt gọi
+      // writeContentTransformWithRetry + scoreContentWithRetry tuần tự, mỗi lượt tự retry riêng
+      // (tối đa 6 round-trip). Lỗi ở bước viết (chưa có gì để mất) làm request này throw thẳng —
+      // giữ đúng hành vi cũ. Lỗi ở bước chấm KHÔNG throw, trả kèm score_error trong response.
+      const { outputText: newOutputText, scoreResult: freshScoreResult, scoreError: freshScoreError } =
+        await this.callContentTransformUpgradeAiService(upgradeSystemPrompt, upgradeUserPrompt, 16000);
 
-      // Chấm điểm lại HOÀN TOÀN từ đầu trên bản MỚI — 1 lệnh AI mới, tự retry tối đa 3 lần,
-      // không tái sử dụng bất kỳ phần nào của previousScoreResult. Lỗi ở đây KHÔNG được làm
-      // hỏng kết quả nâng cấp chính — vẫn lưu output_text mới, chỉ scoreStatus: 'failed'.
-      let newScoreResult: ContentTransformScoreResult | null = null;
-      let scoreStatus: 'success' | 'failed' = 'success';
-      let scoreError: string | null = null;
+      let newScoreResult: ContentTransformScoreResult | null = freshScoreResult;
+      let scoreStatus: 'success' | 'failed' = freshScoreError ? 'failed' : 'success';
+      // Django đã tự thử lại (_classify_group) trước khi trả score_error, nên lỗi đến đây luôn
+      // thuộc loại "đã thử hết cách, ngẫu nhiên" — dùng đúng văn phong retriable-fallback của
+      // buildContentTransformScoreErrorMessage() để nhất quán với thông báo lỗi của /rescore,
+      // dù không có đối tượng lỗi axios thật (Django trả message dạng chuỗi trong response 200).
+      let scoreError: string | null = freshScoreError
+        ? `Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng nâng cấp lại. Chi tiết: ${freshScoreError}`
+        : null;
+      let newScoreFromCache = false;
+
+      // Tra cache SAU khi đã có kết quả (khác rescoreContent, nơi tra cache TRƯỚC để quyết định
+      // có gọi AI hay không) — vì bước chấm giờ chạy TRONG CÙNG request gộp ở trên, BE không còn
+      // cách nào biết trước nội dung mới để bỏ qua lượt gọi đó. Tra cache ở đây không tiết kiệm
+      // được lượt gọi AI (đã lỡ chạy), nhưng vẫn giữ đúng bất biến "cùng nội dung luôn ra cùng
+      // điểm" (xem findContentTransformCachedScoreByOutput) cho trường hợp hiếm bản viết lại
+      // trùng y hệt một bản đã chấm trước đó. Lỗi tra cache không được làm hỏng kết quả đã có.
       try {
-        newScoreResult = await this.scoreContentWithRetry(newOutputText, 'upgrade-rescore');
+        const cached = await this.findContentTransformCachedScoreByOutput(ownerUserId, newOutputText);
+        if (cached) {
+          this.logger.log(`[upgrade-rescore] Tái dùng điểm đã chấm của bản ghi ${cached.id} cho nội dung y hệt`);
+          newScoreResult = cached.score_result as unknown as ContentTransformScoreResult;
+          scoreStatus = 'success';
+          scoreError = null;
+          newScoreFromCache = true;
+        }
       } catch (err: any) {
-        scoreStatus = 'failed';
-        scoreError = this.buildContentTransformScoreErrorMessage(err);
+        this.logger.warn(`[upgrade-rescore] Tra cache thất bại, dùng điểm vừa chấm: ${err?.message}`);
       }
 
       const durationMs = Date.now() - startTime;
@@ -3426,7 +3508,13 @@ export class AiIntegrationService {
           output_text: currentOutputText,
           scoreResult: previousScoreResult,
         },
-        upgraded: { ...newHistory, scoreResult: newHistory.score_result, scoreStatus, scoreError },
+        upgraded: {
+          ...newHistory,
+          scoreResult: newHistory.score_result,
+          scoreStatus,
+          scoreError,
+          fromCache: newScoreFromCache,
+        },
       };
     } finally {
       if (lockKey) {

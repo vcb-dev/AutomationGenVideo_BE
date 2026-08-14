@@ -2,36 +2,13 @@ import { PrismaClient } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import { toTemplateLiteral, toConstName } from '../src/common/utils/character-export.util';
 
 dotenv.config();
 
 const prisma = new PrismaClient();
 
 const OUTPUT_PATH = path.resolve(__dirname, '../prisma/seed-characters.ts');
-
-// Lưu ý: ECMAScript chuẩn hóa mọi CR/CRLF *nằm literal* trong template string thành LF
-// khi engine parse/thực thi. Nếu để \r thật trong backtick, mỗi lần seed script này được
-// chạy (require/ts-node/node), các dòng \r\n gốc sẽ rụng mất \r. Nên escape \r thành chuỗi
-// "\r" tường minh (backslash + r) — lúc đó nó chỉ là escape sequence, không bị chuẩn hóa,
-// và khi evaluate lại sẽ tái tạo đúng byte CR ban đầu.
-function toTemplateLiteral(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/\r/g, '\\r')
-    .replace(/`/g, '\\`')
-    .replace(/\$\{/g, '\\${');
-  return `\`${escaped}\``;
-}
-
-function toConstName(slug: string): string {
-  const base = slug
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, '_')
-    .toUpperCase()
-    .replace(/^_+|_+$/g, '');
-  return `${base}_SYSTEM_PROMPT`;
-}
 
 async function main() {
   const characters = await prisma.character.findMany({ orderBy: { order_index: 'asc' } });

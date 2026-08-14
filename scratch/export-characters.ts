@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import { toTemplateLiteral } from '../src/common/utils/character-export.util';
 
 dotenv.config();
 
@@ -9,18 +10,6 @@ const prisma = new PrismaClient();
 
 const OUTPUT_PATH =
   'C:\\Users\\Admin\\AppData\\Local\\Temp\\claude\\c--AutomationGenVideo\\b179303e-6362-41c7-805c-e55bddf5efd9\\scratchpad\\characters-backup.ts';
-
-// ECMAScript chuẩn hóa mọi CR/CRLF *literal* trong template string thành LF khi engine
-// parse/thực thi. Escape \r thành chuỗi "\r" tường minh (backslash + r) để giữ đúng \r\n
-// gốc nếu file này từng được require/eval lại — escape sequence không bị chuẩn hóa.
-function toTemplateLiteral(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/\r/g, '\\r')
-    .replace(/`/g, '\\`')
-    .replace(/\$\{/g, '\\${');
-  return `\`${escaped}\``;
-}
 
 function formatValue(value: unknown): string {
   if (value === null) return 'null';
