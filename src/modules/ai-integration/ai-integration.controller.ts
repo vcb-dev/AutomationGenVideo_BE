@@ -5,7 +5,16 @@ import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiConsumes, ApiBody, Api
 import { AiIntegrationService } from './ai-integration.service';
 import { SearchVideoDto, UserVideosDto } from './dto/search-video.dto';
 import { MixVideoAutoDto } from './dto/mix-video.dto';
+import { AnalyzeContentDto } from './dto/paast-analyze.dto';
+import { HistoryQueryDto } from './dto/paast-history-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+import { CreateTransformDto } from './dto/content-transform.dto';
+import { ContentTransformHistoryQueryDto } from './dto/content-transform-history-query.dto';
+import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
+import { RescoreDto } from './dto/content-transform-rescore.dto';
 
 @ApiTags('AI Integration')
 @Controller('ai')
@@ -866,5 +875,158 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Tiện ích tải video: stream file đã tải xong (proxy AI)' })
   async videoDownloaderJobFile(@Param('jobId') jobId: string, @Res() res: Response) {
     return this.aiService.videoDownloaderJobFile(jobId, res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAAST — chấm điểm content theo khung PAAST (5 lớp x 6 tiêu chí)
+  // ═══════════════════════════════════════════════════════════════
+
+  @Post('paast/analyze')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí, thang điểm 100)' })
+  async analyzePaastContent(@Req() req: any, @Body() dto: AnalyzeContentDto) {
+    return this.aiService.analyzeContent(req.user.id, dto);
+  }
+
+  @Post('paast/find-by-content')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này (mọi user) — tránh chấm điểm lại content không đổi, kể cả khi người khác đã chấm' })
+  async findPaastByContent(@Body() dto: AnalyzeContentDto) {
+    return this.aiService.findLatestByContent(dto.content);
+  }
+
+  @Post('paast/upgrade/:analysisId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Nâng cấp content dựa trên các tiêu chí đang thiếu của 1 bản phân tích đã lưu' })
+  async upgradePaastAnalysis(@Req() req: any, @Param('analysisId') analysisId: string) {
+    return this.aiService.upgradeAnalysis(req.user.id, analysisId);
+  }
+
+  @Get('paast/history')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy lịch sử phân tích PAAST của chính user đang login' })
+  async getPaastUserHistory(@Req() req: any, @Query() query: HistoryQueryDto) {
+    return this.aiService.getPaastUserHistory(req.user.id, query);
+  }
+
+  @Get('paast/history/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy chi tiết một bản ghi lịch sử phân tích PAAST' })
+  async getPaastHistoryDetail(@Req() req: any, @Param('id') id: string) {
+    return this.aiService.getPaastHistoryDetail(id, req.user.id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Chuyển đổi content — viết kịch bản theo giọng nhân vật + chấm điểm PAAST cho kịch bản đó.
+  // Gộp từ module content-transform riêng (trước ở /content-transform/*, nay /ai/content-transform/*
+  // cho nhất quán với các tính năng AI khác — cùng cách đã làm với PAAST Analyzer ở trên).
+  // ═══════════════════════════════════════════════════════════════
+
+  @Get('content-transform/characters')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy danh sách các nhân vật đang active' })
+  async getContentTransformCharacters() {
+    return this.aiService.getCharacters();
+  }
+
+  @Post('content-transform/transform')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Bước 1 — CHỈ viết kịch bản bằng AI (không chấm điểm). Trả scoreStatus "pending"; gọi tiếp POST content-transform/rescore để chấm điểm bản ghi vừa tạo',
+  })
+  async transformContent(@Req() req: any, @Body() dto: CreateTransformDto) {
+    return this.aiService.transformContent(req.user.id, dto);
+  }
+
+  @Post('content-transform/upgrade')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Sửa nâng cấp kịch bản: ưu tiên khắc phục Hard Gate rồi nhóm tiêu chí yếu nhất, tự động chấm điểm lại để so sánh cũ/mới',
+  })
+  async upgradeContentTransform(@Req() req: any, @Body() dto: UpgradeTransformDto) {
+    return this.aiService.upgradeContent(req.user.id, req.user.roles, dto);
+  }
+
+  @Post('content-transform/rescore')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Bước 2 — chấm điểm PAAST cho 1 bản ghi đã có kịch bản kết quả. Dùng cho cả lần chấm đầu tiên (sau content-transform/transform) lẫn chấm lại khi lần trước thất bại; luôn cập nhật vào đúng bản ghi đó',
+  })
+  async rescoreContentTransform(@Req() req: any, @Body() dto: RescoreDto) {
+    return this.aiService.rescoreContent(req.user.id, req.user.roles, dto);
+  }
+
+  @Post('content-transform/transcribe')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit
+    }),
+  )
+  @ApiOperation({ summary: 'Chuyển đổi file video/audio thành văn bản' })
+  async transcribeContentTransformUpload(@Req() req: any, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new HttpException('Không tìm thấy file upload', HttpStatus.BAD_REQUEST);
+    }
+
+    const ext = file.originalname.split('.').pop()?.toLowerCase() || '';
+    const allowedExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'];
+    if (!allowedExts.includes(ext)) {
+      throw new HttpException(
+        'Chỉ chấp nhận các định dạng file video (mp4, mov, avi, mkv, webm) hoặc audio (mp3, wav, m4a, aac, ogg, flac).',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const isMimeOk = file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/');
+    if (!isMimeOk) {
+      throw new HttpException('Mimetype của file không hợp lệ.', HttpStatus.BAD_REQUEST);
+    }
+
+    // AI transcribe-upload giờ yêu cầu IsAuthenticated (NestJWTAuthentication) — forward
+    // nguyên JWT của FE để AI validate bằng chung JWT_SECRET với BE.
+    return this.aiService.transcribeContentUpload(file, req.headers?.authorization);
+  }
+
+  @Get('content-transform/history')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy lịch sử chuyển đổi của chính user đang login' })
+  async getContentTransformUserHistory(@Req() req: any, @Query() query: ContentTransformHistoryQueryDto) {
+    return this.aiService.getContentTransformUserHistory(req.user.id, query);
+  }
+
+  @Get('content-transform/history/member/:userId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth()
+  @Roles(UserRole.LEADER, UserRole.ADMIN, UserRole.MANAGER)
+  @ApiOperation({ summary: 'Lấy lịch sử chuyển đổi của 1 member cụ thể' })
+  async getContentTransformMemberHistory(
+    @Req() req: any,
+    @Param('userId') memberId: string,
+    @Query() query: ContentTransformHistoryQueryDto,
+  ) {
+    return this.aiService.getContentTransformMemberHistory(req.user.id, memberId, query, req.user.roles);
+  }
+
+  @Get('content-transform/history/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy chi tiết một bản ghi lịch sử chuyển đổi' })
+  async getContentTransformHistoryDetail(@Req() req: any, @Param('id') id: string) {
+    return this.aiService.getContentTransformHistoryDetail(id, req.user.id, req.user.roles);
   }
 }
