@@ -7,6 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { ApprovalService } from './approval.service';
 import { AssignmentService } from './assignment.service';
 import { AvailabilityService } from './availability.service';
+import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { BorrowRequestService } from './borrow-request.service';
 import { HandoverService } from './handover.service';
 import { ReturnService } from './return.service';
@@ -28,6 +29,7 @@ export class MemsBorrowController {
   constructor(
     private readonly availability: AvailabilityService,
     private readonly requests: BorrowRequestService,
+    private readonly borrowHistory: AssetBorrowHistoryService,
     private readonly approvals: ApprovalService,
     private readonly assignment: AssignmentService,
     private readonly handovers: HandoverService,
@@ -49,6 +51,15 @@ export class MemsBorrowController {
   @ApiOperation({ summary: 'Tạo phiếu mượn (NV-06)' })
   create(@Request() req: any, @Body() dto: CreateBorrowRequestDto) {
     return this.requests.create(req.user.id, dto);
+  }
+
+  @Get('assets/:id/borrow-history')
+  @ApiOperation({
+    summary:
+      'Lịch sử máy này từng ai mượn — thành viên chỉ thấy lượt của mình, ADMIN/quản lý thấy tất',
+  })
+  assetBorrowHistory(@Param('id') id: string, @Request() req: any) {
+    return this.borrowHistory.forAsset(id, { id: req.user.id, roles: req.user.roles ?? [] });
   }
 
   @Get('requests')
