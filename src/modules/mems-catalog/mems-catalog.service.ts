@@ -45,18 +45,39 @@ export class MemsCatalogService {
     });
     const assetCode = `${prefix}-${String(existing + 1).padStart(3, '0')}`;
 
-    return this.prisma.memsAsset.create({
-      data: {
-        asset_code: assetCode,
-        qr_code: `MEMS:${assetCode}`,
-        model_id: dto.modelId,
-        serial_number: dto.serialNumber,
-        location_id: dto.locationId ?? null,
-        purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
-        purchase_price: dto.purchasePrice ?? null,
-        status: 'PENDING_INSPECTION', // BR-05
-        condition: 'GOOD',
-      },
+    // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
+    // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
+    const condition = dto.condition ?? 'GOOD';
+
+    return this.prisma.$transaction(async (tx) => {
+      const asset = await tx.memsAsset.create({
+        data: {
+          asset_code: assetCode,
+          qr_code: `MEMS:${assetCode}`,
+          model_id: dto.modelId,
+          serial_number: dto.serialNumber,
+          location_id: dto.locationId ?? null,
+          purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
+          purchase_price: dto.purchasePrice ?? null,
+          status: 'PENDING_INSPECTION', // BR-05
+          condition: condition as any,
+        },
+      });
+
+      // Nhật ký vòng đời bắt đầu từ đây chứ không phải từ lần bàn giao đầu tiên. Thiếu mốc này
+      // thì màn chi tiết của một chiếc máy chưa ai mượn trông như máy không có quá khứ.
+      await tx.memsAssetEvent.create({
+        data: {
+          asset_id: asset.id,
+          kind: 'INTAKE',
+          title: 'Nhập kho',
+          detail: [`tình trạng khi nhập ${condition}`, dto.intakeNote?.trim() || null]
+            .filter(Boolean)
+            .join(' · '),
+        },
+      });
+
+      return asset;
     });
   }
 
