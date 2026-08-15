@@ -161,3 +161,58 @@ export class UpsertEditorDailyKpiDto {
   @Type(() => EditorDailyKpiEntryDto)
   entries: EditorDailyKpiEntryDto[];
 }
+
+// ─── Content Creator KPI (target tháng thủ công) ───────────────────────────────
+
+export class UpsertContentCreatorKpiDto {
+  @ApiProperty() @IsString() user_id: string;
+  @ApiProperty() @IsString() team_id: string;
+  @ApiProperty() @IsString() month: string; // YYYY-MM
+
+  @ApiProperty(intField())
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  content_target: number;
+
+  @ApiProperty(intField())
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  translation_target: number;
+
+  @ApiPropertyOptional() @IsString() @IsOptional() note?: string;
+}
+
+// ─── Content Creator Daily KPI ─────────────────────────────────────────────────
+
+export class ContentCreatorDailyKpiEntryDto {
+  @ApiProperty() @IsString() user_id: string;
+
+  @ApiProperty({
+    minimum: 0,
+    description: "KPI ngày (số content); 0 = chưa set",
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  target: number;
+
+  @ApiPropertyOptional() @IsString() @IsOptional() note?: string;
+}
+
+export class UpsertContentCreatorDailyKpiDto {
+  @ApiProperty() @IsString() team_id: string;
+
+  @ApiProperty({ description: "Ngày áp dụng, định dạng YYYY-MM-DD" })
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: "date phải có dạng YYYY-MM-DD" })
+  date: string;
+
+  @ApiProperty({ type: [ContentCreatorDailyKpiEntryDto] })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ValidateNested({ each: true })
+  @Type(() => ContentCreatorDailyKpiEntryDto)
+  entries: ContentCreatorDailyKpiEntryDto[];
+}
