@@ -30,6 +30,15 @@ export async function isPrivilegedSourceTeamMember(db: Db, userId: string): Prom
   return !!membership;
 }
 
+/** True nếu user là thành viên (hoặc leader) của một Team có team_kind = CONTENT ("Content Team"). */
+export async function isContentTeamMember(db: Db, userId: string): Promise<boolean> {
+  const [membership, ledTeam] = await Promise.all([
+    db.teamMember.findFirst({ where: { user_id: userId, team: { team_kind: 'CONTENT' } }, select: { id: true } }),
+    db.team.findFirst({ where: { leader_id: userId, team_kind: 'CONTENT' }, select: { id: true } }),
+  ]);
+  return !!membership || !!ledTeam;
+}
+
 /** Mở transaction nếu nhận client gốc; nếu đã ở trong transaction thì chạy thẳng. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
   if ('$transaction' in db) {

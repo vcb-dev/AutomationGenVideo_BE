@@ -18,6 +18,8 @@ import {
   UpsertTeamKpiDto,
   UpsertEditorKpiDto,
   UpsertEditorDailyKpiDto,
+  UpsertContentCreatorKpiDto,
+  UpsertContentCreatorDailyKpiDto,
 } from "./kpi.dto";
 
 @ApiTags("task-auto")
@@ -118,5 +120,88 @@ export class TaskAutoKpiController {
   @ApiOperation({ summary: "Delete editor KPI" })
   deleteEditorKpi(@Param("id") id: string) {
     return this.kpi.deleteEditorKpi(id);
+  }
+
+  // ── Content Creator KPI Report (tự tính) ─────────────────────────────────
+  // Khai báo trước "kpi/content-creators/:id" để path tĩnh "report" không bị nuốt bởi :id.
+
+  @Get("kpi/content-creators/report")
+  @ApiOperation({ summary: "Báo cáo tự tính content/bản dịch/video theo content creator" })
+  getContentCreatorKpiReport(
+    @Query("user_id") userId?: string,
+    @Query("team_id") teamId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+  ) {
+    return this.kpi.getContentCreatorKpiReport({ user_id: userId, team_id: teamId, from, to });
+  }
+
+  // ── Content Creator Daily KPI ────────────────────────────────────────────
+  // Khai báo trước "kpi/content-creators/:id" để path tĩnh "daily" không bị nuốt bởi :id.
+
+  @Get("kpi/content-creators/daily")
+  @ApiOperation({ summary: "Get content creator daily KPIs (lọc theo ngày/khoảng/team/user)" })
+  getContentCreatorDailyKpis(
+    @Query("date") date?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("team_id") teamId?: string,
+    @Query("user_id") userId?: string,
+  ) {
+    return this.kpi.getContentCreatorDailyKpis({
+      date,
+      from,
+      to,
+      team_id: teamId,
+      user_id: userId,
+    });
+  }
+
+  @Post("kpi/content-creators/daily")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({
+    summary: "Upsert content creator daily KPIs theo lô (team + ngày; LEADER: team mình)",
+  })
+  upsertContentCreatorDailyKpis(
+    @Body() dto: UpsertContentCreatorDailyKpiDto,
+    @Request() req: any,
+  ) {
+    return this.kpi.upsertContentCreatorDailyKpis(dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("kpi/content-creators/daily/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Delete content creator daily KPI" })
+  deleteContentCreatorDailyKpi(@Param("id") id: string) {
+    return this.kpi.deleteContentCreatorDailyKpi(id);
+  }
+
+  // ── Content Creator KPI (tháng) ──────────────────────────────────────────
+
+  @Get("kpi/content-creators")
+  @ApiOperation({ summary: "Get content creator KPIs" })
+  getContentCreatorKpis(
+    @Query("month") month?: string,
+    @Query("user_id") userId?: string,
+  ) {
+    return this.kpi.getContentCreatorKpis(month, userId);
+  }
+
+  @Post("kpi/content-creators")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Upsert content creator KPI" })
+  upsertContentCreatorKpi(@Body() dto: UpsertContentCreatorKpiDto, @Request() req: any) {
+    return this.kpi.upsertContentCreatorKpi(dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Delete("kpi/content-creators/:id")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Delete content creator KPI" })
+  deleteContentCreatorKpi(@Param("id") id: string) {
+    return this.kpi.deleteContentCreatorKpi(id);
   }
 }

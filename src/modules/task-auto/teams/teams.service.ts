@@ -9,6 +9,7 @@ import { Prisma, UserRole } from '@prisma/client'
 import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 import { findProductBySku, findTeamProductBySku, backfillTeamSourcesForNewTeamProduct } from '../../../common/utils/catalog-link.util'
+import { runOrNotFound } from '../../../common/utils/prisma-not-found.util'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -103,6 +104,7 @@ export class TaskAutoTeamsService {
         data: {
           name: dto.name,
           leader_id: dto.leader_id,
+          team_kind: dto.team_kind,
           is_active: dto.is_active ?? true,
           members: memberIds.length
             ? { create: memberIds.map(uid => ({ user_id: uid })) }
@@ -562,7 +564,7 @@ export class TaskAutoTeamsService {
           market: source.market ?? 'VIETNAM', code: dto.code, title: source.title, body: source.body,
           script: source.script, file_content_url: source.file_content_url, voice_url: source.voice_url,
           content_line_id: source.content_line_id, classification_id: source.classification_id,
-          status: 'AVAILABLE', added_by_id: userId,
+          status: 'AVAILABLE', added_by_id: userId, origin: dto.origin as any,
         },
         include: this.teamContentInclude,
       })
@@ -574,7 +576,7 @@ export class TaskAutoTeamsService {
         code: dto.code, title: dto.title, body: dto.body, script: dto.script, file_content_url: dto.file_content_url,
         voice_url: dto.voice_url, content_line_id: dto.content_line_id, classification_id: dto.classification_id,
         status: 'AVAILABLE',
-        added_by_id: userId,
+        added_by_id: userId, origin: dto.origin as any,
       },
       include: this.teamContentInclude,
     })
@@ -602,6 +604,7 @@ export class TaskAutoTeamsService {
         ...(dto.content_line_id !== undefined  && { content_line_id: dto.content_line_id }),
         ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
         ...(dto.status !== undefined           && { status: dto.status as any }),
+        ...(dto.origin !== undefined           && { origin: dto.origin as any }),
       },
       include: this.teamContentInclude,
     })
@@ -635,6 +638,7 @@ export class TaskAutoTeamsService {
         brand_type:             entry.brand_type,
         classification_id:      entry.classification_id,
         added_by_id:            userId,
+        origin:                 entry.origin,
       },
     })
     // Thêm luôn vào kho tháng hiện tại — nếu không, content vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
@@ -876,6 +880,25 @@ export class TaskAutoTeamsService {
         include: { user: { select: { id: true, full_name: true, email: true } } },
       })
     }
+  }
+
+  async setMemberContentCreator(teamId: string, userId: string, isContentCreator: boolean, approverId: string, approverRoles: string[]) {
+    const isLeaderOnly = approverRoles.includes('LEADER') && !approverRoles.includes('ADMIN') && !approverRoles.includes('MANAGER')
+
+    if (isLeaderOnly) {
+      const team = await this.prisma.team.findUnique({ where: { id: teamId } })
+      if (team?.leader_id !== approverId)
+        throw new ForbiddenException('LEADER chỉ được quản lý team của mình')
+    }
+
+    return runOrNotFound(
+      () => this.prisma.teamMember.update({
+        where: { team_id_user_id: { team_id: teamId, user_id: userId } },
+        data: { is_content_creator: isContentCreator },
+        include: { user: { select: { id: true, full_name: true, email: true } } },
+      }),
+      'Người dùng không trong team này',
+    )
   }
 
   async getEditorApprovals(status?: string) {
