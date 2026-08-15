@@ -120,6 +120,8 @@ export class QueryProductDto {
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
+const CONTENT_ORIGINS = ["COLLECTED", "SELF_CREATED"];
+
 export class CreateContentDto {
   @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
@@ -134,6 +136,10 @@ export class CreateContentDto {
   @IsEnum(["GLOBAL", "VIETNAM"])
   @IsOptional()
   market?: "GLOBAL" | "VIETNAM";
+  @ApiPropertyOptional({ enum: CONTENT_ORIGINS })
+  @IsEnum(CONTENT_ORIGINS)
+  @IsOptional()
+  origin?: "COLLECTED" | "SELF_CREATED";
 }
 
 export class UpdateContentDto {
@@ -154,6 +160,10 @@ export class UpdateContentDto {
   @IsEnum(["AVAILABLE", "IN_TASK", "USED", "ARCHIVED"])
   @IsOptional()
   status?: "AVAILABLE" | "IN_TASK" | "USED" | "ARCHIVED";
+  @ApiPropertyOptional({ enum: CONTENT_ORIGINS })
+  @IsEnum(CONTENT_ORIGINS)
+  @IsOptional()
+  origin?: "COLLECTED" | "SELF_CREATED";
 }
 
 export class QueryContentDto {
@@ -177,6 +187,19 @@ export class QueryContentDto {
   @Min(1)
   @IsOptional()
   limit?: number = 50;
+}
+
+// ─── Content Translations (bản dịch content theo thị trường) ──────────────────
+
+export class UpsertContentTranslationDto {
+  @ApiProperty({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) market: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
+}
+
+export class AiTranslateContentDto {
+  @ApiProperty({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) market: string;
 }
 
 // ─── Source ───────────────────────────────────────────────────────────────────
@@ -265,6 +288,7 @@ export class CreateTeamContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() voice_url?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
+  @ApiPropertyOptional({ enum: CONTENT_ORIGINS }) @IsEnum(CONTENT_ORIGINS) @IsOptional() origin?: "COLLECTED" | "SELF_CREATED";
 }
 
 export class UpdateTeamContentDto {
@@ -279,6 +303,7 @@ export class UpdateTeamContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsEnum(['AVAILABLE', 'IN_TASK', 'USED', 'ARCHIVED']) @IsOptional() status?: string;
+  @ApiPropertyOptional({ enum: CONTENT_ORIGINS }) @IsEnum(CONTENT_ORIGINS) @IsOptional() origin?: "COLLECTED" | "SELF_CREATED";
 }
 
 // ─── Team Source (standalone) ─────────────────────────────────────────────────

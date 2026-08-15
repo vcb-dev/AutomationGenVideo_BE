@@ -6,6 +6,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -69,7 +70,9 @@ export class TaskAutoTasksService {
   private taskDetailInclude = {
     // leader_id thêm vào đây để update()/submit() đọc trực tiếp từ `updated.team.leader_id`
     // thay vì phải query lại team.findUnique riêng chỉ để lấy leader_id (xem bên dưới).
-    team: { select: { id: true, name: true, leader_id: true } },
+    // market: FE dùng để biết editor đang làm task cho thị trường nào (xem ContentSection —
+    // gợi ý dùng/dịch bản content sang đúng thị trường team khi content nguồn là tiếng Việt).
+    team: { select: { id: true, name: true, leader_id: true, market: true } },
     content: {
       select: {
         id: true,
@@ -1337,6 +1340,7 @@ export class TaskAutoTasksService {
       teamApprovedByContentLine,
       contentLines,
       manualDailyKpis,
+      contentFreshnessByUser,
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
@@ -1444,6 +1448,13 @@ export class TaskAutoTasksService {
         },
         select: { user_id: true, target: true },
       }),
+      // "Content mới/cũ": task dùng content thêm vào kho đúng ngày task tạo (mới) hay từ trước (cũ).
+      this.getContentFreshnessByAssignee({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        ...(range ? { created_at: range } : {}),
+      }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1522,6 +1533,10 @@ export class TaskAutoTasksService {
         traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
         /** Tổng doanh thu tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
         revenue_month: revenueMonthByEmail[email.toLowerCase().trim()] ?? 0,
+        /** Số task trong kỳ dùng content thêm vào kho ĐÚNG NGÀY task được tạo. */
+        content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
+        /** Số task trong kỳ dùng content đã có từ TRƯỚC ngày task được tạo (tiêu thụ tồn kho). */
+        content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
       };
     });
 
@@ -1572,6 +1587,82 @@ export class TaskAutoTasksService {
       cur.setMonth(cur.getMonth() + 1);
     }
     return months;
+  }
+
+  /**
+   * "Content mới" vs "Content cũ": với mỗi task trong `where`, tra ngày tạo của content đã dùng
+   * (content_id → Content.created_at, editor_content_id → EditorContent.added_at, team_content_id →
+   * TeamContent.added_at — mỗi task chỉ có đúng 1 trong 3 field này được set) và so với ngày tạo task
+   * theo NGÀY LỊCH VN (vietnamDateString). Cùng ngày → "content mới" (editor vừa tạo rồi dùng ngay);
+   * ngày trước đó → "content cũ" (đang tiêu thụ tồn kho có sẵn). Gộp theo assignee_id — task không có
+   * assignee hoặc content bị xoá/thiếu liên kết bị bỏ qua (không tính vào mẫu số).
+   */
+  private async getContentFreshnessByAssignee(
+    where: Prisma.TaskWhereInput,
+  ): Promise<Record<string, { new: number; old: number }>> {
+    const rows = await this.prisma.task.findMany({
+      where,
+      select: {
+        assignee_id: true,
+        created_at: true,
+        content_id: true,
+        editor_content_id: true,
+        team_content_id: true,
+      },
+    });
+
+    const contentIds = [
+      ...new Set(rows.map((r) => r.content_id).filter((id): id is string => !!id)),
+    ];
+    const editorContentIds = [
+      ...new Set(rows.map((r) => r.editor_content_id).filter((id): id is string => !!id)),
+    ];
+    const teamContentIds = [
+      ...new Set(rows.map((r) => r.team_content_id).filter((id): id is string => !!id)),
+    ];
+
+    const [contents, editorContents, teamContents] = await Promise.all([
+      contentIds.length > 0
+        ? this.prisma.content.findMany({
+            where: { id: { in: contentIds } },
+            select: { id: true, created_at: true },
+          })
+        : Promise.resolve([]),
+      editorContentIds.length > 0
+        ? this.prisma.editorContent.findMany({
+            where: { id: { in: editorContentIds } },
+            select: { id: true, added_at: true },
+          })
+        : Promise.resolve([]),
+      teamContentIds.length > 0
+        ? this.prisma.teamContent.findMany({
+            where: { id: { in: teamContentIds } },
+            select: { id: true, added_at: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const contentDateById = new Map(contents.map((c) => [c.id, c.created_at]));
+    const editorContentDateById = new Map(editorContents.map((c) => [c.id, c.added_at]));
+    const teamContentDateById = new Map(teamContents.map((c) => [c.id, c.added_at]));
+
+    const result: Record<string, { new: number; old: number }> = {};
+    for (const r of rows) {
+      if (!r.assignee_id) continue;
+      const contentCreatedAt =
+        (r.content_id && contentDateById.get(r.content_id)) ||
+        (r.editor_content_id && editorContentDateById.get(r.editor_content_id)) ||
+        (r.team_content_id && teamContentDateById.get(r.team_content_id)) ||
+        null;
+      if (!contentCreatedAt) continue;
+      const bucket = (result[r.assignee_id] ??= { new: 0, old: 0 });
+      if (vietnamDateString(contentCreatedAt) === vietnamDateString(r.created_at)) {
+        bucket.new++;
+      } else {
+        bucket.old++;
+      }
+    }
+    return result;
   }
 
   /**
@@ -1643,6 +1734,7 @@ export class TaskAutoTasksService {
       approvedByContentLine,
       contentLines,
       manualDailyKpis,
+      contentFreshnessByUser,
     ] = await Promise.all([
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: { in: monthsTouched } },
@@ -1705,6 +1797,13 @@ export class TaskAutoTasksService {
         },
         select: { user_id: true, target: true },
       }),
+      // "Content mới/cũ": task dùng content thêm vào kho đúng ngày task tạo (mới) hay từ trước (cũ).
+      this.getContentFreshnessByAssignee({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        created_at: range,
+      }),
     ]);
 
     const kpiTargetByUser: Record<string, number> = {};
@@ -1754,6 +1853,8 @@ export class TaskAutoTasksService {
         0,
       traffic_month: trafficByEmail[m.email] ?? 0,
       revenue_month: revenueByEmail[m.email] ?? 0,
+      content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
+      content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
     }));
 
     const approvedCountByContentLineId = Object.fromEntries(
@@ -1786,6 +1887,8 @@ export class TaskAutoTasksService {
         kpi_day_target: number;
         traffic_month: number;
         revenue_month: number;
+        content_new: number;
+        content_old: number;
       }
     >();
     for (const t of teams) {
@@ -1799,6 +1902,8 @@ export class TaskAutoTasksService {
         kpi_day_target: 0,
         traffic_month: 0,
         revenue_month: 0,
+        content_new: 0,
+        content_old: 0,
       });
     }
     for (const pm of perMember) {
@@ -1810,6 +1915,8 @@ export class TaskAutoTasksService {
       agg.kpi_day_target += pm.kpi_day_target;
       agg.traffic_month += pm.traffic_month;
       agg.revenue_month += pm.revenue_month;
+      agg.content_new += pm.content_new;
+      agg.content_old += pm.content_old;
     }
 
     return {

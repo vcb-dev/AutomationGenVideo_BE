@@ -20,6 +20,10 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       task: {
         groupBy: jest.fn(async () => []),
         count: jest.fn(async () => 0),
+        // getContentFreshnessByAssignee (content_new/content_old) đọc task.findMany — không nằm
+        // trong phạm vi test file này (xem content-freshness-by-assignee.spec.ts), nhưng thiếu
+        // mock này thì suite hỏng ngay ở lời gọi biên dịch được, không phải lúc assert.
+        findMany: jest.fn(async () => []),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
       trafficReport: { groupBy: jest.fn(async () => []) },

@@ -17,7 +17,7 @@ import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTeamsService } from "./teams.service";
 import { TaskAutoTasksService } from "../tasks/tasks.service";
-import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto } from "./team.dto";
+import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto, SetContentCreatorDto } from "./team.dto";
 import {
   CreateTeamProductDto,
   UpdateTeamProductDto,
@@ -93,6 +93,25 @@ export class TaskAutoTeamsController {
       teamId,
       userId,
       dto.is_editor,
+      req.user.id,
+      req.user.roles ?? [],
+    );
+  }
+
+  @Patch("teams/:id/members/:userId/content-creator")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Directly set/unset a team member as Content Creator" })
+  setMemberContentCreator(
+    @Param("id") teamId: string,
+    @Param("userId") userId: string,
+    @Body() dto: SetContentCreatorDto,
+    @Request() req: any,
+  ) {
+    return this.teams.setMemberContentCreator(
+      teamId,
+      userId,
+      dto.is_content_creator,
       req.user.id,
       req.user.roles ?? [],
     );

@@ -39,7 +39,9 @@ import {
   CreateEditorSourceDto,
   UpdateEditorSourceDto,
   QueryEditorSourceDto,
+  UpsertContentTranslationDto,
 } from "./catalog.dto";
+import { AiIntegrationService } from "../../ai-integration/ai-integration.service";
 
 @Injectable()
 export class TaskAutoCatalogService {
@@ -47,6 +49,7 @@ export class TaskAutoCatalogService {
     private prisma: PrismaService,
     private teamsService: TaskAutoTeamsService,
     private push: PushService,
+    private aiIntegration: AiIntegrationService,
   ) {}
 
   private monthRange(month?: string, field = "created_at") {
@@ -283,6 +286,7 @@ export class TaskAutoCatalogService {
           added_by_id: true,
           lark_record_id: true,
           source_team_content_id: true,
+          origin: true,
           created_at: true,
           updated_at: true,
           content_line: { select: { id: true, name: true } },
@@ -414,6 +418,89 @@ export class TaskAutoCatalogService {
       throw new ConflictException("Content is currently in use by a task");
     await this.prisma.content.delete({ where: { id } });
     return { success: true };
+  }
+
+  // ─── Content Translations (bản dịch content theo thị trường) ──────────────
+
+  private async assertContentExists(contentId: string) {
+    const exists = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException("Content not found");
+  }
+
+  async getContentTranslations(contentId: string) {
+    await this.assertContentExists(contentId);
+    return this.prisma.contentTranslation.findMany({
+      where: { content_id: contentId },
+      include: { translated_by: { select: { id: true, full_name: true } } },
+      orderBy: { market: "asc" },
+    });
+  }
+
+  async upsertContentTranslation(
+    contentId: string,
+    dto: UpsertContentTranslationDto,
+    userId: string,
+  ) {
+    await this.assertContentExists(contentId);
+    return this.prisma.contentTranslation.upsert({
+      where: { content_id_market: { content_id: contentId, market: dto.market } },
+      update: {
+        title: dto.title,
+        body: dto.body,
+        script: dto.script,
+        translated_by_id: userId,
+      },
+      create: {
+        content_id: contentId,
+        market: dto.market,
+        title: dto.title,
+        body: dto.body,
+        script: dto.script,
+        translated_by_id: userId,
+      },
+      include: { translated_by: { select: { id: true, full_name: true } } },
+    });
+  }
+
+  async deleteContentTranslation(contentId: string, market: string) {
+    await runOrNotFound(
+      () =>
+        this.prisma.contentTranslation.delete({
+          where: { content_id_market: { content_id: contentId, market } },
+        }),
+      "ContentTranslation not found",
+    );
+    return { success: true };
+  }
+
+  /** Dịch nháp title/body/script sang market đích — KHÔNG lưu DB, chỉ trả bản nháp. */
+  async aiTranslateContent(contentId: string, market: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: { title: true, body: true, script: true },
+    });
+    if (!content) throw new NotFoundException("Content not found");
+
+    const translateField = async (text: string | null) => {
+      if (!text) return null;
+      const translated = await this.aiIntegration.translateVideoScript({
+        content: text,
+        hashtags: [],
+        market,
+      });
+      return translated?.content ?? null;
+    };
+
+    const [title, body, script] = await Promise.all([
+      translateField(content.title),
+      translateField(content.body),
+      translateField(content.script),
+    ]);
+
+    return { market, title, body, script };
   }
 
   async findContentLines() {
