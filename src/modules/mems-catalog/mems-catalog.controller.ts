@@ -58,7 +58,7 @@ export class MemsCatalogController {
     return this.photos.list(assetCode);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('assets/:assetCode/photos')
   @ApiOperation({ summary: 'Tải ảnh thiết bị lên' })
   @ApiConsumes('multipart/form-data')
@@ -72,14 +72,14 @@ export class MemsCatalogController {
     return this.photos.upload(assetCode, req.user.id, file, caption, req.user);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('photos/:photoId/primary')
   @ApiOperation({ summary: 'Chọn ảnh đại diện hiện ở bảng kho' })
   setPrimaryPhoto(@Param('photoId') photoId: string) {
     return this.photos.setPrimary(photoId);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Delete('photos/:photoId')
   @ApiOperation({ summary: 'Xoá một ảnh thiết bị' })
   removePhoto(@Param('photoId') photoId: string) {
@@ -117,14 +117,14 @@ export class MemsCatalogController {
     fs.createReadStream(filePath).pipe(res);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Get('pending-inspection')
   @ApiOperation({ summary: 'Máy đang chờ kết luận kiểm tra (NV-14)' })
   pendingInspection() {
     return this.inspection.listPending();
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('assets/:assetCode/inspect')
   @ApiOperation({ summary: 'Kết luận kiểm tra, đưa máy ra khỏi bàn nhận (NV-14)' })
   inspect(
@@ -135,7 +135,7 @@ export class MemsCatalogController {
     return this.inspection.inspect(assetCode, req.user.id, dto);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('assets')
   @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01)' })
   createAsset(@Body() dto: CreateAssetDto) {
@@ -154,7 +154,7 @@ export class MemsCatalogController {
     return this.service.listModels({ categoryId });
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('models')
   @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03)' })
   createModel(@Body() dto: CreateModelDto) {
@@ -167,7 +167,7 @@ export class MemsCatalogController {
     return this.service.listLocations();
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('categories')
   @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02)' })
   createCategory(@Body() dto: CreateCategoryDto) {
