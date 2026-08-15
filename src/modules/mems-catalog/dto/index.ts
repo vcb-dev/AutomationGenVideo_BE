@@ -26,6 +26,19 @@ export class CreateAssetDto {
   @IsOptional()
   @IsUUID()
   locationId?: string;
+
+  @ApiPropertyOptional({
+    enum: ['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'],
+    description: 'Tình trạng vật lý lúc nhập kho; bỏ trống hiểu là Tốt',
+  })
+  @IsOptional()
+  @IsIn(['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'])
+  condition?: string;
+
+  @ApiPropertyOptional({ description: 'Ghi chú lúc nhập kho, vào thẳng nhật ký vòng đời' })
+  @IsOptional()
+  @IsString()
+  intakeNote?: string;
 }
 
 export class CreateCategoryDto {
