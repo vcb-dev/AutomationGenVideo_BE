@@ -77,42 +77,42 @@ export class MemsBorrowController {
     return this.approvals.reject(id, { id: req.user.id, roles: req.user.roles ?? [] }, dto);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Get('request-lines/:lineId/assignable-assets')
   @ApiOperation({ summary: 'Máy hợp lệ để gán cho một dòng phiếu (BR-25)' })
   assignable(@Param('lineId') lineId: string) {
     return this.assignment.assignableUnits(lineId);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('requests/:id/assign')
   @ApiOperation({ summary: 'Gán máy cụ thể cho phiếu đã duyệt (NV-10)' })
   assign(@Param('id') id: string, @Body() dto: AssignSerialsDto) {
     return this.assignment.assign(id, dto);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Get('requests/:id/handover-sheet')
   @ApiOperation({ summary: 'Dữ liệu dựng biên bản bàn giao (MH-11)' })
   handoverSheet(@Param('id') id: string) {
     return this.handovers.prepareSheet(id);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('requests/:id/handover')
   @ApiOperation({ summary: 'Lập biên bản bàn giao (NV-11)' })
   handover(@Request() req: any, @Param('id') id: string, @Body() dto: CreateHandoverDto) {
     return this.handovers.create(id, req.user.id, dto);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Get('requests/:id/pending-returns')
   @ApiOperation({ summary: 'Những máy của phiếu còn đang ở ngoài (MH-13)' })
   pendingReturns(@Param('id') id: string) {
     return this.returns.pendingUnits(id);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('requests/:id/return')
   @ApiOperation({ summary: 'Tiếp nhận máy trả về, kết luận theo BR-42 (NV-13)' })
   receiveReturn(@Request() req: any, @Param('id') id: string, @Body() dto: CreateReturnDto) {
