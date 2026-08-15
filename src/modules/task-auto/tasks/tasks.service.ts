@@ -553,44 +553,73 @@ export class TaskAutoTasksService {
 
   async findAll(q: QueryTaskDto) {
     const where: any = {};
+    const and: any[] = [];
+    // Trạng thái coi như "xong việc" — task ở đây không tính trễ hạn dù deadline đã qua.
+    // Phải khớp isOverdue() ở FE (src/components/task-auto/helpers.ts và PersonalDashboard.tsx).
+    const doneStatuses = ["APPROVED", "CANCELLED"];
 
-    if (q.status) where.status = q.status;
     if (q.team_id) where.team_id = q.team_id;
     if (q.assignee_id) where.assignee_id = q.assignee_id;
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";
-    if (q.deadline_from || q.deadline_to) {
-      // Khoảng ngày: mặc định mở về quá khứ/tương lai nếu chỉ truyền 1 đầu mốc.
-      const rangeStart = q.deadline_from
-        ? new Date(`${q.deadline_from}T00:00:00+07:00`)
-        : undefined;
-      const rangeEnd = q.deadline_to
-        ? new Date(`${q.deadline_to}T23:59:59.999+07:00`)
-        : undefined;
-      const bounds: { gte?: Date; lte?: Date } = {};
-      if (rangeStart) bounds.gte = rangeStart;
-      if (rangeEnd) bounds.lte = rangeEnd;
-      // Task có deadline rơi vào khoảng lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
-      where.OR = [
-        { deadline: bounds },
-        { deadline: null, created_at: bounds },
-      ];
-    } else if (q.deadline_date) {
-      const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
-      const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
-      // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
-      where.OR = [
-        { deadline: { gte: dayStart, lte: dayEnd } },
-        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
-      ];
-    } else if (q.month) {
-      const start = new Date(`${q.month}-01`);
-      const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
-      where.created_at = { gte: start, lt: end };
+
+    if (q.overdue === "true") {
+      // Cột "Quá hạn" ảo (Kanban): không phải 1 status thật nên bỏ qua q.status/deadline_from/to/
+      // deadline_date/month — trễ hạn tự neo theo thời điểm hiện tại, không phải khoảng ngày lọc thêm.
+      and.push({ deadline: { lt: new Date() } });
+      and.push({ status: { notIn: doneStatuses } });
+    } else {
+      if (q.status) where.status = q.status;
+      if (q.deadline_from || q.deadline_to) {
+        // Khoảng ngày: mặc định mở về quá khứ/tương lai nếu chỉ truyền 1 đầu mốc.
+        const rangeStart = q.deadline_from
+          ? new Date(`${q.deadline_from}T00:00:00+07:00`)
+          : undefined;
+        const rangeEnd = q.deadline_to
+          ? new Date(`${q.deadline_to}T23:59:59.999+07:00`)
+          : undefined;
+        const bounds: { gte?: Date; lte?: Date } = {};
+        if (rangeStart) bounds.gte = rangeStart;
+        if (rangeEnd) bounds.lte = rangeEnd;
+        // Task có deadline rơi vào khoảng lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+        and.push({
+          OR: [
+            { deadline: bounds },
+            { deadline: null, created_at: bounds },
+          ],
+        });
+      } else if (q.deadline_date) {
+        const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
+        const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
+        // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
+        and.push({
+          OR: [
+            { deadline: { gte: dayStart, lte: dayEnd } },
+            { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+          ],
+        });
+      } else if (q.month) {
+        const start = new Date(`${q.month}-01`);
+        const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+        where.created_at = { gte: start, lt: end };
+      }
+
+      if (q.exclude_overdue === "true") {
+        // Task trễ hạn giờ dồn về cột "Quá hạn" riêng — loại khỏi các cột trạng thái khác
+        // (trừ APPROVED/CANCELLED, vốn không tính trễ hạn) để tránh hiển thị trùng 2 nơi.
+        and.push({
+          OR: [
+            { deadline: null },
+            { deadline: { gte: new Date() } },
+            { status: { in: doneStatuses } },
+          ],
+        });
+      }
     }
     if (q.search) {
       where.content = { title: { contains: q.search, mode: "insensitive" } };
     }
+    if (and.length) where.AND = and;
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 20;
