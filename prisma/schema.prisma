@@ -4508,6 +4508,7 @@ model MemsAsset {
   returnLines   MemsReturnLine[]
   incidents     MemsIncident[]
   events        MemsAssetEvent[]
+  photos        MemsAssetPhoto[]
 
   @@index([model_id, status])
   @@map("mems_assets")
@@ -4780,4 +4781,25 @@ model MemsAssetEvent {
   // Nhật ký vòng đời chỉ ghi thêm: màn chi tiết máy đọc ngược theo thời gian
   @@index([asset_id, occurred_at])
   @@map("mems_asset_events")
+}
+
+model MemsAssetPhoto {
+  id          String   @id @default(uuid()) @db.Uuid
+  asset_id    String   @db.Uuid
+  /// Đường dẫn đầy đủ tới ảnh. Lưu URL chứ không lưu khoá lưu trữ, giống avatar_url và
+  /// thumbnail_url ở các bảng khác — nơi lưu có thể đổi mà chỗ đọc không phải sửa gì.
+  url         String
+  /// google_drive hoặc local, ghi lại để sau này còn biết ảnh nào cần chuyển kho
+  storage     String   @default("local")
+  caption     String?
+  /// Ảnh đại diện hiện ở bảng kho. Mỗi máy chỉ nên có một, service tự bỏ cờ ở ảnh cũ.
+  is_primary  Boolean  @default(false)
+  sort_order  Int      @default(0)
+  uploaded_by String?  @db.Uuid
+  created_at  DateTime @default(now())
+
+  asset MemsAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+
+  @@index([asset_id, sort_order])
+  @@map("mems_asset_photos")
 }

@@ -139,6 +139,7 @@ export class MemsCatalogService {
       include: {
         model: { include: { category: true, accessories: { orderBy: { sort_order: 'asc' } } } },
         location: true,
+        photos: { orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }] },
       },
     });
     if (!asset) throw new NotFoundException(`Không có thiết bị mã ${assetCode}`);
@@ -186,7 +187,13 @@ export class MemsCatalogService {
         ...(filter.status ? { status: filter.status as any } : {}),
         ...(filter.categoryId ? { model: { category_id: filter.categoryId } } : {}),
       },
-      include: { model: { include: { category: true } }, location: true },
+      include: {
+        model: { include: { category: true } },
+        location: true,
+        // Chỉ ảnh đại diện: bảng kho có hàng chục dòng, kéo cả bộ ảnh mỗi dòng là phí băng thông
+        // cho thứ không ai nhìn tới cho đến khi bấm vào máy.
+        photos: { where: { is_primary: true }, take: 1 },
+      },
       orderBy: { asset_code: 'asc' },
     });
   }
