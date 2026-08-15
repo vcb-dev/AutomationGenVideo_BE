@@ -10,6 +10,53 @@ export class BorrowRequestService {
     private readonly availability: AvailabilityService,
   ) {}
 
+  /**
+   * Bộ phận của người mượn, suy từ chính người đăng nhập.
+   *
+   * Client KHÔNG nên tự khai mình thuộc bộ phận nào — khai sai là quy trách nhiệm sai người,
+   * và giao diện cũng không có nguồn nào để lấy con số đó.
+   *
+   * Thứ tự tra, từ chắc chắn nhất tới suy đoán:
+   *   1. Bảng thành viên MEMS, nếu ai đó đã gán
+   *   2. Trường team trên hồ sơ người dùng, khớp với mã hoặc tên bộ phận
+   *   3. Cả hệ thống chỉ có một bộ phận thì dùng luôn nó
+   * Hết cả ba thì báo lỗi nói rõ phải làm gì, chứ không đoán bừa một bộ phận.
+   */
+  private async resolveDepartment(tx: any, ownerId: string, given?: string): Promise<string> {
+    if (given) return given;
+
+    const membership = await tx.memsMember.findFirst({
+      where: { user_id: ownerId, is_disabled: false },
+      select: { department_id: true },
+    });
+    if (membership) return membership.department_id;
+
+    const user = await tx.user.findUnique({
+      where: { id: ownerId },
+      select: { team: true },
+    });
+    if (user?.team) {
+      const matched = await tx.memsDepartment.findFirst({
+        where: {
+          is_disabled: false,
+          OR: [
+            { code: { equals: user.team, mode: 'insensitive' } },
+            { name: { equals: user.team, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (matched) return matched.id;
+    }
+
+    const all = await tx.memsDepartment.findMany({ where: { is_disabled: false }, select: { id: true } });
+    if (all.length === 1) return all[0].id;
+
+    throw new BadRequestException(
+      'Chưa xác định được bộ phận của bạn. Nhờ quản trị gán bạn vào một bộ phận trong MEMS.',
+    );
+  }
+
   async create(ownerId: string, dto: CreateBorrowRequestDto) {
     const fromTime = new Date(dto.fromTime);
     const toTime = new Date(dto.toTime);
@@ -28,12 +75,13 @@ export class BorrowRequestService {
         );
       }
 
+      const departmentId = await this.resolveDepartment(tx, ownerId, dto.departmentId);
       const requestCode = await this.nextRequestCode(tx, fromTime);
       const request = await tx.memsBorrowRequest.create({
         data: {
           request_code: requestCode,
           owner_id: ownerId,
-          department_id: dto.departmentId,
+          department_id: departmentId,
           project: dto.project,
           place: dto.place,
           from_time: fromTime,
