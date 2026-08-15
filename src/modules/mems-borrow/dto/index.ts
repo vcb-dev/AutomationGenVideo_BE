@@ -31,9 +31,14 @@ export class BorrowLineDto {
 }
 
 export class CreateBorrowRequestDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'Bỏ trống thì server tự suy từ người đăng nhập. Client không nên tự khai mình thuộc ' +
+      'bộ phận nào — khai sai là quy trách nhiệm sai người.',
+  })
+  @IsOptional()
   @IsUUID()
-  departmentId: string;
+  departmentId?: string;
 
   @ApiProperty({ description: 'Dự án hoặc mục đích sử dụng — BR-19 bắt buộc' })
   @IsString()
