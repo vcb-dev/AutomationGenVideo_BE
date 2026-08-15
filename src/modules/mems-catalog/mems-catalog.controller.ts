@@ -1,10 +1,31 @@
-import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  NotFoundException,
+  Param,
+  Post,
+  Query,
+  Request,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes } from '@nestjs/swagger';
+import { Response } from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 import { CreateAssetDto, CreateCategoryDto, CreateModelDto, InspectAssetDto } from './dto';
+import { AssetPhotoService, MEMS_PHOTO_DIR } from './asset-photo.service';
 import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
 
@@ -16,6 +37,7 @@ export class MemsCatalogController {
   constructor(
     private readonly service: MemsCatalogService,
     private readonly inspection: InspectionService,
+    private readonly photos: AssetPhotoService,
   ) {}
 
   @Get('assets')
@@ -28,6 +50,71 @@ export class MemsCatalogController {
   @ApiOperation({ summary: 'Chi tiết thiết bị kèm nhật ký vòng đời (MH-03)' })
   assetDetail(@Param('assetCode') assetCode: string) {
     return this.service.assetDetail(assetCode);
+  }
+
+  @Get('assets/:assetCode/photos')
+  @ApiOperation({ summary: 'Ảnh của một thiết bị' })
+  listPhotos(@Param('assetCode') assetCode: string) {
+    return this.photos.list(assetCode);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Post('assets/:assetCode/photos')
+  @ApiOperation({ summary: 'Tải ảnh thiết bị lên' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('photo'))
+  uploadPhoto(
+    @Request() req: any,
+    @Param('assetCode') assetCode: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('caption') caption?: string,
+  ) {
+    return this.photos.upload(assetCode, req.user.id, file, caption, req.user);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Post('photos/:photoId/primary')
+  @ApiOperation({ summary: 'Chọn ảnh đại diện hiện ở bảng kho' })
+  setPrimaryPhoto(@Param('photoId') photoId: string) {
+    return this.photos.setPrimary(photoId);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER)
+  @Delete('photos/:photoId')
+  @ApiOperation({ summary: 'Xoá một ảnh thiết bị' })
+  removePhoto(@Param('photoId') photoId: string) {
+    return this.photos.remove(photoId);
+  }
+
+  /**
+   * Công khai có chủ đích: thẻ <img> của trình duyệt không gửi được header Authorization,
+   * nên để sau JwtAuthGuard thì ảnh không bao giờ hiện lên.
+   *
+   * Đổi lại phải tự canh cửa: tên file chỉ nhận đúng dạng do chính server sinh ra
+   * (MÃMÁY_mốcthờigian_ngẫunhiên.đuôi), nên không ai đoán được đường dẫn để dò, và cũng không
+   * ai chèn được ../ để đọc file khác trên máy chủ.
+   */
+  @Public()
+  @Get('photos/:filename')
+  @ApiOperation({ summary: 'Phục vụ ảnh lưu trên đĩa khi chưa cấu hình Google Drive' })
+  servePhoto(@Param('filename') filename: string, @Res() res: Response) {
+    const safeName = path.basename(filename);
+    if (!/^[A-Za-z0-9-]+_\d{10,}_[a-z0-9]{4,12}\.(jpg|jpeg|png|gif|webp|heic)$/i.test(safeName)) {
+      throw new NotFoundException('Không tìm thấy ảnh');
+    }
+    const filePath = path.join(MEMS_PHOTO_DIR, safeName);
+    if (!fs.existsSync(filePath)) throw new NotFoundException('Không tìm thấy ảnh');
+    const mime: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.heic': 'image/heic',
+    };
+    res.setHeader('Content-Type', mime[path.extname(safeName).toLowerCase()] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    fs.createReadStream(filePath).pipe(res);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER)
