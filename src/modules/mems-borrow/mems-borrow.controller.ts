@@ -8,6 +8,7 @@ import { ApprovalService } from './approval.service';
 import { AssignmentService } from './assignment.service';
 import { AvailabilityService } from './availability.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
+import { BorrowHistoryLogService } from './borrow-history-log.service';
 import { BorrowRequestService } from './borrow-request.service';
 import { HandoverService } from './handover.service';
 import { ReturnService } from './return.service';
@@ -30,6 +31,7 @@ export class MemsBorrowController {
     private readonly availability: AvailabilityService,
     private readonly requests: BorrowRequestService,
     private readonly borrowHistory: AssetBorrowHistoryService,
+    private readonly historyLog: BorrowHistoryLogService,
     private readonly approvals: ApprovalService,
     private readonly assignment: AssignmentService,
     private readonly handovers: HandoverService,
@@ -51,6 +53,28 @@ export class MemsBorrowController {
   @ApiOperation({ summary: 'Tạo phiếu mượn (NV-06)' })
   create(@Request() req: any, @Body() dto: CreateBorrowRequestDto) {
     return this.requests.create(req.user.id, dto);
+  }
+
+  @Get('borrow-history')
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Nhật ký toàn bộ lượt mượn của cả kho, lọc theo trạng thái và khoảng ngày (chỉ quản lý kho)',
+  })
+  borrowHistoryLog(
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.historyLog.list({
+      status,
+      from,
+      to,
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
   }
 
   @Get('assets/:id/borrow-history')
