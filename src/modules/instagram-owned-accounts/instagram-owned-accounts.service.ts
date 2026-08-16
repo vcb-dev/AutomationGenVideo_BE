@@ -12,7 +12,7 @@ export const MEDIA_PER_SYNC = 25;
  * ── Khác gì instagram-scraper ───────────────────────────────────────────────────
  * Module `instagram-scraper` cào Instagram BÊN NGOÀI theo username qua TikHub, tính tiền mỗi
  * lượt gọi. Module này đọc tài khoản Instagram Business của chính công ty — nối sẵn với Facebook
- * Page nên dùng chung page token, không tốn đồng nào.
+ * Page nên dùng shared page token, không tốn đồng nào.
  *
  * ── Vì sao ghi vào bảng Scraper* thay vì bảng mới ───────────────────────────────
  * ScraperInstagramProfile/ScraperInstagramReel vừa khít dữ liệu Graph API, và là hai bảng mà
@@ -62,8 +62,8 @@ export class InstagramOwnedAccountsService {
           skipped++;
           continue;
         }
-        const daCo = await this.upsertProfile(account);
-        daCo ? updated++ : created++;
+        const existing = await this.upsertProfile(account);
+        existing ? updated++ : created++;
       } catch (err: any) {
         failed++;
         this.logger.error(`❌ [IG-IMPORT] ${page.name}: ${err.message}`);
@@ -79,7 +79,7 @@ export class InstagramOwnedAccountsService {
 
   /** Trả về true nếu hồ sơ đã tồn tại (cập nhật), false nếu vừa tạo mới. */
   private async upsertProfile(acc: FetchedInstagramAccount): Promise<boolean> {
-    const chung = {
+    const shared = {
       instagram_id: acc.instagram_id,
       full_name: acc.full_name,
       url: acc.url,
@@ -91,17 +91,17 @@ export class InstagramOwnedAccountsService {
       posts_count: acc.posts_count || 0,
     };
 
-    const daCo = await this.prisma.scraperInstagramProfile.findUnique({
+    const existing = await this.prisma.scraperInstagramProfile.findUnique({
       where: { username: acc.username },
       select: { id: true },
     });
 
-    if (daCo) {
-      await this.prisma.scraperInstagramProfile.update({ where: { id: daCo.id }, data: chung });
+    if (existing) {
+      await this.prisma.scraperInstagramProfile.update({ where: { id: existing.id }, data: shared });
       return true;
     }
 
-    await this.prisma.scraperInstagramProfile.create({ data: { username: acc.username, ...chung } });
+    await this.prisma.scraperInstagramProfile.create({ data: { username: acc.username, ...shared } });
     return false;
   }
 
@@ -125,7 +125,7 @@ export class InstagramOwnedAccountsService {
         continue;
       }
 
-      const daCo = await this.prisma.scraperInstagramReel.findUnique({
+      const existing = await this.prisma.scraperInstagramReel.findUnique({
         where: { post_id: m.post_id },
         select: { id: true, play_count: true },
       });
@@ -140,14 +140,14 @@ export class InstagramOwnedAccountsService {
         // null từ AI = KHÔNG lấy được lượt xem (thiếu quyền instagram_manage_insights), khác
         // hẳn 0 = thật sự không ai xem. Giữ số cũ thay vì ghi 0 đè — xem resolve-view-count.ts,
         // đây đúng là chỗ gây sự cố 27/07–09/08/2026 bên Facebook.
-        play_count: resolveViewCount(m.view_count, daCo?.play_count),
+        play_count: resolveViewCount(m.view_count, existing?.play_count),
         likes_count: BigInt(m.likes_count || 0),
         comments_count: BigInt(m.comments_count || 0),
         date_posted: new Date(m.date_posted),
       };
 
-      if (daCo) {
-        await this.prisma.scraperInstagramReel.update({ where: { id: daCo.id }, data });
+      if (existing) {
+        await this.prisma.scraperInstagramReel.update({ where: { id: existing.id }, data });
         updated++;
       } else {
         await this.prisma.scraperInstagramReel.create({ data: { post_id: m.post_id, ...data } });
