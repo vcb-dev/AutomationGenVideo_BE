@@ -140,7 +140,7 @@ export class OAuthService {
       }
     }
 
-    await this.luuTokenSangAi(longLivedToken);
+    await this.saveTokenToAi(longLivedToken);
 
     this.logger.log(`✅ Facebook OAuth: Đã lưu ${results.length} kênh vào DB`);
     return { success: true, count: results.length, channels: results };
@@ -162,7 +162,7 @@ export class OAuthService {
    * Hỏng thì chỉ log: kênh đã lưu vào DB xong rồi, ném lỗi ở đây là người dùng thấy màn hình
    * đỏ dù việc chính đã thành công, rồi bấm cấp quyền lại từ đầu — vô ích.
    */
-  private async luuTokenSangAi(longLivedToken: string): Promise<void> {
+  private async saveTokenToAi(longLivedToken: string): Promise<void> {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL');
     try {
       await axios.post(

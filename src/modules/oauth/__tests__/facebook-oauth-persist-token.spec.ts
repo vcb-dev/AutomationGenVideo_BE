@@ -25,7 +25,7 @@ describe('handleFacebookCallback — token mới phải được lưu vào token
   let service: OAuthService;
   let prisma: any;
   let config: any;
-  let goiAi: jest.Mock;
+  let aiPost: jest.Mock;
 
   beforeEach(() => {
     prisma = {
@@ -44,8 +44,8 @@ describe('handleFacebookCallback — token mới phải được lưu vào token
     };
     service = new OAuthService(config, prisma);
 
-    goiAi = jest.fn(async () => ({ data: { status: 'ok' } }));
-    jest.spyOn(axios, 'post').mockImplementation(goiAi as any);
+    aiPost = jest.fn(async () => ({ data: { status: 'ok' } }));
+    jest.spyOn(axios, 'post').mockImplementation(aiPost as any);
     jest.spyOn(axios, 'get').mockImplementation((async (url: string) => {
       if (url.includes('oauth/access_token')) return { data: { access_token: LONG_LIVED } };
       if (url.includes('/me/accounts')) return { data: { data: [] } };
@@ -61,7 +61,7 @@ describe('handleFacebookCallback — token mới phải được lưu vào token
   it('gửi token dài hạn sang AI để lưu vào token store', async () => {
     await service.handleFacebookCallback('code-gia');
 
-    const [url, body] = goiAi.mock.calls[0];
+    const [url, body] = aiPost.mock.calls[0];
     expect(url).toContain('/api/facebook/fetch/token-save/');
     expect(body.access_token).toBe(LONG_LIVED);
   });
@@ -69,7 +69,7 @@ describe('handleFacebookCallback — token mới phải được lưu vào token
   it('lưu token hỏng KHÔNG được làm hỏng cả lượt cấp quyền', async () => {
     // Page đã lưu vào DB xong rồi mới tới bước này. Ném lỗi ở đây là người dùng thấy màn hình
     // đỏ dù việc chính đã thành công, rồi bấm cấp quyền lại từ đầu — vô ích.
-    goiAi.mockRejectedValue(new Error('AI service 502'));
+    aiPost.mockRejectedValue(new Error('AI service 502'));
 
     await expect(service.handleFacebookCallback('code-gia')).resolves.toBeDefined();
   });
