@@ -6,6 +6,10 @@ export enum Platform {
   DOUYIN = 'douyin',
   INSTAGRAM = 'instagram',
   FACEBOOK = 'facebook',
+  XIAOHONGSHU = 'xiaohongshu',
+  BILIBILI = 'bilibili',
+  KUAISHOU = 'kuaishou',
+  YOUTUBE = 'youtube',
 }
 
 export class SearchVideoDto {
