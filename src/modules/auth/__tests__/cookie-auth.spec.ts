@@ -90,11 +90,11 @@ describe('CookieAuthService.setAuthCookies', () => {
     expect(byName[COOKIE_REFRESH].maxAge).toBe(604_800_000);
   });
 
-  it('định dạng thời hạn sai → âm thầm dùng mặc định 15 phút', () => {
+  it('định dạng thời hạn sai → âm thầm dùng mặc định 7 ngày', () => {
     const { res, set } = fakeResponse();
     buildService({ JWT_ACCESS_EXPIRES: '15x' }).setAuthCookies(res, TOKENS);
     const byName = Object.fromEntries(set.map((c) => [c.name, c.opts]));
-    expect(byName[COOKIE_ACCESS].maxAge).toBe(15 * 60 * 1000);
+    expect(byName[COOKIE_ACCESS].maxAge).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
   it('sameSite theo biến môi trường COOKIE_SAMESITE', () => {
