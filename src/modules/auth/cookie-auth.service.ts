@@ -30,6 +30,7 @@ export class CookieAuthService {
   constructor(private readonly config: ConfigService) {}
 
   private baseOptions(): CookieOptions {
+    const domain = this.config.get<string>('COOKIE_DOMAIN', '').trim();
     const secure = this.config.get<string>('COOKIE_SECURE', 'false') === 'true';
     const sameSite = parseSameSite(this.config.get<string>('COOKIE_SAMESITE', 'lax'));
     return {
@@ -37,6 +38,7 @@ export class CookieAuthService {
       secure,
       sameSite,
       path: '/',
+      ...(domain ? { domain } : {}),
     };
   }
 

@@ -108,6 +108,16 @@ describe('CookieAuthService.setAuthCookies', () => {
     expect(set.every((c) => c.opts.secure === false)).toBe(true);
   });
 
+  it('chỉ gắn domain khi COOKIE_DOMAIN có giá trị', () => {
+    const noDomain = fakeResponse();
+    buildService().setAuthCookies(noDomain.res, TOKENS);
+    expect(noDomain.set.every((c) => c.opts.domain === undefined)).toBe(true);
+
+    const withDomain = fakeResponse();
+    buildService({ COOKIE_DOMAIN: '.vcbi.vn' }).setAuthCookies(withDomain.res, TOKENS);
+    expect(withDomain.set.every((c) => c.opts.domain === '.vcbi.vn')).toBe(true);
+  });
+
   it('csrf token khác nhau giữa hai lần đăng nhập', () => {
     const a = fakeResponse();
     const b = fakeResponse();
