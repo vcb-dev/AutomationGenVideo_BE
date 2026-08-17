@@ -170,6 +170,36 @@ export class UsersService {
     });
   }
 
+  /**
+   * Chỉ dùng nội bộ cho auth flow (so khớp refresh token) — select riêng kèm refresh_token_hash,
+   * KHÔNG dùng findOne() công khai vì hash không được phép lộ ra UserResponseDto.
+   */
+  async findByIdForAuth(id: string) {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        manager_id: true,
+        is_active: true,
+        created_at: true,
+        updated_at: true,
+        refresh_token_hash: true,
+      },
+    });
+  }
+
+  /** Ghi hoặc xoá (null) bản băm refresh token hiện hành — token rotation single-session. */
+  async updateRefreshTokenHash(id: string, refreshTokenHash: string | null): Promise<void> {
+    await this.prisma.user.update({
+      where: { id },
+      data: { refresh_token_hash: refreshTokenHash },
+    });
+  }
+
   async update(id: string, updateUserDto: UpdateUserDto) {
     if (updateUserDto.email) {
       updateUserDto.email = updateUserDto.email.toLowerCase();
@@ -566,17 +596,31 @@ export class UsersService {
     }
 
     if (callerRoles.includes(UserRole.LEADER)) {
-      // Nguồn sự thật là bảng team_members (join qua Team.leader_id) — KHÔNG match chuỗi
-      // User.team (derived-only, có thể lệch với user cũ gán tay trước migration team_members,
-      // xem team-derived-sync.service.ts). Cùng pattern với assertCanViewEditorCatalog().
-      return this.prisma.user.findMany({
-        where: {
-          id: { not: callerId },
-          deleted_at: null,
-          team_memberships: { some: { team: { leader_id: callerId } } },
-        },
+      // team_members hiện rỗng trên thực tế (chưa từng được populate) — nguồn sự thật thực
+      // dùng được là User.team (chuỗi, có thể liệt kê nhiều team cách nhau bởi dấu phẩy) so
+      // khớp với tên các Team mà caller đang lead (Team.leader_id). Cùng pattern với
+      // getContentTransformMemberHistory() trong ai-integration.service.ts.
+      const ledTeams = await this.prisma.team.findMany({
+        where: { leader_id: callerId },
+        select: { name: true },
+      });
+      const ledTeamNames = ledTeams.map((t) => t.name.trim().toLowerCase());
+
+      if (ledTeamNames.length === 0) {
+        return [];
+      }
+
+      const candidates = await this.prisma.user.findMany({
+        where: { id: { not: callerId }, deleted_at: null, team: { not: null } },
         select: selectFields as any,
         orderBy: { created_at: 'desc' },
+      });
+
+      return candidates.filter((u: any) => {
+        const memberTeams = u.team
+          ? u.team.split(',').map((t: string) => t.trim().toLowerCase())
+          : [];
+        return memberTeams.some((t: string) => ledTeamNames.includes(t));
       });
     }
 

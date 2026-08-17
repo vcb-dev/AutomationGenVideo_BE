@@ -46,6 +46,11 @@ export class CreateMemberDto {
   @IsString()
   @IsNotEmpty({ message: 'Phải chọn team cho thành viên' })
   teamId: string;
+
+  @ApiPropertyOptional({ example: 'https://example.com/avatar.jpg' })
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 }
 
 export class UpdateMemberDto {
@@ -60,6 +65,11 @@ export class UpdateMemberDto {
   @IsOptional()
   @IsString()
   teamId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 }
 
 export class BulkMemberRowDto {
@@ -74,6 +84,11 @@ export class BulkMemberRowDto {
   @IsNotEmpty()
   @MaxLength(MAX_NAME_LENGTH)
   teamName: string;
+
+  @ApiPropertyOptional({ description: 'Link ảnh đại diện của thành viên' })
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 }
 
 export class BulkCreateMembersDto {

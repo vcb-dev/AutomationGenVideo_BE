@@ -143,12 +143,36 @@ describe('bulkCreateMembers — nhập Excel thay trọn danh sách thành viên
     expect(ra).toMatchObject({ createdMembers: 0, deletedMembers: 0 });
   });
 
-  it('file toàn dòng thiếu dữ liệu cũng không xoá gì', async () => {
-    const { service, tx } = buildService({ members: [{ id: 'm1' }] });
+  it('lưu đúng link avatar_url nếu file có trường ảnh đại diện', async () => {
+    const { service, tx } = buildService();
 
-    await service.bulkCreateMembers('seci', { members: [{ name: '  ', teamName: 'Team A' }] } as any, ACTOR);
+    await service.bulkCreateMembers(
+      'seci',
+      {
+        members: [
+          { name: 'Nguyễn Văn A', teamName: 'Team A', avatarUrl: 'https://example.com/a.jpg' },
+          { name: 'Trần Thị B', teamName: 'Team B' },
+        ],
+      } as any,
+      ACTOR,
+    );
 
-    expect(tx.spinMember.deleteMany).not.toHaveBeenCalled();
+    expect(tx.spinMember.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          workspace_id: 'ws1',
+          team_id: 't-Team A',
+          name: 'Nguyễn Văn A',
+          avatar_url: 'https://example.com/a.jpg',
+        },
+        {
+          workspace_id: 'ws1',
+          team_id: 't-Team B',
+          name: 'Trần Thị B',
+          avatar_url: null,
+        },
+      ],
+    });
   });
 });
 

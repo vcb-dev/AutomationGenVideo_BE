@@ -1,6 +1,6 @@
 import { Controller, ForbiddenException, Get, Body, HttpException, HttpStatus, Logger, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';

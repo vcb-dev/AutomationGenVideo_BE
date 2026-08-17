@@ -12,9 +12,9 @@ import {
   Request,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
-import { RolesGuard } from "../../../common/guards/roles.guard";
-import { Roles } from "../../../common/decorators/roles.decorator";
+import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { RolesGuard } from "../../auth/guards/roles.guard";
+import { Roles } from "../../auth/decorators/roles.decorator";
 import { ScaleDataSourceGuard } from "../../../common/guards/scale-data-source.guard";
 import { TaskAutoCatalogService } from "./catalog.service";
 import {
@@ -27,6 +27,8 @@ import {
   CreateSourceDto,
   UpdateSourceDto,
   QuerySourceDto,
+  UpsertContentTranslationDto,
+  AiTranslateContentDto,
 } from "./catalog.dto";
 
 @ApiTags("task-auto")
@@ -197,6 +199,39 @@ export class TaskAutoCatalogController {
   })
   deleteContent(@Param("id") id: string, @Request() req: any) {
     return this.catalog.removeContent(id, req.user.roles ?? []);
+  }
+
+  // ── Content Translations (bản dịch theo thị trường) ─────────────────────────
+
+  @Get("contents/:id/translations")
+  @ApiOperation({ summary: "List translations of a content" })
+  getContentTranslations(@Param("id") id: string) {
+    return this.catalog.getContentTranslations(id);
+  }
+
+  @Post("contents/:id/translations")
+  @ApiOperation({ summary: "Upsert a content translation for a market" })
+  upsertContentTranslation(
+    @Param("id") id: string,
+    @Body() dto: UpsertContentTranslationDto,
+    @Request() req: any,
+  ) {
+    return this.catalog.upsertContentTranslation(id, dto, req.user.id);
+  }
+
+  @Delete("contents/:id/translations/:market")
+  @ApiOperation({ summary: "Delete a content translation" })
+  deleteContentTranslation(
+    @Param("id") id: string,
+    @Param("market") market: string,
+  ) {
+    return this.catalog.deleteContentTranslation(id, market);
+  }
+
+  @Post("contents/:id/ai-translate")
+  @ApiOperation({ summary: "AI dịch nháp title/body/script sang market đích (không lưu DB)" })
+  aiTranslateContent(@Param("id") id: string, @Body() dto: AiTranslateContentDto) {
+    return this.catalog.aiTranslateContent(id, dto.market);
   }
 
   // ── Content Lines ─────────────────────────────────────────────────────────

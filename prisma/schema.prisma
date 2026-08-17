@@ -23,6 +23,10 @@ model User {
   id                      String     @id @default(uuid()) @db.Uuid
   email                   String     @unique
   password_hash           String?
+  /// SHA-256 hex của refresh token JWT hiện hành. Token thô chỉ sống trong cookie HttpOnly — DB
+  /// không giữ bản gốc, nên lộ dump DB cũng không mạo danh được ai. Đăng nhập thiết bị mới ghi đè
+  /// giá trị này (single-session): thiết bị cũ tự động bị đăng xuất ở lần refresh kế tiếp.
+  refresh_token_hash      String?
   full_name               String
   google_id               String?    @unique
   manager_id              String?    @db.Uuid
@@ -50,61 +54,67 @@ model User {
   manager            User?              @relation("ManagerEditors", fields: [manager_id], references: [id])
   editors            User[]             @relation("ManagerEditors")
 
-  reviewed_duplicates              VideoDuplicate[]          @relation("ReviewedDuplicates")
+  reviewed_duplicates              VideoDuplicate[]               @relation("ReviewedDuplicates")
   videos                           Video[]
   social_accounts                  SocialAccount[]
   social_posts                     SocialPost[]
   // Content Report relations
-  content_videos_edited            ContentVideo[]            @relation("EditorContentVideos")
-  case_studies_created             CaseStudy[]               @relation("CreatorCaseStudies")
+  content_videos_edited            ContentVideo[]                 @relation("EditorContentVideos")
+  case_studies_created             CaseStudy[]                    @relation("CreatorCaseStudies")
   editor_performances              EditorPerformance[]
-  clone_videos_edited              CloneVideo[]              @relation("EditorCloneVideos")
-  action_items_assigned            ActionItem[]              @relation("AssigneeActionItems")
-  video_scores                     VideoScore[]              @relation("UserVideoScores")
+  clone_videos_edited              CloneVideo[]                   @relation("EditorCloneVideos")
+  action_items_assigned            ActionItem[]                   @relation("AssigneeActionItems")
+  video_scores                     VideoScore[]                   @relation("UserVideoScores")
   // Attendance relations
-  meeting_sessions_created         MeetingSession[]          @relation("MeetingSessionCreator")
-  meeting_sessions_finalized       MeetingSession[]          @relation("MeetingSessionFinalizer")
-  attendance_records               AttendanceRecord[]        @relation("AttendanceOf")
-  attendance_marked                AttendanceRecord[]        @relation("AttendanceMarkedBy")
-  meeting_session_logs             MeetingSessionLog[]       @relation("MeetingLogActor")
+  meeting_sessions_created         MeetingSession[]               @relation("MeetingSessionCreator")
+  meeting_sessions_finalized       MeetingSession[]               @relation("MeetingSessionFinalizer")
+  attendance_records               AttendanceRecord[]             @relation("AttendanceOf")
+  attendance_marked                AttendanceRecord[]             @relation("AttendanceMarkedBy")
+  meeting_session_logs             MeetingSessionLog[]            @relation("MeetingLogActor")
   // toan24 relations
-  teams_leading                    Team[]                    @relation("TeamLeaderOf")
-  team_memberships                 TeamMember[]              @relation("TeamMembershipOf")
-  editor_approvals                 EditorApproval[]          @relation("EditorApprovalOf")
-  editor_approvals_reviewed        EditorApproval[]          @relation("EditorApprovalBy")
-  team_push_requests               TeamPushRequest[]         @relation("TeamPushRequestBy")
-  team_push_requests_reviewed      TeamPushRequest[]         @relation("TeamPushRequestReviewedBy")
-  scraper_video_proposals          ScraperVideoProposal[]    @relation("ScraperVideoProposalBy")
-  scraper_video_proposals_reviewed ScraperVideoProposal[]    @relation("ScraperVideoProposalReviewedBy")
-  task_content_approvals           TaskContentApproval[]     @relation("TaskContentApprovalBy")
-  task_content_approvals_reviewed  TaskContentApproval[]     @relation("TaskContentApprovalReviewedBy")
-  editor_kpis                      EditorKpi[]               @relation("EditorKpiOf")
-  editor_kpis_set                  EditorKpi[]               @relation("EditorKpiSetBy")
-  editor_daily_kpis                EditorDailyKpi[]          @relation("EditorDailyKpiOf")
-  editor_daily_kpis_set            EditorDailyKpi[]          @relation("EditorDailyKpiSetBy")
-  team_kpis_created                TeamKpi[]                 @relation("TeamKpiCreatedBy")
-  products_added                   Product[]                 @relation("ProductAddedBy")
-  team_products_added              TeamProduct[]             @relation("TeamProductAddedBy")
-  team_contents_added              TeamContent[]             @relation("TeamContentAddedBy")
-  contents_added                   Content[]                 @relation("ContentAddedBy")
-  sources_added                    Source[]                  @relation("SourceAddedBy")
-  team_sources_added               TeamSource[]              @relation("TeamSourceAddedBy")
-  editor_products                  EditorProduct[]           @relation("EditorProductOf")
-  editor_products_added            EditorProduct[]           @relation("EditorProductAddedBy")
-  editor_contents                  EditorContent[]           @relation("EditorContentOf")
-  editor_contents_added            EditorContent[]           @relation("EditorContentAddedBy")
-  editor_sources                   EditorSource[]            @relation("EditorSourceOf")
-  editor_sources_added             EditorSource[]            @relation("EditorSourceAddedBy")
-  tasks_assigned                   Task[]                    @relation("TaskAssignee")
-  tasks_reviewed                   Task[]                    @relation("TaskReviewer")
-  task_assignments                 TaskAssignment[]          @relation("AssignmentUser")
-  notifications                    Notification[]            @relation("NotificationOf")
-  push_subscriptions               PushSubscription[]        @relation("PushSubscriptionOf")
-  owned_channels                   Channel[]                 @relation("ChannelOwnerUser")
-  ai_voice_usages                  AiVoiceUsage[]            @relation("AiVoiceUsageOf")
-  content_transforms               ContentTransformHistory[] @relation("ContentTransformOf")
-  paast_analyses                   PaastAnalysisHistory[]    @relation("PaastAnalysisOf")
-  refresh_tokens                   RefreshToken[]            @relation("UserRefreshTokens")
+  teams_leading                    Team[]                         @relation("TeamLeaderOf")
+  team_memberships                 TeamMember[]                   @relation("TeamMembershipOf")
+  editor_approvals                 EditorApproval[]               @relation("EditorApprovalOf")
+  editor_approvals_reviewed        EditorApproval[]               @relation("EditorApprovalBy")
+  team_push_requests               TeamPushRequest[]              @relation("TeamPushRequestBy")
+  team_push_requests_reviewed      TeamPushRequest[]              @relation("TeamPushRequestReviewedBy")
+  scraper_video_proposals          ScraperVideoProposal[]         @relation("ScraperVideoProposalBy")
+  scraper_video_proposals_reviewed ScraperVideoProposal[]         @relation("ScraperVideoProposalReviewedBy")
+  task_content_approvals           TaskContentApproval[]          @relation("TaskContentApprovalBy")
+  task_content_approvals_reviewed  TaskContentApproval[]          @relation("TaskContentApprovalReviewedBy")
+  editor_kpis                      EditorKpi[]                    @relation("EditorKpiOf")
+  editor_kpis_set                  EditorKpi[]                    @relation("EditorKpiSetBy")
+  editor_daily_kpis                EditorDailyKpi[]               @relation("EditorDailyKpiOf")
+  editor_daily_kpis_set            EditorDailyKpi[]               @relation("EditorDailyKpiSetBy")
+  content_creator_kpis             ContentCreatorKpi[]            @relation("ContentCreatorKpiOf")
+  content_creator_kpis_set         ContentCreatorKpi[]            @relation("ContentCreatorKpiSetBy")
+  content_creator_daily_kpis       ContentCreatorDailyKpi[]       @relation("ContentCreatorDailyKpiOf")
+  content_creator_daily_kpis_set   ContentCreatorDailyKpi[]       @relation("ContentCreatorDailyKpiSetBy")
+  content_translations             ContentTranslation[]           @relation("ContentTranslationBy")
+  team_kpis_created                TeamKpi[]                      @relation("TeamKpiCreatedBy")
+  characters_updated               Character[]                    @relation("CharacterUpdatedBy")
+  character_prompt_changes         CharacterSystemPromptHistory[] @relation("CharacterSystemPromptHistoryChangedBy")
+  products_added                   Product[]                      @relation("ProductAddedBy")
+  team_products_added              TeamProduct[]                  @relation("TeamProductAddedBy")
+  team_contents_added              TeamContent[]                  @relation("TeamContentAddedBy")
+  contents_added                   Content[]                      @relation("ContentAddedBy")
+  sources_added                    Source[]                       @relation("SourceAddedBy")
+  team_sources_added               TeamSource[]                   @relation("TeamSourceAddedBy")
+  editor_products                  EditorProduct[]                @relation("EditorProductOf")
+  editor_products_added            EditorProduct[]                @relation("EditorProductAddedBy")
+  editor_contents                  EditorContent[]                @relation("EditorContentOf")
+  editor_contents_added            EditorContent[]                @relation("EditorContentAddedBy")
+  editor_sources                   EditorSource[]                 @relation("EditorSourceOf")
+  editor_sources_added             EditorSource[]                 @relation("EditorSourceAddedBy")
+  tasks_assigned                   Task[]                         @relation("TaskAssignee")
+  tasks_reviewed                   Task[]                         @relation("TaskReviewer")
+  task_assignments                 TaskAssignment[]               @relation("AssignmentUser")
+  notifications                    Notification[]                 @relation("NotificationOf")
+  push_subscriptions               PushSubscription[]             @relation("PushSubscriptionOf")
+  owned_channels                   Channel[]                      @relation("ChannelOwnerUser")
+  ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
+  content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
+  paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
 
   @@index([email])
   @@index([roles])
@@ -2328,11 +2338,6 @@ enum ContentUsageStatus {
   ARCHIVED
 }
 
-enum ContentMarket {
-  GLOBAL
-  VIETNAM
-}
-
 enum SourceType {
   PRODUCT_STOCK
   COLLECTED
@@ -2369,28 +2374,44 @@ enum BrandType {
   TRANG_SUC
 }
 
+enum TeamKind {
+  PRODUCTION
+  CONTENT
+}
+
+/// Nguồn gốc 1 content do content creator thêm: sưu tầm hay tự nghĩ ra. Content creator tự chọn
+/// thủ công khi thêm — không suy luận từ cơ chế tạo (copy từ kho tổng hay tạo mới).
+enum ContentOrigin {
+  COLLECTED
+  SELF_CREATED
+}
+
 model Team {
   id         String    @id @default(uuid()) @db.Uuid
   name       String    @unique
   leader_id  String?   @db.Uuid
   brand_type BrandType @default(TRANG_SUC)
   market     String    @default("VIETNAM")
+  /// PRODUCTION = team sản xuất video (mặc định), CONTENT = team chuyên sưu tầm/dịch content
+  team_kind  TeamKind  @default(PRODUCTION)
   is_active  Boolean   @default(true)
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
 
-  leader          User?             @relation("TeamLeaderOf", fields: [leader_id], references: [id])
-  members         TeamMember[]
-  team_kpis       TeamKpi[]
-  editor_kpis     EditorKpi[]
-  editor_daily_kpis EditorDailyKpi[]
-  tasks           Task[]
-  products        TeamProduct[]
-  contents        TeamContent[]
-  team_sources    TeamSource[]
-  channels        Channel[]         @relation("ChannelTeam")
-  ordered_sources Source[]          @relation("SourceOrderedTeam")
-  push_requests   TeamPushRequest[]
+  leader                     User?                    @relation("TeamLeaderOf", fields: [leader_id], references: [id])
+  members                    TeamMember[]
+  team_kpis                  TeamKpi[]
+  editor_kpis                EditorKpi[]
+  editor_daily_kpis          EditorDailyKpi[]
+  content_creator_kpis       ContentCreatorKpi[]
+  content_creator_daily_kpis ContentCreatorDailyKpi[]
+  tasks                      Task[]
+  products                   TeamProduct[]
+  contents                   TeamContent[]
+  team_sources               TeamSource[]
+  channels                   Channel[]                @relation("ChannelTeam")
+  ordered_sources            Source[]                 @relation("SourceOrderedTeam")
+  push_requests              TeamPushRequest[]
 
   // Content Report relations
   content_videos      ContentVideo[]
@@ -2406,10 +2427,14 @@ model Team {
 }
 
 model TeamMember {
-  id        String   @id @default(uuid()) @db.Uuid
-  team_id   String   @db.Uuid
-  user_id   String   @db.Uuid
-  joined_at DateTime @default(now())
+  id                 String   @id @default(uuid()) @db.Uuid
+  team_id            String   @db.Uuid
+  user_id            String   @db.Uuid
+  /// Đánh dấu thành viên này là content creator của team (bổ sung cạnh editor, không loại trừ
+  /// lẫn nhau, không giới hạn số lượng — chỉ là quy ước nghiệp vụ/UI). Mặc định false cho mọi
+  /// dòng hiện có, kể cả thành viên của team_kind=CONTENT.
+  is_content_creator Boolean  @default(false)
+  joined_at          DateTime @default(now())
 
   team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
   user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
@@ -2483,6 +2508,9 @@ model TeamContent {
   source_editor_content_id String?
   /// FK trỏ về Content kho tổng khi được tạo từ global
   source_content_id        String?
+  /// Sưu tầm hay tự nghĩ — content creator tự chọn thủ công khi thêm. NULL cho content không do
+  /// content creator thêm (editor push, copy kho tổng qua flow khác...).
+  origin                   ContentOrigin?
   added_by_id              String
   added_at                 DateTime           @default(now())
   updated_at               DateTime           @updatedAt
@@ -2861,6 +2889,54 @@ model EditorDailyKpi {
   @@map("editor_daily_kpis")
 }
 
+/// Target KPI tháng đặt tay cho content creator (team_kind=CONTENT), mirror EditorKpi.
+/// content_target/translation_target = 0 (hoặc không có bản ghi) = chưa set, giống quy ước EditorDailyKpi.
+model ContentCreatorKpi {
+  id                 String   @id @default(uuid()) @db.Uuid
+  user_id            String   @db.Uuid
+  team_id            String   @db.Uuid
+  month              String
+  content_target     Int      @default(0) // Target số content sưu tầm/tạo mới trong tháng
+  translation_target Int      @default(0) // Target số bản dịch trong tháng
+  note               String?
+  set_by_id          String   @db.Uuid
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  user   User @relation("ContentCreatorKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  set_by User @relation("ContentCreatorKpiSetBy", fields: [set_by_id], references: [id])
+  team   Team @relation(fields: [team_id], references: [id])
+
+  @@unique([user_id, team_id, month])
+  @@index([month])
+  @@index([team_id])
+  @@map("content_creator_kpis")
+}
+
+/// KPI ngày cho content creator (số content/ngày) — mirror EditorDailyKpi 1:1. Độc lập với
+/// ContentCreatorKpi (target THÁNG) — bảng này phục vụ KPI ngày cho content creator ở cả
+/// team_kind=PRODUCTION lẫn CONTENT. target = 0 (hoặc không có bản ghi) = chưa set.
+model ContentCreatorDailyKpi {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  team_id    String   @db.Uuid
+  date       DateTime @db.Date
+  target     Int      @default(0)
+  note       String?
+  set_by_id  String   @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user   User @relation("ContentCreatorDailyKpiOf", fields: [user_id], references: [id], onDelete: Cascade)
+  team   Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  set_by User @relation("ContentCreatorDailyKpiSetBy", fields: [set_by_id], references: [id])
+
+  @@unique([user_id, team_id, date])
+  @@index([team_id, date])
+  @@index([date])
+  @@map("content_creator_daily_kpis")
+}
+
 model ContentLine {
   id     String  @id @default(uuid())
   name   String  @unique
@@ -2982,7 +3058,10 @@ model Product {
 model Content {
   id                     String             @id @default(uuid())
   brand_type             BrandType          @default(DO_DA)
-  market                 ContentMarket      @default(VIETNAM)
+  /// Free-text, cùng quy ước TEAM_MARKETS với Team.market/TeamContent.market/EditorContent.market
+  /// (GLOBAL/VIETNAM/INDONESIA/JAPAN/THAILAND) — trước đây là enum ContentMarket chỉ có GLOBAL|VIETNAM,
+  /// gây lỗi không lưu được khi chọn thị trường khác Việt Nam.
+  market                 String             @default("VIETNAM")
   /// Mã content (business code), unique toàn hệ thống
   code                   String?            @unique
   title                  String?
@@ -3000,6 +3079,8 @@ model Content {
   lark_record_id         String?            @unique
   /// FK trỏ về TeamContent khi được push từ kho team (thay thế copy data)
   source_team_content_id String?            @unique
+  /// Copy từ TeamContent.origin khi push lên kho tổng — chỉ lưu vết, không dùng để tính KPI.
+  origin                 ContentOrigin?
   created_at             DateTime           @default(now())
   updated_at             DateTime           @updatedAt
 
@@ -3011,10 +3092,33 @@ model Content {
   editor_versions     EditorContent[]        @relation("EditorContentGlobalRef")
   tasks               Task[]
   warehouses          ContentWarehouse[]
+  translations        ContentTranslation[]
 
   @@index([added_by_id])
   @@index([classification_id])
   @@map("contents")
+}
+
+/// Bản dịch content sang ngôn ngữ của từng thị trường (VIETNAM/INDONESIA/JAPAN/THAILAND...) —
+/// chỉ lưu văn bản (title/body/script), tối đa 1 bản dịch/market cho mỗi content.
+model ContentTranslation {
+  id               String   @id @default(uuid())
+  content_id       String
+  /// Free-text, validate ở DTO theo cùng TEAM_MARKETS — KHÔNG dùng enum ContentMarket (chỉ có GLOBAL|VIETNAM)
+  market           String
+  title            String?
+  body             String?
+  script           String?
+  translated_by_id String   @db.Uuid
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  content       Content @relation(fields: [content_id], references: [id], onDelete: Cascade)
+  translated_by User    @relation("ContentTranslationBy", fields: [translated_by_id], references: [id])
+
+  @@unique([content_id, market])
+  @@index([content_id])
+  @@map("content_translations")
 }
 
 model Source {
@@ -3853,17 +3957,37 @@ model Character {
   slug          String   @unique // "huyk", "chi-nhan", "chung-bui" — dùng làm key ổn định
   description   String?  @db.Text // Mô tả ngắn hiển thị trên UI
   avatar_url    String? // Ảnh đại diện nhân vật
-  system_prompt String   @db.Text // Prompt đầy đủ — chỉ BE đọc, không expose FE
+  system_prompt String   @db.Text // Prompt đầy đủ — chỉ BE đọc, không expose FE qua endpoint public (/content-transform/characters); CÓ expose qua endpoint admin CRUD (/characters/*, chỉ ADMIN/MANAGER)
   is_active     Boolean  @default(true) // Ẩn/hiện nhân vật mà không xoá
   order_index   Int      @default(0) // Thứ tự hiển thị trong danh sách
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
+  updated_by    String?  @db.Uuid // Người sửa gần nhất — FK users.id (uuid, khớp User.id), null nếu chưa từng sửa qua admin CRUD
 
-  histories ContentTransformHistory[]
+  histories      ContentTransformHistory[]
+  prompt_history CharacterSystemPromptHistory[]
+  updatedByUser  User?                          @relation("CharacterUpdatedBy", fields: [updated_by], references: [id])
 
   @@index([is_active])
   @@index([order_index])
   @@map("characters")
+}
+
+/// Lưu lại bản CŨ của system_prompt mỗi khi bị ghi đè qua admin CRUD — để đối chiếu/khôi phục
+/// khi cần, tránh lặp lại sự cố mất dữ liệu do sửa prompt thủ công không có lưu vết trước đây.
+model CharacterSystemPromptHistory {
+  id           String   @id @default(uuid())
+  character_id String // Nhân vật bị đổi system_prompt — FK characters.id
+  old_content  String   @db.Text // Nội dung system_prompt TRƯỚC lần sửa này (giữ nguyên tuyệt đối, không trim/normalize)
+  changed_by   String?  @db.Uuid // Người thực hiện lần sửa — FK users.id (uuid), null nếu không xác định được
+  changed_at   DateTime @default(now())
+
+  character     Character @relation(fields: [character_id], references: [id], onDelete: Cascade)
+  changedByUser User?     @relation("CharacterSystemPromptHistoryChangedBy", fields: [changed_by], references: [id])
+
+  @@index([character_id])
+  @@index([changed_at])
+  @@map("character_system_prompt_history")
 }
 
 /// Lịch sử mỗi lần chuyển đổi content
@@ -3878,6 +4002,10 @@ model ContentTransformHistory {
   error_message String? // Lý do lỗi nếu status = FAILED
   model_used    String? // Tên model AI ("mock", "gpt-4o", ...)
   duration_ms   Int? // Thời gian xử lý (ms) — monitoring
+  /// Kết quả chấm điểm đầy đủ (7 nhóm/23 tiêu chí + hardGateViolations) — xem scoring-criteria.ts
+  score_result  Json?
+  /// Điểm tổng /100, tách riêng để lọc/sắp xếp mà không cần parse JSON
+  overall_score Int?
   created_at    DateTime        @default(now())
   updated_at    DateTime        @updatedAt
 
@@ -3969,20 +4097,28 @@ enum InputType {
 
 enum SpinEntryStatus {
   ACTIVE // còn trong vòng quay
-  DONE   // đã trúng, bị loại khỏi các lượt sau cho tới khi đặt lại
+  DONE // đã trúng, bị loại khỏi các lượt sau cho tới khi đặt lại
 }
 
-/// Mỗi vòng quay là một bộ dữ liệu tách biệt (SECI, Đào tạo cán bộ nguồn...)
+/// Mỗi vòng quay là một bộ dữ liệu tách biệt (SECI, Đào tạo cán bộ nguồn...) của MỘT tài khoản
 model SpinWorkspace {
-  id          String   @id @default(uuid())
-  slug        String   @unique // "seci" — key ổn định dùng trên URL và FE
-  name        String
+  id   String @id @default(uuid())
+  slug String // "seci" — key ổn định dùng trên URL và FE
+  name String
+
+  /// Chủ sở hữu: tài khoản nào đăng nhập thì dùng vòng quay của tài khoản đó, không dùng chung
+  /// nữa. Không đặt khoá ngoại sang User, giống created_by_id ở các bảng lịch sử bên dưới.
+  owner_id String @db.Uuid
+
   order_index Int      @default(0)
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 
   // Khóa điều khiển: giữa buổi sự kiện chỉ một người được quay và sửa dữ liệu, những người
   // khác vẫn xem trực tiếp được. Khóa tự hết hạn để không ai bị kẹt khi MC đóng máy.
+  //
+  // Từ khi mỗi tài khoản có vòng quay riêng thì khóa chỉ có thể do chính chủ giữ, nên nó không
+  // còn tác dụng gì. Giữ lại cột thay vì bỏ để khỏi tốn thêm một migration cho thứ vô hại.
   controller_id      String?   @db.Uuid
   controller_name    String?
   control_expires_at DateTime?
@@ -3995,6 +4131,8 @@ model SpinWorkspace {
   team_wins   SpinTeamWin[]
   gift_awards SpinGiftAward[]
 
+  // Mỗi tài khoản một bản riêng của từng slug: slug một mình không còn là duy nhất.
+  @@unique([slug, owner_id])
   @@map("spin_workspaces")
 }
 
@@ -4021,6 +4159,7 @@ model SpinMember {
   workspace_id  String
   team_id       String?
   name          String
+  avatar_url    String?
   status        SpinEntryStatus @default(ACTIVE)
   gift_received Boolean         @default(false)
   created_at    DateTime        @default(now())
@@ -4061,6 +4200,7 @@ model SpinMemberWin {
   member_id       String? // null khi thành viên đã bị xoá khỏi danh sách
   member_name     String
   team_name       String
+  avatar_url      String?
   created_by_id   String?  @db.Uuid // user bấm xác nhận — không đặt FK để khỏi sửa model User
   created_by_name String?
   created_at      DateTime @default(now())
@@ -4143,39 +4283,6 @@ model SpinRound {
   @@index([workspace_id, started_at])
   @@map("spin_rounds")
 }
-model RefreshToken {
-  id String @id @default(uuid()) @db.Uuid
-
-  user_id String @db.Uuid
-
-  /// SHA-256 hex của token thô. Token thô chỉ sống trong cookie — DB không giữ bản gốc, nên lộ
-  /// dump DB cũng không mạo danh được ai. KHÔNG dùng bcrypt: token là 32 byte ngẫu nhiên (256 bit)
-  /// nên không có gì để dò, mà bcrypt sinh salt riêng mỗi lần nên không đánh index được — tra một
-  /// token sẽ phải quét cả bảng.
-  token_hash String @unique
-
-  /// Nhóm token sinh ra từ MỘT lần đăng nhập. Phát hiện tái dùng thì thu hồi cả nhóm.
-  family_id String @db.Uuid
-
-  expires_at DateTime
-  revoked_at DateTime?
-
-  /// id của token đã thay thế nó khi xoay vòng. null = còn hiệu lực.
-  /// Cố ý KHÔNG đặt khoá ngoại tự trỏ: Prisma bắt khai báo quan hệ hai chiều kèm tên, đổi lại
-  /// chẳng được gì vì chuỗi thay thế chỉ dùng để tra ngược khi điều tra sự cố.
-  replaced_by String? @db.Uuid
-
-  user_agent String?
-  ip_address String?
-  created_at DateTime @default(now())
-
-  user User @relation("UserRefreshTokens", fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@index([user_id, revoked_at])
-  @@index([family_id])
-  @@index([expires_at])
-  @@map("refresh_tokens")
-}
 
 model OwnedVideoWeeklyNotifyLog {
   id String @id @default(uuid())
@@ -4211,3 +4318,490 @@ model OwnedVideoWeeklyNotifyLog {
   @@map("owned_video_weekly_notify_log")
 }
 
+// ============================================================
+// MEMS — Quản lý thiết bị Media. Nguồn: DAC_TA_NGHIEP_VU_MEMS_v1.0.docx
+//
+// Tên cột đặt tiếng Anh dù tài liệu đặc tả viết tiếng Việt: đây là bảng mới,
+// chưa có hợp đồng API nào để giữ, nên theo quy ước hiện hành của repo.
+// Bảng đối chiếu tên nằm trong docs/plans/2026-08-10-mems-lat-cat-1-kho-va-kha-dung.md
+// ============================================================
+
+enum MemsAssetStatus {
+  PENDING_INSPECTION // Chờ kiểm tra — vừa nhập kho, CHƯA cho mượn được (BR-05)
+  AVAILABLE // Sẵn sàng
+  ON_LOAN // Đang mượn
+  POST_RETURN_CHECK // Kiểm tra sau trả — BR-42 bắt buộc đi qua đây, đặc tả thiếu giá trị này
+  UNDER_MAINTENANCE // Bảo trì
+  BROKEN // Hỏng
+  LOST // Mất
+  DISPOSED // Đã thanh lý
+}
+
+enum MemsAssetCondition {
+  GOOD // Tốt
+  USED // Có dấu hiệu sử dụng
+  NEEDS_CHECK // Cần kiểm tra
+  BROKEN // Hỏng
+  IN_MAINTENANCE // Bảo trì
+}
+
+enum MemsRequestStatus {
+  DRAFT // Nháp
+  PENDING_APPROVAL // Chờ duyệt
+  APPROVED // Đã duyệt
+  REJECTED // Từ chối
+  CANCELLED // Đã huỷ
+  PREPARING // Đang chuẩn bị
+  ON_LOAN // Đang mượn
+  PARTIALLY_RETURNED // Trả một phần
+  CLOSED // Đã đóng
+}
+
+enum MemsLineStatus {
+  BACKORDERED // Chờ hàng — không giữ chỗ (QĐ-08)
+  RESERVED // Đã giữ chỗ
+  ALLOCATED // Đã phân bổ máy cụ thể
+  ON_LOAN // Đang mượn
+  RETURNED // Đã trả
+  CANCELLED // Huỷ
+}
+
+enum MemsReservationStatus {
+  TENTATIVE // Tạm giữ
+  CONFIRMED // Đã xác nhận
+  RELEASED // Đã nhả — KHÔNG tính vào khả dụng nữa
+}
+
+enum MemsRole {
+  MEMBER
+  APPROVER
+  MANAGER
+  ADMIN
+}
+
+enum MemsApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+enum MemsIncidentKind {
+  CONDITION_WORSENED // Máy tệ đi so với lúc giao
+  MISSING_ACCESSORY // Thiếu phụ kiện khi trả
+  OVERDUE // Trả trễ
+}
+
+enum MemsIncidentStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  WRITTEN_OFF
+}
+
+enum MemsAssetEventKind {
+  INTAKE // Nhập kho
+  HANDED_OVER // Bàn giao cho người mượn
+  RETURNED // Người mượn trả về
+  INSPECTED // Kiểm tra xong, cho về kệ
+  CONDITION_CHANGED
+  MAINTENANCE
+  INCIDENT
+}
+
+model MemsDepartment {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique
+  name         String
+  borrow_limit Int? // Hạn mức thiết bị giữ đồng thời (BR-02). Null = không giới hạn
+  is_disabled  Boolean  @default(false) // QĐ-07: không xoá cứng
+  created_at   DateTime @default(now())
+
+  members  MemsMember[]
+  requests MemsBorrowRequest[]
+
+  @@map("mems_departments")
+}
+
+model MemsMember {
+  id            String   @id @default(uuid()) @db.Uuid
+  user_id       String   @unique @db.Uuid
+  department_id String   @db.Uuid
+  role          MemsRole @default(MEMBER)
+  is_disabled   Boolean  @default(false)
+  created_at    DateTime @default(now())
+
+  department MemsDepartment @relation(fields: [department_id], references: [id])
+
+  @@index([department_id])
+  @@map("mems_members")
+}
+
+model MemsCategory {
+  id             String   @id @default(uuid()) @db.Uuid
+  code           String   @unique
+  name           String
+  parent_id      String?  @db.Uuid // BR-07: cây chỉ hai cấp
+  buffer_minutes Int      @default(0) // BR-12: buffer kiểm tra sau mỗi lượt trả
+  is_disabled    Boolean  @default(false)
+  created_at     DateTime @default(now())
+
+  parent   MemsCategory?    @relation("MemsCategoryTree", fields: [parent_id], references: [id])
+  children MemsCategory[]   @relation("MemsCategoryTree")
+  models   MemsAssetModel[]
+
+  @@index([parent_id])
+  @@map("mems_categories")
+}
+
+model MemsAssetModel {
+  id              String   @id @default(uuid()) @db.Uuid
+  category_id     String   @db.Uuid
+  name            String
+  manufacturer    String?
+  reference_price Decimal? @db.Decimal(14, 2)
+  is_pooled       Boolean  @default(false) // QĐ-04: vật tư quản lý theo số lượng
+  is_disabled     Boolean  @default(false)
+  created_at      DateTime @default(now())
+
+  category     MemsCategory      @relation(fields: [category_id], references: [id])
+  assets       MemsAsset[]
+  lines        MemsRequestLine[]
+  reservations MemsReservation[]
+  accessories  MemsAccessory[]
+
+  @@index([category_id])
+  @@map("mems_asset_models")
+}
+
+model MemsLocation {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  parent_id   String?  @db.Uuid
+  is_disabled Boolean  @default(false)
+  created_at  DateTime @default(now())
+
+  parent   MemsLocation?  @relation("MemsLocationTree", fields: [parent_id], references: [id])
+  children MemsLocation[] @relation("MemsLocationTree")
+  assets   MemsAsset[]
+
+  @@index([parent_id])
+  @@map("mems_locations")
+}
+
+model MemsAsset {
+  id             String             @id @default(uuid()) @db.Uuid
+  asset_code     String             @unique // BR-04: duy nhất, không sửa sau khi tạo
+  model_id       String             @db.Uuid
+  serial_number  String             @unique // BR-04
+  condition      MemsAssetCondition @default(GOOD)
+  status         MemsAssetStatus    @default(PENDING_INSPECTION) // BR-05
+  location_id    String?            @db.Uuid
+  purchase_date  DateTime?          @db.Date
+  purchase_price Decimal?           @db.Decimal(14, 2)
+  qr_code        String             @unique
+  is_disabled    Boolean            @default(false)
+  created_at     DateTime           @default(now())
+  updated_at     DateTime           @updatedAt
+
+  model         MemsAssetModel     @relation(fields: [model_id], references: [id])
+  location      MemsLocation?      @relation(fields: [location_id], references: [id])
+  reservations  MemsReservation[]
+  maintenances  MemsMaintenance[]
+  handoverLines MemsHandoverLine[]
+  returnLines   MemsReturnLine[]
+  incidents     MemsIncident[]
+  events        MemsAssetEvent[]
+  photos        MemsAssetPhoto[]
+
+  @@index([model_id, status])
+  @@map("mems_assets")
+}
+
+model MemsBorrowRequest {
+  id            String            @id @default(uuid()) @db.Uuid
+  request_code  String            @unique // REQ-YYYYMMDD-NNN
+  owner_id      String            @db.Uuid // Người chịu trách nhiệm (QĐ-10)
+  department_id String            @db.Uuid
+  project       String // BR-19: bắt buộc
+  place         String
+  from_time     DateTime
+  to_time       DateTime
+  status        MemsRequestStatus @default(DRAFT)
+  is_fast_track Boolean           @default(false) // QĐ-05
+  note          String?
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+
+  department MemsDepartment    @relation(fields: [department_id], references: [id])
+  lines      MemsRequestLine[]
+  approvals  MemsApproval[]
+  handovers  MemsHandover[]
+  returns    MemsReturn[]
+
+  @@index([owner_id, status])
+  @@map("mems_borrow_requests")
+}
+
+model MemsRequestLine {
+  id         String         @id @default(uuid()) @db.Uuid
+  request_id String         @db.Uuid
+  model_id   String         @db.Uuid
+  quantity   Int
+  status     MemsLineStatus @default(RESERVED)
+  note       String?
+  created_at DateTime       @default(now())
+
+  request      MemsBorrowRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  model        MemsAssetModel    @relation(fields: [model_id], references: [id])
+  reservations MemsReservation[]
+
+  @@index([request_id])
+  @@map("mems_request_lines")
+}
+
+model MemsReservation {
+  id              String                @id @default(uuid()) @db.Uuid
+  request_line_id String                @db.Uuid
+  model_id        String                @db.Uuid
+  asset_id        String?               @db.Uuid // Chỉ điền khi đã ghim máy cụ thể (QĐ-01)
+  from_time       DateTime
+  to_time         DateTime
+  buffer_to_time  DateTime // to_time + buffer của danh mục. Lưu sẵn để đổi tham số không hồi tố
+  status          MemsReservationStatus @default(TENTATIVE)
+  created_at      DateTime              @default(now())
+
+  request_line MemsRequestLine @relation(fields: [request_line_id], references: [id], onDelete: Cascade)
+  model        MemsAssetModel  @relation(fields: [model_id], references: [id])
+  asset        MemsAsset?      @relation(fields: [asset_id], references: [id])
+
+  // Truy vấn khả dụng luôn lọc theo model + khoảng thời gian + trạng thái
+  @@index([model_id, status, from_time, buffer_to_time])
+  @@map("mems_reservations")
+}
+
+model MemsMaintenance {
+  id         String    @id @default(uuid()) @db.Uuid
+  asset_id   String    @db.Uuid
+  reason     String
+  from_time  DateTime
+  to_time    DateTime? // Null = lệnh còn mở, coi như chiếm dụng vô hạn về sau
+  cost       Decimal?  @db.Decimal(14, 2)
+  created_at DateTime  @default(now())
+
+  asset MemsAsset @relation(fields: [asset_id], references: [id])
+
+  @@index([asset_id, from_time])
+  @@map("mems_maintenances")
+}
+
+model MemsApproval {
+  id         String               @id @default(uuid()) @db.Uuid
+  request_id String               @db.Uuid
+  level      Int // Cấp 1 hay cấp 2 — BR-22 quyết định phiếu cần mấy cấp
+  decision   MemsApprovalDecision
+  decided_by String               @db.Uuid
+  reason     String? // BR-20: bắt buộc khi từ chối, service chặn chứ không để null lọt qua
+  decided_at DateTime             @default(now())
+
+  request MemsBorrowRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+
+  // BR-23: bản ghi quyết định chỉ ghi thêm, không sửa không xoá. Không có updated_at là cố ý.
+  @@index([request_id, decided_at])
+  @@map("mems_approvals")
+}
+
+model MemsAccessory {
+  id          String  @id @default(uuid()) @db.Uuid
+  model_id    String  @db.Uuid
+  name        String
+  /// Phụ kiện bắt buộc thì thiếu là chặn nhập kho lại, phụ kiện tuỳ chọn chỉ ghi nhận
+  is_required Boolean @default(true)
+  sort_order  Int     @default(0)
+
+  model         MemsAssetModel          @relation(fields: [model_id], references: [id])
+  handoverItems MemsHandoverAccessory[]
+  returnItems   MemsReturnAccessory[]
+
+  @@unique([model_id, name])
+  @@map("mems_accessories")
+}
+
+model MemsHandover {
+  id          String   @id @default(uuid()) @db.Uuid
+  request_id  String   @db.Uuid
+  handed_by   String   @db.Uuid // Người của kho đứng ra giao
+  received_by String // Người nhận thực tế, có thể nhận thay nên lưu tên chứ không phải id
+  received_at DateTime @default(now())
+  note        String?
+  created_at  DateTime @default(now())
+
+  request MemsBorrowRequest  @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  lines   MemsHandoverLine[]
+
+  @@index([request_id])
+  @@map("mems_handovers")
+}
+
+model MemsHandoverLine {
+  id          String             @id @default(uuid()) @db.Uuid
+  handover_id String             @db.Uuid
+  asset_id    String             @db.Uuid
+  /// Tình trạng lúc giao — mốc để đối chiếu lúc nhận lại (BR-42)
+  condition   MemsAssetCondition
+  note        String?
+
+  handover    MemsHandover            @relation(fields: [handover_id], references: [id], onDelete: Cascade)
+  asset       MemsAsset               @relation(fields: [asset_id], references: [id])
+  photos      MemsHandoverPhoto[]
+  accessories MemsHandoverAccessory[]
+  returnLines MemsReturnLine[]
+
+  @@unique([handover_id, asset_id])
+  @@map("mems_handover_lines")
+}
+
+model MemsHandoverPhoto {
+  id               String   @id @default(uuid()) @db.Uuid
+  handover_line_id String   @db.Uuid
+  /// Khoá lưu trữ của ảnh. Chưa có endpoint tải ảnh lên nên tạm là chuỗi do client sinh.
+  storage_key      String
+  taken_at         DateTime @default(now())
+
+  line MemsHandoverLine @relation(fields: [handover_line_id], references: [id], onDelete: Cascade)
+
+  @@index([handover_line_id])
+  @@map("mems_handover_photos")
+}
+
+model MemsHandoverAccessory {
+  id               String  @id @default(uuid()) @db.Uuid
+  handover_line_id String  @db.Uuid
+  accessory_id     String  @db.Uuid
+  is_present       Boolean @default(true)
+
+  line      MemsHandoverLine @relation(fields: [handover_line_id], references: [id], onDelete: Cascade)
+  accessory MemsAccessory    @relation(fields: [accessory_id], references: [id])
+
+  @@unique([handover_line_id, accessory_id])
+  @@map("mems_handover_accessories")
+}
+
+model MemsReturn {
+  id          String   @id @default(uuid()) @db.Uuid
+  request_id  String   @db.Uuid
+  received_by String   @db.Uuid // Người của kho tiếp nhận
+  returned_at DateTime @default(now())
+  note        String?
+  created_at  DateTime @default(now())
+
+  request MemsBorrowRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  lines   MemsReturnLine[]
+
+  // Một phiếu có thể trả nhiều đợt (trả một phần), nên đây là quan hệ một-nhiều
+  @@index([request_id])
+  @@map("mems_returns")
+}
+
+model MemsReturnLine {
+  id               String             @id @default(uuid()) @db.Uuid
+  return_id        String             @db.Uuid
+  asset_id         String             @db.Uuid
+  handover_line_id String?            @db.Uuid // Dòng bàn giao tương ứng, để tra lại ảnh lúc giao
+  condition_before MemsAssetCondition
+  condition_after  MemsAssetCondition
+  /// Trạng thái máy sau khi nhận lại — BR-42 chọn giữa AVAILABLE và POST_RETURN_CHECK
+  resulting_status MemsAssetStatus
+  note             String?
+
+  returnRecord MemsReturn            @relation(fields: [return_id], references: [id], onDelete: Cascade)
+  asset        MemsAsset             @relation(fields: [asset_id], references: [id])
+  handoverLine MemsHandoverLine?     @relation(fields: [handover_line_id], references: [id])
+  photos       MemsReturnPhoto[]
+  accessories  MemsReturnAccessory[]
+  incidents    MemsIncident[]
+
+  @@unique([return_id, asset_id])
+  @@map("mems_return_lines")
+}
+
+model MemsReturnPhoto {
+  id             String   @id @default(uuid()) @db.Uuid
+  return_line_id String   @db.Uuid
+  storage_key    String
+  taken_at       DateTime @default(now())
+
+  line MemsReturnLine @relation(fields: [return_line_id], references: [id], onDelete: Cascade)
+
+  @@index([return_line_id])
+  @@map("mems_return_photos")
+}
+
+model MemsReturnAccessory {
+  id             String  @id @default(uuid()) @db.Uuid
+  return_line_id String  @db.Uuid
+  accessory_id   String  @db.Uuid
+  is_present     Boolean @default(true)
+
+  line      MemsReturnLine @relation(fields: [return_line_id], references: [id], onDelete: Cascade)
+  accessory MemsAccessory  @relation(fields: [accessory_id], references: [id])
+
+  @@unique([return_line_id, accessory_id])
+  @@map("mems_return_accessories")
+}
+
+model MemsIncident {
+  id             String             @id @default(uuid()) @db.Uuid
+  asset_id       String             @db.Uuid
+  request_id     String?            @db.Uuid
+  return_line_id String?            @db.Uuid
+  /// Người bị quy trách nhiệm — chính là người chịu trách nhiệm trên phiếu (QĐ-10)
+  responsible_id String?            @db.Uuid
+  kind           MemsIncidentKind
+  description    String
+  status         MemsIncidentStatus @default(OPEN)
+  created_at     DateTime           @default(now())
+  updated_at     DateTime           @updatedAt
+
+  asset      MemsAsset       @relation(fields: [asset_id], references: [id])
+  returnLine MemsReturnLine? @relation(fields: [return_line_id], references: [id])
+
+  @@index([asset_id, status])
+  @@map("mems_incidents")
+}
+
+model MemsAssetEvent {
+  id          String             @id @default(uuid()) @db.Uuid
+  asset_id    String             @db.Uuid
+  kind        MemsAssetEventKind
+  title       String
+  detail      String?
+  actor_id    String?            @db.Uuid
+  request_id  String?            @db.Uuid
+  occurred_at DateTime           @default(now())
+
+  asset MemsAsset @relation(fields: [asset_id], references: [id])
+
+  // Nhật ký vòng đời chỉ ghi thêm: màn chi tiết máy đọc ngược theo thời gian
+  @@index([asset_id, occurred_at])
+  @@map("mems_asset_events")
+}
+
+model MemsAssetPhoto {
+  id          String   @id @default(uuid()) @db.Uuid
+  asset_id    String   @db.Uuid
+  /// Đường dẫn đầy đủ tới ảnh. Lưu URL chứ không lưu khoá lưu trữ, giống avatar_url và
+  /// thumbnail_url ở các bảng khác — nơi lưu có thể đổi mà chỗ đọc không phải sửa gì.
+  url         String
+  /// google_drive hoặc local, ghi lại để sau này còn biết ảnh nào cần chuyển kho
+  storage     String   @default("local")
+  caption     String?
+  /// Ảnh đại diện hiện ở bảng kho. Mỗi máy chỉ nên có một, service tự bỏ cờ ở ảnh cũ.
+  is_primary  Boolean  @default(false)
+  sort_order  Int      @default(0)
+  uploaded_by String?  @db.Uuid
+  created_at  DateTime @default(now())
+
+  asset MemsAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+
+  @@index([asset_id, sort_order])
+  @@map("mems_asset_photos")
+}

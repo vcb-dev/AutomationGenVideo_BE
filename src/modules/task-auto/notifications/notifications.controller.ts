@@ -14,7 +14,7 @@ import {
 import { Observable } from "rxjs";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
-import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
+import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
 import { NotificationStreamService } from "../../../common/push/notification-stream.service";
 import { NotificationsService } from "./notifications.service";
 import {

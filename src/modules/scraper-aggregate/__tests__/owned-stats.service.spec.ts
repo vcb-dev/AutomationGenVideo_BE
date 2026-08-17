@@ -3,7 +3,7 @@ import {
   chuanHoaNenTang,
   congNgay,
   OwnedStatsService,
-  soNgayGiua,
+  daysBetween,
 } from '../owned-stats.service';
 
 /**
@@ -12,7 +12,7 @@ import {
  * Test bám vào phần KHÔNG chạm Postgres: chuẩn hoá tham số vào và gộp kết quả ra. Mấy câu
  * $queryRaw ở giữa phải kiểm bằng dữ liệu thật chứ mock lại chỉ chứng minh mock đúng.
  *
- * Giờ hệ thống ghim vào 12:00 ngày 07/08/2026 giờ VN: chuanHoaKhoang() và dungCanhBao() đều
+ * Giờ hệ thống ghim vào 12:00 ngày 07/08/2026 giờ VN: chuanHoaKhoang() và buildAlerts() đều
  * đọc đồng hồ, không ghim thì test xanh hôm nay đỏ ngày mai.
  */
 
@@ -50,7 +50,7 @@ describe('chuanHoaNenTang', () => {
   );
 });
 
-describe('congNgay / soNgayGiua', () => {
+describe('congNgay / daysBetween', () => {
   it('cộng ngày vượt qua ranh giới tháng', () => {
     expect(congNgay('2026-01-31', 1)).toBe('2026-02-01');
     expect(congNgay('2026-03-01', -1)).toBe('2026-02-28');
@@ -62,16 +62,16 @@ describe('congNgay / soNgayGiua', () => {
 
   /* Khoảng ĐÓNG hai đầu: 7 ngày gần nhất phải là 7, không phải 6. */
   it('đếm cả ngày đầu lẫn ngày cuối', () => {
-    expect(soNgayGiua('2026-08-07', '2026-08-07')).toBe(1);
-    expect(soNgayGiua('2026-08-01', '2026-08-07')).toBe(7);
-    expect(soNgayGiua('2026-01-01', '2026-12-31')).toBe(365);
+    expect(daysBetween('2026-08-07', '2026-08-07')).toBe(1);
+    expect(daysBetween('2026-08-01', '2026-08-07')).toBe(7);
+    expect(daysBetween('2026-01-01', '2026-12-31')).toBe(365);
   });
 });
 
 describe('chuanHoaKhoang', () => {
   it('không tham số nào thì lấy 28 ngày gần nhất tính tới hôm nay', () => {
     expect(chuanHoaKhoang()).toEqual({ tu: '2026-07-11', den: '2026-08-07' });
-    expect(soNgayGiua('2026-07-11', '2026-08-07')).toBe(28);
+    expect(daysBetween('2026-07-11', '2026-08-07')).toBe(28);
   });
 
   it.each([
@@ -125,7 +125,7 @@ describe('chuanHoaKhoang', () => {
    */
   it('chặn trần 366 ngày, giữ ngày cuối và đẩy ngày đầu lên', () => {
     const ra = chuanHoaKhoang('2016-01-01', '2026-08-07');
-    expect(soNgayGiua(ra.tu, ra.den)).toBe(366);
+    expect(daysBetween(ra.tu, ra.den)).toBe(366);
     expect(ra.den).toBe('2026-08-07');
   });
 
@@ -140,7 +140,7 @@ describe('chuanHoaKhoang', () => {
 
 // ── Gộp kết quả ────────────────────────────────────────────────────────────────
 
-function dungService() {
+function buildService() {
   return new OwnedStatsService({} as any, {} as any);
 }
 
@@ -157,7 +157,7 @@ const kenh = (p: any = {}) => ({
   ...p,
 });
 
-const soKenh = (p: any = {}) => ({
+const channelCount = (p: any = {}) => ({
   platform: 'facebook',
   kenh_id: 'k1',
   ky: 'nay',
@@ -169,9 +169,9 @@ const soKenh = (p: any = {}) => ({
   ...p,
 });
 
-describe('gopThiTruong', () => {
+describe('mergeMarkets', () => {
   it('tách VN / Global theo cờ vn và xếp nền tảng nhiều lượt xem lên trước', () => {
-    const ra = (dungService() as any).gopThiTruong([
+    const ra = (buildService() as any).mergeMarkets([
       { platform: 'facebook', vn: true, posts: BigInt(10), views: BigInt(1000) },
       { platform: 'facebook', vn: false, posts: BigInt(5), views: BigInt(500) },
       { platform: 'tiktok', vn: true, posts: BigInt(1), views: BigInt(9_999) },
@@ -184,18 +184,18 @@ describe('gopThiTruong', () => {
   });
 
   it('không có dòng nào thì trả mảng rỗng, không phải undefined', () => {
-    expect((dungService() as any).gopThiTruong([])).toEqual([]);
+    expect((buildService() as any).mergeMarkets([])).toEqual([]);
   });
 });
 
-describe('gopTuyen', () => {
+describe('mergeContentLines', () => {
   /*
    * SQL trả MỘT DÒNG cho mỗi cặp (mã tuyến, thị trường). Gộp ở đây phải cộng views vào tổng
    * chung ĐỒNG THỜI tách sang views_vn/views_global — cộng thiếu một chỗ là tổng không khớp
    * với hai cột con.
    */
   it('cộng tổng và tách VN / Global cho cùng một mã tuyến', () => {
-    const ra = (dungService() as any).gopTuyen([
+    const ra = (buildService() as any).mergeContentLines([
       { ma: 'A1', vn: true, posts: BigInt(3), views: BigInt(300) },
       { ma: 'A1', vn: false, posts: BigInt(2), views: BigInt(200) },
       { ma: 'A2', vn: true, posts: BigInt(1), views: BigInt(50) },
@@ -209,10 +209,10 @@ describe('gopTuyen', () => {
   });
 });
 
-describe('dungCanhBao', () => {
+describe('buildAlerts', () => {
   it('kênh có lỗi đồng bộ được báo trước, nội dung cắt còn 120 ký tự', () => {
     const loiDai = 'x'.repeat(500);
-    const ra = (dungService() as any).dungCanhBao([kenh({ loi: loiDai })], [], 28);
+    const ra = (buildService() as any).buildAlerts([kenh({ loi: loiDai })], [], 28);
 
     expect(ra).toHaveLength(1);
     expect(ra[0].nhan).toBe('Lỗi');
@@ -221,7 +221,7 @@ describe('dungCanhBao', () => {
   });
 
   it('kênh đã tắt thì im lặng hay lỗi đều không báo — báo lên chỉ làm nhiễu', () => {
-    const ra = (dungService() as any).dungCanhBao(
+    const ra = (buildService() as any).buildAlerts(
       [kenh({ hoat_dong: false, loi: 'token hết hạn', ngay_cuoi: new Date('2020-01-01') })],
       [],
       28,
@@ -230,7 +230,7 @@ describe('dungCanhBao', () => {
   });
 
   it('kênh chưa cào được video nào thì báo Trống', () => {
-    const ra = (dungService() as any).dungCanhBao([kenh({ ngay_cuoi: null })], [], 28);
+    const ra = (buildService() as any).buildAlerts([kenh({ ngay_cuoi: null })], [], 28);
     expect(ra[0]).toMatchObject({ nhan: 'Trống', muc: 'w', noi_dung: 'Chưa cào được video nào' });
   });
 
@@ -238,13 +238,13 @@ describe('dungCanhBao', () => {
     [6, false],
     [7, true],
     [30, true],
-  ])('im lặng %s ngày → có báo: %s', (soNgayIm, coBao) => {
-    const ngayCuoi = new Date(BAY_GIO.getTime() - soNgayIm * 86_400_000);
-    const ra = (dungService() as any).dungCanhBao([kenh({ ngay_cuoi: ngayCuoi })], [], 28);
+  ])('im lặng %s ngày → có báo: %s', (silentDays, coBao) => {
+    const ngayCuoi = new Date(BAY_GIO.getTime() - silentDays * 86_400_000);
+    const ra = (buildService() as any).buildAlerts([kenh({ ngay_cuoi: ngayCuoi })], [], 28);
     const imLang = ra.filter((c: any) => c.nhan === 'Im lặng');
 
     expect(imLang).toHaveLength(coBao ? 1 : 0);
-    if (coBao) expect(imLang[0].noi_dung).toBe(`Chưa đăng bài trong ${soNgayIm} ngày`);
+    if (coBao) expect(imLang[0].noi_dung).toBe(`Chưa đăng bài trong ${silentDays} ngày`);
   });
 
   /*
@@ -252,9 +252,9 @@ describe('dungCanhBao', () => {
    * "tụt 60%" nhưng chẳng nói lên điều gì.
    */
   it('không báo tụt khi kỳ trước dưới 10.000 lượt xem, dù tụt sạch', () => {
-    const ra = (dungService() as any).dungCanhBao(
+    const ra = (buildService() as any).buildAlerts(
       [kenh()],
-      [soKenh({ ky: 'nay', views: BigInt(0) }), soKenh({ ky: 'truoc', views: BigInt(9_999) })],
+      [channelCount({ ky: 'nay', views: BigInt(0) }), channelCount({ ky: 'truoc', views: BigInt(9_999) })],
       28,
     );
     expect(ra.filter((c: any) => c.nhan === 'Tụt')).toHaveLength(0);
@@ -266,11 +266,11 @@ describe('dungCanhBao', () => {
     [70_000, true], // giảm đúng 30% — vẫn báo
     [50_000, true], // giảm 50%
   ])('kỳ trước 100.000, kỳ này %s → báo tụt: %s', (viewsNay, coBao) => {
-    const ra = (dungService() as any).dungCanhBao(
+    const ra = (buildService() as any).buildAlerts(
       [kenh()],
       [
-        soKenh({ ky: 'nay', views: BigInt(viewsNay) }),
-        soKenh({ ky: 'truoc', views: BigInt(100_000) }),
+        channelCount({ ky: 'nay', views: BigInt(viewsNay) }),
+        channelCount({ ky: 'truoc', views: BigInt(100_000) }),
       ],
       28,
     );
@@ -278,9 +278,9 @@ describe('dungCanhBao', () => {
   });
 
   it('nội dung cảnh báo tụt nhắc đúng số ngày của kỳ đang xem', () => {
-    const ra = (dungService() as any).dungCanhBao(
+    const ra = (buildService() as any).buildAlerts(
       [kenh()],
-      [soKenh({ ky: 'nay', views: BigInt(40_000) }), soKenh({ ky: 'truoc', views: BigInt(100_000) })],
+      [channelCount({ ky: 'nay', views: BigInt(40_000) }), channelCount({ ky: 'truoc', views: BigInt(100_000) })],
       90,
     );
     expect(ra[0].noi_dung).toBe('Lượt xem giảm 60% so với 90 ngày trước đó');
@@ -294,11 +294,11 @@ describe('dungCanhBao', () => {
     const nhieuKenh = Array.from({ length: 40 }, (_, i) =>
       kenh({ kenh_id: `k${i}`, ten: `Page ${i}`, ngay_cuoi: new Date('2020-01-01') }),
     );
-    expect((dungService() as any).dungCanhBao(nhieuKenh, [], 28)).toHaveLength(12);
+    expect((buildService() as any).buildAlerts(nhieuKenh, [], 28)).toHaveLength(12);
   });
 
   it('xếp lỗi đồng bộ lên trước im lặng', () => {
-    const ra = (dungService() as any).dungCanhBao(
+    const ra = (buildService() as any).buildAlerts(
       [
         kenh({ kenh_id: 'im', ten: 'Kênh im', ngay_cuoi: new Date('2020-01-01') }),
         kenh({ kenh_id: 'loi', ten: 'Kênh lỗi', loi: 'token hết hạn' }),

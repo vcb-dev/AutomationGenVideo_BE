@@ -10,7 +10,6 @@ import { UsersModule } from "../users/users.module";
 import { CacheModule } from "../../common/cache/cache.module";
 import { getRuntimeJwtSecret } from "./jwt-secret.util";
 import { CookieAuthService } from "./cookie-auth.service";
-import { RefreshTokenService } from "./refresh-token.service";
 
 @Module({
   imports: [
@@ -31,9 +30,7 @@ import { RefreshTokenService } from "./refresh-token.service";
     }),
   ],
   controllers: [AuthController],
-  // PrismaModule khai @Global() nên RefreshTokenService tiêm được PrismaService mà không cần
-  // thêm vào imports — cùng cách JwtStrategy đang dùng.
-  providers: [AuthService, JwtStrategy, GoogleStrategy, CookieAuthService, RefreshTokenService],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, CookieAuthService],
   exports: [AuthService, CookieAuthService],
 })
 export class AuthModule {}

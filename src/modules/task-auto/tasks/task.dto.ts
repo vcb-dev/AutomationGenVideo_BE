@@ -75,6 +75,16 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_from?: string // format: 2025-06-17
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string   // format: 2025-06-17
 
+  // Cột "Quá hạn" ảo (Kanban): task đang xử lý (chưa duyệt/huỷ) có deadline đã qua.
+  // Khi bật, bỏ qua deadline_from/to/date/month và cả `status` — xem tasks.service.ts findAll.
+  @ApiPropertyOptional({ enum: ['true', 'false'] })
+  @IsIn(['true', 'false']) @IsOptional() overdue?: string
+
+  // Dùng ở các cột trạng thái khác (trừ APPROVED) để loại task đã hiện ở cột "Quá hạn",
+  // tránh hiển thị trùng 2 nơi.
+  @ApiPropertyOptional({ enum: ['true', 'false'] })
+  @IsIn(['true', 'false']) @IsOptional() exclude_overdue?: string
+
   @ApiPropertyOptional({ enum: ['auto', 'extra'] })
   @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 
