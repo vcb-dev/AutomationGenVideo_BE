@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto';
 import { ApprovalPlan, canSign, nextStep, planApprovals } from './approval-rules';
@@ -12,7 +13,7 @@ import { ApprovalPlan, canSign, nextStep, planApprovals } from './approval-rules
 /** Người đang ký, lấy từ token — cần cả id lẫn vai trò để đối chiếu với cấp đang tới lượt. */
 export interface Approver {
   id: string;
-  roles: string[];
+  roles: (UserRole | string)[];
 }
 
 @Injectable()

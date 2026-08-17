@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { borrowDuration } from './borrow-duration';
 
@@ -13,11 +14,15 @@ import { borrowDuration } from './borrow-duration';
  */
 
 /** Vai được xem toàn bộ lịch sử của máy, không chỉ lượt của mình. */
-const FULL_ACCESS_ROLES = ['ADMIN', 'MANAGER', 'LEADER'];
+const FULL_ACCESS_ROLES: readonly string[] = [
+  UserRole.ADMIN,
+  UserRole.MANAGER,
+  UserRole.LEADER,
+];
 
 export interface HistoryViewer {
   id: string;
-  roles: string[];
+  roles: (UserRole | string)[];
 }
 
 export interface AssetBorrowHistoryRow {
