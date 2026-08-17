@@ -13,6 +13,7 @@ describe('AuthService.register', () => {
   let mockUsersService: any;
   let mockJwtService: any;
   let mockConfigService: any;
+  let mockCacheService: any;
 
   beforeEach(() => {
     mockPrisma = {
@@ -27,11 +28,17 @@ describe('AuthService.register', () => {
       get: jest.fn(),
     };
 
+    mockCacheService = {
+      invalidate: jest.fn(),
+      get: jest.fn(),
+    };
+
     authService = new AuthService(
       mockUsersService as UsersService,
       mockJwtService as JwtService,
       mockConfigService as ConfigService,
       mockPrisma as PrismaService,
+      mockCacheService as any,
     );
   });
 

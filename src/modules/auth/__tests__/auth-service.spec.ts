@@ -33,12 +33,47 @@ function hashSha256(value: string) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+import { PrismaService } from '../../../common/prisma/prisma.service';
+
+function buildPrisma(overrides: any = {}) {
+  return {
+    user: {
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
+    ...overrides,
+  } as unknown as PrismaService;
+}
+
+import { CacheService } from '../../../common/cache/cache.service';
+
+function buildCacheService() {
+  return {
+    get: jest.fn(),
+    set: jest.fn(),
+    delete: jest.fn(),
+    invalidate: jest.fn(),
+  } as unknown as CacheService;
+}
+
+function createAuthService(
+  users = buildUsersService(),
+  jwt = buildJwt(),
+  config = buildConfig(),
+  prisma = buildPrisma(),
+  cache = buildCacheService(),
+) {
+  return new AuthService(users, jwt, config, prisma, cache);
+}
+
 const BASE_USER = { id: 'u1', email: 'a@b.vn', roles: ['MEMBER'], is_active: true };
 
 describe('AuthService.login', () => {
   it('sai email/mật khẩu → 401, không cấp phiên', async () => {
     const users = buildUsersService({ findByEmail: jest.fn(async () => null) });
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     await expect(
       service.login({ email: 'a@b.vn', password: 'secret123' } as LoginDto),
@@ -51,7 +86,7 @@ describe('AuthService.login', () => {
     const users = buildUsersService({
       findByEmail: jest.fn(async () => ({ ...BASE_USER, is_active: false, password_hash })),
     });
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     await expect(
       service.login({ email: 'a@b.vn', password: 'secret123' } as LoginDto),
@@ -64,7 +99,7 @@ describe('AuthService.login', () => {
     const users = buildUsersService({
       findByEmail: jest.fn(async () => ({ ...BASE_USER, password_hash })),
     });
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     const { tokenResponse, refreshToken } = await service.login({
       email: 'a@b.vn',
@@ -81,7 +116,7 @@ describe('AuthService.issueSession', () => {
   it('cấp accessToken + refreshToken JWT khác nhau, ghi bản băm refreshToken xuống DB', async () => {
     const jwt = buildJwt();
     const users = buildUsersService();
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     const { tokenResponse, refreshToken } = await service.issueSession(BASE_USER);
 
@@ -95,7 +130,7 @@ describe('AuthService.issueSession', () => {
   it('không lộ password_hash / refresh_token_hash ra tokenResponse.user', async () => {
     const jwt = buildJwt();
     const users = buildUsersService();
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     const { tokenResponse } = await service.issueSession({
       ...BASE_USER,
@@ -111,12 +146,12 @@ describe('AuthService.issueSession', () => {
 
 describe('AuthService.refreshTokens', () => {
   it('thiếu token → 401', async () => {
-    const service = new AuthService(buildUsersService(), buildJwt(), buildConfig());
+    const service = createAuthService(buildUsersService(), buildJwt(), buildConfig());
     await expect(service.refreshTokens('')).rejects.toThrow(UnauthorizedException);
   });
 
   it('token sai chữ ký hoặc không phải JWT → 401', async () => {
-    const service = new AuthService(buildUsersService(), buildJwt(), buildConfig());
+    const service = createAuthService(buildUsersService(), buildJwt(), buildConfig());
     await expect(service.refreshTokens('khong-phai-jwt')).rejects.toThrow(UnauthorizedException);
   });
 
@@ -124,7 +159,7 @@ describe('AuthService.refreshTokens', () => {
     const jwt = buildJwt();
     const raw = jwt.sign({ sub: 'ghost' });
     const users = buildUsersService({ findByIdForAuth: jest.fn(async () => null) });
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     await expect(service.refreshTokens(raw)).rejects.toThrow(UnauthorizedException);
   });
@@ -139,7 +174,7 @@ describe('AuthService.refreshTokens', () => {
         refresh_token_hash: hashSha256(raw),
       })),
     });
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     await expect(service.refreshTokens(raw)).rejects.toThrow(UnauthorizedException);
   });
@@ -155,7 +190,7 @@ describe('AuthService.refreshTokens', () => {
         refresh_token_hash: 'hash-cua-phien-khac',
       })),
     });
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     await expect(service.refreshTokens(raw)).rejects.toThrow(UnauthorizedException);
   });
@@ -166,7 +201,7 @@ describe('AuthService.refreshTokens', () => {
     const users = buildUsersService({
       findByIdForAuth: jest.fn(async () => ({ ...BASE_USER, refresh_token_hash: null })),
     });
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     await expect(service.refreshTokens(raw)).rejects.toThrow(UnauthorizedException);
   });
@@ -177,7 +212,7 @@ describe('AuthService.refreshTokens', () => {
     const users = buildUsersService({
       findByIdForAuth: jest.fn(async () => ({ ...BASE_USER, refresh_token_hash: hashSha256(raw) })),
     });
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
 
     const { tokenResponse, refreshToken } = await service.refreshTokens(raw);
 
@@ -190,7 +225,7 @@ describe('AuthService.refreshTokens', () => {
 describe('AuthService.logout', () => {
   it('có userId → xoá hash', async () => {
     const users = buildUsersService();
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     await service.logout('u1');
 
@@ -199,7 +234,7 @@ describe('AuthService.logout', () => {
 
   it('không có userId → không làm gì, không ném lỗi', async () => {
     const users = buildUsersService();
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     await expect(service.logout(undefined)).resolves.toBeUndefined();
     expect(users.updateRefreshTokenHash).not.toHaveBeenCalled();
@@ -210,7 +245,7 @@ describe('AuthService.logoutFromRefreshToken', () => {
   it('có cookie → giải mã userId (không verify) rồi xoá hash', async () => {
     const users = buildUsersService();
     const jwt = buildJwt();
-    const service = new AuthService(users, jwt, buildConfig());
+    const service = createAuthService(users, jwt, buildConfig());
     const raw = jwt.sign({ sub: 'u1' });
 
     await service.logoutFromRefreshToken(raw);
@@ -220,7 +255,7 @@ describe('AuthService.logoutFromRefreshToken', () => {
 
   it('token đã hết hạn vẫn xoá được hash — không cần verify chữ ký/hạn', async () => {
     const users = buildUsersService();
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
     const expired = jsonwebtoken.sign(
       { sub: 'u1', exp: Math.floor(Date.now() / 1000) - 10 },
       SECRET,
@@ -233,7 +268,7 @@ describe('AuthService.logoutFromRefreshToken', () => {
 
   it('không có cookie → không làm gì', async () => {
     const users = buildUsersService();
-    const service = new AuthService(users, buildJwt(), buildConfig());
+    const service = createAuthService(users, buildJwt(), buildConfig());
 
     await service.logoutFromRefreshToken(undefined);
 
@@ -246,13 +281,13 @@ describe('AuthService.decodeRefreshTokenUserId', () => {
   // ném lỗi ở đúng lúc cần đọc payload nhất, nên hàm này CỐ Ý không kiểm tra hạn/chữ ký.
   it('lấy được sub từ token đã hết hạn, không cần verify', () => {
     const expired = jsonwebtoken.sign({ sub: 'u1', exp: Math.floor(Date.now() / 1000) - 10 }, SECRET);
-    const service = new AuthService(buildUsersService(), buildJwt(), buildConfig());
+    const service = createAuthService(buildUsersService(), buildJwt(), buildConfig());
 
     expect(service.decodeRefreshTokenUserId(expired)).toBe('u1');
   });
 
   it('token rác → null', () => {
-    const service = new AuthService(buildUsersService(), buildJwt(), buildConfig());
+    const service = createAuthService(buildUsersService(), buildJwt(), buildConfig());
     expect(service.decodeRefreshTokenUserId('khong-phai-jwt')).toBeNull();
   });
 });
@@ -260,7 +295,7 @@ describe('AuthService.decodeRefreshTokenUserId', () => {
 describe('AuthService.resolveGoogleLogin', () => {
   it('tài khoản bị vô hiệu hoá → về /login kèm thông báo, KHÔNG cấp phiên', async () => {
     const users = buildUsersService();
-    const service = new AuthService(
+    const service = createAuthService(
       users,
       buildJwt(),
       buildConfig({ FRONTEND_URL: 'http://localhost:3001' }),
@@ -276,7 +311,7 @@ describe('AuthService.resolveGoogleLogin', () => {
 
   it('email chưa được cấp tài khoản → về /login kèm thông báo, KHÔNG cấp phiên', async () => {
     const users = buildUsersService();
-    const service = new AuthService(
+    const service = createAuthService(
       users,
       buildJwt(),
       buildConfig({ FRONTEND_URL: 'http://localhost:3001' }),
@@ -290,7 +325,7 @@ describe('AuthService.resolveGoogleLogin', () => {
 
   it('hợp lệ → cấp phiên và trả URL callback (xác thực hoàn toàn bằng HttpOnly cookie)', async () => {
     const users = buildUsersService();
-    const service = new AuthService(
+    const service = createAuthService(
       users,
       buildJwt(),
       buildConfig({ FRONTEND_URL: 'http://localhost:3001' }),
@@ -308,7 +343,7 @@ describe('AuthService.resolveGoogleLogin', () => {
   });
 
   it('dùng FRONTEND_URL mặc định (localhost:3001) khi không cấu hình', async () => {
-    const service = new AuthService(buildUsersService(), buildJwt(), buildConfig());
+    const service = createAuthService(buildUsersService(), buildJwt(), buildConfig());
 
     const result = await service.resolveGoogleLogin({ isInactiveUser: true });
 
@@ -318,7 +353,7 @@ describe('AuthService.resolveGoogleLogin', () => {
 
 describe('AuthService.googleErrorRedirect', () => {
   it('trả URL /login kèm thông báo chung, không phụ thuộc lỗi gốc', () => {
-    const service = new AuthService(
+    const service = createAuthService(
       buildUsersService(),
       buildJwt(),
       buildConfig({ FRONTEND_URL: 'http://localhost:3001' }),

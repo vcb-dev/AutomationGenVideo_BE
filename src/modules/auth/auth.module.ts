@@ -11,8 +11,11 @@ import { CacheModule } from "../../common/cache/cache.module";
 import { getRuntimeJwtSecret } from "./jwt-secret.util";
 import { CookieAuthService } from "./cookie-auth.service";
 
+import { PrismaModule } from "../../common/prisma/prisma.module";
+
 @Module({
   imports: [
+    PrismaModule,
     UsersModule,
     CacheModule,
     PassportModule,

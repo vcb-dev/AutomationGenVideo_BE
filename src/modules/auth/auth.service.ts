@@ -1,8 +1,9 @@
 import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { PrismaService } from "../../common/prisma/prisma.service";
+import { CacheService } from "../../common/cache/cache.service";
 import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
@@ -30,7 +31,8 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
-    private prisma?: PrismaService,
+    private prisma: PrismaService,
+    private cacheService: CacheService,
   ) {}
 
   /** SHA-256 hex — dùng để lưu bản băm refresh token xuống DB, không bao giờ lưu token thô. */
@@ -130,6 +132,12 @@ export class AuthService {
     tokenResponse: TokenResponseDto;
   } {
     const payload = { sub: user.id, email: user.email, roles: user.roles };
+    const refreshPayload = {
+      sub: user.id,
+      email: user.email,
+      roles: user.roles,
+      jti: randomBytes(16).toString("hex"),
+    };
 
     // Một biến duy nhất chi phối hạn mỗi loại token. Hai chỗ đọc hai biến khác nhau cho cùng một
     // hạn là mời gọi sự cố khi chúng lệch nhau.
@@ -137,7 +145,7 @@ export class AuthService {
     const refreshExpires = this.configService.get<string>("JWT_REFRESH_EXPIRES") || "30d";
 
     const accessToken = this.jwtService.sign(payload, { expiresIn: accessExpires as any });
-    const refreshToken = this.jwtService.sign(payload, { expiresIn: refreshExpires as any });
+    const refreshToken = this.jwtService.sign(refreshPayload, { expiresIn: refreshExpires as any });
     const refreshTokenHash = this.hashSha256(refreshToken);
 
     // password_hash và refresh_token_hash KHÔNG BAO GIỜ được lọt vào response.
@@ -256,30 +264,35 @@ export class AuthService {
 
     const password_hash = await bcrypt.hash(password, 10);
 
-    const user = await this.prisma.user.create({
-      data: {
-        full_name: name,
-        email: emailLower,
-        password_hash,
-        is_active: false, // Chờ ADMIN phê duyệt
-        roles: [],
-        team: team || undefined,
-      },
-      select: {
-        id: true,
-        email: true,
-        full_name: true,
-        roles: true,
-        team: true,
-        is_active: true,
-        created_at: true,
-      },
-    });
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          full_name: name,
+          email: emailLower,
+          password_hash,
+          is_active: false, // Chờ ADMIN phê duyệt
+          roles: [],
+          team: team || undefined,
+        },
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          roles: true,
+          team: true,
+          is_active: true,
+          created_at: true,
+        },
+      });
 
-    return {
-      message: 'Đăng ký tài khoản thành công! Yêu cầu của bạn đang CHỜ ADMIN PHÊ DUYỆT trước khi có thể đăng nhập.',
-      user,
-    };
+      return {
+        message: 'Đăng ký tài khoản thành công! Yêu cầu của bạn đang CHỜ ADMIN PHÊ DUYỆT trước khi có thể đăng nhập.',
+        user,
+      };
+    } catch (err) {
+      console.error('[Register Error Details]:', err);
+      throw err;
+    }
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
@@ -353,6 +366,9 @@ export class AuthService {
         refresh_token_hash: null, // Yêu cầu đăng nhập lại
       },
     });
+
+    this.cacheService.invalidate(`user:email:${user.email.toLowerCase()}`);
+    this.cacheService.invalidate(`user:id:${user.id}`);
 
     return {
       message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.',
