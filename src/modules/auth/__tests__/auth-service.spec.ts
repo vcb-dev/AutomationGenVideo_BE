@@ -288,7 +288,7 @@ describe('AuthService.resolveGoogleLogin', () => {
     expect(decodeURIComponent(result.redirectUrl)).toContain('chưa được tạo');
   });
 
-  it('hợp lệ → cấp phiên và trả URL callback kèm ?token= đúng bằng access token', async () => {
+  it('hợp lệ → cấp phiên và trả URL callback (xác thực hoàn toàn bằng HttpOnly cookie)', async () => {
     const users = buildUsersService();
     const service = new AuthService(
       users,
@@ -303,7 +303,7 @@ describe('AuthService.resolveGoogleLogin', () => {
 
     const url = new URL(result.redirectUrl);
     expect(url.pathname).toBe('/auth/google/callback');
-    expect(url.searchParams.get('token')).toBe(result.session?.accessToken);
+    expect(url.searchParams.get('token')).toBeNull();
     expect(users.updateRefreshTokenHash).toHaveBeenCalledWith('u1', expect.any(String));
   });
 

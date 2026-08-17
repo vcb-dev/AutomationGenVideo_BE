@@ -30,7 +30,7 @@ function buildController(
   const resolveGoogleLogin =
     opts.resolveGoogleLogin ??
     jest.fn(async () => ({
-      redirectUrl: 'http://localhost:3001/auth/google/callback?token=jwt.access.value',
+      redirectUrl: 'http://localhost:3001/auth/google/callback',
       session: { accessToken: 'jwt.access.value', refreshToken: 'refresh-raw-value' },
     }));
   const googleErrorRedirect =
@@ -56,7 +56,7 @@ describe('googleAuthRedirect — AuthService trả session (đăng nhập thành
       refreshToken: 'refresh-raw-value',
     });
     expect(redirects).toEqual([
-      { url: 'http://localhost:3001/auth/google/callback?token=jwt.access.value' },
+      { url: 'http://localhost:3001/auth/google/callback' },
     ]);
   });
 

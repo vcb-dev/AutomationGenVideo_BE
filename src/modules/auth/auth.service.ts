@@ -129,8 +129,8 @@ export class AuthService {
 
     // Một biến duy nhất chi phối hạn mỗi loại token. Hai chỗ đọc hai biến khác nhau cho cùng một
     // hạn là mời gọi sự cố khi chúng lệch nhau.
-    const accessExpires = this.configService.get<string>("JWT_ACCESS_EXPIRES") || "15m";
-    const refreshExpires = this.configService.get<string>("JWT_REFRESH_EXPIRES") || "7d";
+    const accessExpires = this.configService.get<string>("JWT_ACCESS_EXPIRES") || "7d";
+    const refreshExpires = this.configService.get<string>("JWT_REFRESH_EXPIRES") || "30d";
 
     const accessToken = this.jwtService.sign(payload, { expiresIn: accessExpires as any });
     const refreshToken = this.jwtService.sign(payload, { expiresIn: refreshExpires as any });
@@ -224,7 +224,7 @@ export class AuthService {
     const { tokenResponse, refreshToken } = await this.issueSession(googleAuthUser);
 
     return {
-      redirectUrl: `${this.configService.get<string>("FRONTEND_URL") || "http://localhost:3001"}/auth/google/callback?token=${encodeURIComponent(tokenResponse.access_token)}`,
+      redirectUrl: `${this.configService.get<string>("FRONTEND_URL") || "http://localhost:3001"}/auth/google/callback`,
       session: { accessToken: tokenResponse.access_token, refreshToken },
     };
   }
