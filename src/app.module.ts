@@ -39,6 +39,7 @@ import { OAuthModule } from './modules/oauth/oauth.module';
 import { FacebookOwnedPagesModule } from './modules/facebook-owned-pages/facebook-owned-pages.module';
 import { DouyinScraperModule } from './modules/douyin-scraper/douyin-scraper.module';
 import { TiktokScraperModule } from './modules/tiktok-scraper/tiktok-scraper.module';
+import { InstagramOwnedAccountsModule } from './modules/instagram-owned-accounts/instagram-owned-accounts.module';
 import { InstagramScraperModule } from './modules/instagram-scraper/instagram-scraper.module';
 import { XiaohongshuScraperModule } from './modules/xiaohongshu-scraper/xiaohongshu-scraper.module';
 import { FacebookExternalScraperModule } from './modules/facebook-external-scraper/facebook-external-scraper.module';
@@ -105,6 +106,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     FacebookOwnedPagesModule,
     DouyinScraperModule,
     TiktokScraperModule,
+    InstagramOwnedAccountsModule,
     InstagramScraperModule,
     XiaohongshuScraperModule,
     FacebookExternalScraperModule,
