@@ -4159,6 +4159,7 @@ model SpinMember {
   workspace_id  String
   team_id       String?
   name          String
+  avatar_url    String?
   status        SpinEntryStatus @default(ACTIVE)
   gift_received Boolean         @default(false)
   created_at    DateTime        @default(now())
@@ -4199,6 +4200,7 @@ model SpinMemberWin {
   member_id       String? // null khi thành viên đã bị xoá khỏi danh sách
   member_name     String
   team_name       String
+  avatar_url      String?
   created_by_id   String?  @db.Uuid // user bấm xác nhận — không đặt FK để khỏi sửa model User
   created_by_name String?
   created_at      DateTime @default(now())

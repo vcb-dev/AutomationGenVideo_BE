@@ -226,6 +226,7 @@ export class LuckySpinService {
       members: members.map((m) => ({
         id: m.id,
         name: m.name,
+        avatarUrl: m.avatar_url ?? undefined,
         teamId: m.team_id ?? '',
         status: m.status === SpinEntryStatus.DONE ? 'done' : 'active',
         giftReceived: m.gift_received,
@@ -236,6 +237,7 @@ export class LuckySpinService {
         memberId: h.member_id ?? '',
         name: h.member_name,
         team: h.team_name,
+        avatarUrl: h.avatar_url ?? undefined,
         time: h.created_at.toISOString(),
         by: h.created_by_name ?? undefined,
       })),
@@ -285,6 +287,7 @@ export class LuckySpinService {
         memberId: h.member_id ?? '',
         name: h.member_name,
         team: h.team_name,
+        avatarUrl: h.avatar_url ?? undefined,
         time: h.created_at.toISOString(),
         by: h.created_by_name ?? undefined,
       }));
@@ -588,7 +591,12 @@ export class LuckySpinService {
     const workspaceId = await this.assertControl(slug, actor);
     await this.assertTeamInWorkspace(slug, dto.teamId, actor.id);
     return this.prisma.spinMember.create({
-      data: { workspace_id: workspaceId, team_id: dto.teamId, name: dto.name.trim() },
+      data: {
+        workspace_id: workspaceId,
+        team_id: dto.teamId,
+        name: dto.name.trim(),
+        avatar_url: dto.avatarUrl?.trim() || null,
+      },
     });
   }
 
@@ -614,7 +622,11 @@ export class LuckySpinService {
     // Lọc TRƯỚC khi đụng vào DB: file trắng hoặc file toàn dòng thiếu cột không được phép
     // quét sạch danh sách đang chạy. Chọn nhầm file giữa buổi là chuyện có thật.
     const rows = dto.members
-      .map((r) => ({ name: r.name.trim(), teamName: r.teamName.trim() }))
+      .map((r) => ({
+        name: r.name.trim(),
+        teamName: r.teamName.trim(),
+        avatarUrl: r.avatarUrl?.trim() || null,
+      }))
       .filter((r) => r.name && r.teamName);
 
     if (rows.length === 0) {
@@ -643,7 +655,12 @@ export class LuckySpinService {
           teamIdByLowerName.set(row.teamName.toLowerCase(), teamId);
           createdTeams++;
         }
-        membersData.push({ workspace_id: workspaceId, team_id: teamId, name: row.name });
+        membersData.push({
+          workspace_id: workspaceId,
+          team_id: teamId,
+          name: row.name,
+          avatar_url: row.avatarUrl,
+        });
       }
 
       await tx.spinMember.createMany({ data: membersData });
@@ -660,6 +677,7 @@ export class LuckySpinService {
       data: {
         ...(dto.name !== undefined && { name: dto.name.trim() }),
         ...(dto.teamId !== undefined && { team_id: dto.teamId }),
+        ...(dto.avatarUrl !== undefined && { avatar_url: dto.avatarUrl?.trim() || null }),
       },
     });
   }
@@ -746,6 +764,7 @@ export class LuckySpinService {
           member_id: member.id,
           member_name: member.name,
           team_name: member.team?.name ?? NO_TEAM_LABEL,
+          avatar_url: member.avatar_url ?? null,
           created_by_id: actor.id,
           created_by_name: actor.name,
         },
