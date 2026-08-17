@@ -1,5 +1,6 @@
 import { Injectable, Logger, HttpException, HttpStatus, NotFoundException, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { PlayUrlNoCreditError } from './play-url-errors';
+import { buildVoiceUsageDateRange } from './voice-usage-range';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -2459,11 +2460,8 @@ export class AiIntegrationService {
    */
   async getVoiceUsageStats(dateFrom?: string, dateTo?: string): Promise<any> {
     const where: any = {};
-    if (dateFrom || dateTo) {
-      where.created_at = {};
-      if (dateFrom) where.created_at.gte = new Date(`${dateFrom}T00:00:00`);
-      if (dateTo) where.created_at.lte = new Date(`${dateTo}T23:59:59.999`);
-    }
+    const range = buildVoiceUsageDateRange(dateFrom, dateTo);
+    if (range) where.created_at = range;
 
     const rows = await this.prisma.aiVoiceUsage.findMany({
       where,
