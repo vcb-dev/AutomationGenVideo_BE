@@ -125,3 +125,62 @@ describe('POST /auth/logout', () => {
     expect(result).toEqual({ success: true });
   });
 });
+
+describe('POST /auth/register', () => {
+  it('gọi AuthService.register và trả kết quả', async () => {
+    const register = jest.fn(async () => ({
+      message: 'Đăng ký thành công',
+      user: { id: 'u1', email: 'test@vcb.vn' },
+    }));
+    const controller = new AuthController(
+      { register } as unknown as AuthService,
+      {} as unknown as CookieAuthService,
+    );
+
+    const dto = { name: 'Test', email: 'test@vcb.vn', password: '123' };
+    const result = await controller.register(dto);
+
+    expect(register).toHaveBeenCalledWith(dto);
+    expect(result).toEqual({
+      message: 'Đăng ký thành công',
+      user: { id: 'u1', email: 'test@vcb.vn' },
+    });
+  });
+});
+
+describe('POST /auth/forgot-password', () => {
+  it('gọi AuthService.forgotPassword và trả thông báo', async () => {
+    const forgotPassword = jest.fn(async () => ({
+      message: 'OTP đã được gửi',
+    }));
+    const controller = new AuthController(
+      { forgotPassword } as unknown as AuthService,
+      {} as unknown as CookieAuthService,
+    );
+
+    const dto = { email: 'test@vcb.vn' };
+    const result = await controller.forgotPassword(dto);
+
+    expect(forgotPassword).toHaveBeenCalledWith(dto);
+    expect(result).toEqual({ message: 'OTP đã được gửi' });
+  });
+});
+
+describe('POST /auth/reset-password', () => {
+  it('gọi AuthService.resetPassword và trả thông báo', async () => {
+    const resetPassword = jest.fn(async () => ({
+      message: 'Đặt lại mật khẩu thành công',
+    }));
+    const controller = new AuthController(
+      { resetPassword } as unknown as AuthService,
+      {} as unknown as CookieAuthService,
+    );
+
+    const dto = { email: 'test@vcb.vn', otp: '123456', newPassword: 'new123Password' };
+    const result = await controller.resetPassword(dto);
+
+    expect(resetPassword).toHaveBeenCalledWith(dto);
+    expect(result).toEqual({ message: 'Đặt lại mật khẩu thành công' });
+  });
+});
+

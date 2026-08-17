@@ -1,9 +1,12 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { createHash } from "crypto";
+import { PrismaService } from "../../common/prisma/prisma.service";
 import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
+import { RegisterDto } from "./dto/register.dto";
+import { ForgotPasswordDto, ResetPasswordDto } from "./dto/password-reset.dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
 import * as bcrypt from "bcrypt";
@@ -27,6 +30,7 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private prisma?: PrismaService,
   ) {}
 
   /** SHA-256 hex — dùng để lưu bản băm refresh token xuống DB, không bao giờ lưu token thô. */
@@ -233,5 +237,125 @@ export class AuthService {
     return this.loginErrorRedirect(
       "Đăng nhập Google thất bại. Vui lòng thử lại hoặc liên hệ Admin.",
     );
+  }
+
+  async register(registerDto: RegisterDto) {
+    if (!this.prisma) {
+      throw new Error('PrismaService is required for register');
+    }
+    const { email, password, name, team } = registerDto;
+    const emailLower = email.toLowerCase();
+
+    const existingUser = await this.prisma.user.findFirst({
+      where: { email: { equals: emailLower, mode: 'insensitive' } },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('Email này đã được đăng ký sử dụng trong hệ thống');
+    }
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const user = await this.prisma.user.create({
+      data: {
+        full_name: name,
+        email: emailLower,
+        password_hash,
+        is_active: false, // Chờ ADMIN phê duyệt
+        roles: [],
+        team: team || undefined,
+      },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        roles: true,
+        team: true,
+        is_active: true,
+        created_at: true,
+      },
+    });
+
+    return {
+      message: 'Đăng ký tài khoản thành công! Yêu cầu của bạn đang CHỜ ADMIN PHÊ DUYỆT trước khi có thể đăng nhập.',
+      user,
+    };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    if (!this.prisma) {
+      throw new Error('PrismaService is required for forgotPassword');
+    }
+    const { email } = dto;
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
+    });
+
+    if (!user) {
+      // Để bảo mật không làm lộ email tồn tại hay không, vẫn trả lời thông báo chung
+      return {
+        message: 'Nếu email tồn tại trong hệ thống, mã xác thực OTP đã được gửi đến bạn.',
+      };
+    }
+
+    // Sinh mã OTP 6 chữ số
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const resetTokenHash = this.hashSha256(otp);
+    const resetTokenExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 phút
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        reset_token_hash: resetTokenHash,
+        reset_token_expires: resetTokenExpires,
+      },
+    });
+
+    // TODO: Thay bằng MailService.sendForgotPasswordOtp() khi có MailModule
+    console.log(`[SECURITY LOG] Mã OTP Quên Mật Khẩu của ${email} là: ${otp}`);
+
+    return {
+      message: 'Mã xác thực OTP đặt lại mật khẩu đã được gửi đến email của bạn (hiệu lực 15 phút)',
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    if (!this.prisma) {
+      throw new Error('PrismaService is required for resetPassword');
+    }
+    const { email, otp, newPassword } = dto;
+
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
+    });
+
+    if (!user || !user.reset_token_hash || !user.reset_token_expires) {
+      throw new BadRequestException('Yêu cầu đặt lại mật khẩu không hợp lệ hoặc không tồn tại');
+    }
+
+    if (new Date() > user.reset_token_expires) {
+      throw new BadRequestException('Mã xác thực OTP đã hết hạn (chỉ có hiệu lực trong 15 phút)');
+    }
+
+    const incomingHash = this.hashSha256(otp);
+    if (user.reset_token_hash !== incomingHash) {
+      throw new BadRequestException('Mã xác thực OTP không chính xác');
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password_hash: newPasswordHash,
+        reset_token_hash: null,
+        reset_token_expires: null,
+        refresh_token_hash: null, // Yêu cầu đăng nhập lại
+      },
+    });
+
+    return {
+      message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.',
+    };
   }
 }

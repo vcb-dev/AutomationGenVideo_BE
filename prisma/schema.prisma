@@ -27,6 +27,10 @@ model User {
   /// không giữ bản gốc, nên lộ dump DB cũng không mạo danh được ai. Đăng nhập thiết bị mới ghi đè
   /// giá trị này (single-session): thiết bị cũ tự động bị đăng xuất ở lần refresh kế tiếp.
   refresh_token_hash      String?
+  /// SHA-256 hex của OTP reset mật khẩu (6 chữ số). Null khi không có yêu cầu reset đang chờ.
+  reset_token_hash        String?
+  /// Thời điểm OTP reset mật khẩu hết hạn (15 phút sau khi yêu cầu).
+  reset_token_expires     DateTime?
   full_name               String
   google_id               String?    @unique
   manager_id              String?    @db.Uuid

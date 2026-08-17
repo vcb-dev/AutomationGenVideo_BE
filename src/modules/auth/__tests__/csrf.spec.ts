@@ -1,6 +1,14 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { COOKIE_CSRF, CSRF_HEADER } from '../cookie.constants';
 import { CsrfGuard } from '../guards/csrf.guard';
+import { SKIP_CSRF_KEY } from '../decorators/skip-csrf.decorator';
+
+function makeReflector(skipCsrf = false): Reflector {
+  return {
+    getAllAndOverride: jest.fn().mockReturnValue(skipCsrf),
+  } as unknown as Reflector;
+}
 
 function makeContext(opts: {
   method?: string;
@@ -20,11 +28,13 @@ function makeContext(opts: {
 
   return {
     switchToHttp: () => ({ getRequest: () => req }),
+    getHandler: () => ({}),
+    getClass: () => ({}),
   } as unknown as ExecutionContext;
 }
 
 describe('CsrfGuard', () => {
-  const guard = new CsrfGuard();
+  const guard = new CsrfGuard(makeReflector(false));
 
   it('cho qua khi cookie và header khớp nhau', () => {
     expect(guard.canActivate(makeContext({ cookieValue: 'tok', headerValue: 'tok' }))).toBe(true);
@@ -93,3 +103,27 @@ describe('CsrfGuard', () => {
     ).toThrow(ForbiddenException);
   });
 });
+
+describe('CsrfGuard + @SkipCsrf()', () => {
+  const skipGuard = new CsrfGuard(makeReflector(true));
+
+  it('cho qua POST khi route có @SkipCsrf(), không cần cookie/header CSRF', () => {
+    expect(skipGuard.canActivate(makeContext({ method: 'POST' }))).toBe(true);
+  });
+
+  it('cho qua DELETE khi route có @SkipCsrf()', () => {
+    expect(skipGuard.canActivate(makeContext({ method: 'DELETE' }))).toBe(true);
+  });
+
+  it('Reflector.getAllAndOverride được gọi đúng key SKIP_CSRF_KEY', () => {
+    const reflector = makeReflector(true);
+    const g = new CsrfGuard(reflector);
+    const ctx = makeContext({ method: 'POST' });
+    g.canActivate(ctx);
+    expect(reflector.getAllAndOverride).toHaveBeenCalledWith(SKIP_CSRF_KEY, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+  });
+});
+

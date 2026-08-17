@@ -1,6 +1,8 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { COOKIE_CSRF, CSRF_HEADER } from '../cookie.constants';
+import { SKIP_CSRF_KEY } from '../decorators/skip-csrf.decorator';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -11,7 +13,18 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
   canActivate(context: ExecutionContext): boolean {
+    // Kiểm tra route có gắn @SkipCsrf() không (ở cả method và class)
+    const skip = this.reflector.getAllAndOverride<boolean>(SKIP_CSRF_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (skip) {
+      return true;
+    }
+
     const req = context
       .switchToHttp()
       .getRequest<Request & { cookies?: Record<string, string> }>();
@@ -38,3 +51,4 @@ export class CsrfGuard implements CanActivate {
     return true;
   }
 }
+

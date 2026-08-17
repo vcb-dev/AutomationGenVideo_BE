@@ -4,6 +4,7 @@ import {
   Body,
   Get,
   HttpCode,
+  HttpStatus,
   UseGuards,
   UseInterceptors,
   ClassSerializerInterceptor,
@@ -12,7 +13,7 @@ import {
 } from "@nestjs/common";
 import { Request, Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
-import { SkipThrottle } from "@nestjs/throttler";
+import { Throttle, SkipThrottle } from "@nestjs/throttler";
 import {
   ApiTags,
   ApiOperation,
@@ -21,6 +22,8 @@ import {
 } from "@nestjs/swagger";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
+import { RegisterDto } from "./dto/register.dto";
+import { ForgotPasswordDto, ResetPasswordDto } from "./dto/password-reset.dto";
 import { TokenResponseDto } from "./dto/token-response.dto";
 import { UserResponseDto } from "../users/dto/user-response.dto";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
@@ -28,18 +31,23 @@ import { CsrfGuard } from "./guards/csrf.guard";
 import { CurrentUser } from "./decorators/current-user.decorator";
 import { CookieAuthService } from "./cookie-auth.service";
 import { COOKIE_REFRESH } from "./cookie.constants";
+import { SkipCsrf } from "./decorators/skip-csrf.decorator";
 
 @ApiTags("auth")
 @Controller("auth")
 @SkipThrottle({ long: true, short: true })
 @UseInterceptors(ClassSerializerInterceptor)
+@UseGuards(CsrfGuard)
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly cookieAuthService: CookieAuthService,
   ) {}
 
+  @SkipCsrf()
+  @Throttle({ short: { ttl: 60000, limit: 10 } })
   @Post("login")
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Login user" })
   @ApiResponse({
     status: 200,
@@ -64,8 +72,7 @@ export class AuthController {
   }
 
   @Post("refresh")
-  @HttpCode(200)
-  @UseGuards(CsrfGuard)
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Xoay vòng refresh token, cấp lại cookie" })
   @ApiResponse({ status: 200, description: "Cấp lại phiên thành công", type: TokenResponseDto })
   @ApiResponse({ status: 401, description: "Refresh token thiếu, hết hạn hoặc đã bị thu hồi" })
@@ -92,8 +99,7 @@ export class AuthController {
   }
 
   @Post("logout")
-  @HttpCode(200)
-  @UseGuards(CsrfGuard)
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Đăng xuất" })
   @ApiResponse({ status: 200, description: "Đã đăng xuất" })
   async logout(
@@ -111,6 +117,38 @@ export class AuthController {
     return { success: true };
   }
 
+  @SkipCsrf()
+  @Post("register")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Đăng ký tài khoản mới (chờ Admin phê duyệt)" })
+  @ApiResponse({ status: 201, description: "Đăng ký thành công, chờ phê duyệt" })
+  @ApiResponse({ status: 409, description: "Email đã tồn tại" })
+  async register(@Body() registerDto: RegisterDto) {
+    return this.authService.register(registerDto);
+  }
+
+  @SkipCsrf()
+  @Throttle({ short: { ttl: 60000, limit: 5 } })
+  @Post("forgot-password")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Yêu cầu OTP đặt lại mật khẩu" })
+  @ApiResponse({ status: 200, description: "OTP đã được gửi (nếu email tồn tại)" })
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @SkipCsrf()
+  @Throttle({ short: { ttl: 60000, limit: 5 } })
+  @Post("reset-password")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Đặt lại mật khẩu bằng OTP" })
+  @ApiResponse({ status: 200, description: "Đặt lại mật khẩu thành công" })
+  @ApiResponse({ status: 400, description: "OTP sai hoặc hết hạn" })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
+  }
+
+  @SkipCsrf()
   @Get("profile")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -125,12 +163,14 @@ export class AuthController {
     return new UserResponseDto(user);
   }
 
+  @SkipCsrf()
   @Get("google")
   @UseGuards(AuthGuard("google"))
   @ApiOperation({ summary: "Login with Google" })
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async googleAuth(@Req() req: Request) {}
 
+  @SkipCsrf()
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
   @ApiOperation({ summary: "Google auth callback" })
@@ -156,3 +196,4 @@ export class AuthController {
     }
   }
 }
+
