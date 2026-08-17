@@ -14,40 +14,16 @@ export function extractAccessTokenFromCookie(req: Request): string | null {
   return (req as Request & { cookies?: Record<string, string> })?.cookies?.[COOKIE_ACCESS] ?? null;
 }
 
-const ALLOWED_SAMESITE = ['lax', 'strict', 'none'] as const;
-type SameSite = (typeof ALLOWED_SAMESITE)[number];
-
-function parseSameSite(value: string): SameSite {
-  const normalized = value.trim().toLowerCase();
-  if (!(ALLOWED_SAMESITE as readonly string[]).includes(normalized)) {
-    throw new Error(
-      `COOKIE_SAMESITE="${value}" không hợp lệ. Chỉ nhận ${ALLOWED_SAMESITE.join(' | ')}.`,
-    );
-  }
-  return normalized as SameSite;
-}
-
 @Injectable()
 export class CookieAuthService {
-  constructor(private readonly config: ConfigService) {
-    this.baseOptions();
-  }
+  constructor(private readonly config: ConfigService) {}
 
   private baseOptions(): CookieOptions {
     const secure = this.config.get<string>('COOKIE_SECURE', 'false') === 'true';
-    const sameSite = parseSameSite(this.config.get<string>('COOKIE_SAMESITE', 'lax'));
-
-    if (sameSite === 'none' && !secure) {
-      throw new Error(
-        'COOKIE_SAMESITE="none" bắt buộc phải đi kèm COOKIE_SECURE="true", nếu không trình duyệt ' +
-        'sẽ vứt bỏ toàn bộ cookie phiên.',
-      );
-    }
-
     return {
       httpOnly: true,
       secure,
-      sameSite,
+      sameSite: 'lax',
       path: '/',
     };
   }
