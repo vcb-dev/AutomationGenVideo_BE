@@ -80,10 +80,20 @@ describe('CookieAuthService.setAuthCookies', () => {
   });
 
 
-  it('mặc định sameSite=lax khi không có env', () => {
+  it('sameSite theo biến môi trường COOKIE_SAMESITE', () => {
+    const { res, set } = fakeResponse();
+    buildService({ COOKIE_SAMESITE: 'none' }).setAuthCookies(res, TOKENS);
+    expect(set.every((c) => c.opts.sameSite === 'none')).toBe(true);
+  });
+
+  it('mặc định sameSite=lax khi không có env hoặc env không hợp lệ', () => {
     const { res, set } = fakeResponse();
     buildService().setAuthCookies(res, TOKENS);
     expect(set.every((c) => c.opts.sameSite === 'lax')).toBe(true);
+
+    const { res: res2, set: set2 } = fakeResponse();
+    buildService({ COOKIE_SAMESITE: 'invalid' }).setAuthCookies(res2, TOKENS);
+    expect(set2.every((c) => c.opts.sameSite === 'lax')).toBe(true);
   });
 
   it('secure theo biến môi trường COOKIE_SECURE', () => {

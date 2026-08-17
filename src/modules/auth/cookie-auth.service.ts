@@ -14,16 +14,28 @@ export function extractAccessTokenFromCookie(req: Request): string | null {
   return (req as Request & { cookies?: Record<string, string> })?.cookies?.[COOKIE_ACCESS] ?? null;
 }
 
+const ALLOWED_SAMESITE = ['lax', 'strict', 'none'] as const;
+type SameSite = (typeof ALLOWED_SAMESITE)[number];
+
+function parseSameSite(value: string): SameSite {
+  const normalized = (value || '').trim().toLowerCase();
+  if (!(ALLOWED_SAMESITE as readonly string[]).includes(normalized)) {
+    return 'lax';
+  }
+  return normalized as SameSite;
+}
+
 @Injectable()
 export class CookieAuthService {
   constructor(private readonly config: ConfigService) {}
 
   private baseOptions(): CookieOptions {
     const secure = this.config.get<string>('COOKIE_SECURE', 'false') === 'true';
+    const sameSite = parseSameSite(this.config.get<string>('COOKIE_SAMESITE', 'lax'));
     return {
       httpOnly: true,
       secure,
-      sameSite: 'lax',
+      sameSite,
       path: '/',
     };
   }
