@@ -43,6 +43,8 @@ export class OAuthService {
 
   /** Xử lý callback từ Facebook: đổi code → token → lấy danh sách pages → lưu DB */
   async handleFacebookCallback(code: string) {
+    if (!code) throw new BadRequestException('Thiếu tham số code từ Facebook');
+
     const appId = this.config.get<string>('FACEBOOK_APP_ID');
     const appSecret = this.config.get<string>('FACEBOOK_APP_SECRET');
     const callbackUrl = this.config.get<string>('FACEBOOK_CALLBACK_URL');
@@ -138,8 +140,43 @@ export class OAuthService {
       }
     }
 
+    await this.saveTokenToAi(longLivedToken);
+
     this.logger.log(`✅ Facebook OAuth: Đã lưu ${results.length} kênh vào DB`);
     return { success: true, count: results.length, channels: results };
+  }
+
+  /**
+   * Gửi User Access Token vừa cấp sang AI để lưu vào token store.
+   *
+   * Vì sao bắt buộc: quyền Facebook đóng cứng vào token lúc phát hành. App được duyệt thêm
+   * quyền KHÔNG làm token cũ mạnh lên, và `fb_exchange_token` chỉ đổi hạn chứ không thêm quyền
+   * (đo 16/08/2026: token vừa gia hạn vẫn thiếu `instagram_manage_insights`). Đường DUY NHẤT
+   * để có quyền mới là qua màn hình đồng ý — tức chính luồng này. Trước đây token mới bị vứt
+   * đi ngay sau khi gọi /me/accounts, nên cấp quyền xong hệ thống vẫn chạy bằng token cũ và
+   * người cấp tưởng đã xong.
+   *
+   * AI giữ token store (.fb_token.json) nên BE gửi sang thay vì tự ghi file — giữ đúng ranh
+   * giới sẵn có giữa hai repo.
+   *
+   * Hỏng thì chỉ log: kênh đã lưu vào DB xong rồi, ném lỗi ở đây là người dùng thấy màn hình
+   * đỏ dù việc chính đã thành công, rồi bấm cấp quyền lại từ đầu — vô ích.
+   */
+  private async saveTokenToAi(longLivedToken: string): Promise<void> {
+    const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL');
+    try {
+      await axios.post(
+        `${aiServiceUrl}/api/facebook/fetch/token-save/`,
+        { access_token: longLivedToken },
+        { timeout: 30_000 },
+      );
+      this.logger.log('✅ Đã lưu User Access Token mới vào token store của AI');
+    } catch (err: any) {
+      this.logger.error(
+        `❌ Không lưu được token mới sang AI: ${err.message} — hệ thống vẫn chạy token cũ, ` +
+          'quyền mới cấp sẽ KHÔNG có tác dụng cho tới khi lưu được',
+      );
+    }
   }
 
   // ────────────────────────────────────────────────
