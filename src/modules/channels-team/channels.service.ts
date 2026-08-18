@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 import { CreateChannelDto } from "./dto/create-channel.dto";
 import { UpdateChannelDto } from "./dto/update-channel.dto";
 import { UserRole } from "@prisma/client";
-import { PrismaService } from "@/common/prisma/prisma.service";
+import { PrismaService } from "../../common/prisma/prisma.service";
 
 const CHANNEL_INCLUDE = {
   channel_team: { select: { id: true, name: true } },
@@ -113,21 +113,91 @@ export class ChannelsService {
     });
   }
 
-  /** Lấy tất cả kênh thuộc về user hiện tại (owner_id). */
-  async findMine(userId: string) {
-    return this.prisma.channel.findMany({
-      where: { owner_id: userId },
+  /** Lấy tất cả kênh thuộc về user hiện tại (bằng owner_id, email, hoặc tên owner). */
+  async findMine(user: { id: string; email?: string; full_name?: string; roles?: UserRole[]; team?: string | null }) {
+    const orConditions: any[] = [{ owner_id: user.id }];
+
+    if (user.email) {
+      orConditions.push({ email: { equals: user.email, mode: "insensitive" } });
+    }
+    if (user.full_name) {
+      orConditions.push({ owner: { equals: user.full_name, mode: "insensitive" } });
+    }
+
+    const channels = await this.prisma.channel.findMany({
+      where: { OR: orConditions },
       include: CHANNEL_INCLUDE,
       orderBy: { created_at: "desc" },
     });
+
+    // Also include active tracked_channels for this user
+    try {
+      const tracked = await this.prisma.trackedChannel.findMany({
+        where: { user_id: user.id, is_active: true },
+        orderBy: { created_at: "desc" },
+      });
+
+      const existingNames = new Set(channels.map((c) => (c.name || "").toLowerCase()));
+      for (const tc of tracked) {
+        const channelName = tc.display_name || tc.username;
+        if (channelName && !existingNames.has(channelName.toLowerCase())) {
+          channels.push({
+            id: tc.id,
+            name: channelName,
+            platform: tc.platform?.toLowerCase() || null,
+            channel_id: tc.username,
+            link_channel: null,
+            status: tc.is_active ? "đang hoạt động" : "ngừng hoạt động",
+            team_traffic: user.team || null,
+            owner: user.full_name || null,
+            created_at: tc.created_at,
+            updated_at: tc.updated_at,
+            email: user.email || null,
+            owner_id: user.id,
+            team_id: null,
+            channel_team: null,
+            channel_owner: {
+              id: user.id,
+              full_name: user.full_name || "",
+              email: user.email || "",
+            },
+          } as any);
+          existingNames.add(channelName.toLowerCase());
+        }
+      }
+    } catch {
+      // Ignore tracked channel query error if table or field differs
+    }
+
+    // Nếu chưa có kênh riêng nhưng user là ADMIN/MANAGER, trả về toàn bộ kênh để test và báo cáo
+    if (channels.length === 0 && user.roles && this.isAdminOrManager(user.roles)) {
+      return this.prisma.channel.findMany({
+        include: CHANNEL_INCLUDE,
+        orderBy: { created_at: "desc" },
+      });
+    }
+
+    // Nếu là LEADER chưa gán kênh riêng, trả về các kênh thuộc team của leader
+    if (channels.length === 0 && user.roles && this.isLeader(user.roles) && user.team) {
+      return this.prisma.channel.findMany({
+        where: {
+          channel_team: { name: { equals: user.team, mode: "insensitive" } },
+        },
+        include: CHANNEL_INCLUDE,
+        orderBy: { created_at: "desc" },
+      });
+    }
+
+    return channels;
   }
 
   /**
-   * Lấy danh sách kênh thuộc team của user hiện tại.
+   * Lấy danh sách kênh thuộc team của user hiện tại (ADMIN/MANAGER thấy toàn bộ).
    */
   async findAll(user: { roles: UserRole[]; team: string | null }) {
+    const isGlobal = this.isAdminOrManager(user.roles);
     return this.prisma.channel.findMany({
-      where: user.team
+      where: !isGlobal && user.team
         ? { channel_team: { name: { equals: user.team, mode: "insensitive" } } }
         : undefined,
       include: CHANNEL_INCLUDE,
