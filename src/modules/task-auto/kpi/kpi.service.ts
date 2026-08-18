@@ -96,11 +96,51 @@ export class TaskAutoKpiService {
 
   // ─── Editor KPI ───────────────────────────────────────────────────────────
 
-  async getEditorKpis(month?: string, userId?: string) {
+  async getEditorKpis(
+    month?: string,
+    userId?: string,
+    currentUser?: { id: string; roles: string[] },
+    teamId?: string,
+  ) {
+    const roles = currentUser?.roles ?? [];
+    const isAdminOrManager =
+      roles.includes("ADMIN") || roles.includes("MANAGER");
+    const isLeader = roles.includes("LEADER") && !isAdminOrManager;
+    const isEditorOrMember =
+      !isAdminOrManager && !isLeader && !!currentUser?.id;
+
+    let teamFilter: any = undefined;
+    if (teamId) {
+      teamFilter = teamId;
+    }
+
+    if (isLeader && currentUser) {
+      const myTeams = await this.prisma.team.findMany({
+        where: { leader_id: currentUser.id },
+        select: { id: true },
+      });
+      const myTeamIds = myTeams.map((t) => t.id);
+      if (teamId && !myTeamIds.includes(teamId)) {
+        return [];
+      }
+      teamFilter = teamId ? teamId : { in: myTeamIds };
+    } else if (isEditorOrMember && currentUser) {
+      const myTeamMemberships = await this.prisma.teamMember.findMany({
+        where: { user_id: currentUser.id },
+        select: { team_id: true },
+      });
+      const myTeamIds = myTeamMemberships.map((m) => m.team_id);
+      if (teamId && !myTeamIds.includes(teamId)) {
+        return [];
+      }
+      teamFilter = teamId ? teamId : { in: myTeamIds };
+    }
+
     return this.prisma.editorKpi.findMany({
       where: {
         ...(month ? { month } : {}),
         ...(userId ? { user_id: userId } : {}),
+        ...(teamFilter !== undefined ? { team_id: teamFilter } : {}),
       },
       include: this.editorKpiInclude,
       orderBy: [{ month: "desc" }, { user: { full_name: "asc" } }],

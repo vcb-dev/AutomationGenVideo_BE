@@ -102,8 +102,10 @@ export class TaskAutoKpiController {
   getEditorKpis(
     @Query("month") month?: string,
     @Query("user_id") userId?: string,
+    @Query("team_id") teamId?: string,
+    @Request() req?: any,
   ) {
-    return this.kpi.getEditorKpis(month, userId);
+    return this.kpi.getEditorKpis(month, userId, req?.user, teamId);
   }
 
   @Post("kpi/editors")
