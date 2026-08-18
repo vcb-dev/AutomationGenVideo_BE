@@ -53,7 +53,7 @@ export class ChannelsController {
   @ApiOperation({ summary: "Get channels owned by the current user" })
   @ApiResponse({ status: 200, type: [ChannelResponseDto] })
   async findMine(@Request() req) {
-    const channels = await this.channelsService.findMine(req.user.id);
+    const channels = await this.channelsService.findMine(req.user);
     return channels.map((c) => new ChannelResponseDto(c));
   }
 
