@@ -49,6 +49,22 @@ export class ChannelsController {
     return this.channelsService.lookupByIdentifiers(body.identifiers ?? []);
   }
 
+  @Get("meta-connected")
+  @ApiOperation({ summary: "Get all Meta/Social accounts connected via OAuth" })
+  async getConnectedMeta(@Request() req) {
+    return this.channelsService.getConnectedMetaChannels(req.user);
+  }
+
+  @Post("import-from-meta")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Bulk import selected Meta channels into team channels" })
+  async importFromMeta(
+    @Body() body: { channels: Array<{ platform: string; name: string; channel_id: string; link_channel?: string }> },
+    @Request() req,
+  ) {
+    return this.channelsService.importFromMeta(body.channels || [], req.user);
+  }
+
   @Get("my")
   @ApiOperation({ summary: "Get channels owned by the current user" })
   @ApiResponse({ status: 200, type: [ChannelResponseDto] })
@@ -56,6 +72,7 @@ export class ChannelsController {
     const channels = await this.channelsService.findMine(req.user);
     return channels.map((c) => new ChannelResponseDto(c));
   }
+
 
   @Get()
   @ApiOperation({ summary: "Get all channels belonging to current user's team" })
