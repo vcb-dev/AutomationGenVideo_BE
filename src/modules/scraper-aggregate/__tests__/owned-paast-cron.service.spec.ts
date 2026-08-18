@@ -1,17 +1,5 @@
 import { OwnedPaastCronService } from '../owned-paast-cron.service';
 
-/**
- * Cron tự chấm PAAST cho video kênh nội bộ.
- *
- * Ba thứ phải khoá lại, vì hỏng cái nào cũng tốn hạn mức thật chứ không chỉ sai kết quả:
- *   1. scoreVideo() luôn được gọi với chiPhuDe = true — đường Whisper đi qua RapidAPI, gói hiện
- *      tại chỉ 200 lượt/THÁNG, chạy nền hàng loạt là cháy sạch trong một đêm.
- *   2. Hai cron không được chạy đè nhau.
- *   3. Một video lỗi không được làm đứt cả lượt chạy.
- *
- * setTimeout bị thay để không phải chờ thật 1 giây mỗi video.
- */
-
 const USER = { id: 'u1' };
 
 function buildService(over: { videos?: any[]; user?: any; scoreVideo?: any } = {}) {
@@ -20,13 +8,12 @@ function buildService(over: { videos?: any[]; user?: any; scoreVideo?: any } = {
     $queryRawUnsafe: jest.fn(async () => over.videos ?? []),
   };
   const script: any = {
-    scoreVideo: over.scoreVideo ?? jest.fn(async () => ({ trang_thai: 'da_cham' })),
+    scoreVideo: over.scoreVideo ?? jest.fn(async () => ({ statusCode: 'da_cham' })),
   };
   return { service: new OwnedPaastCronService(prisma, script), prisma, script };
 }
 
 beforeEach(() => {
-  // Bỏ nhịp nghỉ 1 giây giữa hai video — test không cần chờ thật.
   jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void) => {
     fn();
     return 0;
@@ -37,18 +24,14 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('chỉ đi đường phụ đề', () => {
-  /*
-   * Chốt quan trọng nhất của cả file. `true` ở tham số thứ tư là "chỉ phụ đề, không Whisper".
-   * Mất nó thì mỗi video tốn 1–4 lượt RapidAPI và một đêm là hết hạn mức tháng.
-   */
+describe('subtitles-only mode execution', () => {
   it.each([
     ['scoreNewVideos', 'scoreNewVideos' as const],
     ['phuNguoc', 'phuNguoc' as const],
-  ])('%s gọi scoreVideo với chiPhuDe = true', async (_ten, ham) => {
+  ])('%s invokes scoreVideo with subtitlesOnly = true', async (_name, method) => {
     const { service, script } = buildService({ videos: [{ post_id: 'p1' }, { post_id: 'p2' }] });
 
-    await service[ham]();
+    await service[method]();
 
     expect(script.scoreVideo).toHaveBeenCalledTimes(2);
     for (const call of script.scoreVideo.mock.calls) {
@@ -57,8 +40,8 @@ describe('chỉ đi đường phụ đề', () => {
   });
 });
 
-describe('phạm vi và trần của mỗi lượt', () => {
-  it('scoreNewVideos chỉ lấy video 3 ngày gần đây, trần 300', async () => {
+describe('scope and caps per batch execution', () => {
+  it('scoreNewVideos queries last 3 days with a cap of 300', async () => {
     const { service, prisma } = buildService();
     await service.scoreNewVideos();
 
@@ -67,7 +50,7 @@ describe('phạm vi và trần của mỗi lượt', () => {
     expect(sql).toContain('LIMIT 300');
   });
 
-  it('phuNguoc quét toàn kho, trần 400', async () => {
+  it('phuNguoc scans full catalog with a cap of 400', async () => {
     const { service, prisma } = buildService();
     await service.phuNguoc();
 
@@ -76,11 +59,7 @@ describe('phạm vi và trần của mỗi lượt', () => {
     expect(sql).toContain('LIMIT 400');
   });
 
-  /*
-   * Loại video ĐÃ CÓ bản ghi — kể cả bản ghi đánh dấu "không có phụ đề". Nhờ vậy chạy đi chạy
-   * lại nhiều đêm là tự tiến chứ không giẫm chân lên cùng một nhóm video.
-   */
-  it('bỏ qua video đã có bản ghi kịch bản', async () => {
+  it('skips videos with existing script records', async () => {
     const { service, prisma } = buildService();
     await service.phuNguoc();
 
@@ -89,7 +68,7 @@ describe('phạm vi và trần của mỗi lượt', () => {
     expect(sql).toContain('owned_video_scripts');
   });
 
-  it('chỉ lấy trang đang bật và còn token', async () => {
+  it('only queries active pages with valid tokens', async () => {
     const { service, prisma } = buildService();
     await service.phuNguoc();
 
@@ -99,8 +78,8 @@ describe('phạm vi và trần của mỗi lượt', () => {
   });
 });
 
-describe('điều kiện dừng sớm', () => {
-  it('không có user nào thì dừng, không đụng tới scoreVideo', async () => {
+describe('early exit conditions', () => {
+  it('aborts cleanly when no active user is available', async () => {
     const { service, script, prisma } = buildService({ user: null, videos: [{ post_id: 'p1' }] });
 
     await service.phuNguoc();
@@ -109,7 +88,7 @@ describe('điều kiện dừng sớm', () => {
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
-  it('không còn video nào cần chấm thì kết thúc êm', async () => {
+  it('finishes cleanly when no videos need scoring', async () => {
     const { service, script } = buildService({ videos: [] });
 
     await expect(service.phuNguoc()).resolves.toBeUndefined();
@@ -117,44 +96,39 @@ describe('điều kiện dừng sớm', () => {
   });
 });
 
-describe('khoá chống chạy đè', () => {
-  /*
-   * Hai cron (01:00 phủ ngược, 07:30 video mới) có thể chồng nhau khi lượt trước chạy quá lâu.
-   * Chạy đè thì cùng một video bị chấm hai lần — tốn gấp đôi lượt LLM.
-   */
-  it('lượt trước chưa xong thì lượt sau bỏ qua', async () => {
-    let thaChot: () => void = () => undefined;
+describe('concurrency lock guards', () => {
+  it('skips execution if previous run is still active', async () => {
+    let releaseLock: () => void = () => undefined;
     const scoreVideo = jest.fn(
-      () => new Promise((r) => (thaChot = () => r({ trang_thai: 'da_cham' }))),
+      () => new Promise((r) => (releaseLock = () => r({ statusCode: 'da_cham' }))),
     );
     const { service } = buildService({ videos: [{ post_id: 'p1' }], scoreVideo });
 
     const isRunning = service.phuNguoc();
-    await service.scoreNewVideos(); // chen vào giữa chừng
+    await service.scoreNewVideos();
 
     expect(scoreVideo).toHaveBeenCalledTimes(1);
 
-    thaChot();
+    releaseLock();
     await isRunning;
   });
 
-  /* Khoá phải nhả trong finally — lượt lỗi mà giữ khoá là cron chết vĩnh viễn tới lần restart. */
-  it('lượt trước ném lỗi thì khoá vẫn nhả, lượt sau chạy được', async () => {
+  it('releases lock when an error is thrown in query', async () => {
     const { service, prisma, script } = buildService({ videos: [{ post_id: 'p1' }] });
-    prisma.$queryRawUnsafe.mockRejectedValueOnce(new Error('Postgres đứt kết nối'));
+    prisma.$queryRawUnsafe.mockRejectedValueOnce(new Error('Postgres connection lost'));
 
-    await expect(service.phuNguoc()).rejects.toThrow('Postgres đứt kết nối');
+    await expect(service.phuNguoc()).rejects.toThrow('Postgres connection lost');
 
     await service.scoreNewVideos();
     expect(script.scoreVideo).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('một video lỗi không làm đứt cả lượt', () => {
-  it('vẫn chấm hết các video còn lại', async () => {
+describe('resilience to individual video errors', () => {
+  it('continues processing subsequent videos when one fails', async () => {
     const scoreVideo = jest.fn(async (_p: string, postId: string) => {
       if (postId === 'p2') throw new Error('AI service 500');
-      return { trang_thai: 'da_cham' };
+      return { statusCode: 'da_cham' };
     });
     const { service } = buildService({
       videos: [{ post_id: 'p1' }, { post_id: 'p2' }, { post_id: 'p3' }],
@@ -165,10 +139,10 @@ describe('một video lỗi không làm đứt cả lượt', () => {
     expect(scoreVideo.mock.calls.map((c) => c[1])).toEqual(['p1', 'p2', 'p3']);
   });
 
-  it('video không có phụ đề vẫn tính là xong, không ném lỗi', async () => {
+  it('treats videos without subtitles as completed without throwing errors', async () => {
     const { service } = buildService({
       videos: [{ post_id: 'p1' }],
-      scoreVideo: jest.fn(async () => ({ trang_thai: 'chua_co_kich_ban' })),
+      scoreVideo: jest.fn(async () => ({ statusCode: 'chua_co_kich_ban' })),
     });
 
     await expect(service.phuNguoc()).resolves.toBeUndefined();
