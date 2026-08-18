@@ -47,6 +47,11 @@ export class VideoLibraryService {
     });
   }
 
+  async getSavedVideoIds(): Promise<string[]> {
+    const rows = await this.prisma.videoLibrary.findMany({ select: { video_id: true } });
+    return rows.map((r) => r.video_id);
+  }
+
   async deleteVideoLibrary(id: string, roles: string[]): Promise<void> {
     const row = await this.prisma.videoLibrary.findUnique({ where: { id } });
     if (!row) throw new NotFoundException('Không tìm thấy video trong bộ sưu tập');
