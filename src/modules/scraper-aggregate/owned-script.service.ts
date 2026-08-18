@@ -7,44 +7,49 @@ import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 /**
- * Kịch bản + điểm PAAST cho video kênh nội bộ.
- *
- * ── Kịch bản lấy từ đâu ─────────────────────────────────────────────────────────
- * Theo thứ tự ưu tiên, dừng ở nguồn đầu tiên có:
- *   1. Đã lưu trong `owned_video_scripts` — dùng lại, không tốn gì.
- *   2. Phụ đề tự sinh của Facebook qua Graph API — ~2 giây, miễn phí, phủ ~34% video.
- *   3. Bóc lời thoại: RapidAPI lấy bản video CÓ TIẾNG rồi Whisper chạy tại máy — ~35 giây,
- *      không tốn tiền API, phủ phần còn lại.
- *   4. (chưa làm) kịch bản gốc từ task-auto khi nối được task ↔ bài đã đăng.
- *
- * Đã đo và LOẠI các đường khác: caption bài đăng chỉ 9,4% đạt mức tối thiểu 100 ký tự của
- * PAAST và vốn không phải kịch bản; video lấy từ Graph API luôn là bản CHỈ CÓ HÌNH (4/4 video
- * đo được `audio_stream=0`) nên Whisper không có gì để nghe — đó chính là lý do phải đi vòng
- * qua RapidAPI; yt-dlp trên link reel đòi đăng nhập, tải về 112 KB trang login rồi bỏ cuộc
- * sau hơn 4 phút.
+ * Script fetching and PAAST scoring service for internal owned videos.
  */
 
-/** Mức tối thiểu của PAAST — xem AnalyzeContentDto. Chặn ở đây để khỏi tốn một lượt gọi LLM. */
-const TOI_THIEU_KY_TU = 100;
+/** Minimum character count for PAAST evaluation. */
+const MIN_PAAST_CHAR_COUNT = 100;
 
-/** Trần của PAAST — xem AnalyzeContentDto. Kịch bản dài hơn thì cắt chứ không bỏ chấm. */
-const TOI_DA_KY_TU = 3000;
+/** Maximum character count allowed for PAAST evaluation before truncating. */
+const MAX_PAAST_CHAR_COUNT = 3000;
 
-/** Dấu "đã thử lấy kịch bản mà không ra" — không phải kịch bản thật, xem fetchScript(). */
-const KHONG_CO = 'khong_co';
+/** Marker recorded when a script lookup yielded no results to avoid repeated queries. */
+const NO_SCRIPT_MARKER = 'khong_co';
 
-export type TrangThaiKichBan = 'da_cham' | 'co_kich_ban' | 'chua_co_kich_ban' | 'qua_ngan' | 'khong_ho_tro';
+export type PaastStatusCode =
+  | 'da_cham'
+  | 'co_kich_ban'
+  | 'chua_co_kich_ban'
+  | 'qua_ngan'
+  | 'khong_ho_tro';
 
-export interface KetQuaPaastVideo {
-  trang_thai: TrangThaiKichBan;
+// Backward compatibility alias
+export type TrangThaiKichBan = PaastStatusCode;
+
+export interface PaastScoreResult {
+  statusCode: PaastStatusCode;
+  source?: string;
+  language?: string;
+  charCount?: number;
+  script?: string;
+  analysis?: unknown;
+  note?: string;
+
+  // Backward compatibility
+  trang_thai?: PaastStatusCode;
   nguon?: string;
   ngon_ngu?: string;
   so_ky_tu?: number;
   kich_ban?: string;
-  /** Bản ghi PaastAnalysisHistory — FE đưa thẳng vào PaastScoreModal qua prop `cachedResult`. */
   phan_tich?: unknown;
   ghi_chu?: string;
 }
+
+// Backward compatibility alias
+export type KetQuaPaastVideo = PaastScoreResult;
 
 @Injectable()
 export class OwnedScriptService {
@@ -58,19 +63,15 @@ export class OwnedScriptService {
   ) {}
 
   /**
-   * Trạng thái kịch bản của nhiều video cùng lúc — để lưới 24 thẻ chỉ tốn MỘT lượt gọi.
-   *
-   * Chỉ ĐỌC bảng đã lưu, tuyệt đối không kích hoạt lấy phụ đề: mở trang mà tự động gọi
-   * Graph API 24 lần thì vừa chậm vừa tốn hạn mức, trong khi người dùng có thể không bấm
-   * chấm điểm cái nào.
+   * Bulk retrieves script and PAAST status for multiple video keys.
    */
-  async statusMany(khoas: { platform: string; post_id: string }[]) {
-    if (!khoas.length) return {};
+  async statusMany(keys: { platform: string; post_id: string }[]) {
+    if (!keys.length) return {};
 
     const rows = await this.prisma.ownedVideoScript.findMany({
       where: {
-        nguon: { not: KHONG_CO },
-        OR: khoas.map((k) => ({ platform: k.platform, post_id: k.post_id })),
+        nguon: { not: NO_SCRIPT_MARKER },
+        OR: keys.map((k) => ({ platform: k.platform, post_id: k.post_id })),
       },
       select: {
         platform: true,
@@ -82,168 +83,189 @@ export class OwnedScriptService {
       },
     });
 
-    const ket: Record<
+    const result: Record<
       string,
-      { trang_thai: TrangThaiKichBan; dat: boolean | null; so_ky_tu: number }
+      {
+        statusCode: PaastStatusCode;
+        passed: boolean | null;
+        charCount: number;
+        trang_thai: PaastStatusCode;
+        dat: boolean | null;
+        so_ky_tu: number;
+      }
     > = {};
+
     for (const r of rows) {
       const alreadyScored = r.paast_analysis?.status === 'SUCCESS';
-      // Bản 2 không có điểm số — ô trên thẻ video hiển thị ĐẠT / CHƯA ĐẠT theo verdict.
       const kq = r.paast_analysis?.analysis_result as { verdict?: { passed?: boolean } } | null;
-      ket[`${r.platform}:${r.post_id}`] = {
-        trang_thai: alreadyScored ? 'da_cham' : r.so_ky_tu < TOI_THIEU_KY_TU ? 'qua_ngan' : 'co_kich_ban',
-        dat: alreadyScored ? kq?.verdict?.passed ?? null : null,
+      const statusCode: PaastStatusCode = alreadyScored
+        ? 'da_cham'
+        : r.so_ky_tu < MIN_PAAST_CHAR_COUNT
+          ? 'qua_ngan'
+          : 'co_kich_ban';
+      const passed = alreadyScored ? kq?.verdict?.passed ?? null : null;
+
+      result[`${r.platform}:${r.post_id}`] = {
+        statusCode,
+        passed,
+        charCount: r.so_ky_tu,
+        // Backward compatibility
+        trang_thai: statusCode,
+        dat: passed,
         so_ky_tu: r.so_ky_tu,
       };
     }
-    return ket;
+    return result;
   }
 
   /**
-   * Lấy kịch bản và điểm PAAST của một video; tự chấm nếu chưa có.
-   *
-   * Chỉ gọi khi người dùng CHỦ ĐỘNG bấm — bên trong có thể tốn một lượt LLM.
+   * Scores a single video with PAAST.
    */
   async scoreVideo(
     platform: string,
     postId: string,
     userId: string,
-    chiPhuDe = false,
-  ): Promise<KetQuaPaastVideo> {
-    const script = await this.fetchScript(platform, postId, chiPhuDe);
+    subtitlesOnly = false,
+  ): Promise<PaastScoreResult> {
+    const script = await this.fetchScript(platform, postId, subtitlesOnly);
     if (!script) {
+      const statusCode: PaastStatusCode = platform === 'facebook' ? 'chua_co_kich_ban' : 'khong_ho_tro';
+      const note =
+        platform === 'facebook'
+          ? 'This video has no automatic subtitles generated on Facebook yet.'
+          : `Transcript extraction is not currently supported for platform ${platform}.`;
       return {
-        trang_thai: platform === 'facebook' ? 'chua_co_kich_ban' : 'khong_ho_tro',
-        ghi_chu:
-          platform === 'facebook'
-            ? 'Video này chưa có phụ đề tự sinh trên Facebook nên chưa lấy được kịch bản.'
-            : `Chưa hỗ trợ lấy kịch bản cho nền tảng ${platform}.`,
+        statusCode,
+        note,
+        trang_thai: statusCode,
+        ghi_chu: note,
       };
     }
 
-    const chung = {
+    const common = {
+      source: script.nguon,
+      language: script.ngon_ngu,
+      charCount: script.so_ky_tu,
+      script: script.noi_dung,
       nguon: script.nguon,
       ngon_ngu: script.ngon_ngu,
       so_ky_tu: script.so_ky_tu,
       kich_ban: script.noi_dung,
     };
 
-    if (script.so_ky_tu < TOI_THIEU_KY_TU) {
+    if (script.so_ky_tu < MIN_PAAST_CHAR_COUNT) {
+      const note = `Script has only ${script.so_ky_tu} characters, PAAST requires at least ${MIN_PAAST_CHAR_COUNT}.`;
       return {
-        ...chung,
+        ...common,
+        statusCode: 'qua_ngan',
+        note,
         trang_thai: 'qua_ngan',
-        ghi_chu: `Kịch bản chỉ ${script.so_ky_tu} ký tự, PAAST cần tối thiểu ${TOI_THIEU_KY_TU}.`,
+        ghi_chu: note,
       };
     }
 
-    // Bộ tiêu chí và prompt của PAAST đều viết bằng tiếng Việt. Đưa kịch bản tiếng Thái vào
-    // vẫn ra một bản chấm trông như thật nhưng vô nghĩa — thà nói thẳng là chưa hỗ trợ.
-    // 'th' là mã Whisper trả về; phụ đề Facebook trả dạng 'vi_VN' nên phải chấp nhận cả hai.
-    const maNgonNgu = (script.ngon_ngu || '').toLowerCase();
-    if (maNgonNgu && !maNgonNgu.startsWith('vi')) {
+    const langCode = (script.ngon_ngu || '').toLowerCase();
+    if (langCode && !langCode.startsWith('vi')) {
+      const note = `Video transcript language is "${script.ngon_ngu}" — translation is required before PAAST scoring.`;
       return {
-        ...chung,
+        ...common,
+        statusCode: 'khong_ho_tro',
+        note,
         trang_thai: 'khong_ho_tro',
-        ghi_chu:
-          `Kịch bản của video này là tiếng "${script.ngon_ngu}", ` +
-          'trong khi bộ tiêu chí PAAST viết cho tiếng Việt — cần dịch trước khi chấm.',
+        ghi_chu: note,
       };
     }
 
-    // PAAST chỉ nhận tối đa 3.000 ký tự. Video dài bóc ra tới 5.320 ký tự (đo được), trước
-    // đây rơi thẳng vào nhánh lỗi và không chấm được gì. Cắt ở ranh giới câu gần nhất rồi
-    // vẫn chấm — phần mở đầu là nơi PAAST soi kỹ nhất (hook, insight chủ đạo) nên giữ đầu
-    // bỏ đuôi có ích hơn là không chấm.
     let scoredContent = script.noi_dung;
     let truncateNote: string | undefined;
-    if (scoredContent.length > TOI_DA_KY_TU) {
-      const cat = scoredContent.slice(0, TOI_DA_KY_TU);
-      const ranhCau = Math.max(cat.lastIndexOf('. '), cat.lastIndexOf('! '), cat.lastIndexOf('? '));
-      scoredContent = ranhCau > TOI_DA_KY_TU * 0.6 ? cat.slice(0, ranhCau + 1) : cat;
-      truncateNote =
-        `Kịch bản dài ${script.so_ky_tu} ký tự, PAAST chỉ nhận ${TOI_DA_KY_TU} — ` +
-        `đã chấm trên ${scoredContent.length} ký tự đầu.`;
+    if (scoredContent.length > MAX_PAAST_CHAR_COUNT) {
+      const sliced = scoredContent.slice(0, MAX_PAAST_CHAR_COUNT);
+      const sentenceBoundary = Math.max(sliced.lastIndexOf('. '), sliced.lastIndexOf('! '), sliced.lastIndexOf('? '));
+      scoredContent = sentenceBoundary > MAX_PAAST_CHAR_COUNT * 0.6 ? sliced.slice(0, sentenceBoundary + 1) : sliced;
+      truncateNote = `Script length is ${script.so_ky_tu} characters. PAAST evaluated the first ${scoredContent.length} characters.`;
     }
 
-    // Đã chấm rồi thì trả lại bản cũ — kể cả người chấm là đồng nghiệp khác. Đây là lý do
-    // phải đi qua paast_analysis_id thay vì findLatestByContent(): hàm đó lọc theo user_id
-    // nên mỗi người mở cùng một video lại tốn thêm một lượt LLM và cho ra điểm khác nhau.
     if (script.paast_analysis_id) {
-      const cu = await this.prisma.paastAnalysisHistory.findUnique({
+      const existing = await this.prisma.paastAnalysisHistory.findUnique({
         where: { id: script.paast_analysis_id },
       });
-      if (cu?.status === 'SUCCESS') return { ...chung, trang_thai: 'da_cham', phan_tich: cu };
+      if (existing?.status === 'SUCCESS') {
+        return {
+          ...common,
+          statusCode: 'da_cham',
+          analysis: existing,
+          trang_thai: 'da_cham',
+          phan_tich: existing,
+        };
+      }
     }
 
-    // Bản 2: không thang điểm 100, có 16 hook gợi ý — khớp với paast.vercel.app.
-    const moi: any = await this.aiIntegration.analyzeContentV2(userId, scoredContent);
-    if (moi?.status === 'SUCCESS') {
+    const freshResult: any = await this.aiIntegration.analyzeContentV2(userId, scoredContent);
+    if (freshResult?.status === 'SUCCESS') {
       await this.prisma.ownedVideoScript.update({
         where: { id: script.id },
-        data: { paast_analysis_id: moi.id },
+        data: { paast_analysis_id: freshResult.id },
       });
-      return { ...chung, trang_thai: 'da_cham', phan_tich: moi, ghi_chu: truncateNote };
+      return {
+        ...common,
+        statusCode: 'da_cham',
+        analysis: freshResult,
+        note: truncateNote,
+        trang_thai: 'da_cham',
+        phan_tich: freshResult,
+        ghi_chu: truncateNote,
+      };
     }
 
-    return { ...chung, trang_thai: 'co_kich_ban', ghi_chu: moi?.error_message || 'Chấm điểm thất bại' };
+    const failureNote = freshResult?.error_message || 'PAAST evaluation failed';
+    return {
+      ...common,
+      statusCode: 'co_kich_ban',
+      note: failureNote,
+      trang_thai: 'co_kich_ban',
+      ghi_chu: failureNote,
+    };
   }
 
-  // ── Nội bộ ───────────────────────────────────────────────────────────────────
+  // Backward compatibility alias
+  async chamDiemPaast(platform: string, postId: string, userId: string, chiPhuDe = false) {
+    return this.scoreVideo(platform, postId, userId, chiPhuDe);
+  }
 
-  /**
-   * @param chiPhuDe Chỉ thử phụ đề Facebook, KHÔNG đụng tới Whisper.
-   *
-   * Cron dùng chế độ này: đường Whisper cần RapidAPI mà gói hiện tại chỉ có 200 lượt/tháng
-   * — chạy nền hàng loạt là cháy hạn mức trong một đêm. Người dùng bấm tay thì vẫn đủ cả hai.
-   */
-  private async fetchScript(platform: string, postId: string, chiPhuDe = false) {
+  private async fetchScript(platform: string, postId: string, subtitlesOnly = false) {
     const existing = await this.prisma.ownedVideoScript.findUnique({
       where: { platform_post_id: { platform, post_id: postId } },
     });
-    // `khong_co` là DẤU đã thử mà không ra, không phải kịch bản thật. Gặp dấu này thì vẫn
-    // cho thử lại bằng Whisper (nếu được phép) — biết đâu lần này ra.
-    if (existing && existing.nguon !== KHONG_CO) return existing;
+    if (existing && existing.nguon !== NO_SCRIPT_MARKER) return existing;
 
     if (platform !== 'facebook') return null;
 
-    // Phụ đề trước (2 giây, miễn phí, ~34% video có), rồi mới tới bóc lời thoại
-    // (~91 giây, tốn hạn mức RapidAPI).
-    let nguonLay: any = existing ? null : await this.getFacebookSubtitles(postId);
-    if (!nguonLay && !chiPhuDe) nguonLay = await this.getFacebookDialogue(postId);
+    let sourceResult: any = existing ? null : await this.getFacebookSubtitles(postId);
+    if (!sourceResult && !subtitlesOnly) sourceResult = await this.getFacebookDialogue(postId);
 
-    if (!nguonLay) {
-      // Recording dấu để lần quét nền sau không hỏi lại Graph API cho cùng một video.
+    if (!sourceResult) {
       if (!existing) {
         await this.prisma.ownedVideoScript
           .create({
-            data: { platform, post_id: postId, nguon: KHONG_CO, noi_dung: '', so_ky_tu: 0, ngon_ngu: '' },
+            data: { platform, post_id: postId, nguon: NO_SCRIPT_MARKER, noi_dung: '', so_ky_tu: 0, ngon_ngu: '' },
           })
           .catch(() => undefined);
       }
       return null;
     }
 
-    const duLieu = {
-      nguon: nguonLay.nguon === 'whisper' ? 'whisper' : 'phu_de',
-      noi_dung: nguonLay.noi_dung,
-      so_ky_tu: nguonLay.so_ky_tu,
-      ngon_ngu: nguonLay.ngon_ngu || '',
+    const scriptData = {
+      nguon: sourceResult.nguon === 'whisper' ? 'whisper' : 'phu_de',
+      noi_dung: sourceResult.noi_dung,
+      so_ky_tu: sourceResult.so_ky_tu,
+      ngon_ngu: sourceResult.ngon_ngu || '',
     };
     return existing
-      ? this.prisma.ownedVideoScript.update({ where: { id: existing.id }, data: duLieu })
-      : this.prisma.ownedVideoScript.create({ data: { platform, post_id: postId, ...duLieu } });
+      ? this.prisma.ownedVideoScript.update({ where: { id: existing.id }, data: scriptData })
+      : this.prisma.ownedVideoScript.create({ data: { platform, post_id: postId, ...scriptData } });
   }
 
-  /**
-   * Bóc lời thoại khi video chưa có phụ đề tự sinh — khoảng 2/3 số video rơi vào đây.
-   *
-   * Chậm (~35 giây) nên chỉ chạy sau khi phụ đề đã thất bại, và chỉ khi người dùng chủ động
-   * bấm chấm điểm. Kết quả lưu lại nên mỗi video chỉ tốn một lần.
-   */
   private async getFacebookDialogue(postId: string) {
-    // `tieng_viet` quyết định Whisper có dùng bộ từ điển tiếng Việt hay không. Đoán theo
-    // dấu tiếng Việt trong caption của CHÍNH TRANG đó (không phải riêng video này — caption
-    // một video có thể rỗng), cùng lớp ký tự với bộ lọc thị trường sẵn có.
     const video = await this.prisma.$queryRaw<
       { page_id: string; permalink: string; tieng_viet: boolean }[]
     >`
@@ -262,7 +284,6 @@ export class OwnedScriptService {
     `;
     if (!video.length) return null;
 
-    // video_id nằm trong permalink dạng facebook.com/reel/<id>/ — RapidAPI đối chiếu theo id này.
     const videoId = /\/reel\/(\d+)/.exec(video[0].permalink)?.[1] || '';
 
     try {
@@ -279,23 +300,18 @@ export class OwnedScriptService {
           headers: {
             Authorization: `Bearer ${this.jwtService.sign({ sub: 'be-system', email: 'be-system@internal.local' })}`,
           },
-          // Tải video + bóc audio + nhận dạng: đo thật 35 giây, để rộng cho video dài.
           timeout: 600_000,
         },
       );
       return data?.success ? data : null;
     } catch (e: any) {
       if (e?.response?.status !== 404) {
-        this.logger.warn(`Bóc lời thoại ${postId} lỗi: ${e?.message}`);
+        this.logger.warn(`Transcript extraction failed for ${postId}: ${e?.message}`);
       }
       return null;
     }
   }
 
-  /**
-   * Hỏi AI service lấy phụ đề tự sinh. Token của trang đi qua dạng ĐÃ MÃ HOÁ — AI là nơi
-   * duy nhất giữ FERNET_KEY, BE chỉ chuyển tiếp nguyên chuỗi.
-   */
   private async getFacebookSubtitles(postId: string) {
     const tokenRow = await this.prisma.$queryRaw<{ tok: string }[]>`
       SELECT mp.page_access_token AS tok
@@ -319,9 +335,8 @@ export class OwnedScriptService {
       );
       return data?.success ? data : null;
     } catch (e: any) {
-      // 404 = video chưa có phụ đề, chuyện bình thường với ~2/3 video nên KHÔNG log như lỗi.
       if (e?.response?.status !== 404) {
-        this.logger.warn(`Lấy phụ đề ${postId} lỗi: ${e?.message}`);
+        this.logger.warn(`Subtitle fetch failed for ${postId}: ${e?.message}`);
       }
       return null;
     }
