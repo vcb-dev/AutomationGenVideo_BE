@@ -21,7 +21,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     return { service, prisma };
   }
 
-  it('Admin/Manager có thể xem toàn bộ KPI của tất cả team', async () => {
+  it('Admin/Manager can view all KPIs across all teams', async () => {
     const { service, prisma } = build();
     await service.getEditorKpis('2026-08', undefined, { id: 'admin-1', roles: ['ADMIN'] });
 
@@ -32,7 +32,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     );
   });
 
-  it('Leader chỉ xem KPI của các team do mình quản lý', async () => {
+  it('Leader only views KPIs of teams managed by them', async () => {
     const { service, prisma } = build({
       leaderTeams: [{ id: 'team-k4' }],
     });
@@ -52,7 +52,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     );
   });
 
-  it('Leader nếu chọn xem team ngoài quyền quản lý sẽ nhận mảng rỗng', async () => {
+  it('Leader querying an unmanaged team returns an empty array', async () => {
     const { service, prisma } = build({
       leaderTeams: [{ id: 'team-k4' }],
     });
@@ -67,7 +67,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     expect(prisma.editorKpi.findMany).not.toHaveBeenCalled();
   });
 
-  it('Editor/Member chỉ xem KPI của team mình tham gia (Đồ Da không thấy K4)', async () => {
+  it('Editor/Member only views KPIs of their own assigned team(s)', async () => {
     const { service, prisma } = build({
       memberTeams: [{ team_id: 'team-doda' }],
     });
