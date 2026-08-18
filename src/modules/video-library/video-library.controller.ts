@@ -20,6 +20,11 @@ export class VideoLibraryController {
     return this.service.listVideoLibrary(t);
   }
 
+  @Get('video-library/saved-ids')
+  async getSavedIds() {
+    return this.service.getSavedVideoIds();
+  }
+
   @Post('video-library/direct')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
