@@ -26,10 +26,13 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
         findMany: jest.fn(async () => []),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
-      trafficReport: { groupBy: jest.fn(async () => []) },
+      trafficReport: { findMany: jest.fn(async () => []) },
       revenueReport: { groupBy: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => []) },
       editorDailyKpi: { findMany: jest.fn(async () => []) },
+      // getApprovedProductLineBreakdown (product_by_category) đọc productLine.findMany luôn, kể cả
+      // khi task.findMany rỗng — thiếu mock này thì suite hỏng ngay ở lời gọi, không phải lúc assert.
+      productLine: { findMany: jest.fn(async () => []) },
     };
     const service = new TaskAutoTasksService(prisma, videoService, push, linkStats);
     return { service, prisma };
@@ -82,6 +85,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       members: [],
       kpi: null,
       video_by_line: [],
+      product_by_category: [],
     });
   });
 
