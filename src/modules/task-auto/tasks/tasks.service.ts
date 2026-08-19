@@ -20,6 +20,7 @@ import {
   UpdatePublishedLinksDto,
 } from "./task.dto";
 import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
+import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -558,7 +559,8 @@ export class TaskAutoTasksService {
     // Phải khớp isOverdue() ở FE (src/components/task-auto/helpers.ts và PersonalDashboard.tsx).
     const doneStatuses = ["APPROVED", "CANCELLED"];
 
-    if (q.team_id) where.team_id = q.team_id;
+    const teamIdFilter = parseTeamIdFilter(q.team_id);
+    if (teamIdFilter) where.team_id = teamIdFilter;
     if (q.assignee_id) where.assignee_id = q.assignee_id;
     if (q.task_type === "auto") where.task_type = "AUTO";
     if (q.task_type === "extra") where.task_type = "EXTRA";

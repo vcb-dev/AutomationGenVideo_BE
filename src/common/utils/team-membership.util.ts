@@ -339,3 +339,15 @@ export async function isTeamLeaderOfUser(db: Db, leaderId: string, targetUserId:
   });
   return !!membership;
 }
+
+/**
+ * Parse query param `team_id` — 1 id thường, hoặc nhiều id nối dấu phẩy (FE gửi khi leader
+ * quản lý nhiều team cùng lúc, xem `effectiveTeamId` ở tasks/page.tsx) — thành điều kiện Prisma
+ * tương ứng. Trả về undefined nếu rỗng để caller bỏ qua, giữ where-clause gọn như cũ.
+ */
+export function parseTeamIdFilter(raw?: string): string | { in: string[] } | undefined {
+  if (!raw) return undefined;
+  const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) return undefined;
+  return ids.length > 1 ? { in: ids } : ids[0];
+}
