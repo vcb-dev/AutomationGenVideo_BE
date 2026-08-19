@@ -2262,15 +2262,20 @@ export class TaskAutoTasksService {
   async remove(id: string, requesterId: string, roles: string[]) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { status: true, team_id: true },
+      select: { status: true, team_id: true, assignee_id: true },
     });
     if (!task) throw new NotFoundException("Task not found");
 
     const isAdminOrManager = roles.some((r) =>
       ["ADMIN", "MANAGER"].includes(r),
     );
-    if (!isAdminOrManager) {
+    const isOwnTask = task.assignee_id === requesterId;
+
+    if (!isAdminOrManager && !isOwnTask) {
       // LEADER chỉ được xoá task thuộc team mình đang quản lý.
+      if (!roles.includes("LEADER")) {
+        throw new ForbiddenException("Không có quyền xoá task này");
+      }
       const team = await this.prisma.team.findUnique({
         where: { id: task.team_id },
         select: { leader_id: true },
@@ -2282,9 +2287,6 @@ export class TaskAutoTasksService {
       }
     }
 
-    if (["IN_PROGRESS"].includes(task.status)) {
-      throw new BadRequestException("Cannot delete a task in this state");
-    }
     await this.prisma.task.delete({ where: { id } });
     return { success: true };
   }
