@@ -2271,7 +2271,7 @@ export class TaskAutoTasksService {
       }
     }
 
-    if (["APPROVED", "IN_PROGRESS"].includes(task.status)) {
+    if (["IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Cannot delete a task in this state");
     }
     await this.prisma.task.delete({ where: { id } });
