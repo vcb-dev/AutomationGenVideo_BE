@@ -110,6 +110,7 @@ export class TaskAutoKpiService {
       !isAdminOrManager && !isLeader && !!currentUser?.id;
 
     let teamFilter: any = undefined;
+    let effectiveUserId = userId;
     if (teamId) {
       teamFilter = teamId;
     }
@@ -125,21 +126,14 @@ export class TaskAutoKpiService {
       }
       teamFilter = teamId ? teamId : { in: myTeamIds };
     } else if (isEditorOrMember && currentUser) {
-      const myTeamMemberships = await this.prisma.teamMember.findMany({
-        where: { user_id: currentUser.id },
-        select: { team_id: true },
-      });
-      const myTeamIds = myTeamMemberships.map((m) => m.team_id);
-      if (teamId && !myTeamIds.includes(teamId)) {
-        return [];
-      }
-      teamFilter = teamId ? teamId : { in: myTeamIds };
+      // Editor/Member chỉ được xem KPI của chính mình, không phải cả team.
+      effectiveUserId = currentUser.id;
     }
 
     return this.prisma.editorKpi.findMany({
       where: {
         ...(month ? { month } : {}),
-        ...(userId ? { user_id: userId } : {}),
+        ...(effectiveUserId ? { user_id: effectiveUserId } : {}),
         ...(teamFilter !== undefined ? { team_id: teamFilter } : {}),
       },
       include: this.editorKpiInclude,

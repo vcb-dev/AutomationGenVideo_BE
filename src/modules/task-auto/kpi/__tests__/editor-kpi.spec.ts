@@ -75,30 +75,41 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
       expect(prisma.editorKpi.findMany).not.toHaveBeenCalled();
     });
 
-    it('Editor/Member only views KPIs of their own assigned team(s) (Đồ Da cannot see K4)', async () => {
-      const { service, prisma } = build({
-        memberTeams: [{ team_id: 'team-doda' }],
-      });
+    it('Editor/Member only views their own KPI, not teammates\' (Đồ Da cannot see K4\'s KPI either)', async () => {
+      const { service, prisma } = build();
       await service.getEditorKpis('2026-08', undefined, { id: 'editor-1', roles: ['EDITOR'] });
 
-      expect(prisma.teamMember.findMany).toHaveBeenCalledWith({
-        where: { user_id: 'editor-1' },
-        select: { team_id: true },
-      });
+      expect(prisma.teamMember.findMany).not.toHaveBeenCalled();
       expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             month: '2026-08',
-            team_id: { in: ['team-doda'] },
+            user_id: 'editor-1',
           },
         }),
       );
     });
 
-    it('Editor belonging to multiple teams can filter by a valid team', async () => {
-      const { service, prisma } = build({
-        memberTeams: [{ team_id: 'team-doda' }, { team_id: 'team-global' }],
-      });
+    it('Editor/Member cannot see another user\'s KPI by passing a different user_id', async () => {
+      const { service, prisma } = build();
+      await service.getEditorKpis(
+        '2026-08',
+        'someone-else',
+        { id: 'editor-1', roles: ['EDITOR'] },
+      );
+
+      expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            month: '2026-08',
+            user_id: 'editor-1',
+          },
+        }),
+      );
+    });
+
+    it('Editor/Member filtering by team still only returns their own KPI within that team', async () => {
+      const { service, prisma } = build();
       await service.getEditorKpis(
         '2026-08',
         undefined,
@@ -110,38 +121,22 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
         expect.objectContaining({
           where: {
             month: '2026-08',
+            user_id: 'editor-1',
             team_id: 'team-global',
           },
         }),
       );
     });
 
-    it('Editor querying an unauthorized team returns an empty array immediately', async () => {
-      const { service, prisma } = build({
-        memberTeams: [{ team_id: 'team-doda' }],
-      });
-      const result = await service.getEditorKpis(
-        '2026-08',
-        undefined,
-        { id: 'editor-1', roles: ['EDITOR'] },
-        'team-k4',
-      );
-
-      expect(result).toEqual([]);
-      expect(prisma.editorKpi.findMany).not.toHaveBeenCalled();
-    });
-
-    it('User with no assigned teams returns an empty list', async () => {
-      const { service, prisma } = build({
-        memberTeams: [],
-      });
-      await service.getEditorKpis('2026-08', undefined, { id: 'unassigned-user', roles: ['MEMBER'] });
+    it('Member role behaves the same as Editor: only their own KPI', async () => {
+      const { service, prisma } = build();
+      await service.getEditorKpis('2026-08', undefined, { id: 'member-1', roles: ['MEMBER'] });
 
       expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             month: '2026-08',
-            team_id: { in: [] },
+            user_id: 'member-1',
           },
         }),
       );
