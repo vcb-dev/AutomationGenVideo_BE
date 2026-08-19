@@ -325,6 +325,12 @@ export class TaskAutoTeamsController {
     return this.teams.getEditorApprovals(status);
   }
 
+  @Get("editor-approvals/me")
+  @ApiOperation({ summary: "Get current user's own latest editor approval status" })
+  getMyEditorApproval(@Request() req: any) {
+    return this.teams.getMyEditorApproval(req.user.id);
+  }
+
   @Post("editor-approvals")
   @ApiOperation({ summary: "Request editor role approval" })
   requestEditorApproval(@Request() req: any) {
