@@ -144,11 +144,9 @@ export class TaskAutoTasksController {
   }
 
   @Delete("tasks/:id")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
   @ApiOperation({
     summary:
-      "Delete a task (ADMIN/MANAGER: mọi task, LEADER: chỉ task của team mình)",
+      "Delete a task (ADMIN/MANAGER: mọi task, LEADER: task của team mình, thành viên: task của chính mình)",
   })
   deleteTask(@Param("id") id: string, @Request() req: any) {
     return this.tasks.remove(id, req.user.id, req.user.roles ?? []);
