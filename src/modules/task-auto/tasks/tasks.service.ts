@@ -1316,13 +1316,25 @@ export class TaskAutoTasksService {
   ) {
     const now = new Date();
     const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    // Tháng báo cáo do leader chọn (bộ lọc tháng) — mặc định về tháng thực tế nếu bỏ trống/sai định dạng.
-    const currentMonth = month && /^\d{4}-\d{2}$/.test(month) ? month : realCurrentMonth;
+    // Tháng dùng để tra KPI target (EditorKpi chỉ lưu target theo tháng, không có khái niệm target
+    // cho một khoảng ngày tuỳ ý) và làm nhãn "KPI Team — Tháng X": ưu tiên `month` truyền tay (trang
+    // /dashboard/leader riêng), kế đến tháng chứa ngày bắt đầu của bộ lọc ngày (trang Task Auto truyền
+    // `range`), cuối cùng mới về tháng thực tế.
+    const currentMonth =
+      month && /^\d{4}-\d{2}$/.test(month)
+        ? month
+        : range
+          ? `${range.gte.getFullYear()}-${String(range.gte.getMonth() + 1).padStart(2, "0")}`
+          : realCurrentMonth;
     const [selYear, selMonthNum] = currentMonth.split("-").map(Number);
     const monthStart = new Date(selYear, selMonthNum - 1, 1);
     const monthEnd = new Date(selYear, selMonthNum, 1);
-    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc tháng, vì đây là
-    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một tháng đã qua.
+    // Khoảng thời gian dùng để tính SỐ THỰC TẾ trong kỳ (video đã duyệt, traffic, doanh thu, content
+    // mới/cũ, sản phẩm...) — ưu tiên bộ lọc ngày (`range`) do trang Task Auto truyền xuống; không có
+    // thì mặc định cả tháng đang xem, nhất quán với getGlobalDashboard.
+    const periodRange = range ?? { gte: monthStart, lt: monthEnd };
+    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc ngày/tháng, vì đây là
+    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một kỳ đã qua.
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
@@ -1403,7 +1415,7 @@ export class TaskAutoTasksService {
         where: {
           team_id: { in: teamIds },
           status: "APPROVED",
-          reviewed_at: { gte: monthStart, lt: monthEnd },
+          reviewed_at: periodRange,
         },
       }),
       this.prisma.task.groupBy({
@@ -1411,7 +1423,7 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: monthStart, lt: monthEnd },
+          reviewed_at: periodRange,
         },
         _count: { id: true },
       }),
@@ -1440,13 +1452,13 @@ export class TaskAutoTasksService {
       }),
       // Traffic báo cáo hằng ngày (TrafficReport, tách biệt task-auto) — khớp theo email vì field
       // `team` trên TrafficReport là text tự do, không đảm bảo khớp tên với Team.name của task-auto.
-      // Lấy nguyên các dòng trong tháng (không SUM ở query) — traffic là điểm cuối kỳ, phải quy về
-      // đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn cả tháng.
+      // Lấy nguyên các dòng trong kỳ (không SUM ở query) — traffic là điểm cuối kỳ, phải quy về
+      // đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn cả kỳ.
       memberEmails.length > 0
         ? this.prisma.trafficReport.findMany({
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: { gte: monthStart, lt: monthEnd },
+              date: periodRange,
             },
             select: { email: true, date: true, total_traffic: true },
           })
@@ -1457,17 +1469,17 @@ export class TaskAutoTasksService {
             by: ["email"],
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: { gte: monthStart, lt: monthEnd },
+              date: periodRange,
             },
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
-      // "TEAM - Số video theo tuyến": số task đã duyệt trong tháng của cả team, gộp theo tuyến
+      // "TEAM - Số video theo tuyến": số task đã duyệt trong kỳ của cả team, gộp theo tuyến
       // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
       // không thuộc tuyến nào.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
-        reviewed_at: { gte: monthStart, lt: monthEnd },
+        reviewed_at: periodRange,
       }),
       // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
@@ -1479,24 +1491,23 @@ export class TaskAutoTasksService {
         },
         select: { user_id: true, target: true },
       }),
-      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng tháng đang xem (mới),
-      // còn lại tính là cũ — khoá theo đúng tháng báo cáo (monthStart/monthEnd), không phải bộ lọc
-      // ngày tuỳ ý `range` (leader dashboard hiện chỉ lọc theo tháng).
+      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng kỳ đang xem (mới),
+      // còn lại tính là cũ — khoá theo `periodRange` (bộ lọc ngày nếu có, không thì cả tháng đang xem).
       this.getContentFreshnessByAssignee(
         {
           team_id: { in: teamIds },
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          created_at: { gte: monthStart, lt: monthEnd },
+          created_at: periodRange,
         },
-        { gte: monthStart, lt: monthEnd },
+        periodRange,
       ),
-      // "TEAM - SẢN PHẨM": số video đã duyệt trong tháng của cả team, gộp theo dòng sản phẩm
+      // "TEAM - SẢN PHẨM": số video đã duyệt trong kỳ của cả team, gộp theo dòng sản phẩm
       // (GMV/Traffic/Profit).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
         status: "APPROVED",
-        reviewed_at: { gte: monthStart, lt: monthEnd },
+        reviewed_at: periodRange,
       }),
     ]);
 
