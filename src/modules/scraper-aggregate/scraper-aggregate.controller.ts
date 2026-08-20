@@ -5,6 +5,8 @@ import { OwnedStatsService } from './owned-stats.service';
 import { OwnedScriptService } from './owned-script.service';
 import { OwnedDuplicateService } from './owned-duplicate.service';
 
+import { TrafficInsightsService } from './traffic-insights.service';
+
 // Thay thế all_external_videos / owned_channel_videos bên AI (đã xóa) — route giữ
 // nguyên path cũ để FE (scraperService.ts) không cần đổi gì. Gom dữ liệu từ nhiều
 // module scraper khác nhau nên đặt ở module riêng, không thuộc platform cụ thể nào.
@@ -16,7 +18,19 @@ export class ScraperAggregateController {
     private readonly statsService: OwnedStatsService,
     private readonly scriptService: OwnedScriptService,
     private readonly duplicateService: OwnedDuplicateService,
+    private readonly trafficInsightsService: TrafficInsightsService,
   ) {}
+
+  @Get('traffic-insights')
+  async getTrafficInsights(
+    @Query('channelId') channelId: string,
+    @Query('date') date?: string,
+  ) {
+    if (!channelId) {
+      return { success: false, views: 0, message: 'channelId is required' };
+    }
+    return this.trafficInsightsService.getTrafficInsights(channelId, date);
+  }
 
   @Get('all-videos')
   async allVideos(@Query() query: Record<string, string>) {
