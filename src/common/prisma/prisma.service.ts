@@ -53,6 +53,55 @@ export class PrismaService
 
   async onModuleInit() {
     await this.connectWithRetry();
+    await this.ensureRequiredTables();
+  }
+
+  private async ensureRequiredTables() {
+    try {
+      await this.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS scraper_threads_profiles (
+          id BIGSERIAL PRIMARY KEY,
+          profile_id VARCHAR(100) UNIQUE NOT NULL,
+          username VARCHAR(100) NOT NULL,
+          nickname VARCHAR(255) DEFAULT '',
+          avatar_url TEXT,
+          avatar_drive_url TEXT,
+          biography TEXT DEFAULT '',
+          followers_count BIGINT DEFAULT 0,
+          is_verified BOOLEAN DEFAULT false,
+          is_tracked BOOLEAN DEFAULT false,
+          is_bookmarked BOOLEAN DEFAULT false,
+          is_owned BOOLEAN DEFAULT true,
+          last_scraped_at TIMESTAMPTZ(6),
+          scraping_status VARCHAR(20) DEFAULT 'idle',
+          scrape_error TEXT,
+          created_at TIMESTAMPTZ(6) DEFAULT NOW(),
+          updated_at TIMESTAMPTZ(6) DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS scraper_threads_posts (
+          id BIGSERIAL PRIMARY KEY,
+          profile_id BIGINT,
+          post_id VARCHAR(100) UNIQUE NOT NULL,
+          shortcode VARCHAR(100),
+          url VARCHAR(1000) DEFAULT '',
+          text TEXT DEFAULT '',
+          hashtags TEXT[] DEFAULT '{}',
+          thumbnail_url TEXT,
+          thumbnail_drive_url TEXT,
+          media_type VARCHAR(50) DEFAULT 'TEXT',
+          views_count BIGINT DEFAULT 0,
+          likes_count BIGINT DEFAULT 0,
+          replies_count BIGINT DEFAULT 0,
+          reposts_count BIGINT DEFAULT 0,
+          quotes_count BIGINT DEFAULT 0,
+          date_posted TIMESTAMPTZ(6) NOT NULL DEFAULT NOW(),
+          created_at TIMESTAMPTZ(6) DEFAULT NOW(),
+          updated_at TIMESTAMPTZ(6) DEFAULT NOW()
+        );
+      `);
+    } catch (err: any) {
+      this.logger.warn(`Could not auto-ensure scraper_threads tables: ${err?.message}`);
+    }
   }
 
   /** Connect with exponential backoff — prevents circuit breaker activation on Supabase. */
