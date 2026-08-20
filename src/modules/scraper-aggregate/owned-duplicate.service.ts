@@ -460,7 +460,7 @@ export class OwnedDuplicateService {
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform,
                p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.name, ''), p.username)::text AS kenh_ten,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
                tp.url::text AS url,
                ${this.normalizeCaptionSql(Prisma.sql`tp.text`)} AS cap,
                NULL::int AS giay,

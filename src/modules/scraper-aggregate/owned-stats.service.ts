@@ -414,7 +414,7 @@ export class OwnedStatsService {
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform,
                p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.name, ''), p.username)::text AS kenh_ten,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
                tp.post_id::text AS post_id,
                tp.url::text AS url,
                tp.text::text AS mo_ta,
@@ -488,7 +488,7 @@ export class OwnedStatsService {
     if (!platform || platform === 'threads') {
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform, p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.name, ''), p.username)::text AS ten,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS ten,
                COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '')::text AS avatar,
                p.followers_count::bigint AS followers,
                p.last_scraped_at AS dong_bo, NULLIF(p.scrape_error, '')::text AS loi,
