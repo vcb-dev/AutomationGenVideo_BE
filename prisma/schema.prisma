@@ -107,6 +107,7 @@ model User {
   editor_sources                   EditorSource[]                 @relation("EditorSourceOf")
   editor_sources_added             EditorSource[]                 @relation("EditorSourceAddedBy")
   tasks_assigned                   Task[]                         @relation("TaskAssignee")
+  tasks_assigned_by                Task[]                         @relation("TaskAssignedBy")
   tasks_reviewed                   Task[]                         @relation("TaskReviewer")
   task_assignments                 TaskAssignment[]               @relation("AssignmentUser")
   notifications                    Notification[]                 @relation("NotificationOf")
@@ -3247,6 +3248,11 @@ model Task {
   /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
   is_product_push           Boolean    @default(false)
   assignee_id               String?
+  /// Ai đã set assignee_id: privileged user (leader/admin/manager) khi giao tay task cho người
+  /// khác — KHÔNG set khi chính assignee tự nhận task (self-claim) hoặc khi task chưa có assignee.
+  /// NULL với task cũ tạo trước khi có cột này. Dùng để chặn member tự xoá task được giao tay,
+  /// xem tasks.service.ts remove().
+  assigned_by_id            String?    @db.Uuid
   assigned_at               DateTime?
   deadline                  DateTime?
   run_id                    String?
@@ -3283,6 +3289,7 @@ model Task {
   team_source_workshop   TeamSource?           @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
   team_source_huyk       TeamSource?           @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
   assignee               User?                 @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  assigned_by            User?                 @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
   reviewed_by            User?                 @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
   run                    AssignmentRun?        @relation(fields: [run_id], references: [id])
   assignments            TaskAssignment[]

@@ -815,6 +815,10 @@ export class TaskAutoTasksService {
         team_source_workshop_id: dto.team_source_workshop_id ?? null,
         team_source_huyk_id: dto.team_source_huyk_id ?? null,
         assignee_id: dto.assignee_id,
+        // Ghi nhận ai đã set assignee_id — dùng ở remove() để phân biệt member tự tạo/tự nhận
+        // task (assigned_by_id === assignee_id, không bị khoá xoá) với leader giao tay
+        // (assigned_by_id khác assignee_id, bị khoá xoá với thành viên thường).
+        assigned_by_id: dto.assignee_id ? creatorId : undefined,
         deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
         status: dto.assignee_id ? "ASSIGNED" : "PENDING",
         assigned_at: dto.assignee_id ? new Date() : undefined,
@@ -892,6 +896,13 @@ export class TaskAutoTasksService {
 
     const data: any = { ...dto };
     if (dto.deadline) data.deadline = parseVNDeadline(dto.deadline);
+    if (dto.assignee_id !== undefined && dto.assignee_id !== task.assignee_id) {
+      // Ghi nhận ai vừa set assignee_id (xem create() để biết cách dùng ở remove()). Member tự
+      // nhận task (self-claim, nhánh !isPrivileged phía trên đã ép dto.assignee_id === userId)
+      // → assigned_by_id === assignee_id, không bị khoá xoá. Leader/admin/manager giao hoặc
+      // reassign cho người khác → assigned_by_id khác assignee_id, bị khoá xoá với thành viên.
+      data.assigned_by_id = dto.assignee_id ? userId : null;
+    }
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;
       if (dto.assignee_id && task.status === "PENDING") {
@@ -2262,29 +2273,50 @@ export class TaskAutoTasksService {
   async remove(id: string, requesterId: string, roles: string[]) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { status: true, team_id: true, assignee_id: true },
+      select: {
+        status: true,
+        team_id: true,
+        assignee_id: true,
+        assigned_by_id: true,
+        run_id: true,
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
 
     const isAdminOrManager = roles.some((r) =>
       ["ADMIN", "MANAGER"].includes(r),
     );
-    const isOwnTask = task.assignee_id === requesterId;
+    if (isAdminOrManager) {
+      await this.prisma.task.delete({ where: { id } });
+      return { success: true };
+    }
 
-    if (!isAdminOrManager && !isOwnTask) {
-      // LEADER chỉ được xoá task thuộc team mình đang quản lý.
-      if (!roles.includes("LEADER")) {
-        throw new ForbiddenException("Không có quyền xoá task này");
-      }
+    // LEADER quản lý team của task → xoá được mọi task trong team, không bị chặn bởi luật
+    // "task do leader/hệ thống giao" ở dưới (leader có toàn quyền với task trong team mình).
+    if (roles.includes("LEADER")) {
       const team = await this.prisma.team.findUnique({
         where: { id: task.team_id },
         select: { leader_id: true },
       });
-      if (!team || team.leader_id !== requesterId) {
-        throw new ForbiddenException(
-          "Chỉ leader của team mới có thể xoá task của team mình",
-        );
+      if (team?.leader_id === requesterId) {
+        await this.prisma.task.delete({ where: { id } });
+        return { success: true };
       }
+    }
+
+    // Còn lại (thành viên thường, hoặc LEADER của team khác): chỉ được xoá task của chính mình,
+    // và chỉ khi task đó do chính mình tự nhận — không phải được leader giao tay
+    // (assigned_by_id khác assignee_id) hoặc hệ thống tự động chia (run_id != null).
+    if (task.assignee_id !== requesterId) {
+      throw new ForbiddenException("Không có quyền xoá task này");
+    }
+    const isSystemAssigned = task.run_id != null;
+    const isAssignedByOther =
+      task.assigned_by_id != null && task.assigned_by_id !== task.assignee_id;
+    if (isSystemAssigned || isAssignedByOther) {
+      throw new ForbiddenException(
+        "Task này được leader giao hoặc hệ thống tự động chia, bạn không thể tự xoá",
+      );
     }
 
     await this.prisma.task.delete({ where: { id } });
