@@ -2826,9 +2826,10 @@ model EditorKpi {
   content_new         Int     @default(0) // Số content mới được làm
   content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
   content_win_cover   Int     @default(0) // Số content win cover lại bởi team
-  // ── Product ──
+  // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
   product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
   product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
+  product_profit      Int     @default(0) // Số SP Profit
 
   set_by_id  String   @db.Uuid
   created_at DateTime @default(now())
