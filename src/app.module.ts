@@ -46,6 +46,7 @@ import { FacebookExternalScraperModule } from './modules/facebook-external-scrap
 import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.module';
 import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
 import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
+import { ThreadsOwnedAccountsModule } from './modules/threads-owned-accounts/threads-owned-accounts.module';
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
@@ -108,6 +109,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     TiktokScraperModule,
     InstagramOwnedAccountsModule,
     InstagramScraperModule,
+    ThreadsOwnedAccountsModule,
     XiaohongshuScraperModule,
     FacebookExternalScraperModule,
     YoutubeScraperModule,

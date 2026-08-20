@@ -1336,7 +1336,7 @@ export class LarkService implements OnModuleInit {
 
                 // Fetch in 2 sequential batches to cap peak concurrent connections (pool_size=8).
                 // Running all 10 queries at once × N concurrent users exhausts PgBouncer pool.
-                const [
+                let [
                     reports,
                     standardKpis,
                     dodaKpisRaw,
@@ -1418,9 +1418,63 @@ export class LarkService implements OnModuleInit {
                     }),
                 ]);
 
+                if (standardKpis.length === 0) {
+                    const fallbackKpis = await this.prisma.kpi.findMany({
+                        where: {
+                            month: { not: null },
+                            report_date: { gte: new Date('2026-03-01T00:00:00Z') },
+                        },
+                        orderBy: { report_date: 'desc' },
+                        take: 500,
+                        select: {
+                            id: true,
+                            employee_id: true,
+                            name: true,
+                            tag: true,
+                            team: true,
+                            image_url: true,
+                            kpi_day: true,
+                            kpi_month: true,
+                            kpii_status: true,
+                            kpi_day_percent: true,
+                            completed_day: true,
+                            completed_month: true,
+                            task_new: true,
+                            task_new_month: true,
+                            task_auto: true,
+                            task_auto_month: true,
+                            task_creative: true,
+                            content_win_new: true,
+                            revenue_month: true,
+                            traffic_month: true,
+                            target_revenue_month: true,
+                            target_traffic_month: true,
+                            kpi_progress_month: true,
+                            employee_status: true,
+                            state: true,
+                            employee_data: true,
+                            report_date: true,
+                            month: true,
+                            link_image: true,
+                        }
+                    });
+                    if (fallbackKpis.length > 0) {
+                        standardKpis = fallbackKpis;
+                        kpiMonthFallback = true;
+                    }
+                }
+
+                // ─── MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi + Task), thay cho lark_kpi ───
+                const nowVnForGoal = getVietnamParts();
+                const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
+                const goalMonthStr = `${goalMonthInfo.year}-${String(goalMonthInfo.monthNum).padStart(2, '0')}`;
+                const goalMonthBounds = getVietnamMonthBounds(goalMonthInfo.year, goalMonthInfo.monthNum);
+
                 const [
                     allTrafficInDb,
                     allRevenueInDb,
+                    allMonthlyTrafficInDb,
+                    allMonthlyRevenueInDb,
                     reportOutstandings,
                     totalKpiCount,
                     reportsUnfilteredCount,
@@ -1430,9 +1484,18 @@ export class LarkService implements OnModuleInit {
                     // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
                     this.prisma.trafficReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
                     // revenueReport: cùng cơ chế lưu/đọc như trafficReport (submitRevenueReport cũng trừ
-                    // lùi 1 ngày). Đây là nguồn doanh thu MỚI (nhập tay theo nền tảng) — thay cho
-                    // reportKpi.revenue_day/câu hỏi checklist cũ (2 nguồn đó không liên quan tính năng này).
+                    // lùi 1 ngày). Đây là nguồn doanh thu MỚI (nhập tay theo nền tảng).
                     this.prisma.revenueReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
+                    // Toàn bộ traffic trong tháng để tính traffic_range cho Summary Cards & Ranking
+                    this.prisma.trafficReport.findMany({
+                        where: { date: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
+                        select: { email: true, name: true, team: true, total_traffic: true }
+                    }),
+                    // Toàn bộ doanh thu trong tháng để tính revenue_range cho Summary Cards & Ranking
+                    this.prisma.revenueReport.findMany({
+                        where: { date: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
+                        select: { email: true, name: true, team: true, total_revenue: true }
+                    }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
                         WHERE "content" NOT ILIKE '%không có%' AND "content" NOT ILIKE '%khong co%'
@@ -1461,16 +1524,6 @@ export class LarkService implements OnModuleInit {
                     }) as Promise<any[]>,
                 ]);
 
-                // ─── MT Tháng / MT Ngày / Đã Xong — nguồn task-auto (EditorKpi + Task), thay cho lark_kpi ───
-                // MT Tháng lấy từ EditorKpi.total_target (số video mục tiêu trong tháng) của đúng tháng đang xem.
-                // MT Ngày = tổng số task (task-auto) có deadline rơi vào ngày/khoảng đang lọc;
-                // task chưa có deadline thì tính theo ngày tạo (created_at) thay thế.
-                // Đã Xong = trong số đó, bao nhiêu task đã được duyệt (status = APPROVED).
-                const nowVnForGoal = getVietnamParts();
-                const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
-                const goalMonthStr = `${goalMonthInfo.year}-${String(goalMonthInfo.monthNum).padStart(2, '0')}`;
-                const goalMonthBounds = getVietnamMonthBounds(goalMonthInfo.year, goalMonthInfo.monthNum);
-
                 const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows] = await Promise.all([
                     this.prisma.editorKpi.findMany({
                         where: { month: goalMonthStr },
@@ -1496,7 +1549,10 @@ export class LarkService implements OnModuleInit {
                         where: {
                             assignee_id: { not: null },
                             status: 'APPROVED',
-                            deadline: { gte: goalMonthBounds.start, lte: goalMonthBounds.end },
+                            OR: [
+                                { deadline: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
+                                { deadline: null, created_at: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
+                            ],
                         },
                         _count: { id: true },
                     }),
@@ -1633,6 +1689,7 @@ export class LarkService implements OnModuleInit {
 
                 // Filter KPIs that match ANY month in range (Secondary JS filter for safety with complex digits)
                 let kpiData = allKpiInDb.filter(k => {
+                    if (kpiMonthFallback) return true;
                     const mStr = (k.month || '').trim();
 
                     // If no month set on record, check report_date
@@ -1873,6 +1930,27 @@ export class LarkService implements OnModuleInit {
                         const mergedMail = revenueMapByEmail.has(inferredEmail) ? mergeRevenue(revenueMapByEmail.get(inferredEmail), rv) : mergeRevenue({ total_revenue: BigInt(0) }, rv);
                         revenueMapByEmail.set(inferredEmail, mergedMail);
                     }
+                });
+
+                // Index monthly traffic & revenue by email/name for traffic_range & revenue_range
+                const monthlyTrafficByEmail = new Map<string, number>();
+                const monthlyTrafficByName = new Map<string, number>();
+                (allMonthlyTrafficInDb || []).forEach((tr: any) => {
+                    const emailKey = tr.email ? String(tr.email).toLowerCase().trim() : null;
+                    const nameKey = tr.name ? normName(tr.name) : null;
+                    const val = Number(tr.total_traffic || 0);
+                    if (emailKey) monthlyTrafficByEmail.set(emailKey, (monthlyTrafficByEmail.get(emailKey) || 0) + val);
+                    if (nameKey) monthlyTrafficByName.set(nameKey, (monthlyTrafficByName.get(nameKey) || 0) + val);
+                });
+
+                const monthlyRevenueByEmail = new Map<string, number>();
+                const monthlyRevenueByName = new Map<string, number>();
+                (allMonthlyRevenueInDb || []).forEach((rr: any) => {
+                    const emailKey = rr.email ? String(rr.email).toLowerCase().trim() : null;
+                    const nameKey = rr.name ? normName(rr.name) : null;
+                    const val = Number(rr.total_revenue || 0);
+                    if (emailKey) monthlyRevenueByEmail.set(emailKey, (monthlyRevenueByEmail.get(emailKey) || 0) + val);
+                    if (nameKey) monthlyRevenueByName.set(nameKey, (monthlyRevenueByName.get(nameKey) || 0) + val);
                 });
 
                 // Build helper map for team resolution (same as DashboardAnalytics)
@@ -2255,6 +2333,48 @@ export class LarkService implements OnModuleInit {
                     applyTargetDayKpiToAggregation();
                 }
 
+                // Ensure all active employees exist in kpisForAggregation so their task-auto goals,
+                // daily done, monthly done, traffic, and revenue are properly represented.
+                activeEmployees.forEach((emp: any) => {
+                    const empEmail = emp.email ? String(emp.email).toLowerCase().trim() : null;
+                    const empName = emp.full_name || emp.name;
+                    const pKey = empEmail || (empName ? normName(empName) : null);
+                    if (!pKey) return;
+
+                    const empTeamStr = emp.team || (empEmail ? userTeamByEmail.get(empEmail) : null) || (empName ? userTeamByName.get(normName(empName)) : null) || '';
+                    const empTeams = splitTeamList(empTeamStr);
+                    const teams = empTeams.length ? empTeams : ['Khác'];
+
+                    const nowVn = getVietnamParts();
+                    const monthInfo = monthsInRange[0] || { monthNum: nowVn.m, year: nowVn.y };
+
+                    teams.forEach(team => {
+                        const teamNorm = normalizeTeamKey(team);
+                        const pmk = getAggKey(pKey, teamNorm, monthInfo);
+
+                        if (!kpisForAggregation.has(pmk)) {
+                            kpisForAggregation.set(pmk, {
+                                id: `user_${emp.id || pKey}_${teamNorm}`,
+                                employee_id: emp.employee_id || null,
+                                name: emp.full_name || emp.name,
+                                email: emp.email || null,
+                                team: team,
+                                checklist_source_team: empTeamStr || team,
+                                role: emp.role || 'member',
+                                image_url: emp.image_url || null,
+                                status: emp.status || emp.employee_status || 'on',
+                                kpi_day: 0,
+                                kpi_month: 0,
+                                completed_day: 0,
+                                completed_month: 0,
+                                traffic_month: 0,
+                                revenue_month: 0,
+                                kpi_progress_month: 0,
+                            });
+                        }
+                    });
+                });
+
                 // Reports are processed next to enrich the kpisForAggregation set initialize above.
 
                 // --- OPTIMIZATION: Process Daily Reports and Map to Authoritative Users ---
@@ -2457,9 +2577,11 @@ export class LarkService implements OnModuleInit {
                     const effectiveTeam = performanceTeam || filterMatchedChecklistTeam || checklistTeams[0] || 'Khác';
                     const checklistSourceTeam = checklistTeamStr || checklistTeams.join(', ') || effectiveTeam;
 
-                    // Performance filter — lark_kpi team only
+                    // Performance filter
                     let isMatchForRanking = false;
-                    const perfPool = performanceTeam ? [performanceTeam] : [];
+                    const perfPool = performanceTeam
+                        ? [performanceTeam]
+                        : (checklistTeams.length ? checklistTeams : (effectiveTeam ? [effectiveTeam] : []));
 
                     if (!teamFilterNormalized) {
                         isMatchForRanking = perfPool.length > 0;
@@ -2610,19 +2732,33 @@ export class LarkService implements OnModuleInit {
                         const matchedTeam = myTeams.find(t => normalizeTeamKey(t.name) === wantedTeamNorm) || myTeams[0] || null;
                         taskAutoTeamId = matchedTeam?.id || null;
                     }
-                    const monthlyVideoTarget = (resolvedUserId && taskAutoTeamId)
+                    const monthlyVideoTarget = (resolvedUserId && taskAutoTeamId && editorKpiTeamMap.has(`${resolvedUserId}_${taskAutoTeamId}`))
                         ? (editorKpiTeamMap.get(`${resolvedUserId}_${taskAutoTeamId}`) || 0)
-                        : 0;
+                        : (Number(kpi.kpi_month) || 0);
                     // MT Ngày: ưu tiên KPI ngày set tay (EditorDailyKpi của đúng team);
                     // chưa set (hoặc = 0) → fallback đếm task theo deadline như cũ.
                     const manualDailyGoal = (resolvedUserId && taskAutoTeamId)
                         ? (manualDailyKpiTeamMap.get(`${resolvedUserId}_${taskAutoTeamId}`) || 0)
                         : 0;
                     const derivedDailyGoal = resolvedUserId ? (taskGoalByUser.get(resolvedUserId) || 0) : 0;
-                    const dailyTaskGoal = manualDailyGoal > 0 ? manualDailyGoal : derivedDailyGoal;
+                    const dailyTaskGoal = manualDailyGoal > 0 ? manualDailyGoal : (derivedDailyGoal > 0 ? derivedDailyGoal : (Number(kpi.kpi_day) || 0));
                     const dailyGoalSource: 'manual' | 'derived' = manualDailyGoal > 0 ? 'manual' : 'derived';
-                    const dailyTaskDone = resolvedUserId ? (taskDoneByUser.get(resolvedUserId) || 0) : 0;
-                    const monthlyTaskDone = resolvedUserId ? (taskApprovedMonthByUser.get(resolvedUserId) || 0) : 0;
+                    const dailyTaskDone = (resolvedUserId && taskDoneByUser.has(resolvedUserId))
+                        ? (taskDoneByUser.get(resolvedUserId) || 0)
+                        : (Number(kpi.completed_day) || 0);
+                    const monthlyTaskDone = (resolvedUserId && taskApprovedMonthByUser.has(resolvedUserId))
+                        ? (taskApprovedMonthByUser.get(resolvedUserId) || 0)
+                        : (Number(kpi.completed_month) || 0);
+
+                    const personMonthlyTraffic = (normalizedEmail ? monthlyTrafficByEmail.get(normalizedEmail) : null) ?? (nameKey ? monthlyTrafficByName.get(nameKey) : null) ?? 0;
+                    const personMonthlyRevenue = (normalizedEmail ? monthlyRevenueByEmail.get(normalizedEmail) : null) ?? (nameKey ? monthlyRevenueByName.get(nameKey) : null) ?? 0;
+
+                    const effectiveTrafficRange = personMonthlyTraffic > 0
+                        ? personMonthlyTraffic
+                        : ((monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic);
+                    const effectiveRevenueRange = personMonthlyRevenue > 0
+                        ? personMonthlyRevenue
+                        : ((monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue);
 
                     return {
                         id: kpi.id,
@@ -2630,7 +2766,6 @@ export class LarkService implements OnModuleInit {
                         personKey: emailLookupKey || nameKey,
                         name: kpi.name,
                         position: employee?.position || (employee?.role === 'leader' ? 'Leader' : 'Member'),
-                        // Role: ưu tiên lấy từ chính employee (bảng users)
                         // Role: ưu tiên lấy từ chính employee (bảng users)
                         role: employee?.role || personEmp?.role || kpi._empRole || 'member',
                         email: personEmail || null,
@@ -2655,8 +2790,8 @@ export class LarkService implements OnModuleInit {
                         completed_day: dailyTaskDone,
                         completed_month: monthlyTaskDone,
                         // Stable monthly traffic/revenue for the Summary Cards:
-                        traffic_range: (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic,
-                        revenue_range: (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue,
+                        traffic_range: effectiveTrafficRange,
+                        revenue_range: effectiveRevenueRange,
                         // Nguồn MỚI: bảng revenue_reports (nhập tay theo nền tảng, giống trafficToday.total ở
                         // dưới) — không còn dùng reportKpi.revenue_day/câu hỏi checklist (2 nguồn cũ, khác tính năng).
                         revenueToday: personRevenue ? Number(personRevenue.total_revenue || 0) : 0,
@@ -2671,8 +2806,8 @@ export class LarkService implements OnModuleInit {
                             task_new: isViewingToday ? 0 : (kpi.task_new || 0),
                             kpi_status: isViewingToday ? 'N/A' : (kpi.kpii_status || 'N/A')
                         },
-                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0)),
-                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0)),
+                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0), personMonthlyTraffic),
+                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0), personMonthlyRevenue),
                         trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
                         revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                         monthlyProgress: monthlyVideoTarget > 0 ? Math.round((monthlyTaskDone / monthlyVideoTarget) * 100) : 0,
@@ -2945,12 +3080,12 @@ export class LarkService implements OnModuleInit {
                         // Sum numeric RESULTS
                         existing.done += r.done;
                         existing.videoCount += r.videoCount;
-                        existing.traffic_range += r.traffic_range;
-                        existing.revenue_range += r.revenue_range;
-                        existing.completed_day += r.completed_day;
-                        existing.completed_month += r.completed_month;
-                        existing.traffic_month += r.traffic_month;
-                        existing.revenue_month += r.revenue_month;
+                        existing.traffic_range = Math.max(existing.traffic_range || 0, r.traffic_range || 0);
+                        existing.revenue_range = Math.max(existing.revenue_range || 0, r.revenue_range || 0);
+                        existing.completed_day = Math.max(existing.completed_day || 0, r.completed_day || 0);
+                        existing.completed_month = Math.max(existing.completed_month || 0, r.completed_month || 0);
+                        existing.traffic_month = Math.max(existing.traffic_month || 0, r.traffic_month || 0);
+                        existing.revenue_month = Math.max(existing.revenue_month || 0, r.revenue_month || 0);
                         // revenueToday KHÔNG cộng dồn ở đây — giống hệt trafficToday (không bị đụng trong
                         // merge này), vì cả 2 đều đã là tổng theo người từ personTraffic/personRevenue rồi.
 

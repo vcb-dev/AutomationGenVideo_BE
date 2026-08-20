@@ -341,6 +341,70 @@ export class ChannelsService {
   }
 
   /**
+   * Lấy danh sách các tài khoản/kênh Meta đã kết nối qua OAuth
+   */
+  async getConnectedMetaChannels(user: { id: string }) {
+    const accounts = await this.prisma.socialAccount.findMany({
+      where: { is_active: true },
+      select: {
+        id: true,
+        name: true,
+        platform: true,
+        platform_id: true,
+        username: true,
+        avatar_url: true,
+        extra_data: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+    return accounts;
+  }
+
+  /**
+   * Bulk import các kênh chọn từ tài khoản Meta vào bảng Channel của team
+   */
+  async importFromMeta(
+    channelsToImport: Array<{ platform: string; name: string; channel_id: string; link_channel?: string }>,
+    user: { id: string; team?: string | null; full_name?: string; roles: UserRole[] },
+  ) {
+    const team_id = await this.resolveTeamId(user.team);
+    let imported = 0;
+
+    for (const c of channelsToImport) {
+      const cleanId = c.channel_id.replace(/^page_/, '').replace(/^ig_/, '').replace(/^thread_/, '');
+      const existing = await this.prisma.channel.findFirst({
+        where: {
+          OR: [
+            { channel_id: c.channel_id },
+            { channel_id: cleanId },
+            { name: c.name },
+          ],
+        },
+      });
+
+      if (!existing) {
+        await this.prisma.channel.create({
+          data: {
+            id: `meta_${randomUUID()}`,
+            name: c.name,
+            platform: c.platform.toLowerCase(),
+            channel_id: c.channel_id,
+            link_channel: c.link_channel || (c.platform.toUpperCase() === 'FACEBOOK' ? `https://facebook.com/${cleanId}` : null),
+            status: 'đang hoạt động',
+            owner_id: user.id,
+            team_id: team_id ?? undefined,
+            owner: user.full_name || undefined,
+            team_traffic: user.team || undefined,
+          },
+        });
+        imported++;
+      }
+    }
+
+    return { success: true, count: imported };
+  }
+
+  /**
    * Xóa kênh — chủ sở hữu channel (owner_id), LEADER cùng team, hoặc ADMIN/MANAGER (toàn quyền, mọi team).
    * Chặn nếu kênh đang được track bởi TrackedChannel.
    */
@@ -366,3 +430,4 @@ export class ChannelsService {
     return { message: "Channel deleted successfully" };
   }
 }
+

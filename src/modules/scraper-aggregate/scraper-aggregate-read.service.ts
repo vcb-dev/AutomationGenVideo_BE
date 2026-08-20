@@ -277,6 +277,27 @@ export class ScraperAggregateReadService {
       `);
     }
 
+    if (!platform || platform === 'threads') {
+      const c: Prisma.Sql[] = [];
+      if (dateFrom) c.push(Prisma.sql`tp.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
+      if (dateTo) c.push(Prisma.sql`tp.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
+      if (minPlays !== undefined) c.push(Prisma.sql`tp.views_count >= ${BigInt(minPlays)}`);
+      if (q) c.push(searchCondition(Prisma.sql`tp.text`, Prisma.sql`tp.hashtags`, q));
+      branches.push(Prisma.sql`
+        SELECT 'threads' AS platform, tp.post_id, tp.url, tp.text AS description,
+               COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '') AS thumbnail_url,
+               NULL::double precision AS duration_seconds, tp.views_count AS play_count,
+               tp.likes_count, tp.replies_count AS comments_count, tp.date_posted,
+               COALESCE(p.threads_user_id, '') AS author_id,
+               COALESCE(NULLIF(p.name, ''), p.username) AS author_name,
+               COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS author_avatar,
+               p.username AS author_username
+        FROM scraper_threads_posts tp
+        JOIN scraper_threads_profiles p ON p.id = tp.profile_id
+        ${buildWhere(c)}
+      `);
+    }
+
     if (branches.length === 0) {
       return { status: 'ok', count: 0, page: pageNum, page_size: pageSize, total_pages: 1, videos: [] };
     }
@@ -484,6 +505,26 @@ export class ScraperAggregateReadService {
       `);
     }
 
+    if (!platform || platform === 'threads') {
+      const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`tp.date_posted`)];
+      if (minPlays !== undefined) conditions.push(Prisma.sql`tp.views_count >= ${BigInt(minPlays)}`);
+      if (q) conditions.push(searchCondition(Prisma.sql`tp.text`, null, q));
+      conditions.push(...filterByKeyword(Prisma.sql`tp.text`, Prisma.sql`tp.hashtags`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`));
+      branches.push(Prisma.sql`
+        SELECT 'threads' AS platform, tp.post_id, tp.url, tp.text AS description,
+               COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '') AS thumbnail_url,
+               NULL::double precision AS duration_seconds, tp.views_count AS play_count,
+               tp.likes_count, tp.replies_count AS comments_count, tp.date_posted,
+               COALESCE(NULLIF(p.name, ''), p.username) AS author_name,
+               COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS author_avatar,
+               p.username AS author_username
+        FROM scraper_threads_posts tp
+        JOIN scraper_threads_profiles p ON p.id = tp.profile_id
+        WHERE ${Prisma.join(conditions, ' AND ')}
+      `);
+    }
+
     if (branches.length === 0) {
       return { status: 'ok', count: 0, page: pageNum, page_size: pageSize, total_pages: 1, videos: [] };
     }
@@ -545,6 +586,10 @@ export class ScraperAggregateReadService {
       SELECT 'youtube', p.channel_id, COALESCE(NULLIF(p.title, ''), p.channel_id),
              (SELECT COUNT(*)::int FROM scraper_youtube_shorts s WHERE s.profile_id = p.id)
       FROM scraper_youtube_profiles p WHERE p.is_owned
+      UNION ALL
+      SELECT 'threads', p.username, COALESCE(NULLIF(p.name, ''), p.username),
+             (SELECT COUNT(*)::int FROM scraper_threads_posts tp WHERE tp.profile_id = p.id)
+      FROM scraper_threads_profiles p WHERE p.is_owned
       ORDER BY so_video DESC, ten ASC
     `;
     return { channels: rows };
