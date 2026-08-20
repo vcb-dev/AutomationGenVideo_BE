@@ -176,10 +176,10 @@ export class FacebookExternalScraperService {
       } else {
         await this.prisma.scraperFanpage.update({
           where: { id: fanpageId },
-          data: { scraping_status: 'failed', scrape_error: 'Không lấy được profile detail từ API' },
+          data: { scraping_status: 'failed', scrape_error: 'Không lấy được profile detail từ RapidAPI' },
         });
       }
-      throw new Error('Không lấy được profile detail từ API');
+      throw new HttpException({ error: 'Không lấy được thông tin Fanpage từ RapidAPI. Vui lòng kiểm tra lại URL hoặc cấu hình RAPIDAPI_FACEBOOK_KEY.' }, HttpStatus.BAD_REQUEST);
     }
 
     try {
@@ -204,18 +204,29 @@ export class FacebookExternalScraperService {
   ): Promise<{ created: number; updated: number; reels_returned: number }> {
     const isPlaceholder = !fanpage.profile_id || fanpage.profile_id.startsWith('tmp_');
 
-    const { profile_api_ok, profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, count, [], '');
+    let fetchResult: { profile_api_ok: boolean; profile: ParsedFanpageProfile | null; reels: ParsedFacebookReel[] };
+    try {
+      fetchResult = await this.aiClient.fetchPageReels(fanpage.page_url, count, [], '');
+    } catch (err: any) {
+      if (isPlaceholder) {
+        await this.prisma.scraperFanpage.delete({ where: { id: fanpage.id } }).catch(() => {});
+      }
+      const msg = err.response?.data?.error || err.response?.data?.detail || err.message;
+      throw new HttpException({ error: `Lỗi kết nối AI cào Facebook: ${msg}` }, err.response?.status || HttpStatus.BAD_GATEWAY);
+    }
+
+    const { profile_api_ok, profile, reels } = fetchResult;
 
     if (!profile_api_ok) {
       if (isPlaceholder) {
-        await this.prisma.scraperFanpage.delete({ where: { id: fanpage.id } });
+        await this.prisma.scraperFanpage.delete({ where: { id: fanpage.id } }).catch(() => {});
       } else {
         await this.prisma.scraperFanpage.update({
           where: { id: fanpage.id },
-          data: { scraping_status: 'failed', scrape_error: 'Không lấy được profile detail từ API' },
-        });
+          data: { scraping_status: 'failed', scrape_error: 'Không lấy được profile detail từ RapidAPI' },
+        }).catch(() => {});
       }
-      throw new Error('Không lấy được profile detail từ API');
+      throw new HttpException({ error: 'Không lấy được thông tin Fanpage từ RapidAPI. Vui lòng kiểm tra lại URL hoặc cấu hình RAPIDAPI_FACEBOOK_KEY.' }, HttpStatus.BAD_REQUEST);
     }
 
     const result = await this.ingestFetchedData(fanpage.id, profile, reels);
@@ -317,7 +328,15 @@ export class FacebookExternalScraperService {
     // Batch đầu SYNCHRONOUS (~20 reels, rất nhanh) — trả data ngay cho user
     const result = await this.ingestReelsSyncFirst(fp, 20);
     if (result.reels_returned === 0) {
-      throw new HttpException({ error: 'Không tìm thấy reels cho page này' }, HttpStatus.NOT_FOUND);
+      await this.prisma.scraperFanpage.update({
+        where: { id: fp.id },
+        data: { scraping_status: 'idle', last_scraped_at: new Date() },
+      }).catch(() => {});
+      return {
+        status: 'ok',
+        message: `Đã thêm kênh ${fp.name || handle} thành công. (Chưa tìm thấy reels hoặc cần cấu hình RAPIDAPI_FACEBOOK_KEY để cào video).`,
+        fanpage_id: Number(fp.id),
+      };
     }
 
     // Dispatch cào tiếp tới tổng 300 reels (fire-and-forget)
