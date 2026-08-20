@@ -1243,27 +1243,36 @@ export class TaskAutoTasksService {
 
   private async getGlobalDashboard(range: { gte: Date; lt: Date } | null) {
     const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const todayStart = new Date(
       now.getFullYear(),
       now.getMonth(),
       now.getDate(),
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
-
-    const monthlyCompletedWhere = range
-      ? { status: "APPROVED" as const, reviewed_at: range }
-      : {
-          status: "APPROVED" as const,
-          reviewed_at: { gte: monthStart, lt: monthEnd },
-        };
+    // Cùng 2 lớp lọc mà Kanban áp cho 4 cột không phải "Quá hạn" (xem TasksKanbanBoard.tsx +
+    // findAll() ở q.deadline_from/to và q.exclude_overdue):
+    // 1) Task có deadline rơi vào bộ lọc ngày; task chưa có deadline thì tính theo ngày tạo thay thế.
+    // 2) Trừ task đang xử lý (chưa xong việc — khớp doneStatuses ở findAll()) đã trễ hạn — nhóm
+    //    đó chỉ còn hiện ở "Quá hạn" (live, xem todayDeadline/overdue bên dưới), không tính trùng
+    //    vào breakdown theo trạng thái nữa.
+    const notOverdueOrDone: Prisma.TaskWhereInput = {
+      OR: [
+        { status: { in: ["APPROVED", "CANCELLED"] } },
+        { deadline: null },
+        { deadline: { gte: now } },
+      ],
+    };
+    const dateWindow: Prisma.TaskWhereInput = range
+      ? { OR: [{ deadline: range }, { deadline: null, created_at: range }] }
+      : {};
+    const tasksByStatusWhere: Prisma.TaskWhereInput = range
+      ? { AND: [dateWindow, notOverdueOrDone] }
+      : notOverdueOrDone;
 
     const [
       tasksByStatus,
       todayDeadline,
       overdue,
-      monthlyCompleted,
       totalEditors,
       approvedEditors,
       pendingApprovals,
@@ -1271,7 +1280,7 @@ export class TaskAutoTasksService {
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
-        where: range ? { created_at: range } : undefined,
+        where: tasksByStatusWhere,
         _count: { id: true },
       }),
       this.prisma.task.count({
@@ -1289,12 +1298,13 @@ export class TaskAutoTasksService {
           status: { notIn: ["APPROVED", "CANCELLED"] },
         },
       }),
-      this.prisma.task.count({ where: monthlyCompletedWhere }),
       this.prisma.user.count({ where: { is_active: true } }),
       this.prisma.editorApproval.count({ where: { status: "APPROVED" } }),
       this.prisma.editorApproval.count({ where: { status: "PENDING" } }),
-      // "Số video theo tuyến" toàn hệ thống — cùng khoảng thời gian với monthly_completed.
-      this.getVideoByContentLine({ reviewed_at: monthlyCompletedWhere.reviewed_at }),
+      // "Số video theo tuyến" toàn hệ thống — cùng cách lọc ngày với breakdown trạng thái ở trên
+      // (deadline trong kỳ, task chưa có deadline thì theo ngày tạo) để khớp đúng "Đã duyệt" trong
+      // kỳ đang hiển thị, thay vì lệch theo ngày duyệt (reviewed_at) như trước.
+      this.getVideoByContentLine(dateWindow),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1309,7 +1319,9 @@ export class TaskAutoTasksService {
       },
       today_deadline: todayDeadline,
       overdue,
-      monthly_completed: monthlyCompleted,
+      /** Task đã duyệt trong kỳ đang chọn — nay khớp 1-1 với `tasks.approved` (cùng cách lọc ngày
+       * với tab "Nhiệm vụ"/Kanban) nên không cần đếm riêng theo reviewed_at nữa. */
+      monthly_completed: taskMap.approved ?? 0,
       editors: {
         total: totalEditors,
         approved: approvedEditors,
