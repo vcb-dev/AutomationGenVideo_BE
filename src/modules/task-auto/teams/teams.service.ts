@@ -912,6 +912,15 @@ export class TaskAutoTeamsService {
     })
   }
 
+  async getMyEditorApproval(userId: string) {
+    const approval = await this.prisma.editorApproval.findFirst({
+      where: { user_id: userId },
+      orderBy: { created_at: 'desc' },
+      select: { status: true },
+    })
+    return { status: approval?.status ?? null }
+  }
+
   async requestEditorApproval(userId: string) {
     const existing = await this.prisma.editorApproval.findFirst({ where: { user_id: userId, status: 'PENDING' } })
     if (existing) throw new ConflictException('Approval request already pending')

@@ -1683,11 +1683,10 @@ export class TaskAutoCatalogService {
 
   // ─── Push request review (leader duyệt) ───────────────────────────────────
 
-  // select hẹp thay vì include trần — trước đây kéo toàn bộ EditorContent (kể cả body/script/
-  // file_content_url/voice_url, Text field lớn) trên mọi hàng của danh sách push-request, dù
-  // FE (TeamPushRequestsTab.tsx) chỉ đọc name/title + product_line/content_line.name. Vẫn giữ
-  // đủ field mà copyEditorProductToTeam/copyEditorContentToTeam cần khi duyệt (xem
-  // reviewTeamPushRequest) để không phải fetch lại.
+  // editor_content cần đủ body/script/voice_url/file_content_url để leader xem trước khi
+  // duyệt (ContentViewModal ở FE) — trước đây select hẹp chỉ lấy title khiến màn hình duyệt
+  // (TeamPushRequestsTab.tsx) không hiện được kịch bản, chỉ thấy tên/tuyến/loại content.
+  // editor_product giữ select hẹp vì Product không có field kịch bản tương đương.
   private pushRequestInclude = {
     team: { select: { id: true, name: true, leader_id: true } },
     requested_by: { select: { id: true, full_name: true, email: true } },
@@ -1708,7 +1707,14 @@ export class TaskAutoCatalogService {
     editor_content: {
       select: {
         id: true,
+        code: true,
         title: true,
+        market: true,
+        status: true,
+        body: true,
+        script: true,
+        voice_url: true,
+        file_content_url: true,
         brand_type: true,
         classification_id: true,
         content_line: { select: { id: true, name: true } },

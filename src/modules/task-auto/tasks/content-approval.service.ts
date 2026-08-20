@@ -9,6 +9,7 @@ import {
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./task.dto";
+import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 
 const approvalInclude = {
   requested_by: { select: { id: true, full_name: true, email: true } },
@@ -55,7 +56,8 @@ export class ContentApprovalService {
     const where: any = { status: q.status ?? "PENDING" };
 
     const taskWhere: any = {};
-    if (q.team_id) taskWhere.team_id = q.team_id;
+    const teamIdFilter = parseTeamIdFilter(q.team_id);
+    if (teamIdFilter) taskWhere.team_id = teamIdFilter;
     if (q.assignee_id) taskWhere.assignee_id = q.assignee_id;
     if (q.search) {
       taskWhere.content = { title: { contains: q.search, mode: "insensitive" } };
