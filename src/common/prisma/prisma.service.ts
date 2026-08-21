@@ -51,11 +51,6 @@ export class PrismaService
     });
   }
 
-  async onModuleInit() {
-    await this.connectWithRetry();
-    await this.ensureRequiredTables();
-  }
-
   private async ensureRequiredTables() {
     try {
       await this.$executeRawUnsafe(`
@@ -64,6 +59,8 @@ export class PrismaService
           profile_id VARCHAR(100) UNIQUE NOT NULL,
           username VARCHAR(100) NOT NULL,
           nickname VARCHAR(255) DEFAULT '',
+          name VARCHAR(255) DEFAULT '',
+          threads_user_id VARCHAR(100) DEFAULT '',
           avatar_url TEXT,
           avatar_drive_url TEXT,
           biography TEXT DEFAULT '',
@@ -77,7 +74,9 @@ export class PrismaService
           scrape_error TEXT,
           created_at TIMESTAMPTZ(6) DEFAULT NOW(),
           updated_at TIMESTAMPTZ(6) DEFAULT NOW()
-        );
+        )
+      `);
+      await this.$executeRawUnsafe(`
         CREATE TABLE IF NOT EXISTS scraper_threads_posts (
           id BIGSERIAL PRIMARY KEY,
           profile_id BIGINT,
@@ -85,7 +84,7 @@ export class PrismaService
           shortcode VARCHAR(100),
           url VARCHAR(1000) DEFAULT '',
           text TEXT DEFAULT '',
-          hashtags TEXT[] DEFAULT '{}',
+          hashtags TEXT[] DEFAULT ARRAY[]::TEXT[],
           thumbnail_url TEXT,
           thumbnail_drive_url TEXT,
           media_type VARCHAR(50) DEFAULT 'TEXT',
@@ -97,11 +96,18 @@ export class PrismaService
           date_posted TIMESTAMPTZ(6) NOT NULL DEFAULT NOW(),
           created_at TIMESTAMPTZ(6) DEFAULT NOW(),
           updated_at TIMESTAMPTZ(6) DEFAULT NOW()
-        );
+        )
       `);
+      await this.$executeRawUnsafe(`ALTER TABLE scraper_threads_profiles ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT '';`);
+      await this.$executeRawUnsafe(`ALTER TABLE scraper_threads_profiles ADD COLUMN IF NOT EXISTS threads_user_id VARCHAR(100) DEFAULT '';`);
     } catch (err: any) {
       this.logger.warn(`Could not auto-ensure scraper_threads tables: ${err?.message}`);
     }
+  }
+
+  async onModuleInit() {
+    await this.connectWithRetry();
+    await this.ensureRequiredTables();
   }
 
   /** Connect with exponential backoff — prevents circuit breaker activation on Supabase. */
