@@ -34,6 +34,10 @@ WORKDIR /app
 
 COPY package*.json ./
 COPY prisma ./prisma/
+# Logo VIENCHIBAO dùng khi vẽ PDF ảnh thẻ — IdPhotoService đọc theo process.cwd()/assets,
+# nằm ngoài dist nên KHÔNG tự vào image theo bước copy dist bên dưới. Thiếu dòng này thì
+# thẻ in ra trên môi trường Docker sẽ mất logo (service chỉ ghi cảnh báo rồi bỏ qua, không sập).
+COPY assets ./assets/
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist

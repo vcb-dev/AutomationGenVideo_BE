@@ -51,6 +51,7 @@ import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggr
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 import { VideoLibraryModule } from './modules/video-library/video-library.module';
+import { IdPhotoModule } from './modules/id-photo/id-photo.module';
 
 @Module({
   imports: [
@@ -119,6 +120,7 @@ import { VideoLibraryModule } from './modules/video-library/video-library.module
     SearchKeywordsModule,
     ScraperProxyModule,
     VideoLibraryModule,
+    IdPhotoModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
