@@ -115,6 +115,7 @@ model User {
   ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
+  id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
 
   @@index([email])
   @@index([roles])
@@ -4147,6 +4148,69 @@ enum InputType {
   TEXT
   VIDEO
   AUDIO
+}
+
+// ─────────────────────────────────────────────
+//  ID PHOTO — Tạo ảnh thẻ nhân viên (module src/modules/id-photo)
+//  FE → BE → AI Service (Gemini ghép áo), BE chỉ orchestrate — không gọi thẳng Gemini.
+// ─────────────────────────────────────────────
+
+/// Lịch sử mỗi lần tạo ảnh thẻ nhân viên: upload ảnh gốc → Gemini ghép áo polo đen →
+/// nhập thông tin nhân viên → xuất PDF theo khung màu (ánh xạ từ `position`).
+model IdPhotoHistory {
+  id         String @id @default(uuid())
+  created_by String @db.Uuid // Người tạo (LEADER/ADMIN, xem RolesGuard trên IdPhotoController) — FK users.id
+
+  // Nhập tay trên form tạo ảnh thẻ — không tra cứu từ bảng users vì nhân viên được lên thẻ
+  // không nhất thiết có tài khoản trong hệ thống này.
+  employee_name String
+  employee_team String
+  employee_id   String
+  /// Tiền tố chức danh in trước tên trên thẻ, vd "HĐ." → "HĐ. BẢO VIỆT" (xem thẻ mẫu thật).
+  /// Nullable vì phần lớn thẻ không cần — để trống thì in mỗi tên, không đổi hành vi cũ.
+  employee_title_prefix String?
+
+  /// Chỉ lưu Ý NGHĨA cấp bậc, KHÔNG lưu tên màu khung — tầng hiển thị (FE) và bước export-pdf
+  /// tự ánh xạ sang màu khung Trắng/Vàng/Xanh/Đỏ/Đen, đổi mapping không cần migration DB.
+  position IdPhotoPosition
+
+  /// Ảnh gốc user upload, lưu base64 data URI (data:image/...;base64,...) — module này tự
+  /// chứa, không phụ thuộc storage ngoài (Drive/S3) như các module upload khác trong dự án.
+  raw_image_data String @db.Text
+  /// Ảnh sau khi AI service (Gemini) ghép áo polo đen — null tới khi bước merge-outfit xong.
+  processed_image_data String? @db.Text
+
+  status        IdPhotoStatus @default(PENDING)
+  error_message String?
+  /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
+  pdf_url String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  createdByUser User @relation("IdPhotoCreatedBy", fields: [created_by], references: [id])
+
+  @@index([created_by])
+  @@index([status])
+  @@index([created_at])
+  @@map("id_photo_histories")
+}
+
+/// Cấp bậc nhân viên — quyết định màu khung khi xuất PDF (ánh xạ ở id-photo.service.ts,
+/// KHÔNG lưu trực tiếp tên màu vào DB để đổi màu khung không cần migration).
+enum IdPhotoPosition {
+  NEW_STAFF_1_3M // Nhân viên mới 1-3 tháng
+  STAFF_OVER_3M  // Nhân viên trên 3 tháng
+  LEADER
+  MANAGER
+  BOD
+}
+
+enum IdPhotoStatus {
+  PENDING    // Bản ghi vừa tạo, chưa xử lý gì thêm
+  PROCESSING // Đang lưu ảnh vào bản ghi (dự phòng cho luồng xử lý bất đồng bộ sau này)
+  SUCCESS    // Tạo thành công, có đủ raw_image_data + processed_image_data
+  FAILED     // Lỗi trong lúc tạo bản ghi — xem error_message
 }
 
 // ─────────────────────────────────────────────
