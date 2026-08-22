@@ -12,7 +12,7 @@ import { CacheService } from '../../common/cache/cache.service';
 const VN_TZ = 'Asia/Ho_Chi_Minh';
 const VN_OFFSET = '+07:00';
 
-export const OWNED_PLATFORMS = ['facebook', 'tiktok', 'instagram', 'youtube'] as const;
+export const OWNED_PLATFORMS = ['facebook', 'tiktok', 'instagram', 'youtube', 'threads'] as const;
 export type OwnedPlatform = (typeof OWNED_PLATFORMS)[number];
 
 // Backward compatibility alias
@@ -410,6 +410,26 @@ export class OwnedStatsService {
       `);
     }
 
+    if (!platform || platform === 'threads') {
+      branches.push(Prisma.sql`
+        SELECT 'threads'::text AS platform,
+               p.username::text AS kenh_id,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
+               tp.post_id::text AS post_id,
+               tp.url::text AS url,
+               tp.text::text AS mo_ta,
+               COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '')::text AS thumbnail,
+               tp.views_count::bigint AS views,
+               tp.likes_count::bigint AS likes,
+               tp.replies_count::bigint AS comments,
+               tp.reposts_count::bigint AS shares,
+               tp.date_posted AS ngay
+        FROM scraper_threads_posts tp
+        JOIN scraper_threads_profiles p ON p.id = tp.profile_id
+        WHERE p.is_owned = true AND tp.date_posted >= ${startDate} AND tp.date_posted <= ${endDate}
+      `);
+    }
+
     return Prisma.sql`(${Prisma.join(branches, ' UNION ALL ')})`;
   }
 
@@ -462,6 +482,19 @@ export class OwnedStatsService {
                true AS hoat_dong,
                (SELECT MAX(s.created_at) FROM scraper_youtube_shorts s WHERE s.profile_id = p.id) AS ngay_cuoi
         FROM scraper_youtube_profiles p WHERE p.is_owned = true
+      `);
+    }
+
+    if (!platform || platform === 'threads') {
+      branches.push(Prisma.sql`
+        SELECT 'threads'::text AS platform, p.username::text AS kenh_id,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS ten,
+               COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '')::text AS avatar,
+               p.followers_count::bigint AS followers,
+               p.last_scraped_at AS dong_bo, NULLIF(p.scrape_error, '')::text AS loi,
+               true AS hoat_dong,
+               (SELECT MAX(tp.date_posted) FROM scraper_threads_posts tp WHERE tp.profile_id = p.id) AS ngay_cuoi
+        FROM scraper_threads_profiles p WHERE p.is_owned = true
       `);
     }
 

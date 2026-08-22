@@ -17,7 +17,7 @@ afterAll(() => {
 });
 
 describe('normalizePlatform', () => {
-  it.each(['facebook', 'tiktok', 'instagram', 'youtube'])('preserves valid platform "%s"', (p) => {
+  it.each(['facebook', 'tiktok', 'instagram', 'youtube', 'threads'])('preserves valid platform "%s"', (p) => {
     expect(normalizePlatform(p)).toBe(p);
   });
 

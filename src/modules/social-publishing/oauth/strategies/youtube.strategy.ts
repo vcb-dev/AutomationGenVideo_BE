@@ -15,12 +15,13 @@ export class YoutubeOAuthStrategy {
   readonly platform = SocialPlatform.YOUTUBE;
 
   private get clientId(): string {
-    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+    return process.env.OAUTH_CLIENT_ID || process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
   }
 
   private get clientSecret(): string {
-    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+    return process.env.OAUTH_CLIENT_SECRET || process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
   }
+
 
   private get redirectUri() {
     return buildRedirectUri('YT_REDIRECT_URI', 'youtube');

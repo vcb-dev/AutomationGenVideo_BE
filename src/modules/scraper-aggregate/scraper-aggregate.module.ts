@@ -19,6 +19,9 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 // JwtModule để MediaTokenGuard tự xác thực token lấy từ query — thẻ <video src> không gắn
 // được header Authorization nên không dùng JwtAuthGuard ở route phát được. Dùng chung đúng
 // một hàm lấy secret với AuthModule, lệch secret là mọi link phát đều 401.
+import { TrafficInsightsService } from './traffic-insights.service';
+import { CryptoService } from '../social-publishing/crypto/crypto.service';
+
 @Module({
   imports: [
     PrismaModule,
@@ -41,6 +44,9 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
     OwnedScriptService,
     OwnedDuplicateService,
     OwnedPaastCronService,
+    TrafficInsightsService,
+    CryptoService,
   ],
+  exports: [TrafficInsightsService],
 })
 export class ScraperAggregateModule {}

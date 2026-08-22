@@ -181,7 +181,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
         params: {
           access_token: token,
-          fields: 'id,name,access_token,picture,instagram_business_account{id,name,username,profile_picture_url}',
+          fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
           limit: 100,
         },
         timeout: 15000,
@@ -192,7 +192,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
         id: p.id,
         name: p.name,
         access_token: p.access_token, // trả về FE để FE gọi save-page; KHÔNG cache
-        picture: p.picture?.data?.url,
+        picture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
         instagram: p.instagram_business_account
           ? {
             id: p.instagram_business_account.id,
@@ -202,6 +202,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
           }
           : null,
       }));
+
 
       // Lưu cache không kèm access_token
       const safePages = pages.map(({ access_token: _t, ...rest }) => rest);
@@ -220,7 +221,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
       params: {
         access_token: token,
-        fields: 'id,name,access_token,picture,instagram_business_account{id,name,username,profile_picture_url}',
+        fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
         limit: 100,
       },
       timeout: 15000,
@@ -247,7 +248,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
             pageId: p.id,
             pageName: p.name,
             pageToken: p.access_token,
-            pagePicture: p.picture?.data?.url,
+            pagePicture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
             igId: p.instagram_business_account?.id,
             igName: p.instagram_business_account?.name,
             igUsername: p.instagram_business_account?.username,
@@ -288,7 +289,8 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       platformId: `page_${opts.pageId}`,
       name: opts.pageName,
       username: opts.pageId,
-      avatarUrl: opts.pagePicture,
+      avatarUrl: opts.pagePicture || `https://graph.facebook.com/${opts.pageId}/picture?type=large`,
+
       accessToken: opts.pageToken,
       parentId: opts.parentAccountId,
       extraData: {
@@ -426,11 +428,14 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
   async getExpiringAccounts(userId: string) {
     const now = new Date();
     const warnBefore = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    // Bao gồm cả token ĐÃ hết hạn (không chặn dưới bằng `gte: now`) — account hết hạn không còn
-    // bị cron ẩn đi nữa nên banner phải hiện "Đã hết hạn" (FE render days_until_expiry <= 0)
-    // để user biết đường kết nối lại, thay vì âm thầm rớt khỏi banner như trước.
+    // YouTube tự refresh lúc publish nên không cảnh báo hết hạn
     const accounts = await this.prisma.socialAccount.findMany({
-      where: { user_id: userId, is_active: true, token_expires_at: { not: null, lte: warnBefore } },
+      where: {
+        user_id: userId,
+        is_active: true,
+        platform: { not: SocialPlatform.YOUTUBE },
+        token_expires_at: { not: null, lte: warnBefore },
+      },
       select: { id: true, name: true, platform: true, avatar_url: true, token_expires_at: true },
       orderBy: { token_expires_at: 'asc' },
     });
@@ -439,6 +444,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       days_until_expiry: Math.ceil((a.token_expires_at!.getTime() - now.getTime()) / 86400000),
     }));
   }
+
 
   /**
    * Bật/tắt chia sẻ account cho toàn bộ hệ thống.
@@ -475,11 +481,13 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const expiresAt = rest.token_expires_at ? new Date(rest.token_expires_at).getTime() : null;
     const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / 86400000) : null;
+    const isYouTube = rest.platform === SocialPlatform.YOUTUBE;
     return {
       ...rest,
-      token_expires_soon: daysLeft !== null && daysLeft <= 7,
-      token_expires_in_days: daysLeft,
+      token_expires_soon: !isYouTube && daysLeft !== null && daysLeft <= 7,
+      token_expires_in_days: isYouTube ? null : daysLeft,
     };
   }
+
 }
 

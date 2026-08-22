@@ -10,7 +10,7 @@ export class OAuthController {
   constructor(
     private readonly oauthService: OAuthService,
     private readonly config: ConfigService,
-  ) {}
+  ) { }
 
   // ────────────────────────────────────────────────
   // META / FACEBOOK

@@ -6,4 +6,4 @@ import { OAuthService } from './oauth.service';
   controllers: [OAuthController],
   providers: [OAuthService],
 })
-export class OAuthModule {}
+export class OAuthModule { }

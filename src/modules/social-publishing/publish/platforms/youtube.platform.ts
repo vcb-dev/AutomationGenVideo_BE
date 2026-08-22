@@ -152,12 +152,13 @@ export class YoutubePublisher {
   }
 
   private get clientId(): string {
-    return process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+    return process.env.OAUTH_CLIENT_ID || process.env.YT_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
   }
 
   private get clientSecret(): string {
-    return process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || '';
+    return process.env.OAUTH_CLIENT_SECRET || process.env.YT_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
   }
+
 
   async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; tokenExpiresAt: Date }> {
     const res = await axios.post(

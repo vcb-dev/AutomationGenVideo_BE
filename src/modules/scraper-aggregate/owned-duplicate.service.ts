@@ -456,6 +456,23 @@ export class OwnedDuplicateService {
       `);
     }
 
+    if (!platform || platform === 'threads') {
+      branches.push(Prisma.sql`
+        SELECT 'threads'::text AS platform,
+               p.username::text AS kenh_id,
+               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
+               tp.url::text AS url,
+               ${this.normalizeCaptionSql(Prisma.sql`tp.text`)} AS cap,
+               NULL::int AS giay,
+               tp.views_count::bigint AS views,
+               tp.date_posted AS ngay
+        FROM scraper_threads_posts tp
+        JOIN scraper_threads_profiles p ON p.id = tp.profile_id
+        WHERE p.is_owned = true AND tp.date_posted >= ${startDate} AND tp.date_posted <= ${endDate}
+          AND length(btrim(tp.text)) >= ${MIN_CAPTION_LENGTH}
+      `);
+    }
+
     return Prisma.join(branches, ' UNION ALL ');
   }
 

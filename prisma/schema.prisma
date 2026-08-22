@@ -1925,6 +1925,65 @@ model ScraperInstagramProfileMetrics {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  THREADS — Profile & Post
+// ═══════════════════════════════════════════════════════════
+
+model ScraperThreadsProfile {
+  id               BigInt              @id @default(autoincrement())
+  threads_user_id  String?             @unique @db.VarChar(100)
+  username         String              @unique @db.VarChar(255)
+  name             String?             @default("") @db.VarChar(500)
+  url              String              @default("") @db.VarChar(1000)
+  avatar_url       String?             @db.Text
+  avatar_drive_url String              @default("") @db.Text
+  biography        String?             @default("") @db.Text
+  followers_count  BigInt              @default(0)
+  is_verified      Boolean             @default(false)
+  is_tracked       Boolean             @default(false)
+  is_bookmarked    Boolean             @default(false)
+  is_owned         Boolean             @default(true)
+  last_scraped_at  DateTime?           @db.Timestamptz(6)
+  scraping_status  String              @default("idle") @db.VarChar(20)
+  scrape_error     String?             @db.Text
+  created_at       DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime            @updatedAt @db.Timestamptz(6)
+  posts            ScraperThreadsPost[]
+
+  @@index([username])
+  @@index([is_tracked, last_scraped_at])
+  @@index([is_owned])
+  @@index([followers_count(sort: Desc)])
+  @@map("scraper_threads_profiles")
+}
+
+model ScraperThreadsPost {
+  id                  BigInt                @id @default(autoincrement())
+  profile_id          BigInt
+  post_id             String                @unique @db.VarChar(100)
+  shortcode           String?               @db.VarChar(100)
+  url                 String                @default("") @db.VarChar(1000)
+  text                String                @default("") @db.Text
+  hashtags            String[]              @default([])
+  thumbnail_url       String?               @db.Text
+  thumbnail_drive_url String?               @db.Text
+  media_type          String?               @default("TEXT") @db.VarChar(50)
+  views_count         BigInt                @default(0)
+  likes_count         BigInt                @default(0)
+  replies_count       BigInt                @default(0)
+  reposts_count       BigInt                @default(0)
+  quotes_count        BigInt                @default(0)
+  date_posted         DateTime              @db.Timestamptz(6)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @updatedAt @db.Timestamptz(6)
+  profile             ScraperThreadsProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@index([profile_id, date_posted(sort: Desc)])
+  @@index([date_posted(sort: Desc)])
+  @@index([views_count(sort: Desc)])
+  @@map("scraper_threads_posts")
+}
+
+// ═══════════════════════════════════════════════════════════
 //  XIAOHONGSHU — Video Note (keyword search)
 // ═══════════════════════════════════════════════════════════
 
