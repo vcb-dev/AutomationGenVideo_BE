@@ -13,6 +13,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { CreateTransformDto } from './dto/content-transform.dto';
 import { ContentTransformHistoryQueryDto } from './dto/content-transform-history-query.dto';
+import { ContentTransformTeamSummaryQueryDto } from './dto/content-transform-team-summary-query.dto';
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
 
@@ -1007,6 +1008,24 @@ export class AiIntegrationController {
   @ApiOperation({ summary: 'Lấy lịch sử chuyển đổi của chính user đang login' })
   async getContentTransformUserHistory(@Req() req: any, @Query() query: ContentTransformHistoryQueryDto) {
     return this.aiService.getContentTransformUserHistory(req.user.id, query);
+  }
+
+  // Khai báo TRƯỚC 'content-transform/history/:id' — nếu để sau, ':id' sẽ nuốt luôn
+  // đường dẫn 'team-summary' và request rơi vào handler chi tiết bản ghi.
+  @Get('content-transform/history/team-summary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth()
+  @Roles(UserRole.LEADER, UserRole.ADMIN, UserRole.MANAGER)
+  @ApiOperation({
+    summary:
+      'Tổng quan: danh sách toàn bộ thành viên trong phạm vi quyền + tổng số lượt chuyển đổi content của từng người, ' +
+      'xu hướng theo ngày (7D/30D/90D) và phân loại theo input_type — phục vụ tab Thống kê (1 lần gọi)',
+  })
+  async getContentTransformTeamSummary(
+    @Req() req: any,
+    @Query() query: ContentTransformTeamSummaryQueryDto,
+  ) {
+    return this.aiService.getContentTransformTeamSummary(req.user.id, req.user.roles, query.range);
   }
 
   @Get('content-transform/history/member/:userId')

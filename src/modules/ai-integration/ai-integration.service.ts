@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { catchError, firstValueFrom, lastValueFrom } from 'rxjs';
 import { AxiosError } from 'axios';
 import { TransformStatus, UserRole, Prisma } from '@prisma/client';
+import { TeamSummaryRange } from './dto/content-transform-team-summary-query.dto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
@@ -26,6 +27,7 @@ import { CreateTransformDto } from './dto/content-transform.dto';
 import { ContentTransformHistoryQueryDto } from './dto/content-transform-history-query.dto';
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
+import { UsersService } from '../users/users.service';
 
 /** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
 export interface VideoDetailResult {
@@ -140,6 +142,7 @@ export class AiIntegrationService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
+    private readonly usersService: UsersService,
   ) {
     this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
@@ -3720,6 +3723,126 @@ export class AiIntegrationService {
       limit,
       totalPages: Math.ceil(total / limit),
       items: items.map((item) => this.attachContentTransformScoreFields(item)),
+    };
+  }
+
+  /**
+   * Tổng quan tab "Thống kê" của tính năng Chuyển đổi nội dung: danh sách thành viên + tổng lượt
+   * (all-time, dùng cho bảng xếp hạng và card "Dẫn đầu" — CÙNG một nguồn `rows` nên 2 chỗ này
+   * luôn khớp nhau), phân loại theo input_type (all-time, cho donut "Theo loại nội dung" — BE
+   * chưa track "loại nội dung" như bài viết/hình ảnh, chỉ có input_type lúc tạo bản ghi nên dùng
+   * tạm field này), và xu hướng theo ngày trong `range` gần nhất kèm tổng của kỳ liền trước để FE
+   * tính badge % thay đổi (cho card "Tổng lượt chuyển đổi" / "Trung bình mỗi người").
+   */
+  async getContentTransformTeamSummary(callerId: string, roles: UserRole[], range: TeamSummaryRange = '30d') {
+    // Phạm vi quyền lấy nguyên từ UsersService.getTeamMembers() (Leader: các user có User.team
+    // khớp tên team mình lead; Manager/Admin: toàn bộ user) — cùng danh sách mà dropdown "Chọn
+    // thành viên" cũ đã dùng, nên không phát sinh cách xét quyền mới.
+    const members = (await this.usersService.getTeamMembers(callerId, roles)) as any[];
+
+    if (members.length === 0) {
+      return {
+        members: [],
+        totalMembers: 0,
+        totalTransforms: 0,
+        byInputType: [],
+        trend: { range, points: [], periodTotal: 0, previousPeriodTotal: 0 },
+      };
+    }
+
+    const memberIds = members.map((m) => m.id);
+    const periodDays = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+
+    // Mốc ngày theo UTC 00:00 — nhất quán nội bộ giữa các lần gọi (không phụ thuộc giờ hệ thống
+    // của tiến trình BE), đủ dùng cho biểu đồ xu hướng theo NGÀY (không cần khớp múi giờ người xem).
+    const startOfToday = new Date();
+    startOfToday.setUTCHours(0, 0, 0, 0);
+    const rangeEnd = new Date(startOfToday);
+    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 1); // đầu ngày mai — cận trên loại trừ, gồm trọn hôm nay
+    const rangeStart = new Date(rangeEnd);
+    rangeStart.setUTCDate(rangeStart.getUTCDate() - periodDays);
+    const previousRangeStart = new Date(rangeStart);
+    previousRangeStart.setUTCDate(previousRangeStart.getUTCDate() - periodDays);
+
+    // 1 lần groupBy cho toàn bộ thành viên thay vì đếm riêng từng người (tổng all-time).
+    const [grouped, byInputTypeRaw, trendRows] = await Promise.all([
+      this.prisma.contentTransformHistory.groupBy({
+        by: ['user_id'],
+        where: { user_id: { in: memberIds } },
+        _count: { _all: true },
+        _max: { created_at: true },
+      }),
+      this.prisma.contentTransformHistory.groupBy({
+        by: ['input_type'],
+        where: { user_id: { in: memberIds } },
+        _count: { _all: true },
+      }),
+      // Chỉ lấy created_at trong khoảng [kỳ trước, kỳ hiện tại) để bucket theo ngày ở JS — Prisma
+      // groupBy không truncate được DateTime về "ngày", và dữ liệu nội bộ ở quy mô này không cần
+      // raw SQL date_trunc.
+      this.prisma.contentTransformHistory.findMany({
+        where: { user_id: { in: memberIds }, created_at: { gte: previousRangeStart, lt: rangeEnd } },
+        select: { created_at: true },
+      }),
+    ]);
+
+    const statsByUser = new Map(grouped.map((g) => [g.user_id, g]));
+
+    const rows = members.map((m) => {
+      const stat = statsByUser.get(m.id);
+      return {
+        id: m.id,
+        full_name: m.full_name,
+        email: m.email,
+        roles: m.roles,
+        team: m.team ?? null,
+        image_url: m.image_url ?? null,
+        is_active: m.is_active ?? true,
+        totalTransforms: stat?._count?._all ?? 0,
+        lastTransformAt: stat?._max?.created_at ?? null,
+      };
+    });
+
+    // Nhiều lượt nhất lên trước; cùng số lượt thì xếp theo tên cho danh sách ổn định giữa các lần gọi.
+    rows.sort(
+      (a, b) =>
+        b.totalTransforms - a.totalTransforms ||
+        (a.full_name || '').localeCompare(b.full_name || '', 'vi'),
+    );
+
+    const byInputType = byInputTypeRaw.map((g) => ({
+      input_type: g.input_type,
+      count: g._count._all,
+    }));
+
+    // Bucket theo ngày (UTC) trong đúng `range` hiện tại; tổng kỳ trước tính riêng, không lên
+    // biểu đồ — chỉ dùng để FE so % thay đổi.
+    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+    const pointsByDay = new Map<string, number>();
+    for (let i = 0; i < periodDays; i++) {
+      const d = new Date(rangeStart);
+      d.setUTCDate(d.getUTCDate() + i);
+      pointsByDay.set(dayKey(d), 0);
+    }
+    let periodTotal = 0;
+    let previousPeriodTotal = 0;
+    for (const row of trendRows) {
+      if (row.created_at >= rangeStart) {
+        const key = dayKey(row.created_at);
+        if (pointsByDay.has(key)) pointsByDay.set(key, (pointsByDay.get(key) || 0) + 1);
+        periodTotal++;
+      } else {
+        previousPeriodTotal++;
+      }
+    }
+    const points = Array.from(pointsByDay.entries()).map(([date, count]) => ({ date, count }));
+
+    return {
+      members: rows,
+      totalMembers: rows.length,
+      totalTransforms: rows.reduce((sum, r) => sum + r.totalTransforms, 0),
+      byInputType,
+      trend: { range, points, periodTotal, previousPeriodTotal },
     };
   }
 

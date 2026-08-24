@@ -33,7 +33,7 @@ describe('AiIntegrationService — PAAST', () => {
         ...prismaOverrides.paastAnalysisHistory,
       },
     };
-    const service = new AiIntegrationService(httpService, configService, jwtService, prisma, driveStorage);
+    const service = new AiIntegrationService(httpService, configService, jwtService, prisma, driveStorage, {} as any);
     return { service, prisma, httpService };
   }
 
