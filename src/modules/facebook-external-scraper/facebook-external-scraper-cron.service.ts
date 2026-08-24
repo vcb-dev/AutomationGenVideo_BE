@@ -12,7 +12,7 @@ export class FacebookExternalScraperCronService {
 
   constructor(private readonly service: FacebookExternalScraperService) {}
 
-  @Cron('0 0 6 * * *', VN_TZ)
+  // @Cron('0 0 6 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();
