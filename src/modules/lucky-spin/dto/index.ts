@@ -225,7 +225,14 @@ export class DrawRoundDto {
   @IsOptional()
   @IsIn(['member', 'team'])
   recipientType?: 'member' | 'team';
+
+  @ApiPropertyOptional({ description: 'Thứ tự hiển thị các ô trên bánh xe (khi người dùng bấm xáo trộn)' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  orderedPoolIds?: string[];
 }
+
 
 export class ConfirmRoundDto {
   @ApiProperty({ description: 'true = loại người trúng khỏi vòng quay' })
