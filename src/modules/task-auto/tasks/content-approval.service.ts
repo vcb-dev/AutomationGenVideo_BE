@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
-import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./task.dto";
+import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/task.dto";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 
 const approvalInclude = {

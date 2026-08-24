@@ -25,7 +25,7 @@ import {
   RemoveFromWarehouseDto,
   PushToMonthDto,
   AutoCarryDto,
-} from "./warehouse.dto";
+} from "./dto/warehouse.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

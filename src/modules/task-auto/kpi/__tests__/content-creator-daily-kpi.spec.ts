@@ -1,5 +1,5 @@
 import { TaskAutoKpiService } from '../kpi.service';
-import { UpsertContentCreatorDailyKpiDto } from '../kpi.dto';
+import { UpsertContentCreatorDailyKpiDto } from '../dto/kpi.dto';
 import { ForbiddenException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { dailyKpiDate } from '../../../../utils/date.utils';

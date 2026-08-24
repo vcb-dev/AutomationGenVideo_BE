@@ -40,7 +40,7 @@ import {
   UpdateEditorSourceDto,
   QueryEditorSourceDto,
   UpsertContentTranslationDto,
-} from "./catalog.dto";
+} from "./dto/catalog.dto";
 import { AiIntegrationService } from "../../ai-integration/ai-integration.service";
 
 @Injectable()

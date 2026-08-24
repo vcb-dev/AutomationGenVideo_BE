@@ -38,7 +38,7 @@ import {
   TranslateVideoScriptDto,
   ReviewContentApprovalDto,
   QueryContentApprovalDto,
-} from "./task.dto";
+} from "./dto/task.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
