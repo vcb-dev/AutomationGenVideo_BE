@@ -367,9 +367,29 @@ export class LuckySpinService {
       throw new BadRequestException(`Chỉ còn ${pool.length} mục, không bốc được ${count}.`);
     }
 
+    // Nếu FE gửi lên thứ tự các ô đã xáo trộn (người dùng bấm "Xáo trộn vị trí"):
+    if (dto.orderedPoolIds && Array.isArray(dto.orderedPoolIds) && dto.orderedPoolIds.length > 0) {
+      const poolMap = new Map(pool.map((p) => [p.id, p]));
+      const ordered: typeof pool = [];
+      for (const id of dto.orderedPoolIds) {
+        const item = poolMap.get(id);
+        if (item) {
+          ordered.push(item);
+          poolMap.delete(id);
+        }
+      }
+      for (const item of poolMap.values()) {
+        ordered.push(item);
+      }
+      if (ordered.length === pool.length) {
+        pool = ordered;
+      }
+    }
+
     const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
 
     const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind);
+
 
     const round = await this.prisma.spinRound.create({
       data: {

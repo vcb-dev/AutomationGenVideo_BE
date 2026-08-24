@@ -35,7 +35,13 @@ export const HISTORY_POLL_LIMIT = 100;
  * Thời gian bánh xe chuyển động. Phải khớp với SPIN_DURATION_MS bên FE
  * (src/lib/lucky-spin/spin-rotation.ts) để màn hình người xem đồng bộ với màn hình điều khiển.
  */
-export const SPIN_DURATION_MS = 10000;
+export const SPIN_DURATION_MS = 30000;
+
+
+
+
+
+
 
 /** Tối đa số người bốc trong một lượt, chặn người dùng gõ nhầm 1000. */
 export const MAX_DRAW_COUNT = 20;
