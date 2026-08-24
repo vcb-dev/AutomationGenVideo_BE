@@ -1,4 +1,4 @@
-import { NotificationsService } from './notifications.service';
+import { NotificationsService } from '../notifications.service';
 
 /**
  * broadcastToActiveUsers — dùng cho thông báo không thuộc về riêng user nào

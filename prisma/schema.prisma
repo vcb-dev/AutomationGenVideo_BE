@@ -2832,6 +2832,10 @@ model EditorApproval {
   user        User  @relation("EditorApprovalOf", fields: [user_id], references: [id], onDelete: Cascade)
   approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
 
+  // Trước đây không có index nào — count(status=APPROVED)/count(status=PENDING) bị quét full
+  // table trên mỗi lần load global dashboard.
+  @@index([status, created_at(sort: Desc)])
+  @@index([user_id])
   @@map("editor_approvals")
 }
 
@@ -2945,6 +2949,8 @@ model EditorDailyKpi {
 
   @@unique([user_id, team_id, date])
   @@index([team_id, date])
+  // Mirror ContentCreatorDailyKpi.@@index([date]) — kpi.service.ts getEditorDailyKpis() cho
+  // phép lọc chỉ theo date/from-to, không bắt buộc team_id (admin xem toàn hệ thống theo ngày).
   @@index([date])
   @@map("editor_daily_kpis")
 }
@@ -3156,6 +3162,9 @@ model Content {
 
   @@index([added_by_id])
   @@index([classification_id])
+  // findAllContents(): mọi filter đều optional, orderBy mặc định created_at desc — mirror
+  // Product.@@index([priority_score desc]) cho trang danh sách kho tổng không lọc gì.
+  @@index([created_at])
   @@map("contents")
 }
 
@@ -3176,8 +3185,9 @@ model ContentTranslation {
   content       Content @relation(fields: [content_id], references: [id], onDelete: Cascade)
   translated_by User    @relation("ContentTranslationBy", fields: [translated_by_id], references: [id])
 
+  // @@unique([content_id, market]) đã bao hàm mọi query lọc riêng content_id (leftmost-prefix)
+  // — bỏ @@index([content_id]) trùng lặp trước đây.
   @@unique([content_id, market])
-  @@index([content_id])
   @@map("content_translations")
 }
 
@@ -3213,6 +3223,8 @@ model Source {
   warehouses         SourceWarehouse[]
 
   @@index([product_id, is_active])
+  // findAllSources(): mọi filter đều optional, orderBy mặc định created_at desc.
+  @@index([created_at])
   @@map("sources")
 }
 
@@ -3292,12 +3304,20 @@ model Task {
   content_approvals      TaskContentApproval[]
   scheduled_posts        SocialPost[]
 
-  @@index([run_id])
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
   // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
   @@index([assignee_id, team_id, assigned_at])
   // Dùng bởi tasks.service.ts findAll — filter chính của GET /task-auto/tasks (kanban/list)
   @@index([team_id, status])
+  // Đếm "quá hạn"/"đến hạn hôm nay" (live) ở global/personal/leader dashboard — deadline
+  // không có index nào trước đây dù bị lọc trên mọi lần load dashboard.
+  @@index([deadline, status])
+  // status=APPROVED + reviewed_at range — lặp lại ở nhiều hàm dashboard/report
+  // (monthlyApproved, approved-in-period, getVideoByContentLine, getProductVideoStats)
+  @@index([status, reviewed_at])
+  // Lọc theo tháng ở findAll, nhánh fallback "deadline null → theo created_at", và cron
+  // refreshMonthlyPublishedLinkStats (scan cả tháng, trước đây không có index nào hỗ trợ)
+  @@index([created_at])
   // ── FK reverse lookups (global warehouse) ──
   @@index([content_id])
   @@index([product_id])
@@ -3345,6 +3365,9 @@ model TaskContentApproval {
 
   @@index([task_id, created_at(sort: Desc)])
   @@index([requested_by_id])
+  // Danh sách "chờ duyệt" (content-approval.service.ts list()) lọc theo status, không theo
+  // task_id — index [task_id,...] ở trên không phục vụ được truy vấn này.
+  @@index([status, created_at(sort: Desc)])
   @@map("task_content_approvals")
 }
 
@@ -3381,9 +3404,9 @@ model TaskAssignment {
   user User           @relation("AssignmentUser", fields: [user_id], references: [id])
   run  AssignmentRun? @relation(fields: [run_id], references: [id])
 
+  // Chỉ dùng qua Task.findOne (include assignments, lọc theo task_id) — user_id/run_id
+  // không có query nào lọc trực tiếp trong toàn backend, bỏ để giảm chi phí ghi batch daily.
   @@index([task_id])
-  @@index([user_id, assigned_at])
-  @@index([run_id])
   @@map("task_assignments")
 }
 

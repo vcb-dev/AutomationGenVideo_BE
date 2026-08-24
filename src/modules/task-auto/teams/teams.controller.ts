@@ -17,7 +17,7 @@ import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTeamsService } from "./teams.service";
 import { TaskAutoTasksService } from "../tasks/tasks.service";
-import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto, SetContentCreatorDto } from "./team.dto";
+import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto, SetContentCreatorDto } from "./dto/team.dto";
 import {
   CreateTeamProductDto,
   UpdateTeamProductDto,
@@ -25,7 +25,7 @@ import {
   UpdateTeamContentDto,
   CreateTeamSourceDto,
   UpdateTeamSourceDto,
-} from "../catalog/catalog.dto";
+} from "../catalog/dto/catalog.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
