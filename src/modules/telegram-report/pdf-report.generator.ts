@@ -1,6 +1,7 @@
 import * as PDFDocument from 'pdfkit';
 import * as fs from 'fs';
 import * as path from 'path';
+import { registerVietnameseFonts } from '../../common/pdf/pdf-fonts';
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
 const C = {
@@ -21,35 +22,27 @@ const C = {
   rowAlt2:   '#EFF6FF',
 };
 
-// ─── Fonts ────────────────────────────────────────────────────────────────────
-const FONT_CANDIDATES = [
-  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-];
-
 // ─── Main Generator ──────────────────────────────────────────────────────────
 export class PdfReportGenerator {
   private doc: PDFKit.PDFDocument;
   private chunks: Buffer[] = [];
   private W: number;   // content width
   private L = 36;      // left margin
-  private hasFont = false;
-  private fontReg = 'Helvetica';
-  private fontBold = 'Helvetica-Bold';
+  private fontReg: string;
+  private fontBold: string;
 
   constructor() {
     this.doc = new PDFDocument({ margin: 36, size: 'A4', bufferPages: true });
     this.W = this.doc.page.width - 72;
     this.doc.on('data', (c: Buffer) => this.chunks.push(c));
 
-    const fp = FONT_CANDIDATES.find(f => fs.existsSync(f));
-    if (fp) {
-      this.doc.registerFont('VN', fp);
-      this.fontReg = 'VN';
-      this.fontBold = 'VN';
-      this.hasFont = true;
-    }
+    // Font đọc từ assets/fonts đã commit sẵn, không dò font hệ điều hành nữa: image
+    // production là node:20-alpine, không có sẵn font nào nên bản cũ luôn rơi về Helvetica —
+    // font 1-byte WinAnsi làm chữ có dấu trong báo cáo (tên team, tiêu đề) ra ký tự rác.
+    // Thiếu file font thì ném lỗi ngay tại đây thay vì gửi báo cáo sai lên Telegram.
+    const { regular, bold } = registerVietnameseFonts(this.doc);
+    this.fontReg = regular;
+    this.fontBold = bold;
   }
 
   async generate(data: ReportData): Promise<Buffer> {

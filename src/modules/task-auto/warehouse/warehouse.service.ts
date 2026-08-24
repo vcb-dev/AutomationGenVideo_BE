@@ -15,8 +15,8 @@ import {
   RemoveFromWarehouseDto,
   PushToMonthDto,
   AutoCarryDto,
-} from "./warehouse.dto";
-import { BrandType } from "../catalog/catalog.dto";
+} from "./dto/warehouse.dto";
+import { BrandType } from "../catalog/dto/catalog.dto";
 
 function prevMonth(month: string): string {
   const dt = DateTime.fromFormat(month, "yyyy-MM");

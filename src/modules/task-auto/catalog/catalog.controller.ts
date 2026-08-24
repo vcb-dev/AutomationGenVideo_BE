@@ -29,7 +29,7 @@ import {
   QuerySourceDto,
   UpsertContentTranslationDto,
   AiTranslateContentDto,
-} from "./catalog.dto";
+} from "./dto/catalog.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

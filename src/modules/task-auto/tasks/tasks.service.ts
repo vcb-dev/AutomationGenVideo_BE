@@ -18,7 +18,7 @@ import {
   SubmitTaskDto,
   ReviewTaskDto,
   UpdatePublishedLinksDto,
-} from "./task.dto";
+} from "./dto/task.dto";
 import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 
