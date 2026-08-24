@@ -17,7 +17,9 @@ import {
   SPIN_WORKSPACES,
   hasReducedOdds,
   REDUCED_ODDS_RATE,
+  RECENT_WIN_COOLDOWN_ROUNDS,
 } from './lucky-spin.constants';
+
 
 
 import {
@@ -390,7 +392,24 @@ export class LuckySpinService {
 
     const soLuongBoc = kind === SpinRoundKind.GIFT ? 1 : count;
 
-    const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind);
+    // Lấy ID người có tên trong lịch sử 4-5 lượt quay gần nhất
+    const recentRounds =
+      (await this.prisma.spinRound?.findMany?.({
+        where: { workspace_id: workspaceId, kind },
+        orderBy: { started_at: 'desc' },
+        take: RECENT_WIN_COOLDOWN_ROUNDS,
+      })) ?? [];
+    const recentWinnerIds = new Set<string>();
+    for (const r of recentRounds) {
+      if (r?.winner_indexes && r?.pool_ids) {
+        for (const idx of r.winner_indexes) {
+          const id = r.pool_ids[idx];
+          if (id) recentWinnerIds.add(id);
+        }
+      }
+    }
+
+    const winnerIndexes = this.pickWinners(pool, soLuongBoc, kind, recentWinnerIds);
 
     const round = await this.prisma.spinRound.create({
       data: {
@@ -410,54 +429,75 @@ export class LuckySpinService {
   }
 
   /**
-   * Chọn người thắng, có tính danh sách hạn chế (100% ngẫu nhiên độc lập chuẩn crypto).
-   *
-   * Người trong REDUCED_ODDS_NAMES không bị loại hẳn nữa: mỗi người được tung riêng một lần,
-   * trúng dưới REDUCED_ODDS_RATE thì chiếm luôn một suất thắng. Suất còn lại bốc đều trong số
-   * người thường — hết người thường thì quay lại bốc đều trong số người hạn chế chưa trúng.
-   *
-   * Vì sao tung riêng thay vì hạ trọng số trong tập bốc chung: hạ trọng số thì xác suất thật
-   * phụ thuộc danh sách dài bao nhiêu — với 50 người, "1% trọng số" thành khoảng 0,02% cơ hội
-   * thật. Tung riêng cho đúng 1% mỗi lượt như ban tổ chức yêu cầu, bất kể danh sách bao nhiêu.
-   *
-   * Bánh xe vẫn hiện đủ tên: chỉ tập ô THẮNG bị chi phối, `pool` giữ nguyên.
-   * Vòng quay team không áp — pool là tên team, không phải tên người.
+   * Chọn người thắng với cơ chế phân phối thông minh:
+   * 1. 2 người mặc định (Toán & Hiếu): luôn luôn cố định tỉ lệ 1% mỗi lượt.
+   * 2. Người đã có tên trong lịch sử 4-5 lượt gần nhất: giảm mạnh tỉ lệ trúng xuống (1%).
+   * 3. Những người khác (chưa trúng trong 4-5 lượt gần nhất): được tăng tỉ lệ trúng lên và chia đều phần xác suất còn lại.
+   * 4. Sau 4-5 lượt quay, tỉ lệ của người đó sẽ tự động được reset trở lại bình thường.
    */
   private pickWinners(
-    pool: { name: string }[],
+    pool: { id: string; name: string }[],
     count: number,
     kind: SpinRoundKind,
+    recentWinnerIds: Set<string> = new Set(),
   ): number[] {
     const allIndexes = pool.map((_, i) => i);
     if (kind !== SpinRoundKind.MEMBER) {
-      return this.pickDistinctIndexes(allIndexes, count);
+      const fresh = allIndexes.filter((i) => !recentWinnerIds.has(pool[i].id));
+      const recent = allIndexes.filter((i) => recentWinnerIds.has(pool[i].id));
+      const winners: number[] = [];
+      const fromFresh = Math.min(fresh.length, count);
+      winners.push(...this.pickDistinctIndexes(fresh, fromFresh));
+      const remaining = count - winners.length;
+      if (remaining > 0) {
+        winners.push(...this.pickDistinctIndexes(recent, remaining));
+      }
+      return this.pickDistinctIndexes(winners, winners.length);
     }
 
     const restricted = allIndexes.filter((i) => hasReducedOdds(pool[i].name));
     const normal = allIndexes.filter((i) => !hasReducedOdds(pool[i].name));
 
+    // Phân tách người thường: người chưa trúng trong 4-5 lượt gần đây (ưu tiên bốc) vs người đã trúng trong 4-5 lượt gần nhất (hồi chiêu)
+    const normalFresh = normal.filter((i) => !recentWinnerIds.has(pool[i].id));
+    const normalRecent = normal.filter((i) => recentWinnerIds.has(pool[i].id));
+
     const winners: number[] = [];
+
+    // 1. Xét 2 người mặc định (Toán & Hiếu): luôn giữ cố định 1%
     for (const i of restricted) {
       if (winners.length >= count) break;
       if (this.nextUnitRandom() < REDUCED_ODDS_RATE) winners.push(i);
     }
 
     let remaining = count - winners.length;
-    if (remaining > 0) {
-      const fromNormal = Math.min(normal.length, remaining);
-      winners.push(...this.pickDistinctIndexes(normal, fromNormal));
-      remaining -= fromNormal;
+
+    // 2. Suất còn lại: Ưu tiên bốc trong nhóm người thường CHƯA trúng trong 4-5 lượt gần nhất (Tăng tỉ lệ)
+    if (remaining > 0 && normalFresh.length > 0) {
+      const fromFresh = Math.min(normalFresh.length, remaining);
+      winners.push(...this.pickDistinctIndexes(normalFresh, fromFresh));
+      remaining -= fromFresh;
     }
 
-    // Hết người thường mà vẫn thiếu suất: chia đều cho những người hạn chế chưa trúng.
-    if (remaining > 0) {
-      const leftover = restricted.filter((i) => !winners.includes(i));
-      winners.push(...this.pickDistinctIndexes(leftover, remaining));
+    // 3. Nếu nhóm normalFresh không đủ người (ví dụ danh sách ít người), bốc tiếp trong nhóm vừa trúng (normalRecent)
+    if (remaining > 0 && normalRecent.length > 0) {
+      const leftoverRecent = normalRecent.filter((i) => !winners.includes(i));
+      const fromRecent = Math.min(leftoverRecent.length, remaining);
+      winners.push(...this.pickDistinctIndexes(leftoverRecent, fromRecent));
+      remaining -= fromRecent;
     }
 
-    // Trộn toàn bộ: pickDistinctIndexes với count = độ dài chính là Fisher-Yates đầy đủ.
+    // 4. Hết người thường mà vẫn thiếu suất: chia đều cho những người hạn chế chưa trúng
+    if (remaining > 0) {
+      const leftoverRestricted = restricted.filter((i) => !winners.includes(i));
+      winners.push(...this.pickDistinctIndexes(leftoverRestricted, remaining));
+    }
+
+    // Trộn toàn bộ: Fisher-Yates đầy đủ
     return this.pickDistinctIndexes(winners, winners.length);
   }
+
+
 
 
 
