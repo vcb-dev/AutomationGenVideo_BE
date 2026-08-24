@@ -47,6 +47,14 @@ export const SPIN_DURATION_MS = 30000;
 export const MAX_DRAW_COUNT = 20;
 
 /**
+ * Số lượt quay gần nhất tạm thời ưu tiên tránh lặp lại người vừa trúng (Anti-Repeat Cooldown).
+ * Khi không chọn xóa người trúng, người vừa trúng ở 1-2 lượt trước sẽ tạm thời nhường cơ hội
+ * cho những người chưa trúng, sau 1-2 lượt sẽ hồi phục lại bình thường.
+ */
+export const RECENT_WINNER_COOLDOWN_ROUNDS = 2;
+
+
+/**
  * Những người bị giảm mạnh cơ hội thắng ở vòng quay cá nhân — quyết định của ban tổ chức.
  *
  * Trước đây họ bị chặn hẳn (0%). Từ 2026-08-11 đổi thành CÓ cơ hội nhưng rất thấp: mỗi lượt
