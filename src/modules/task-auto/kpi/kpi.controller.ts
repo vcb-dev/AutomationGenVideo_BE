@@ -20,7 +20,7 @@ import {
   UpsertEditorDailyKpiDto,
   UpsertContentCreatorKpiDto,
   UpsertContentCreatorDailyKpiDto,
-} from "./kpi.dto";
+} from "./dto/kpi.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

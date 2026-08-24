@@ -21,7 +21,7 @@ import {
   QueryNotificationDto,
   SubscribePushDto,
   UnsubscribePushDto,
-} from "./notifications.dto";
+} from "./dto/notifications.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()

@@ -10,7 +10,7 @@ import {
   UpsertEditorDailyKpiDto,
   UpsertContentCreatorKpiDto,
   UpsertContentCreatorDailyKpiDto,
-} from "./kpi.dto";
+} from "./dto/kpi.dto";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import { dailyKpiDate } from "../../../utils/date.utils";
 

@@ -1,5 +1,5 @@
 import { TaskAutoKpiService } from '../kpi.service';
-import { UpsertEditorDailyKpiDto } from '../kpi.dto';
+import { UpsertEditorDailyKpiDto } from '../dto/kpi.dto';
 import { ForbiddenException, BadRequestException } from '@nestjs/common';
 import { dailyKpiDate } from '../../../../utils/date.utils';
 

@@ -25,7 +25,7 @@ import {
 } from "./steps/warehouse-empty-notice";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { PushService } from "@/common/push/push.service";
-import { UpdateAutoAssignSettingDto } from "../settings/settings.dto";
+import { UpdateAutoAssignSettingDto } from "../settings/dto/settings.dto";
 import {
   DEADLINE_CALENDAR_DAYS,
   DEFAULT_TZ,
