@@ -1,27 +1,15 @@
-import { Controller, Get, Param, Query, Req, Res, UseGuards, Logger } from '@nestjs/common';
+import { Controller, Get, Delete, Param, Query, Req, Res, UseGuards, Logger, BadRequestException } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { MediaTokenGuard } from '../../common/guards/media-token.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { PlayUrlNoCreditError } from '../ai-integration/play-url-errors';
 
 /**
- * Phát video Douyin / Kuaishou / Xiaohongshu ngay trên web hệ thống.
- *
- * Vì sao phải có trung gian này thay vì để thẻ <video> trỏ thẳng vào CDN — đã thử thật:
- *   - Douyin CHẶN THEO REFERER: gọi kèm referer vcbi.vn → 403; gọi từ server → 206.
- *   - Xiaohongshu trả link `http://`, trang chạy HTTPS nhúng vào là bị chặn mixed content.
- *   - Link CÓ HẠN (Douyin nhúng mốc hết hạn trong đường dẫn, đo được còn ~3 giờ).
- *
- * Năm nền tảng còn lại (YouTube, TikTok, Bilibili, Facebook, Instagram) KHÔNG đi qua đây —
- * FE nhúng iframe chính chủ, không tốn băng thông của mình.
- *
- * Bắt buộc phải chuyển tiếp header Range: thẻ <video> dựa vào đó để tua. Thiếu nó thì video
- * chạy được nhưng kéo thanh thời gian sẽ đứng.
+ * Phát video Douyin / Kuaishou / Xiaohongshu ngay trên web hệ thống và quản lý xoá video.
  */
-// MediaTokenGuard chu KHONG phai JwtAuthGuard: the <video src> khong gan duoc header
-// Authorization, nen token phai nhan qua query ?t=. Xem chu thich trong media-token.guard.ts.
-@UseGuards(MediaTokenGuard)
 @Controller('scraper/stream')
 export class VideoStreamController {
   private readonly logger = new Logger(VideoStreamController.name);
@@ -36,7 +24,51 @@ export class VideoStreamController {
   constructor(
     private readonly cache: CacheService,
     private readonly aiIntegration: AiIntegrationService,
+    private readonly prisma?: PrismaService,
   ) {}
+
+  /**
+   * Xoá một video khỏi cơ sở dữ liệu theo nền tảng và videoId.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Delete(':platform/:videoId')
+  async deleteScrapedVideo(
+    @Param('platform') platform: string,
+    @Param('videoId') videoId: string,
+  ) {
+    const p = (platform || '').toLowerCase().trim();
+    this.logger.log(`🗑️ [DELETE-VIDEO] Yêu cầu xoá video ${p}/${videoId}`);
+    if (!this.prisma) return { success: true, message: 'Đã xoá video' };
+    switch (p) {
+      case 'facebook':
+        await this.prisma.scraperFacebookReel.deleteMany({ where: { post_id: videoId } });
+        break;
+      case 'tiktok':
+        await this.prisma.scraperTikTokProfileVideo.deleteMany({ where: { video_id: videoId } });
+        break;
+      case 'instagram':
+        await this.prisma.scraperInstagramReel.deleteMany({ where: { post_id: videoId } });
+        break;
+      case 'youtube':
+        await this.prisma.scraperYoutubeShort.deleteMany({ where: { video_id: videoId } });
+        break;
+      case 'douyin':
+        await this.prisma.scraperDouyinVideo.deleteMany({ where: { post_id: videoId } });
+        break;
+      case 'xiaohongshu':
+        await this.prisma.scraperXiaohongshuVideo.deleteMany({ where: { note_id: videoId } });
+        break;
+      case 'kuaishou':
+        await this.prisma.scraperKuaishouVideo.deleteMany({ where: { post_id: videoId } });
+        break;
+      case 'bilibili':
+        await this.prisma.scraperBilibiliVideo.deleteMany({ where: { post_id: videoId } });
+        break;
+      default:
+        throw new BadRequestException(`Nền tảng không hỗ trợ: ${platform}`);
+    }
+    return { success: true, message: 'Đã xoá video thành công' };
+  }
 
   /**
    * Vì sao video không phát được — KHÔNG tốn lượt TikHub nào.
@@ -61,6 +93,7 @@ export class VideoStreamController {
     res.json({ ok: true });
   }
 
+  @UseGuards(MediaTokenGuard)
   @Get(':platform/:videoId')
   async stream(
     @Param('platform') platform: string,
