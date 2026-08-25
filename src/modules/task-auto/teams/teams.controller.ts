@@ -205,6 +205,12 @@ export class TaskAutoTeamsController {
     return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts);
   }
 
+  @Get("teams/:id/contents/:teamContentId")
+  @ApiOperation({ summary: "Get team content detail (with body/script)" })
+  getTeamContent(@Param("teamContentId") teamContentId: string) {
+    return this.teams.findOneTeamContent(teamContentId);
+  }
+
   @Post("teams/:id/contents")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER", "MEMBER")
@@ -367,12 +373,17 @@ export class TaskAutoTeamsController {
   }
 
   @Get("dashboard")
-  @ApiOperation({ summary: "Dashboard summary stats" })
+  @ApiOperation({
+    summary:
+      "Dashboard summary stats. team_id/assignee_id chỉ có tác dụng với ADMIN/MANAGER (global dashboard) — khoan sâu về 1 team/1 thành viên cụ thể, bị bỏ qua ở LEADER/MEMBER vì 2 nhánh đó đã tự khoanh phạm vi theo JWT.",
+  })
   getDashboard(
     @Request() req: any,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
     @Query("month") month?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
@@ -380,6 +391,30 @@ export class TaskAutoTeamsController {
       dateFrom,
       dateTo,
       month,
+      teamId,
+      assigneeId,
+    );
+  }
+
+  @Get("product-video-stats")
+  @ApiOperation({
+    summary:
+      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
+  })
+  getProductVideoStats(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
+  ) {
+    return this.tasks.getProductVideoStatsForRole(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+      teamId,
+      assigneeId,
     );
   }
 
