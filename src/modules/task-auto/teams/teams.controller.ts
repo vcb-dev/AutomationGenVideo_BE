@@ -162,6 +162,18 @@ export class TaskAutoTeamsController {
     return this.teams.updateTeamProduct(teamId, teamProductId, dto, req.user.id, req.user.roles ?? []);
   }
 
+  @Patch("teams/:id/products/:teamProductId/refresh-from-oms")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Làm mới sku/tên/giá/ảnh theo dữ liệu mới nhất từ OMS" })
+  refreshTeamProductFromOms(
+    @Param("id") teamId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.refreshTeamProductFromOms(teamId, teamProductId, req.user.id, req.user.roles ?? []);
+  }
+
   @Patch("teams/:id/products/:teamProductId/push")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")

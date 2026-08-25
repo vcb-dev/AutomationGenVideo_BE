@@ -48,7 +48,7 @@ describe('TaskAutoTasksService — product_by_category (qua getDashboard)', () =
       editorDailyKpi: { findMany: jest.fn(async () => []) },
       productLine: { findMany: jest.fn(async () => opts.productLines ?? []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 

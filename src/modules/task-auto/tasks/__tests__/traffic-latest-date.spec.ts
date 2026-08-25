@@ -32,7 +32,7 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
       editorDailyKpi: { findMany: jest.fn(async () => []) },
       productLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 

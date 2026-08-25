@@ -2533,6 +2533,11 @@ model TeamProduct {
   source_editor_product_id String?
   /// FK trỏ về Product kho tổng khi được tạo từ global (copy template)
   source_product_id        String?
+  /// "product" gốc bên OMS khi sản phẩm này được leader kéo về từ kho tổng (OMS) — dùng để
+  /// "Làm mới từ OMS" sau này. NULL khi tạo thủ công hoặc copy từ Product/EditorProduct nội bộ.
+  oms_product_id           String?
+  /// variant (SKU thật) gốc bên OMS — unique theo team để tránh kéo trùng cùng 1 SKU vào 1 team.
+  oms_variant_id           String?
   added_by_id              String
   added_at                 DateTime  @default(now())
   updated_at               DateTime  @updatedAt
@@ -2551,6 +2556,7 @@ model TeamProduct {
 
   @@unique([team_id, source_editor_product_id])
   @@unique([team_id, sku])
+  @@unique([team_id, oms_variant_id])
   @@index([team_id, is_active])
   @@map("team_products")
 }
@@ -2656,6 +2662,11 @@ model EditorProduct {
   is_active         Boolean   @default(true)
   /// NULL = tạo mới; có giá trị = được copy từ sản phẩm trong kho tổng
   source_product_id String?
+  /// "product" gốc bên OMS khi sản phẩm này được hệ thống tự tạo (materialize) lúc giao task
+  /// chọn sản phẩm trực tiếp từ kho tổng (OMS) — dùng để "Làm mới từ OMS" sau này.
+  oms_product_id    String?
+  /// variant (SKU thật) gốc bên OMS — unique theo user để tránh materialize trùng cùng 1 SKU.
+  oms_variant_id    String?
   added_by_id       String
   added_at          DateTime  @default(now())
   updated_at        DateTime  @updatedAt
@@ -2673,6 +2684,7 @@ model EditorProduct {
   push_requests  TeamPushRequest[]
 
   @@unique([user_id, sku])
+  @@unique([user_id, oms_variant_id])
   @@index([user_id, is_active])
   @@map("editor_products")
 }
@@ -3242,6 +3254,11 @@ model Task {
   product_id                String?
   editor_product_id         String?
   team_product_id           String?
+  /// Sản phẩm chọn trực tiếp từ kho tổng (OMS) lúc tạo task nhưng CHƯA có assignee (task PENDING)
+  /// — tạm giữ ở đây, đến lúc gán assignee mới materialize thành EditorProduct rồi set
+  /// editor_product_id + xoá 2 field này. Xem TasksService.create()/update().
+  oms_product_id            String?
+  oms_variant_id            String?
   editor_content_id         String?
   team_content_id           String?
   content_line_id           String?

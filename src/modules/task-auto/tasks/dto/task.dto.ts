@@ -22,6 +22,10 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
+  @ApiPropertyOptional({ description: 'Chọn sản phẩm trực tiếp từ kho tổng (OMS) — hệ thống tự materialize vào kho cá nhân editor được giao' })
+  @IsString() @IsOptional() oms_product_id?: string
+  @ApiPropertyOptional({ description: 'ID variant (SKU thật) bên OMS — bắt buộc nếu có oms_product_id' })
+  @IsString() @IsOptional() oms_variant_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_outro_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_extra_id?: string
@@ -51,6 +55,8 @@ export class UpdateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() oms_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() oms_variant_id?: string
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_outro_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_extra_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_workshop_id?: string | null

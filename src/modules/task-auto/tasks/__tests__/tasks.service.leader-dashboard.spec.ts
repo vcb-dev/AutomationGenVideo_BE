@@ -34,7 +34,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       // khi task.findMany rỗng — thiếu mock này thì suite hỏng ngay ở lời gọi, không phải lúc assert.
       productLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats);
+    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats, {} as any);
     return { service, prisma };
   }
 
@@ -131,7 +131,7 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
       editorDailyKpi: { findMany: jest.fn(async () => []) },
       productLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
