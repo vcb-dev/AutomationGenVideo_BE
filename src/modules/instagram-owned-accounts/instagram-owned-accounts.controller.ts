@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Logger } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { InstagramOwnedAccountsService } from './instagram-owned-accounts.service';
 
@@ -11,6 +11,8 @@ import { InstagramOwnedAccountsService } from './instagram-owned-accounts.servic
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/instagram/owned')
 export class InstagramOwnedAccountsController {
+  private readonly logger = new Logger(InstagramOwnedAccountsController.name);
+
   constructor(private readonly service: InstagramOwnedAccountsService) {}
 
   @Get('profiles')
@@ -20,6 +22,9 @@ export class InstagramOwnedAccountsController {
 
   @Post('sync')
   async syncAll() {
-    return this.service.syncAllConnectedAccounts();
+    this.service.syncAllConnectedAccounts().catch((err) => {
+      this.logger.error(`❌ [IGSync] Background sync failed: ${err.message}`);
+    });
+    return { status: 'processing', message: 'Đang bắt đầu đồng bộ kênh Instagram trong nền...' };
   }
 }

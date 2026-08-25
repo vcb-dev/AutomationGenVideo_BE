@@ -314,32 +314,37 @@ export class ThreadsOwnedAccountsService {
    * Danh sách profiles Threads nội bộ.
    */
   async getOwnedProfiles() {
-    const profiles = await this.prisma.scraperThreadsProfile.findMany({
-      where: { is_owned: true },
-      orderBy: { followers_count: 'desc' },
-      include: {
-        _count: {
-          select: { posts: true },
+    try {
+      const profiles = await this.prisma.scraperThreadsProfile.findMany({
+        where: { is_owned: true },
+        orderBy: { followers_count: 'desc' },
+        include: {
+          _count: {
+            select: { posts: true },
+          },
         },
-      },
-    });
+      });
 
-    return profiles.map((p) => ({
-      id: p.id.toString(),
-      threads_user_id: p.threads_user_id,
-      username: p.username,
-      name: p.name,
-      url: p.url,
-      avatar_url: p.avatar_url,
-      biography: p.biography,
-      followers_count: Number(p.followers_count),
-      is_verified: p.is_verified,
-      is_owned: p.is_owned,
-      last_scraped_at: p.last_scraped_at,
-      scraping_status: p.scraping_status,
-      scrape_error: p.scrape_error,
-      posts_count: p._count.posts,
-    }));
+      return profiles.map((p) => ({
+        id: p.id ? p.id.toString() : '',
+        threads_user_id: p.threads_user_id || '',
+        username: p.username,
+        name: p.name || p.username,
+        url: p.url || `https://www.threads.net/@${p.username}`,
+        avatar_url: p.avatar_url || '',
+        biography: p.biography || '',
+        followers_count: p.followers_count ? Number(p.followers_count) : 0,
+        is_verified: Boolean(p.is_verified),
+        is_owned: Boolean(p.is_owned),
+        last_scraped_at: p.last_scraped_at,
+        scraping_status: p.scraping_status || 'idle',
+        scrape_error: p.scrape_error || null,
+        posts_count: p._count?.posts ?? 0,
+      }));
+    } catch (err: any) {
+      this.logger.error(`[Threads] getOwnedProfiles failed: ${err.message}`);
+      return [];
+    }
   }
 
   /**
