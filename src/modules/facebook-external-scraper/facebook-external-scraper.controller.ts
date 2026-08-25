@@ -42,7 +42,7 @@ export class FacebookExternalScraperController {
     return result;
   }
 
-  @Post(':fanpage_id/toggle')
+  @Post([':fanpage_id/toggle', ':fanpage_id/toggle/'])
   async toggle(
     @Param('fanpage_id') fanpageId: string,
     @Body() body: { field?: 'is_bookmarked' | 'is_periodic_crawl' },
@@ -56,7 +56,7 @@ export class FacebookExternalScraperController {
     return this.service.toggleFanpage(BigInt(fanpageId), field);
   }
 
-  @Post('scrape-reels')
+  @Post(['scrape-reels', 'scrape-reels/'])
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeReels(@Body() body: { fanpage_id?: number }) {
@@ -64,7 +64,7 @@ export class FacebookExternalScraperController {
     return this.service.triggerScrapeReels(BigInt(body.fanpage_id));
   }
 
-  @Post('scrape-by-url')
+  @Post(['scrape-by-url', 'scrape-by-url/'])
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeByUrl(@Body() body: { url?: string }) {
