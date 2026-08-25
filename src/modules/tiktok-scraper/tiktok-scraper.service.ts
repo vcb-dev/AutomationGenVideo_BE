@@ -9,6 +9,7 @@ import {
   ParsedTikTokAuthor,
 } from './tiktok-ai-client.service';
 import { TiktokScraperReadService } from './tiktok-scraper-read.service';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
 function isDriveUrl(url?: string | null): boolean {
   return !!url && (url.includes('drive.google.com') || url.includes('googleusercontent.com'));
@@ -472,6 +473,23 @@ export class TiktokScraperService {
     const newValue = !profile[field];
     await this.prisma.scraperTikTokProfile.update({ where: { id }, data: { [field]: newValue } });
     return newValue;
+  }
+
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Video/metrics gắn khoá ngoại onDelete Cascade nên Postgres tự dọn bảng con.
+  // Phải ĐẾM TRƯỚC khi xoá: đếm sau thì cascade đã quét sạch và con số báo về luôn là 0,
+  // trong khi FE dùng đúng con số này để nói người dùng vừa mất bao nhiêu video.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperTikTokProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    const videosDeleted = await this.prisma.scraperTikTokProfileVideo.count({ where: { profile_id: id } });
+    await this.prisma.scraperTikTokProfile.delete({ where: { id } });
+
+    const name = profile.nickname || profile.username;
+    this.logger.warn(`[TIKTOK] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${videosDeleted} video.`);
+    return buildDeleteChannelResult(id, name, videosDeleted);
   }
 
   // Tự mở khóa profile bị kẹt ở 'processing' quá lâu (worker crash giữa chừng), tránh

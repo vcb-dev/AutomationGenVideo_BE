@@ -7,8 +7,14 @@ import {
 } from './facebook-external-ai-client.service';
 import { cleanFacebookUrl, extractHandleFromUrl } from './facebook-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
 const STALE_LOCK_MINUTES = 30;
+
+// Ghi vào scrape_error khi AI chỉ trả được profile tạm (RapidAPI không phản hồi).
+// Kênh vẫn được giữ lại để user không mất công thêm lại, nhưng phải hiện rõ là chưa
+// lấy được dữ liệu thật — trước đây trường hợp này báo 'completed' như cào thành công.
+const FALLBACK_SCRAPE_ERROR = 'Chưa lấy được dữ liệu từ RapidAPI — đang hiển thị thông tin tạm từ URL';
 
 // Toàn bộ logic ghi DB port từ AI (rapidapi_facebook.py::_upsert_fanpage/ingest_reels_data/
 // save_profile_to_db đã xóa + scraper_views.py::fanpage_toggle/trigger_scrape_reels/
@@ -55,8 +61,29 @@ export class FacebookExternalScraperService {
   // "graduate" thành trùng với page đã có) → xóa fanpage hiện tại (placeholder), dùng page
   // thật. Nếu chưa tồn tại và fanpage hiện tại là placeholder → ghi đè profile_id thật vào.
   // Field name/url/handle/avatar_url/is_verified/followers_count chỉ ghi đè khi có giá trị.
-  private async applyFanpageUpdate(fanpageId: bigint, profile: ParsedFanpageProfile): Promise<bigint> {
+  private async applyFanpageUpdate(
+    fanpageId: bigint,
+    profile: ParsedFanpageProfile,
+    isFallback = false,
+  ): Promise<bigint> {
     const current = await this.prisma.scraperFanpage.findUnique({ where: { id: fanpageId } });
+
+    // Profile tạm (RapidAPI chết, AI dựng từ URL/cache) chỉ được ĐIỀN VÀO CHỖ TRỐNG.
+    // Không đụng profile_id: id tạm 'tmp_<handle>' có thể trùng một bản ghi rác khác
+    // và làm nhánh reconcile bên dưới xóa nhầm fanpage thật.
+    if (isFallback) {
+      if (!current) return fanpageId;
+      const data: any = { is_visible_on_ui: true };
+      if (!current.name && profile.name) data.name = profile.name;
+      if (!current.handle && profile.handle) data.handle = profile.handle;
+      if (!current.avatar_url && profile.avatar_url) data.avatar_url = profile.avatar_url;
+      if (current.followers_count <= 0n && profile.followers_count > 0) {
+        data.followers_count = BigInt(profile.followers_count);
+      }
+      const updated = await this.prisma.scraperFanpage.update({ where: { id: fanpageId }, data });
+      return updated.id;
+    }
+
     const existingByRealId = await this.prisma.scraperFanpage.findUnique({ where: { profile_id: profile.profile_id } });
 
     let targetId = fanpageId;
@@ -90,21 +117,27 @@ export class FacebookExternalScraperService {
     fanpageId: bigint,
     profile: ParsedFanpageProfile | null,
     reels: ParsedFacebookReel[],
+    isFallback = false,
   ): Promise<{ fanpage_id: number | null; created: number; updated: number }> {
     let targetId: bigint | null = fanpageId;
 
     if (profile || reels.length > 0) {
-      targetId = profile ? await this.applyFanpageUpdate(fanpageId, profile) : null;
+      targetId = profile ? await this.applyFanpageUpdate(fanpageId, profile, isFallback) : null;
     }
 
     if (!targetId) {
       return { fanpage_id: null, created: 0, updated: 0 };
     }
 
+    // Dữ liệu tạm thì đừng báo 'completed' — FE đọc scrape_error để biết lượt cào
+    // này không thật sự thành công (xem src/lib/scrape/scrape-outcome.ts).
+    const finalStatus = isFallback ? 'failed' : 'completed';
+    const finalError = isFallback ? FALLBACK_SCRAPE_ERROR : null;
+
     if (reels.length === 0) {
       await this.prisma.scraperFanpage.update({
         where: { id: targetId },
-        data: { last_scraped_at: new Date(), scraping_status: 'completed', scrape_error: null },
+        data: { last_scraped_at: new Date(), scraping_status: finalStatus, scrape_error: finalError },
       });
       return { fanpage_id: Number(targetId), created: 0, updated: 0 };
     }
@@ -122,7 +155,7 @@ export class FacebookExternalScraperService {
       else updated++;
     }
 
-    const updateData: any = { last_scraped_at: new Date(), scraping_status: 'completed', scrape_error: null };
+    const updateData: any = { last_scraped_at: new Date(), scraping_status: finalStatus, scrape_error: finalError };
     if (!fp.is_initial_scraped && created > 0) updateData.is_initial_scraped = true;
     await this.prisma.scraperFanpage.update({ where: { id: targetId }, data: updateData });
 
@@ -170,7 +203,8 @@ export class FacebookExternalScraperService {
       throw err;
     }
 
-    if (!profileApiOk) {
+    // Không có gì để ghi (kể cả profile tạm) → hard-fail như cũ.
+    if (!profileApiOk && !profile) {
       // Profile fail + đây là bản ghi tạm → xóa luôn (khớp code gốc)
       if (isPlaceholder) {
         await this.prisma.scraperFanpage.delete({ where: { id: fanpageId } });
@@ -183,8 +217,13 @@ export class FacebookExternalScraperService {
       throw new HttpException({ error: 'Không lấy được thông tin Fanpage từ RapidAPI. Vui lòng kiểm tra lại URL hoặc cấu hình RAPIDAPI_FACEBOOK_KEY.' }, HttpStatus.BAD_REQUEST);
     }
 
+    const isFallback = !profileApiOk;
+    if (isFallback) {
+      this.logger.warn(`[FB-EXTERNAL] ${fanpage.name}: RapidAPI không trả dữ liệu, dùng profile tạm.`);
+    }
+
     try {
-      const result = await this.ingestFetchedData(fanpageId, profile, reels);
+      const result = await this.ingestFetchedData(fanpageId, profile, reels, isFallback);
       this.logger.log(`[FB-EXTERNAL] ${fanpage.name}: +${result.created} mới, ~${result.updated} cập nhật`);
       return result;
     } catch (err: any) {
@@ -202,7 +241,7 @@ export class FacebookExternalScraperService {
   private async ingestReelsSyncFirst(
     fanpage: { id: bigint; page_url: string; profile_id: string },
     count: number,
-  ): Promise<{ created: number; updated: number; reels_returned: number }> {
+  ): Promise<{ created: number; updated: number; reels_returned: number; fallback_used: boolean }> {
     const isPlaceholder = !fanpage.profile_id || fanpage.profile_id.startsWith('tmp_');
 
     let fetchResult: { profile_api_ok: boolean; profile: ParsedFanpageProfile | null; reels: ParsedFacebookReel[] };
@@ -218,7 +257,8 @@ export class FacebookExternalScraperService {
 
     const { profile_api_ok, profile, reels } = fetchResult;
 
-    if (!profile_api_ok) {
+    // Không có gì để ghi (kể cả profile tạm) → hard-fail như cũ.
+    if (!profile_api_ok && !profile) {
       if (isPlaceholder) {
         await this.prisma.scraperFanpage.delete({ where: { id: fanpage.id } }).catch(() => {});
       } else {
@@ -230,8 +270,13 @@ export class FacebookExternalScraperService {
       throw new HttpException({ error: 'Không lấy được thông tin Fanpage từ RapidAPI. Vui lòng kiểm tra lại URL hoặc cấu hình RAPIDAPI_FACEBOOK_KEY.' }, HttpStatus.BAD_REQUEST);
     }
 
-    const result = await this.ingestFetchedData(fanpage.id, profile, reels);
-    return { created: result.created, updated: result.updated, reels_returned: reels.length };
+    const result = await this.ingestFetchedData(fanpage.id, profile, reels, !profile_api_ok);
+    return {
+      created: result.created,
+      updated: result.updated,
+      reels_returned: reels.length,
+      fallback_used: !profile_api_ok,
+    };
   }
 
   async triggerScrapeReels(fanpageId: bigint): Promise<any> {
@@ -251,7 +296,10 @@ export class FacebookExternalScraperService {
       // Batch đầu SYNCHRONOUS (~20 reels, rất nhanh) — trả data ngay cho user
       const result = await this.ingestReelsSyncFirst(fp, 20);
       if (result.reels_returned === 0) {
-        throw new HttpException({ error: 'Không tìm thấy reels cho page này' }, HttpStatus.NOT_FOUND);
+        const reason = result.fallback_used
+          ? FALLBACK_SCRAPE_ERROR
+          : 'Không tìm thấy reels cho page này';
+        throw new HttpException({ error: reason }, HttpStatus.NOT_FOUND);
       }
 
       // Dispatch cào tiếp tới tổng 300 reels (fire-and-forget)
@@ -335,7 +383,9 @@ export class FacebookExternalScraperService {
       }).catch(() => {});
       return {
         status: 'ok',
-        message: `Đã thêm kênh ${fp.name || handle} thành công. (Chưa tìm thấy reels hoặc cần cấu hình RAPIDAPI_FACEBOOK_KEY để cào video).`,
+        message: result.fallback_used
+          ? `Đã thêm kênh ${fp.name || handle} nhưng ${FALLBACK_SCRAPE_ERROR.toLowerCase()}. Thử cào lại sau.`
+          : `Đã thêm kênh ${fp.name || handle} thành công. (Chưa tìm thấy reels hoặc cần cấu hình RAPIDAPI_FACEBOOK_KEY để cào video).`,
         fanpage_id: Number(fp.id),
       };
     }
@@ -350,6 +400,21 @@ export class FacebookExternalScraperService {
       message: `Đã cào ${result.created} reels đầu cho ${fp.name || handle}. Đang tiếp tục cào thêm...`,
       fanpage_id: Number(fp.id),
     };
+  }
+
+  // ─── Xoá cứng fanpage ───────────────────────────────────────────────────────
+
+  // Reels/metrics/keywords đều gắn khoá ngoại onDelete Cascade nên Postgres tự dọn.
+  // Phải ĐẾM TRƯỚC khi xoá: đếm sau thì cascade đã quét sạch, con số báo về luôn là 0.
+  async deleteFanpage(id: bigint): Promise<DeleteChannelResult> {
+    const fp = await this.prisma.scraperFanpage.findUnique({ where: { id } });
+    if (!fp) throw new HttpException({ error: 'Không tìm thấy fanpage' }, HttpStatus.NOT_FOUND);
+
+    const videosDeleted = await this.prisma.scraperFacebookReel.count({ where: { fanpage_id: id } });
+    await this.prisma.scraperFanpage.delete({ where: { id } });
+
+    this.logger.warn(`[FB-EXTERNAL] Đã xoá cứng fanpage "${fp.name}" (id=${id}) kèm ${videosDeleted} reels.`);
+    return buildDeleteChannelResult(id, fp.name, videosDeleted);
   }
 
   // ─── Toggle bookmark/periodic_crawl ─────────────────────────────────────────
@@ -395,9 +460,9 @@ export class FacebookExternalScraperService {
         ? fanpage.last_scraped_at.toISOString().slice(0, 10)
         : new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
 
-      const { profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, 10, existingIds, startDate);
+      const { profile_api_ok, profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, 10, existingIds, startDate);
 
-      const result = await this.ingestFetchedData(fanpageId, profile, reels);
+      const result = await this.ingestFetchedData(fanpageId, profile, reels, !profile_api_ok);
       return { created: result.created, updated: result.updated };
     } catch (err: any) {
       await this.prisma.scraperFanpage.update({

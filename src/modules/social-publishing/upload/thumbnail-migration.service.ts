@@ -3,6 +3,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { GoogleDriveStorageService } from './google-drive-storage.service';
 
+import { CloudinaryStorageService } from './cloudinary-storage.service';
+
 interface ThumbnailTarget {
   table: string;
   sourceColumn?: string;
@@ -10,16 +12,16 @@ interface ThumbnailTarget {
   sourceExpr?: string;
   destColumn: string;
   filenamePrefix: string;
-  /** Drive URL overwrites sourceColumn in place instead of a separate destColumn. */
+  /** Uploaded URL overwrites sourceColumn in place instead of a separate destColumn. */
   inPlace?: boolean;
-  /** Tên hiển thị nền tảng — quyết định folder con trong Root/Scraper Cào Dữ Liệu/{platform}/{ngày}/. */
+  /** Tên hiển thị nền tảng — quyết định folder con trong root/platform. */
   platform: string;
 }
 
 const BATCH_SIZE = 10;
 
 // AI service (scraper) chỉ ghi CDN URL thô vào các cột này. BE tự tải ảnh + đẩy lên
-// Drive định kỳ — AI không còn gọi ngược lại BE để nhờ upload nữa.
+// Cloudinary (hoặc Google Drive) định kỳ.
 const TARGETS: ThumbnailTarget[] = [
   { table: 'scraper_fanpages', sourceColumn: 'avatar_url', destColumn: 'avatar_drive_url', filenamePrefix: 'fb-scraped-avatar', platform: 'Facebook' },
   { table: 'scraper_facebook_reels', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'fb-reel', platform: 'Facebook' },
@@ -53,11 +55,15 @@ export class ThumbnailMigrationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly googleDrive: GoogleDriveStorageService,
+    private readonly cloudinary: CloudinaryStorageService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
   async migrateThumbnails(): Promise<void> {
-    if (this.isRunning || !this.googleDrive.isAvailable()) return;
+    if (this.isRunning) return;
+    const hasStorage = this.cloudinary.isAvailable() || this.googleDrive.isAvailable();
+    if (!hasStorage) return;
+
     this.isRunning = true;
     try {
       for (const target of TARGETS) {
@@ -72,7 +78,7 @@ export class ThumbnailMigrationService {
     const { table, destColumn, filenamePrefix, inPlace, platform } = target;
     const src = sourceExprOf(target);
     const whereClause = inPlace
-      ? `${src} IS NOT NULL AND ${src} <> '' AND ${src} NOT LIKE '%drive.google.com%' AND ${src} NOT LIKE '%googleusercontent.com%'`
+      ? `${src} IS NOT NULL AND ${src} <> '' AND ${src} NOT LIKE '%cloudinary.com%' AND ${src} NOT LIKE '%drive.google.com%' AND ${src} NOT LIKE '%googleusercontent.com%'`
       : `${src} IS NOT NULL AND ${src} <> '' AND ("${destColumn}" IS NULL OR "${destColumn}" = '')`;
 
     let rows: Array<{ id: bigint; src: string }>;
@@ -86,17 +92,29 @@ export class ThumbnailMigrationService {
     }
 
     for (const row of rows) {
-      const filename = `${filenamePrefix}-${row.id}.jpg`;
-      const driveUrl = await this.googleDrive.uploadThumbnailFromUrl(row.src, filename, platform);
-      if (!driveUrl) continue;
+      const filename = `${filenamePrefix}-${row.id}`;
+      let uploadedUrl: string | null = null;
+
+      // Ưu tiên 1: Cloudinary (nhanh, tối ưu nén, không bị 403)
+      if (this.cloudinary.isAvailable()) {
+        uploadedUrl = await this.cloudinary.uploadThumbnailFromUrl(row.src, filename, platform);
+      }
+
+      // Ưu tiên 2: Fallback sang Google Drive nếu Cloudinary không khả dụng
+      if (!uploadedUrl && this.googleDrive.isAvailable()) {
+        uploadedUrl = await this.googleDrive.uploadThumbnailFromUrl(row.src, `${filename}.jpg`, platform);
+      }
+
+      if (!uploadedUrl) continue;
 
       try {
         await this.prisma.$executeRawUnsafe(
           `UPDATE "${table}" SET "${destColumn}" = $1 WHERE id = $2`,
-          driveUrl,
+          uploadedUrl,
           row.id,
         );
-        this.logger.log(`[ThumbnailMigration] ${table}#${row.id} → Drive OK`);
+        const provider = uploadedUrl.includes('cloudinary.com') ? 'Cloudinary' : 'Drive';
+        this.logger.log(`[ThumbnailMigration] ${table}#${row.id} → ${provider} OK`);
       } catch (err: any) {
         this.logger.error(`[ThumbnailMigration] Update failed ${table}#${row.id}: ${err.message}`);
       }

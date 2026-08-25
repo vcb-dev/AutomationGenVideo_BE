@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -42,7 +42,16 @@ export class FacebookExternalScraperController {
     return result;
   }
 
-  @Post([':fanpage_id/toggle', ':fanpage_id/toggle/'])
+  // Xoá cứng fanpage: bản ghi + toàn bộ reels/lịch sử chỉ số biến mất vĩnh viễn.
+  // Chỉ ADMIN/LEADER, khớp phân quyền của scrape-reels và scrape-by-url.
+  @Delete(':fanpage_id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async remove(@Param('fanpage_id') fanpageId: string) {
+    return this.service.deleteFanpage(BigInt(fanpageId));
+  }
+
+  @Post(':fanpage_id/toggle')
   async toggle(
     @Param('fanpage_id') fanpageId: string,
     @Body() body: { field?: 'is_bookmarked' | 'is_periodic_crawl' },
@@ -56,7 +65,7 @@ export class FacebookExternalScraperController {
     return this.service.toggleFanpage(BigInt(fanpageId), field);
   }
 
-  @Post(['scrape-reels', 'scrape-reels/'])
+  @Post('scrape-reels')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeReels(@Body() body: { fanpage_id?: number }) {
@@ -64,7 +73,7 @@ export class FacebookExternalScraperController {
     return this.service.triggerScrapeReels(BigInt(body.fanpage_id));
   }
 
-  @Post(['scrape-by-url', 'scrape-by-url/'])
+  @Post('scrape-by-url')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async scrapeByUrl(@Body() body: { url?: string }) {
