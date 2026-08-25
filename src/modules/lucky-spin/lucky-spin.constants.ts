@@ -47,7 +47,15 @@ export const SPIN_DURATION_MS = 30000;
 export const MAX_DRAW_COUNT = 20;
 
 /**
+ * Số vòng quay gần nhất người có tên trong lịch sử sẽ bị giảm tỉ lệ trúng xuống (nhường cơ hội cho người khác).
+ * Sau 4-5 vòng quay, tỉ lệ của người đó sẽ tự động được reset trở lại bình thường.
+ */
+export const RECENT_WIN_COOLDOWN_ROUNDS = 4;
+
+
+/**
  * Những người bị giảm mạnh cơ hội thắng ở vòng quay cá nhân — quyết định của ban tổ chức.
+
  *
  * Trước đây họ bị chặn hẳn (0%). Từ 2026-08-11 đổi thành CÓ cơ hội nhưng rất thấp: mỗi lượt
  * quay đúng REDUCED_ODDS_RATE, xem cách áp ở LuckySpinService.drawRound.

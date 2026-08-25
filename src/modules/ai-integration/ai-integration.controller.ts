@@ -996,9 +996,10 @@ export class AiIntegrationController {
       throw new HttpException('Mimetype của file không hợp lệ.', HttpStatus.BAD_REQUEST);
     }
 
-    // AI transcribe-upload giờ yêu cầu IsAuthenticated (NestJWTAuthentication) — forward
-    // nguyên JWT của FE để AI validate bằng chung JWT_SECRET với BE.
-    return this.aiService.transcribeContentUpload(file, req.headers?.authorization);
+    // AI transcribe-upload yêu cầu IsAuthenticated (NestJWTAuthentication). Truyền kèm user đã
+    // xác thực: FE đăng nhập bằng cookie HttpOnly nên `req.headers.authorization` thường KHÔNG
+    // tồn tại, khi đó service tự ký token nội bộ theo đúng user này (xem transcribeAiAuthHeaders).
+    return this.aiService.transcribeContentUpload(file, req.headers?.authorization, req.user);
   }
 
   @Get('content-transform/history')

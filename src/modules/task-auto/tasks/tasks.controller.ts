@@ -30,6 +30,7 @@ import {
   CreateTaskDto,
   UpdateTaskDto,
   QueryTaskDto,
+  QueryTaskHeaderCountsDto,
   SubmitTaskDto,
   ReviewTaskDto,
   UpdatePublishedLinksDto,
@@ -58,6 +59,25 @@ export class TaskAutoTasksController {
   @ApiOperation({ summary: "List tasks with filters" })
   getTasks(@Query() q: QueryTaskDto) {
     return this.tasks.findAll(q);
+  }
+
+  // Phải đứng trước "tasks/:id" — nếu không "header-counts" sẽ bị route động :id nuốt mất.
+  @Get("tasks/header-counts")
+  @ApiOperation({
+    summary:
+      "Đếm nhanh cho header ('N task') + 2 badge 'Video chờ duyệt'/'Content chờ duyệt' — gộp " +
+      "3 lượt đếm (vốn phải gọi getTasks/getContentApprovals riêng với limit:1) thành 1 request.",
+  })
+  async getTaskHeaderCounts(@Query() q: QueryTaskHeaderCountsDto) {
+    const [{ total, submittedTotal }, contentApprovalTotal] = await Promise.all([
+      this.tasks.getHeaderCounts(q),
+      this.contentApproval.countPending({
+        team_id: q.team_id,
+        search: q.search,
+        assignee_id: q.assignee_id,
+      }),
+    ]);
+    return { total, submittedTotal, contentApprovalTotal };
   }
 
   @Get("tasks/:id")
