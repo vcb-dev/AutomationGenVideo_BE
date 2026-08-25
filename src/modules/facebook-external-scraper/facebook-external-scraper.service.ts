@@ -151,7 +151,7 @@ export class FacebookExternalScraperService {
     if (fanpage.is_initial_scraped && fanpage.last_scraped_at) {
       startDate = fanpage.last_scraped_at.toISOString().slice(0, 10);
     }
-    const effectiveNum = fanpage.is_initial_scraped ? numOfPosts : 300;
+    const effectiveNum = normalizeTargetCount(numOfPosts);
 
     let profileApiOk: boolean;
     let profile: ParsedFanpageProfile | null;
