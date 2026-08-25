@@ -22,7 +22,7 @@ describe('TaskAutoTasksService.getDashboard (ADMIN/MANAGER) — global dashboard
       editorApproval: { count: jest.fn(async () => 0) },
       contentLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 

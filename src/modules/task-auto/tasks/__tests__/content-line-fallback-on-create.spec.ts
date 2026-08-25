@@ -27,7 +27,7 @@ describe('TaskAutoTasksService.create — fallback content_line_id qua bản ghi
         }),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma, getCreateArgs: () => createArgs };
   }
 
