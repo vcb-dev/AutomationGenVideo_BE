@@ -115,7 +115,7 @@ describe('buildDuplicateAlerts — channel-level warnings', () => {
     expect(res).toHaveLength(1);
     expect(res[0].level).toBe('b');
     expect(res[0].channel).toBe('Channel A');
-    expect(res[0].label).toBe('Duplicate');
+    expect(res[0].label).toBe('Trùng');
     expect(res[0].content).toContain('69/69');
     expect(res[0].content).toContain('100');
   });
