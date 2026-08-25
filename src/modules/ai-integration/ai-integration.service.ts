@@ -102,10 +102,14 @@ export class AiIntegrationService {
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
-   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
-   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (Mặc định: 2.600đ / 1.000 ký tự với model speech-2.8-hd - $100/1M ký tự).
    */
   private readonly minimaxVndPer1kChars: number;
+  /**
+   * Đơn giá clone 1 giọng nói MiniMax ra tiền VND.
+   * Set qua env MINIMAX_VND_PER_CLONE (Mặc định: 38.000đ ≈ $1.50 USD / giọng clone).
+   */
+  private readonly minimaxVndPerClone: number;
 
   // ── Phần "chuyển đổi content" (gộp từ module content-transform) ──
   // Rate limit đơn giản, in-memory, theo user — 5 lần/phút cho cả transform + upgrade gộp
@@ -166,7 +170,8 @@ export class AiIntegrationService {
       runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
     );
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
-    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '2600')) || 2600;
+    this.minimaxVndPerClone = Number(this.configService.get<string>('MINIMAX_VND_PER_CLONE', '38000')) || 38000;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
     if (!this.minimaxApiKey) {
@@ -1815,7 +1820,10 @@ export class AiIntegrationService {
       );
       // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
       if (data && typeof data === 'object') {
-        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+        data.pricing = {
+          vnd_per_1k_chars: this.minimaxVndPer1kChars,
+          vnd_per_clone: this.minimaxVndPerClone,
+        };
       }
       return data;
     } catch (error: any) {
@@ -2542,20 +2550,24 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
-    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
-    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    // Quy đổi điểm đã tiêu và số giọng clone ra tiền theo đơn giá cấu hình
+    const toVnd = (chars: number, clones: number) =>
+      Math.round((chars / 1000) * this.minimaxVndPer1kChars) + clones * this.minimaxVndPerClone;
     const byUserList = [...byUser.values()]
-      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters, u.clone_count) }))
       .sort((a, b) => b.characters - a.characters);
 
     return {
       success: true,
-      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
+      pricing: {
+        vnd_per_1k_chars: this.minimaxVndPer1kChars,
+        vnd_per_clone: this.minimaxVndPerClone,
+      },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
-        cost_vnd: toVnd(totalCharacters),
+        cost_vnd: toVnd(totalCharacters, totalClones),
       },
       by_user: byUserList,
     };

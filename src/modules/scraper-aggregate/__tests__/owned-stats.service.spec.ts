@@ -211,9 +211,9 @@ describe('buildAlerts', () => {
     const res = (buildService() as any).buildAlerts([sampleChannelMeta({ loi: longError })], [], 28);
 
     expect(res).toHaveLength(1);
-    expect(res[0].label).toBe('Error');
+    expect(res[0].label).toBe('Lỗi');
     expect(res[0].level).toBe('b');
-    expect(res[0].content).toBe(`Sync error: ${'x'.repeat(120)}`);
+    expect(res[0].content).toBe(`Đồng bộ lỗi: ${'x'.repeat(120)}`);
   });
 
   it('ignores inactive channels to prevent noise', () => {
@@ -227,7 +227,7 @@ describe('buildAlerts', () => {
 
   it('reports Empty for channels with no scraped videos', () => {
     const res = (buildService() as any).buildAlerts([sampleChannelMeta({ ngay_cuoi: null })], [], 28);
-    expect(res[0]).toMatchObject({ label: 'Empty', level: 'w', content: 'No videos scraped yet' });
+    expect(res[0]).toMatchObject({ label: 'Trống', level: 'w', content: 'Chưa cào được video nào' });
   });
 
   it.each([
@@ -237,10 +237,10 @@ describe('buildAlerts', () => {
   ])('silent for %s days → reported: %s', (silentDays, shouldReport) => {
     const lastDate = new Date(FROZEN_NOW.getTime() - silentDays * 86_400_000);
     const res = (buildService() as any).buildAlerts([sampleChannelMeta({ ngay_cuoi: lastDate })], [], 28);
-    const silentAlerts = res.filter((c: any) => c.label === 'Silent');
+    const silentAlerts = res.filter((c: any) => c.label === 'Im lặng');
 
     expect(silentAlerts).toHaveLength(shouldReport ? 1 : 0);
-    if (shouldReport) expect(silentAlerts[0].content).toBe(`No new posts in ${silentDays} days`);
+    if (shouldReport) expect(silentAlerts[0].content).toBe(`Chưa đăng bài trong ${silentDays} ngày`);
   });
 
   it('does not report drop when previous period has under 10k views', () => {
@@ -249,7 +249,7 @@ describe('buildAlerts', () => {
       [sampleChannelMetrics({ ky: 'nay', views: BigInt(0) }), sampleChannelMetrics({ ky: 'truoc', views: BigInt(9_999) })],
       28,
     );
-    expect(res.filter((c: any) => c.label === 'Drop')).toHaveLength(0);
+    expect(res.filter((c: any) => c.label === 'Tụt')).toHaveLength(0);
   });
 
   it.each([
@@ -265,7 +265,7 @@ describe('buildAlerts', () => {
       ],
       28,
     );
-    expect(res.filter((c: any) => c.label === 'Drop')).toHaveLength(shouldReport ? 1 : 0);
+    expect(res.filter((c: any) => c.label === 'Tụt')).toHaveLength(shouldReport ? 1 : 0);
   });
 
   it('drop alert content mentions exact day count of the period', () => {
@@ -274,14 +274,17 @@ describe('buildAlerts', () => {
       [sampleChannelMetrics({ ky: 'nay', views: BigInt(40_000) }), sampleChannelMetrics({ ky: 'truoc', views: BigInt(100_000) })],
       90,
     );
-    expect(res[0].content).toBe('Views dropped by 60% compared to the prior 90 days');
+    expect(res[0].content).toBe('Lượt xem giảm 60% so với 90 ngày trước đó');
   });
 
-  it('caps returned alerts to maximum 12 items', () => {
+  // Việc cắt bớt cho vừa màn hình đã chuyển ra calculateStats, kèm theo `alertTotal` để
+  // trang nói được đã giấu bao nhiêu — xem alert-message-language.spec.ts và
+  // sync-error-alert-aggregation.spec.ts.
+  it('trả về đủ mọi cảnh báo, không tự cắt', () => {
     const manyChannels = Array.from({ length: 40 }, (_, i) =>
       sampleChannelMeta({ kenh_id: `k${i}`, ten: `Page ${i}`, ngay_cuoi: new Date('2020-01-01') }),
     );
-    expect((buildService() as any).buildAlerts(manyChannels, [], 28)).toHaveLength(12);
+    expect((buildService() as any).buildAlerts(manyChannels, [], 28)).toHaveLength(40);
   });
 
   it('sorts sync error alerts before silent channel alerts', () => {
@@ -293,6 +296,6 @@ describe('buildAlerts', () => {
       [],
       28,
     );
-    expect(res.map((c: any) => c.label)).toEqual(['Error', 'Silent']);
+    expect(res.map((c: any) => c.label)).toEqual(['Lỗi', 'Im lặng']);
   });
 });
