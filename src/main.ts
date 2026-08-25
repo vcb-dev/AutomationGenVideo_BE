@@ -147,10 +147,25 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
 
-  expressInstance.keepAliveTimeout  = 65_000;
-  expressInstance.headersTimeout    = 66_000;
-  expressInstance.maxHeadersCount   = 100;
-  expressInstance.timeout           = 120_000; // 2 min max request time (heavy Lark queries)
+  // Các mốc dưới đây là thuộc tính của http.Server, KHÔNG phải của Express app.
+  // `app.getHttpAdapter().getInstance()` trả về Express app (một function/EventEmitter) — gán
+  // `.keepAliveTimeout`/`.headersTimeout`/`.timeout` lên đó chỉ tạo ra property vô nghĩa, không
+  // ai đọc. Đã đo bằng request thật: với `expressInstance.timeout = 120_000`, một request chạy
+  // 135s vẫn trả về 200 (không hề bị cắt ở giây 120) — tức 4 dòng cũ ở đây là no-op hoàn toàn.
+  // Phải gán lên `app.getHttpServer()` mới có tác dụng.
+  const httpServer = app.getHttpServer();
+  // 65s > 60s idle timeout của các LB phổ biến (ALB/nginx): để BE là bên ĐÓNG SAU, tránh đúng
+  // race "LB gửi request vào socket mà BE vừa đóng" gây 502 lẻ tẻ không tái hiện được.
+  // headersTimeout phải LỚN HƠN keepAliveTimeout, nếu không Node cắt kết nối keep-alive đang rảnh.
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout   = 66_000;
+  httpServer.maxHeadersCount  = 100;
+  // CỐ Ý KHÔNG đặt `httpServer.timeout`. Đó là timeout socket-rảnh áp cho MỌI request, và trong
+  // lúc handler đang chờ AI service thì socket đúng là rảnh — đã đo bằng request thật: đặt
+  // `httpServer.timeout = 5_000` làm request có handler chạy 15s bị giết bằng ECONNRESET ở đúng
+  // giây 5. Đặt lại mốc 120s cũ ở đây sẽ giết mọi endpoint AI dài của hệ thống
+  // (/content-transform/transform tối đa 360s, /upgrade 420s, /rescore 360s, /transcribe 300s).
+  // Mỗi endpoint tự đặt ngân sách riêng ở tầng axios khi gọi AI service — đó mới là chỗ đúng.
 
   // Kích hoạt cron sync social_video_report + ads_campaign_stats (01:00 AM hàng ngày)
   initSocialSyncCron();

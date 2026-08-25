@@ -107,6 +107,7 @@ model User {
   editor_sources                   EditorSource[]                 @relation("EditorSourceOf")
   editor_sources_added             EditorSource[]                 @relation("EditorSourceAddedBy")
   tasks_assigned                   Task[]                         @relation("TaskAssignee")
+  tasks_assigned_by                Task[]                         @relation("TaskAssignedBy")
   tasks_reviewed                   Task[]                         @relation("TaskReviewer")
   task_assignments                 TaskAssignment[]               @relation("AssignmentUser")
   notifications                    Notification[]                 @relation("NotificationOf")
@@ -1941,6 +1942,11 @@ model ScraperThreadsProfile {
   is_verified      Boolean             @default(false)
   is_tracked       Boolean             @default(false)
   is_bookmarked    Boolean             @default(false)
+  /// CẢNH BÁO: mặc định true, ngược với instagram/tiktok/youtube (đều default false). Nghĩa là
+  /// mọi profile Threads cào về đều TỰ ĐỘNG được tính là kênh nội bộ của công ty và lọt vào
+  /// trang Tổng quan kênh nội bộ. Hiện chỉ có 1 profile nên chưa gây sai số; cào thêm kênh đối
+  /// thủ Threads là số liệu công ty lệch ngay. Đổi mặc định thì phải kèm migration và bật tay
+  /// lại cho các profile hiện có.
   is_owned         Boolean             @default(true)
   last_scraped_at  DateTime?           @db.Timestamptz(6)
   scraping_status  String              @default("idle") @db.VarChar(20)
@@ -2889,9 +2895,10 @@ model EditorKpi {
   content_new         Int     @default(0) // Số content mới được làm
   content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
   content_win_cover   Int     @default(0) // Số content win cover lại bởi team
-  // ── Product ──
+  // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
   product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
   product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
+  product_profit      Int     @default(0) // Số SP Profit
 
   set_by_id  String   @db.Uuid
   created_at DateTime @default(now())
@@ -3259,6 +3266,11 @@ model Task {
   /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
   is_product_push           Boolean    @default(false)
   assignee_id               String?
+  /// Ai đã set assignee_id: privileged user (leader/admin/manager) khi giao tay task cho người
+  /// khác — KHÔNG set khi chính assignee tự nhận task (self-claim) hoặc khi task chưa có assignee.
+  /// NULL với task cũ tạo trước khi có cột này. Dùng để chặn member tự xoá task được giao tay,
+  /// xem tasks.service.ts remove().
+  assigned_by_id            String?    @db.Uuid
   assigned_at               DateTime?
   deadline                  DateTime?
   run_id                    String?
@@ -3295,6 +3307,7 @@ model Task {
   team_source_workshop   TeamSource?           @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
   team_source_huyk       TeamSource?           @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
   assignee               User?                 @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  assigned_by            User?                 @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
   reviewed_by            User?                 @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
   run                    AssignmentRun?        @relation(fields: [run_id], references: [id])
   assignments            TaskAssignment[]

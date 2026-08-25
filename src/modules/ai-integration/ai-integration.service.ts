@@ -102,10 +102,14 @@ export class AiIntegrationService {
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
-   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
-   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (Mặc định: 2.600đ / 1.000 ký tự với model speech-2.8-hd - $100/1M ký tự).
    */
   private readonly minimaxVndPer1kChars: number;
+  /**
+   * Đơn giá clone 1 giọng nói MiniMax ra tiền VND.
+   * Set qua env MINIMAX_VND_PER_CLONE (Mặc định: 38.000đ ≈ $1.50 USD / giọng clone).
+   */
+  private readonly minimaxVndPerClone: number;
 
   // ── Phần "chuyển đổi content" (gộp từ module content-transform) ──
   // Rate limit đơn giản, in-memory, theo user — 5 lần/phút cho cả transform + upgrade gộp
@@ -134,6 +138,24 @@ export class AiIntegrationService {
   // so với mức thường gặp (viết ~thực đo dưới 60s, chấm thường dưới 60s khi không phải retry).
   private readonly CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS = 420_000;
 
+  // Ngân sách cho POST /content-transform/transcribe forward sang AI service.
+  //
+  // Mốc cũ là 60s và đó chính là nguyên nhân lỗi "chọn video -> báo lỗi": timeout của axios
+  // ở đây là ĐỒNG HỒ TREO TƯỜNG (follow-redirects đặt setTimeout(ms) lúc có socket, chỉ huỷ
+  // khi có response) nên nó phủ cả thời gian đẩy nguyên file sang Django lẫn toàn bộ thời
+  // gian Django làm việc với Gemini. Đo thật với video thật:
+  //
+  //    76.5MB / 4ph57  ->  Gemini tốn 114.3s (upload 43.1 + poll  6.8 + generate  64.4)
+  //   143.5MB / 9ph17  ->  Gemini tốn 109.8s (upload 61.0 + poll 20.2 + generate  28.7)
+  //    76.5MB / 4ph57  ->  Gemini tốn 239.6s (upload 30.8 + poll  8.9 + generate 195.7)
+  //
+  // Cả ba đều gấp 2-4 lần mốc 60s => mọi video dài đều chắc chắn hỏng. Đáng chú ý nhất là
+  // generate_content dao động 28.7s -> 195.7s TRÊN CÙNG MỘT FILE — nên ngân sách phải phủ mức
+  // XẤU NHẤT quan sát được chứ không phải mức trung bình, nếu không lỗi sẽ quay lại dưới dạng
+  // "lúc được lúc không", còn khó lần ra hơn cả lỗi cũ. 420s = cùng mốc với /upgrade, đủ cho
+  // trường hợp xấu nhất ước tính ở trần 200MB (upload ~85s + poll ~90s + generate ~200s).
+  private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -148,7 +170,8 @@ export class AiIntegrationService {
       runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
     );
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
-    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '2600')) || 2600;
+    this.minimaxVndPerClone = Number(this.configService.get<string>('MINIMAX_VND_PER_CLONE', '38000')) || 38000;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
     if (!this.minimaxApiKey) {
@@ -1797,7 +1820,10 @@ export class AiIntegrationService {
       );
       // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
       if (data && typeof data === 'object') {
-        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+        data.pricing = {
+          vnd_per_1k_chars: this.minimaxVndPer1kChars,
+          vnd_per_clone: this.minimaxVndPerClone,
+        };
       }
       return data;
     } catch (error: any) {
@@ -2524,20 +2550,24 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
-    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
-    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    // Quy đổi điểm đã tiêu và số giọng clone ra tiền theo đơn giá cấu hình
+    const toVnd = (chars: number, clones: number) =>
+      Math.round((chars / 1000) * this.minimaxVndPer1kChars) + clones * this.minimaxVndPerClone;
     const byUserList = [...byUser.values()]
-      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters, u.clone_count) }))
       .sort((a, b) => b.characters - a.characters);
 
     return {
       success: true,
-      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
+      pricing: {
+        vnd_per_1k_chars: this.minimaxVndPer1kChars,
+        vnd_per_clone: this.minimaxVndPerClone,
+      },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
-        cost_vnd: toVnd(totalCharacters),
+        cost_vnd: toVnd(totalCharacters, totalClones),
       },
       by_user: byUserList,
     };
@@ -3879,31 +3909,83 @@ export class AiIntegrationService {
     return this.attachContentTransformScoreFields(history);
   }
 
-  /** Chuyển đổi file video/audio thành văn bản (dùng cho luồng chuyển đổi content). */
-  async transcribeContentUpload(file: Express.Multer.File, authorization?: string): Promise<any> {
+  /**
+   * Header xác thực cho lệnh gọi transcribe sang AI service.
+   *
+   * KHÔNG được dựa vào việc forward `Authorization` của request gốc: FE xác thực với BE bằng
+   * cookie HttpOnly (`apiClient` không hề gắn header Authorization — xem cookie-auth.service.ts
+   * và JwtStrategy đọc cookie TRƯỚC Bearer), nên với mọi request đến từ trình duyệt thì
+   * `req.headers.authorization` là undefined và AI service nhận được request KHÔNG có credential
+   * nào. Đã kiểm chứng bằng request thật: Django trả 403 "Authentication credentials were not
+   * provided." Đây là lỗi thứ hai, độc lập với lỗi timeout, và tự nó đủ làm hỏng tính năng.
+   *
+   * Cách đúng chính là cách các endpoint anh em trong file này đã dùng (videoDownloaderAuthHeaders):
+   * BE tự ký một token nội bộ bằng chung JWT_SECRET với AI service. Khác một điểm có chủ ý — ký
+   * theo ĐÚNG user gọi request chứ không phải một danh tính 'be-system' dùng chung, vì
+   * TranscribeUploadThrottle bên Django lấy `request.user.pk` làm khoá throttle: dùng danh tính
+   * chung sẽ gộp mọi nhân viên vào cùng một rổ 10 lần/phút.
+   */
+  private transcribeAiAuthHeaders(user?: { id?: string; email?: string }): { Authorization: string } {
+    const token = this.jwtService.sign({
+      sub: user?.id ?? 'be-system',
+      email: user?.email ?? 'be-system@internal.local',
+    });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  async transcribeContentUpload(
+    file: Express.Multer.File,
+    authorization?: string,
+    user?: { id?: string; email?: string },
+  ): Promise<any> {
     const FormData = require('form-data');
     const url = `${this.aiServiceUrl}/api/content/transcribe-upload/`;
+
+    const timeoutMs = this.CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS;
 
     const formData = new FormData();
     formData.append('file', file.buffer, {
       filename: file.originalname,
       contentType: file.mimetype,
     });
+    // Giây, không phải ms — cùng quy ước với callContentTransformAiService/callPaastAnalyzeApi.
+    // Thiếu field này thì Django rơi về mặc định hard-code riêng của nó và hai phía lệch nhau
+    // âm thầm: ngân sách nội bộ của Django có thể dài hơn thời gian BE thực sự chờ, BE cắt
+    // trước, Django vẫn chạy tiếp và vẫn tốn tiền gọi Gemini cho một kết quả không ai nhận.
+    formData.append('timeout_seconds', String(Math.ceil(timeoutMs / 1000)));
 
     try {
       const response = await firstValueFrom(
         this.httpService.post(url, formData, {
-          // AI endpoint yêu cầu IsAuthenticated — forward nguyên Bearer JWT của FE,
-          // AI validate bằng chung JWT_SECRET (core.authentication.NestJWTAuthentication).
-          headers: { ...formData.getHeaders(), ...(authorization ? { Authorization: authorization } : {}) },
+          // AI endpoint yêu cầu IsAuthenticated (core.authentication.NestJWTAuthentication).
+          // Giữ nguyên Bearer của client nếu request gốc có (Swagger, script nội bộ, client cũ);
+          // còn với FE chạy bằng cookie HttpOnly thì tự ký token nội bộ — xem transcribeAiAuthHeaders.
+          headers: {
+            ...formData.getHeaders(),
+            ...(authorization ? { Authorization: authorization } : this.transcribeAiAuthHeaders(user)),
+          },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          timeout: 60000, // 60s timeout
+          timeout: timeoutMs,
         }),
       );
       return response.data;
     } catch (error: any) {
       this.logger.error(`Failed to transcribe file: ${error.message}`);
+
+      // Hết giờ ở tầng axios (không có response nào từ Django) — trước đây rơi vào nhánh
+      // `|| HttpStatus.INTERNAL_SERVER_ERROR` nên FE nhận 500 kèm nguyên văn tiếng Anh
+      // "timeout of 60000ms exceeded", vô nghĩa với người dùng cuối và khiến lỗi bị chẩn
+      // đoán nhầm thành lỗi hệ thống. Đây là timeout cổng vào -> đúng ngữ nghĩa là 504.
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT';
+      if (isTimeout && !error.response) {
+        throw new HttpException(
+          `Xử lý file vượt quá ${Math.round(timeoutMs / 1000)}s cho phép. ` +
+            'File càng dài và càng nặng thì càng lâu — vui lòng thử với file ngắn hơn hoặc thử lại sau.',
+          HttpStatus.GATEWAY_TIMEOUT,
+        );
+      }
+
       const errMsg = error.response?.data?.error_message || error.response?.data?.error || error.message || 'Lỗi kết nối tới AI Service';
       throw new HttpException(errMsg, error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR);
     }

@@ -12,7 +12,7 @@ export class DouyinScraperCronService {
 
   constructor(private readonly service: DouyinScraperService) {}
 
-  @Cron('0 0 8 * * *', VN_TZ)
+  // @Cron('0 0 8 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();
@@ -21,7 +21,7 @@ export class DouyinScraperCronService {
     }
   }
 
-  @Cron('0 30 13 * * *', VN_TZ)
+  // @Cron('0 30 13 * * *', VN_TZ)
   async cronAutoRerunKeywords(): Promise<void> {
     try {
       await this.service.autoRerunTopKeywords();
