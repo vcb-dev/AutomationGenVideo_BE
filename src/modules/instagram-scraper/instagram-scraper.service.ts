@@ -10,6 +10,19 @@ import {
 
 const STALE_LOCK_MINUTES = 30;
 
+/**
+ * Các cờ bật/tắt được trên một profile Instagram.
+ *
+ * `is_owned` = kênh của công ty, không phải kênh đối thủ đang theo dõi. Đây là tiêu chí duy
+ * nhất để trang Tổng quan kênh nội bộ tính một profile vào số liệu — xem
+ * owned-stats.service.ts (`WHERE p.is_owned = true`).
+ */
+export const TOGGLE_FIELDS = ['is_bookmarked', 'is_tracked', 'is_owned'] as const;
+export type InstagramToggleField = (typeof TOGGLE_FIELDS)[number];
+
+/** Cờ đụng tới số liệu chung của công ty — chỉ leader/admin. `is_bookmarked` là ghim cá nhân. */
+export const MANAGED_TOGGLE_FIELDS: readonly InstagramToggleField[] = ['is_tracked', 'is_owned'];
+
 // Toàn bộ logic ghi DB port từ AI (tikhub_instagram.py::upsert_profile_from_user_info/
 // upsert_profile_from_item/ingest_instagram_reels đã xóa + scraper_views.py::
 // instagram_profile_scrape/instagram_profile_toggle + tasks.py::
@@ -269,7 +282,7 @@ export class InstagramScraperService {
 
   // ─── Toggle bookmark/tracked ─────────────────────────────────────────────
 
-  async toggleProfile(id: bigint, field: 'is_bookmarked' | 'is_tracked'): Promise<boolean> {
+  async toggleProfile(id: bigint, field: InstagramToggleField): Promise<boolean> {
     const profile = await this.prisma.scraperInstagramProfile.findUnique({ where: { id } });
     if (!profile) throw new HttpException({ error: 'Profile not found' }, HttpStatus.NOT_FOUND);
     const newValue = !profile[field];

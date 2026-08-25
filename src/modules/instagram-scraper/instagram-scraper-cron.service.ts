@@ -12,7 +12,7 @@ export class InstagramScraperCronService {
 
   constructor(private readonly service: InstagramScraperService) {}
 
-  @Cron('0 30 7 * * *', VN_TZ)
+  // @Cron('0 30 7 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();

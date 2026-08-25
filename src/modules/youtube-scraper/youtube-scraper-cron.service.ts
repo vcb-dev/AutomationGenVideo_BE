@@ -13,7 +13,7 @@ export class YoutubeScraperCronService {
 
   constructor(private readonly service: YoutubeScraperService) {}
 
-  @Cron('0 30 8 * * *', VN_TZ)
+  // @Cron('0 30 8 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();

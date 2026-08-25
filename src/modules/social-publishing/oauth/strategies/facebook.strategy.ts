@@ -20,7 +20,18 @@ export class FacebookOAuthStrategy {
     const params = new URLSearchParams({
       client_id: process.env.FB_APP_ID!,
       redirect_uri: this.redirectUri,
-      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish',
+      // `instagram_manage_insights` là quyền DUY NHẤT đọc được lượt xem reels. Thiếu nó thì
+      // mọi lời gọi /{media-id}/insights trả về "(#10) Application does not have permission
+      // for this action" — đã đo trên token thật của 3 kênh: 15 quyền được cấp, không có
+      // quyền này. Hệ quả: trang Tổng quan kênh nội bộ hiện Instagram với like/bình luận
+      // nhưng lượt xem bằng 0 (1.446/1.470 reels trong kho có play_count = 0).
+      //
+      // instagram.strategy.ts (Flow 1) vốn đã xin quyền này; thiếu sót nằm ở đây — tài khoản
+      // Instagram tạo ra từ luồng kết nối Facebook nên thừa hưởng đúng scope của luồng này.
+      //
+      // LƯU Ý: token đã cấp KHÔNG tự có thêm quyền. Phải kết nối lại tài khoản thì token mới
+      // mang quyền mới.
+      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish,instagram_manage_insights',
       response_type: 'code',
       state,
     });

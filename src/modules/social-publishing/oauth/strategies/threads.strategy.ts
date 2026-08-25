@@ -23,7 +23,7 @@ export class ThreadsOAuthStrategy {
     const params = new URLSearchParams({
       client_id: appId,
       redirect_uri: redirectUri,
-      scope: 'threads_basic,threads_content_publish',
+      scope: 'threads_basic,threads_content_publish,threads_manage_insights,threads_read_replies',
       response_type: 'code',
       state,
     });
