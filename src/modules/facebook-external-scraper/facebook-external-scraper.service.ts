@@ -6,6 +6,7 @@ import {
   ParsedFacebookReel,
 } from './facebook-external-ai-client.service';
 import { cleanFacebookUrl, extractHandleFromUrl } from './facebook-url.util';
+import { normalizeTargetCount } from '../../common/utils/target-count.util';
 
 const STALE_LOCK_MINUTES = 30;
 
