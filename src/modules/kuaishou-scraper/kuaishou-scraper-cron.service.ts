@@ -13,7 +13,7 @@ export class KuaishouScraperCronService {
 
   constructor(private readonly service: KuaishouScraperService) {}
 
-  @Cron('0 0 9 * * *', VN_TZ)
+  // @Cron('0 0 9 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();
@@ -22,7 +22,7 @@ export class KuaishouScraperCronService {
     }
   }
 
-  @Cron('0 0 14 * * *', VN_TZ)
+  // @Cron('0 0 14 * * *', VN_TZ)
   async cronAutoRerunKeywords(): Promise<void> {
     try {
       await this.service.autoRerunTopKeywords();

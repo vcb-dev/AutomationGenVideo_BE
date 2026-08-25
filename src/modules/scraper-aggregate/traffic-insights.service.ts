@@ -15,7 +15,7 @@ export class TrafficInsightsService {
   async getTrafficInsights(
     channelId: string,
     date?: string,
-  ): Promise<{ success: boolean; views: number; impressions?: number; source?: string; message?: string }> {
+  ): Promise<{ success: boolean; views: number; impressions?: number; period?: { from: string; to: string; label: string }; source?: string; message?: string }> {
     try {
       const channelIdClean = (channelId || '').trim();
       const cleanName = channelIdClean.replace(/\s*★\s*\(OAuth\)\s*$/i, '').trim();
@@ -34,6 +34,7 @@ export class TrafficInsightsService {
 
       const endOfDateStr = `${year}-${month}-${day}`;
       const endOfDate = new Date(`${year}-${month}-${day}T23:59:59.999Z`);
+      const period = { from: startOfMonthStr, to: endOfDateStr, label: `01/${month}/${year} → ${day}/${month}/${year}` };
 
       // 1. Tìm trong SocialAccount (OAuth accounts)
       const socialAccount = await this.prisma.socialAccount.findFirst({
@@ -90,11 +91,14 @@ export class TrafficInsightsService {
             const decryptedToken = this.crypto.decrypt(socialAccount.access_token_enc);
 
             if (platform === 'FACEBOOK') {
-              // 1. Thử lấy page insights từ đầu tháng
+              // Tổng Lượt xem Facebook (Views) theo chuẩn Meta Professional Dashboard:
+              //   Views = Lượt hiển thị Organic (bao gồm ảnh + chữ + video organic xuất hiện trên màn hình)
+              //         + Lượt xem Video Paid (quảng cáo - không có trong organic impressions)
+              // Không cộng page_video_views vì sẽ bị đếm kép (video ảo hưởng đã có trong organic impressions)
               try {
                 const insightRes = await axios.get(`https://graph.facebook.com/v21.0/${targetPlatformId}/insights`, {
                   params: {
-                    metric: 'page_video_views,page_impressions_unique',
+                    metric: 'page_video_views,page_video_views_organic,page_posts_impressions_organic',
                     period: 'day',
                     since: startOfMonthStr,
                     until: endOfDateStr,
@@ -103,14 +107,36 @@ export class TrafficInsightsService {
                   timeout: 5000,
                 });
                 const dataList = insightRes.data?.data || [];
-                let metricViews = 0;
+
+                let videoViewsTotal = 0;   // Tổng video views (organic + paid)
+                let videoViewsOrganic = 0; // Chỉ organic video views
+                let postImpressionsOrganic = 0; // Organic impressions (bao gồm cả video organic + ảnh + chữ)
+
                 for (const item of dataList) {
                   const values = item.values || [];
                   const sumVal = values.reduce((acc: number, cur: any) => acc + Number(cur.value || 0), 0);
-                  if (sumVal > metricViews) metricViews = sumVal;
+                  if (item.name === 'page_video_views') {
+                    videoViewsTotal = sumVal;
+                  } else if (item.name === 'page_video_views_organic') {
+                    videoViewsOrganic = sumVal;
+                  } else if (item.name === 'page_posts_impressions_organic') {
+                    postImpressionsOrganic = sumVal;
+                  }
                 }
-                if (metricViews > 0) {
-                  return { success: true, views: metricViews, source: 'meta_graph_insights_mtd' };
+
+                // Paid video views = Total video views - Organic video views (không có trong organic impressions)
+                const paidVideoViews = Math.max(0, videoViewsTotal - videoViewsOrganic);
+
+                // Tổng Views = Organic impressions (all content) + Paid video (chưa có trong organic)
+                const totalViews = postImpressionsOrganic + paidVideoViews;
+                if (totalViews > 0) {
+                  return {
+                    success: true,
+                    views: totalViews,
+                    period,
+                    source: 'meta_graph_views_mtd',
+                    impressions: postImpressionsOrganic,
+                  };
                 }
               } catch {
                 // fallback to videos
