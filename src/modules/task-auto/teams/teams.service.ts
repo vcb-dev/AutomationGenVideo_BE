@@ -581,9 +581,32 @@ export class TaskAutoTeamsService {
       team_id: teamId,
       ...(brandType ? { brand_type: brandType } : {}),
       ...(classificationId ? { classification_id: classificationId } : {}),
-      ...(opts?.content_line_id ? { content_line_id: opts.content_line_id } : {}),
       ...(opts?.market ? { market: opts.market } : {}),
       ...this.teamMonthRange(month),
+    }
+    // Lọc theo tuyến — record "tham chiếu" từ kho cá nhân (source_editor_content_id) có thể
+    // chưa có content_line_id riêng (tạo trước khi copyEditorContentToTeam được sửa để copy sẵn
+    // tuyến — xem catalog.service.ts), khi đó tuyến hiệu lực là tuyến của EditorContent gốc.
+    // Sentinel "__unassigned__" (board theo tuyến ở FE) lọc content CHƯA gán tuyến — không thể
+    // truyền content_line_id=null qua query string nên cần 1 giá trị đặc biệt riêng.
+    if (opts?.content_line_id === '__unassigned__') {
+      where.AND = [
+        { content_line_id: null },
+        { OR: [
+          { source_editor_content_id: null },
+          { source_editor_content: { content_line_id: null } },
+        ] },
+      ]
+    } else if (opts?.content_line_id) {
+      where.AND = [
+        { OR: [
+          { content_line_id: opts.content_line_id },
+          { AND: [
+            { content_line_id: null },
+            { source_editor_content: { content_line_id: opts.content_line_id } },
+          ] },
+        ] },
+      ]
     }
     if (opts?.search) {
       const contains = { contains: opts.search, mode: 'insensitive' as const }
@@ -612,6 +635,19 @@ export class TaskAutoTeamsService {
       this.prisma.teamContent.count({ where }),
     ])
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) }
+  }
+
+  /**
+   * Bản đầy đủ (có body/script) của 1 TeamContent — listTeamContents (dạng phân trang) chủ động bớt
+   * body/script để nhẹ payload cho board, nên modal xem chi tiết/sửa phải gọi riêng hàm này.
+   */
+  async findOneTeamContent(id: string) {
+    const tc = await this.prisma.teamContent.findUnique({
+      where: { id },
+      include: this.teamContentInclude,
+    })
+    if (!tc) throw new NotFoundException('TeamContent not found')
+    return tc
   }
 
   private async assertTeamContentCodeAvailable(code: string, excludeId?: string) {

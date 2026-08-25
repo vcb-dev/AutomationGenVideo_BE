@@ -106,6 +106,24 @@ export class QueryTaskDto {
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 20
 }
 
+// Đếm nhanh cho header ("N task") + 2 badge "Video chờ duyệt"/"Content chờ duyệt" trên
+// tasks/page.tsx — gộp 3 request limit:1 (mỗi request kéo theo cả findMany lẫn count ở BE) thành
+// 1 request count()-thuần duy nhất (xem tasks.service.ts getHeaderCounts). deadline_from/to áp
+// dụng cho tổng "N task" (khớp bộ lọc hiện tại); pending_from/to áp dụng riêng cho badge "Video
+// chờ duyệt" (mặc định trống, KHÔNG dùng chung deadline_from/to — xem comment ở FE tasks/page.tsx).
+export class QueryTaskHeaderCountsDto {
+  @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus
+  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() pending_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() pending_to?: string
+  @ApiPropertyOptional({ enum: ['auto', 'extra'] })
+  @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
+}
+
 export class SubmitTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() result_url?: string
 }

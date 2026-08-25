@@ -240,7 +240,11 @@ export class TaskAutoCatalogService {
   async findAllContents(q: QueryContentDto) {
     const where: any = {};
     if (q.brand_type) where.brand_type = q.brand_type;
-    if (q.content_line_id) where.content_line_id = q.content_line_id;
+    // Sentinel "__unassigned__" (board theo tuyến ở FE) lọc content CHƯA gán tuyến — không thể
+    // truyền content_line_id=null qua query string nên cần 1 giá trị đặc biệt riêng (giống
+    // teams.service.ts listTeamContents).
+    if (q.content_line_id === "__unassigned__") where.content_line_id = null;
+    else if (q.content_line_id) where.content_line_id = q.content_line_id;
     if (q.classification_id) where.classification_id = q.classification_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
@@ -1019,7 +1023,9 @@ export class TaskAutoCatalogService {
   async findAllEditorContents(userId: string, q: QueryEditorContentDto) {
     const where: any = { user_id: userId };
     if (q.brand_type) where.brand_type = q.brand_type;
-    if (q.content_line_id) where.content_line_id = q.content_line_id;
+    // Sentinel "__unassigned__" — xem giải thích ở findAllContents().
+    if (q.content_line_id === "__unassigned__") where.content_line_id = null;
+    else if (q.content_line_id) where.content_line_id = q.content_line_id;
     if (q.classification_id) where.classification_id = q.classification_id;
     if (q.status) where.status = q.status;
     if (q.market) where.market = q.market;
@@ -1506,10 +1512,20 @@ export class TaskAutoCatalogService {
   }
 
   private async copyEditorContentToTeam(
-    ec: { id: string; brand_type: any; classification_id: string | null },
+    ec: {
+      id: string;
+      brand_type: any;
+      classification_id: string | null;
+      content_line_id?: string | null;
+      market?: string | null;
+    },
     teamId: string,
     addedById: string,
   ) {
+    // Copy sẵn content_line_id/market vào chính bản ghi TeamContent thay vì để null và chỉ
+    // dựa vào fallback qua quan hệ source_editor_content — listTeamContents lọc theo field thô
+    // của TeamContent nên record để null sẽ luôn rơi vào "chưa gán tuyến" dù content gốc có tuyến,
+    // và market không nullable (default "VIETNAM") nên không có fallback nào cứu được ở tầng query.
     return this.prisma.teamContent.create({
       data: {
         team_id: teamId,
@@ -1517,6 +1533,8 @@ export class TaskAutoCatalogService {
         source_editor_content_id: ec.id,
         brand_type: ec.brand_type,
         classification_id: ec.classification_id,
+        ...(ec.content_line_id ? { content_line_id: ec.content_line_id } : {}),
+        ...(ec.market ? { market: ec.market } : {}),
       },
     });
   }
@@ -1619,6 +1637,8 @@ export class TaskAutoCatalogService {
           title: true,
           brand_type: true,
           classification_id: true,
+          content_line_id: true,
+          market: true,
         },
       }),
       this.prisma.team.findUnique({ where: { id: teamId } }),
@@ -1717,6 +1737,7 @@ export class TaskAutoCatalogService {
         file_content_url: true,
         brand_type: true,
         classification_id: true,
+        content_line_id: true,
         content_line: { select: { id: true, name: true } },
       },
     },
@@ -1747,63 +1768,6 @@ export class TaskAutoCatalogService {
       skip: page ? (page - 1) * limit : undefined,
       take: page ? limit : undefined,
     });
-  }
-
-  /**
-   * Thống kê số content mỗi thành viên đã được đẩy vào kho team trong tháng —
-   * chỉ tính các request type CONTENT đã APPROVED (dựa theo reviewed_at, tức
-   * ngày leader duyệt), không tính content leader/admin/manager đẩy thẳng
-   * (không tạo request nên không có ngày duyệt để tính).
-   */
-  async getTeamMonthlyPushStats(
-    teamId: string,
-    month: string | undefined,
-    userId: string,
-    userRoles: string[],
-  ) {
-    const team = await this.prisma.team.findUnique({
-      where: { id: teamId },
-      include: {
-        members: {
-          include: {
-            user: { select: { id: true, full_name: true, email: true } },
-          },
-        },
-      },
-    });
-    if (!team) throw new NotFoundException("Team not found");
-    if (!this.canPushDirectly(team, userId, userRoles))
-      throw new ForbiddenException(
-        "Chỉ leader hoặc quản lý mới xem được thống kê đẩy kho của team",
-      );
-
-    const targetMonth =
-      month ?? DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyy-MM");
-
-    const grouped = await this.prisma.teamPushRequest.groupBy({
-      by: ["requested_by_id"],
-      where: {
-        team_id: teamId,
-        type: "CONTENT",
-        status: "APPROVED",
-        ...this.monthRange(targetMonth, "reviewed_at"),
-      },
-      _count: { id: true },
-    });
-    const countMap = new Map(
-      grouped.map((g) => [g.requested_by_id, g._count.id]),
-    );
-
-    const members = team.members
-      .map((m) => ({
-        user_id: m.user.id,
-        full_name: m.user.full_name,
-        email: m.user.email,
-        approved_content_pushes: countMap.get(m.user.id) ?? 0,
-      }))
-      .sort((a, b) => b.approved_content_pushes - a.approved_content_pushes);
-
-    return { team_id: teamId, month: targetMonth, members };
   }
 
   async listMyPushRequests(
