@@ -1941,6 +1941,11 @@ model ScraperThreadsProfile {
   is_verified      Boolean             @default(false)
   is_tracked       Boolean             @default(false)
   is_bookmarked    Boolean             @default(false)
+  /// CẢNH BÁO: mặc định true, ngược với instagram/tiktok/youtube (đều default false). Nghĩa là
+  /// mọi profile Threads cào về đều TỰ ĐỘNG được tính là kênh nội bộ của công ty và lọt vào
+  /// trang Tổng quan kênh nội bộ. Hiện chỉ có 1 profile nên chưa gây sai số; cào thêm kênh đối
+  /// thủ Threads là số liệu công ty lệch ngay. Đổi mặc định thì phải kèm migration và bật tay
+  /// lại cho các profile hiện có.
   is_owned         Boolean             @default(true)
   last_scraped_at  DateTime?           @db.Timestamptz(6)
   scraping_status  String              @default("idle") @db.VarChar(20)

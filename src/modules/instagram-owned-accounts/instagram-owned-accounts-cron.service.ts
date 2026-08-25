@@ -17,7 +17,7 @@ export class InstagramOwnedAccountsCronService {
 
   constructor(private readonly service: InstagramOwnedAccountsService) {}
 
-  @Cron('0 15 7 * * *', VN_TZ)
+  @Cron('0 15 7,12 * * *', VN_TZ)
   async cronSyncOwnedInstagram(): Promise<void> {
     try {
       await this.service.syncAllConnectedAccounts();

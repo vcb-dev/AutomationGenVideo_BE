@@ -17,7 +17,7 @@ export class ThreadsOwnedAccountsCronService {
 
   constructor(private readonly service: ThreadsOwnedAccountsService) {}
 
-  @Cron('0 30 7 * * *', VN_TZ)
+  @Cron('0 30 7,12 * * *', VN_TZ)
   async cronSyncOwnedThreads(): Promise<void> {
     try {
       await this.service.syncAllConnectedAccounts();
