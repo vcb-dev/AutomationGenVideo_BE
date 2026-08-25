@@ -191,6 +191,7 @@ export class TaskAutoKpiService {
       content_win_cover: dto.content_win_cover ?? 0,
       product_planned: dto.product_planned ?? 0,
       product_win_collect: dto.product_win_collect ?? 0,
+      product_profit: dto.product_profit ?? 0,
       set_by_id: setById,
     };
 
