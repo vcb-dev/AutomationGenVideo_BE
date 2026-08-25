@@ -6,10 +6,8 @@ import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/util
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { DouyinAiClientService, ParsedDouyinVideo } from './douyin-ai-client.service';
 import { DouyinScraperReadService } from './douyin-scraper-read.service';
+import { isHostedThumbnailUrl } from '../../common/utils/hosted-thumbnail-url.util';
 
-function isDriveUrl(url?: string | null): boolean {
-  return !!url && (url.includes('drive.google.com') || url.includes('googleusercontent.com'));
-}
 
 const STALE_LOCK_MINUTES = 30;
 
@@ -64,7 +62,7 @@ export class DouyinScraperService {
   private async upsertVideo(v: ParsedDouyinVideo, keywordOverride?: string): Promise<{ created: boolean }> {
     const existing = await this.prisma.scraperDouyinVideo.findUnique({ where: { post_id: v.post_id } });
 
-    const preview_image = existing && isDriveUrl(existing.preview_image) ? existing.preview_image : v.thumbnail_url;
+    const preview_image = existing && isHostedThumbnailUrl(existing.preview_image) ? existing.preview_image : v.thumbnail_url;
     // keywordOverride ưu tiên hơn v.search_keyword: khi user gõ tiếng Việt rồi dịch sang
     // tiếng Trung để query, ta vẫn muốn LƯU tiếng Việt cho dễ đọc ở bộ lọc/gợi ý.
     // (Nhánh cào profile truyền override='@label' và v.search_keyword rỗng nên không đổi.)

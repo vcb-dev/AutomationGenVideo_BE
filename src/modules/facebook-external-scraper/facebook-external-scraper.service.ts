@@ -65,14 +65,22 @@ export class FacebookExternalScraperService {
     fanpageId: bigint,
     profile: ParsedFanpageProfile,
     isFallback = false,
-  ): Promise<bigint> {
+  ): Promise<bigint | null> {
     const current = await this.prisma.scraperFanpage.findUnique({ where: { id: fanpageId } });
+
+    // Kênh đã bị xoá giữa chừng. Nút xoá cho bấm bất kể trạng thái, mà scrapeByUrl cào
+    // batch đầu đồng bộ rồi còn dispatch tiếp phần nền — người dùng hoàn toàn có thể xoá
+    // đúng lúc đó. Ghi tiếp thì Prisma ném "Record to update not found" và họ nhận 500 cho
+    // chính thao tác mình vừa chủ động huỷ, nên dừng êm là đúng hơn.
+    if (!current) {
+      this.logger.warn(`[FB-EXTERNAL] Fanpage ${fanpageId} đã bị xoá giữa lượt cào — bỏ qua phần ghi.`);
+      return null;
+    }
 
     // Profile tạm (RapidAPI chết, AI dựng từ URL/cache) chỉ được ĐIỀN VÀO CHỖ TRỐNG.
     // Không đụng profile_id: id tạm 'tmp_<handle>' có thể trùng một bản ghi rác khác
     // và làm nhánh reconcile bên dưới xóa nhầm fanpage thật.
     if (isFallback) {
-      if (!current) return fanpageId;
       const data: any = { is_visible_on_ui: true };
       if (!current.name && profile.name) data.name = profile.name;
       if (!current.handle && profile.handle) data.handle = profile.handle;
@@ -88,11 +96,11 @@ export class FacebookExternalScraperService {
 
     let targetId = fanpageId;
     if (existingByRealId) {
-      if (current && existingByRealId.id !== current.id) {
+      if (existingByRealId.id !== current.id) {
         await this.prisma.scraperFanpage.delete({ where: { id: current.id } });
       }
       targetId = existingByRealId.id;
-    } else if (current) {
+    } else {
       const isPlaceholder = !current.profile_id || current.profile_id.startsWith('tmp_');
       if (isPlaceholder) {
         await this.prisma.scraperFanpage.update({ where: { id: current.id }, data: { profile_id: profile.profile_id } });

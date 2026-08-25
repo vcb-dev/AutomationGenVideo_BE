@@ -1634,35 +1634,37 @@ model ScraperReelMetrics {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperTikTokVideo {
-  id                  BigInt   @id @default(autoincrement())
-  post_id             String   @unique @db.VarChar(50)
-  shortcode           String   @unique @db.VarChar(50)
-  url                 String   @db.VarChar(1000)
-  description         String   @default("") @db.Text
-  hashtags            String[] @default([])
-  video_url           String?  @db.Text
-  cdn_url             String?  @db.Text
-  preview_image       String?  @db.Text
-  video_duration      Int      @default(0)
-  region              String   @default("") @db.VarChar(10)
-  author_id           String   @default("") @db.VarChar(50)
-  author_username     String   @default("") @db.VarChar(255)
-  author_display_name String   @default("") @db.VarChar(500)
-  author_avatar       String?  @db.Text
-  author_url          String   @default("") @db.VarChar(1000)
-  author_followers    BigInt   @default(0)
-  author_is_verified  Boolean  @default(false)
-  play_count          BigInt   @default(0)
-  digg_count          BigInt   @default(0)
-  comment_count       BigInt   @default(0)
-  share_count         BigInt   @default(0)
-  collect_count       BigInt   @default(0)
-  music_title         String   @default("") @db.VarChar(500)
-  music_author        String   @default("") @db.VarChar(255)
-  search_keyword      String   @default("") @db.VarChar(500)
-  date_posted         DateTime @db.Timestamptz(6)
-  created_at          DateTime @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime @updatedAt @db.Timestamptz(6)
+  id                         BigInt   @id @default(autoincrement())
+  post_id                    String   @unique @db.VarChar(50)
+  shortcode                  String   @unique @db.VarChar(50)
+  url                        String   @db.VarChar(1000)
+  description                String   @default("") @db.Text
+  hashtags                   String[] @default([])
+  video_url                  String?  @db.Text
+  cdn_url                    String?  @db.Text
+  preview_image              String?  @db.Text
+  /// URL CDN gốc, cất lại trước khi preview_image bị ghi đè bằng URL Cloudinary.
+  preview_image_original_url String?  @db.Text
+  video_duration             Int      @default(0)
+  region                     String   @default("") @db.VarChar(10)
+  author_id                  String   @default("") @db.VarChar(50)
+  author_username            String   @default("") @db.VarChar(255)
+  author_display_name        String   @default("") @db.VarChar(500)
+  author_avatar              String?  @db.Text
+  author_url                 String   @default("") @db.VarChar(1000)
+  author_followers           BigInt   @default(0)
+  author_is_verified         Boolean  @default(false)
+  play_count                 BigInt   @default(0)
+  digg_count                 BigInt   @default(0)
+  comment_count              BigInt   @default(0)
+  share_count                BigInt   @default(0)
+  collect_count              BigInt   @default(0)
+  music_title                String   @default("") @db.VarChar(500)
+  music_author               String   @default("") @db.VarChar(255)
+  search_keyword             String   @default("") @db.VarChar(500)
+  date_posted                DateTime @db.Timestamptz(6)
+  created_at                 DateTime @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([play_count(sort: Desc)])
@@ -1677,30 +1679,32 @@ model ScraperTikTokVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperDouyinVideo {
-  id                  BigInt   @id @default(autoincrement())
-  post_id             String   @unique @db.VarChar(50)
-  url                 String   @db.VarChar(1000)
-  description         String   @default("") @db.Text
-  hashtags            String[] @default([])
-  preview_image       String?  @db.Text
-  video_duration      Int      @default(0)
-  region              String   @default("") @db.VarChar(10)
-  author_id           String   @default("") @db.VarChar(50)
-  author_username     String   @default("") @db.VarChar(255)
-  author_display_name String   @default("") @db.VarChar(500)
-  author_avatar       String?  @db.Text
-  author_followers    BigInt   @default(0)
-  author_is_verified  Boolean  @default(false)
-  digg_count          BigInt   @default(0)
-  comment_count       BigInt   @default(0)
-  share_count         BigInt   @default(0)
-  collect_count       BigInt   @default(0)
-  music_title         String   @default("") @db.VarChar(500)
-  music_author        String   @default("") @db.VarChar(255)
-  search_keyword      String   @default("") @db.VarChar(500)
-  date_posted         DateTime @db.Timestamptz(6)
-  created_at          DateTime @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime @updatedAt @db.Timestamptz(6)
+  id                         BigInt   @id @default(autoincrement())
+  post_id                    String   @unique @db.VarChar(50)
+  url                        String   @db.VarChar(1000)
+  description                String   @default("") @db.Text
+  hashtags                   String[] @default([])
+  preview_image              String?  @db.Text
+  /// URL CDN gốc, cất lại trước khi preview_image bị ghi đè bằng URL Cloudinary.
+  preview_image_original_url String?  @db.Text
+  video_duration             Int      @default(0)
+  region                     String   @default("") @db.VarChar(10)
+  author_id                  String   @default("") @db.VarChar(50)
+  author_username            String   @default("") @db.VarChar(255)
+  author_display_name        String   @default("") @db.VarChar(500)
+  author_avatar              String?  @db.Text
+  author_followers           BigInt   @default(0)
+  author_is_verified         Boolean  @default(false)
+  digg_count                 BigInt   @default(0)
+  comment_count              BigInt   @default(0)
+  share_count                BigInt   @default(0)
+  collect_count              BigInt   @default(0)
+  music_title                String   @default("") @db.VarChar(500)
+  music_author               String   @default("") @db.VarChar(255)
+  search_keyword             String   @default("") @db.VarChar(500)
+  date_posted                DateTime @db.Timestamptz(6)
+  created_at                 DateTime @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([digg_count(sort: Desc)])
@@ -1813,28 +1817,30 @@ model ScraperTikTokProfileMetrics {
 }
 
 model ScraperTikTokProfileVideo {
-  id              BigInt               @id @default(autoincrement())
-  profile_id      BigInt
-  video_id        String               @unique @db.VarChar(50)
-  shortcode       String               @default("") @db.VarChar(50)
-  url             String               @db.VarChar(1000)
-  description     String               @default("") @db.Text
-  hashtags        String[]             @default([])
-  cover_image     String?              @db.Text
-  video_duration  Int                  @default(0)
-  region          String               @default("") @db.VarChar(10)
-  post_type       String               @default("video") @db.VarChar(20)
-  play_count      BigInt               @default(0)
-  digg_count      BigInt               @default(0)
-  comment_count   BigInt               @default(0)
-  share_count     BigInt               @default(0)
-  favorites_count BigInt               @default(0)
-  music_title     String               @default("") @db.VarChar(500)
-  music_author    String               @default("") @db.VarChar(255)
-  date_posted     DateTime             @db.Timestamptz(6)
-  created_at      DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime             @updatedAt @db.Timestamptz(6)
-  profile         ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  id                       BigInt               @id @default(autoincrement())
+  profile_id               BigInt
+  video_id                 String               @unique @db.VarChar(50)
+  shortcode                String               @default("") @db.VarChar(50)
+  url                      String               @db.VarChar(1000)
+  description              String               @default("") @db.Text
+  hashtags                 String[]             @default([])
+  cover_image              String?              @db.Text
+  /// URL CDN gốc, cất lại trước khi cover_image bị ghi đè bằng URL Cloudinary.
+  cover_image_original_url String?              @db.Text
+  video_duration           Int                  @default(0)
+  region                   String               @default("") @db.VarChar(10)
+  post_type                String               @default("video") @db.VarChar(20)
+  play_count               BigInt               @default(0)
+  digg_count               BigInt               @default(0)
+  comment_count            BigInt               @default(0)
+  share_count              BigInt               @default(0)
+  favorites_count          BigInt               @default(0)
+  music_title              String               @default("") @db.VarChar(500)
+  music_author             String               @default("") @db.VarChar(255)
+  date_posted              DateTime             @db.Timestamptz(6)
+  created_at               DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime             @updatedAt @db.Timestamptz(6)
+  profile                  ScraperTikTokProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
 
   @@index([profile_id, date_posted(sort: Desc)])
   @@index([date_posted(sort: Desc)])
@@ -1929,29 +1935,29 @@ model ScraperInstagramProfileMetrics {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperThreadsProfile {
-  id               BigInt              @id @default(autoincrement())
-  threads_user_id  String?             @unique @db.VarChar(100)
-  username         String              @unique @db.VarChar(255)
-  name             String?             @default("") @db.VarChar(500)
-  url              String              @default("") @db.VarChar(1000)
-  avatar_url       String?             @db.Text
-  avatar_drive_url String              @default("") @db.Text
-  biography        String?             @default("") @db.Text
-  followers_count  BigInt              @default(0)
-  is_verified      Boolean             @default(false)
-  is_tracked       Boolean             @default(false)
-  is_bookmarked    Boolean             @default(false)
+  id               BigInt               @id @default(autoincrement())
+  threads_user_id  String?              @unique @db.VarChar(100)
+  username         String               @unique @db.VarChar(255)
+  name             String?              @default("") @db.VarChar(500)
+  url              String               @default("") @db.VarChar(1000)
+  avatar_url       String?              @db.Text
+  avatar_drive_url String               @default("") @db.Text
+  biography        String?              @default("") @db.Text
+  followers_count  BigInt               @default(0)
+  is_verified      Boolean              @default(false)
+  is_tracked       Boolean              @default(false)
+  is_bookmarked    Boolean              @default(false)
   /// CẢNH BÁO: mặc định true, ngược với instagram/tiktok/youtube (đều default false). Nghĩa là
   /// mọi profile Threads cào về đều TỰ ĐỘNG được tính là kênh nội bộ của công ty và lọt vào
   /// trang Tổng quan kênh nội bộ. Hiện chỉ có 1 profile nên chưa gây sai số; cào thêm kênh đối
   /// thủ Threads là số liệu công ty lệch ngay. Đổi mặc định thì phải kèm migration và bật tay
   /// lại cho các profile hiện có.
-  is_owned         Boolean             @default(true)
-  last_scraped_at  DateTime?           @db.Timestamptz(6)
-  scraping_status  String              @default("idle") @db.VarChar(20)
-  scrape_error     String?             @db.Text
-  created_at       DateTime            @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime            @updatedAt @db.Timestamptz(6)
+  is_owned         Boolean              @default(true)
+  last_scraped_at  DateTime?            @db.Timestamptz(6)
+  scraping_status  String               @default("idle") @db.VarChar(20)
+  scrape_error     String?              @db.Text
+  created_at       DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime             @updatedAt @db.Timestamptz(6)
   posts            ScraperThreadsPost[]
 
   @@index([username])
@@ -2227,27 +2233,29 @@ model ScraperKuaishouVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperKuaishouSearchVideo {
-  id                 BigInt   @id @default(autoincrement())
-  post_id            String   @unique @db.VarChar(50)
-  url                String   @db.VarChar(1000)
-  description        String   @default("") @db.Text
-  hashtags           String[] @default([])
-  thumbnail_url      String?  @db.Text
-  video_duration     Int      @default(0)
-  author_id          String   @default("") @db.VarChar(50)
-  author_eid         String   @default("") @db.VarChar(50)
-  author_username    String   @default("") @db.VarChar(500)
-  author_avatar      String?  @db.Text
-  author_is_verified Boolean  @default(false)
-  view_count         BigInt   @default(0)
-  like_count         BigInt   @default(0)
-  comment_count      BigInt   @default(0)
-  share_count        BigInt   @default(0)
-  collect_count      BigInt   @default(0)
-  search_keyword     String   @default("") @db.VarChar(500)
-  date_posted        DateTime @db.Timestamptz(6)
-  created_at         DateTime @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime @updatedAt @db.Timestamptz(6)
+  id                     BigInt   @id @default(autoincrement())
+  post_id                String   @unique @db.VarChar(50)
+  url                    String   @db.VarChar(1000)
+  description            String   @default("") @db.Text
+  hashtags               String[] @default([])
+  thumbnail_url          String?  @db.Text
+  /// URL CDN gốc, cất lại trước khi thumbnail_url bị ghi đè bằng URL Cloudinary.
+  thumbnail_original_url String?  @db.Text
+  video_duration         Int      @default(0)
+  author_id              String   @default("") @db.VarChar(50)
+  author_eid             String   @default("") @db.VarChar(50)
+  author_username        String   @default("") @db.VarChar(500)
+  author_avatar          String?  @db.Text
+  author_is_verified     Boolean  @default(false)
+  view_count             BigInt   @default(0)
+  like_count             BigInt   @default(0)
+  comment_count          BigInt   @default(0)
+  share_count            BigInt   @default(0)
+  collect_count          BigInt   @default(0)
+  search_keyword         String   @default("") @db.VarChar(500)
+  date_posted            DateTime @db.Timestamptz(6)
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([view_count(sort: Desc)])
@@ -2347,25 +2355,27 @@ model ScraperBilibiliVideo {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperBilibiliSearchVideo {
-  id              BigInt   @id @default(autoincrement())
-  post_id         String   @unique @db.VarChar(20)
-  url             String   @db.VarChar(1000)
-  description     String   @default("") @db.Text
-  hashtags        String[] @default([])
-  thumbnail_url   String?  @db.Text
-  video_duration  Int      @default(0)
-  author_id       String   @default("") @db.VarChar(50)
-  author_username String   @default("") @db.VarChar(500)
-  author_avatar   String?  @db.Text
-  view_count      BigInt   @default(0)
-  like_count      BigInt   @default(0)
-  comment_count   BigInt   @default(0)
-  collect_count   BigInt   @default(0)
-  danmaku_count   BigInt   @default(0)
-  search_keyword  String   @default("") @db.VarChar(500)
-  date_posted     DateTime @db.Timestamptz(6)
-  created_at      DateTime @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime @updatedAt @db.Timestamptz(6)
+  id                     BigInt   @id @default(autoincrement())
+  post_id                String   @unique @db.VarChar(20)
+  url                    String   @db.VarChar(1000)
+  description            String   @default("") @db.Text
+  hashtags               String[] @default([])
+  thumbnail_url          String?  @db.Text
+  /// URL CDN gốc, cất lại trước khi thumbnail_url bị ghi đè bằng URL Cloudinary.
+  thumbnail_original_url String?  @db.Text
+  video_duration         Int      @default(0)
+  author_id              String   @default("") @db.VarChar(50)
+  author_username        String   @default("") @db.VarChar(500)
+  author_avatar          String?  @db.Text
+  view_count             BigInt   @default(0)
+  like_count             BigInt   @default(0)
+  comment_count          BigInt   @default(0)
+  collect_count          BigInt   @default(0)
+  danmaku_count          BigInt   @default(0)
+  search_keyword         String   @default("") @db.VarChar(500)
+  date_posted            DateTime @db.Timestamptz(6)
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([author_id])
   @@index([view_count(sort: Desc)])
@@ -4191,9 +4201,9 @@ model IdPhotoHistory {
 
   // Nhập tay trên form tạo ảnh thẻ — không tra cứu từ bảng users vì nhân viên được lên thẻ
   // không nhất thiết có tài khoản trong hệ thống này.
-  employee_name String
-  employee_team String
-  employee_id   String
+  employee_name         String
+  employee_team         String
+  employee_id           String
   /// Tiền tố chức danh in trước tên trên thẻ, vd "HĐ." → "HĐ. BẢO VIỆT" (xem thẻ mẫu thật).
   /// Nullable vì phần lớn thẻ không cần — để trống thì in mỗi tên, không đổi hành vi cũ.
   employee_title_prefix String?
@@ -4204,14 +4214,14 @@ model IdPhotoHistory {
 
   /// Ảnh gốc user upload, lưu base64 data URI (data:image/...;base64,...) — module này tự
   /// chứa, không phụ thuộc storage ngoài (Drive/S3) như các module upload khác trong dự án.
-  raw_image_data String @db.Text
+  raw_image_data       String  @db.Text
   /// Ảnh sau khi AI service (Gemini) ghép áo polo đen — null tới khi bước merge-outfit xong.
   processed_image_data String? @db.Text
 
   status        IdPhotoStatus @default(PENDING)
   error_message String?
   /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
-  pdf_url String?
+  pdf_url       String?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -4228,17 +4238,17 @@ model IdPhotoHistory {
 /// KHÔNG lưu trực tiếp tên màu vào DB để đổi màu khung không cần migration).
 enum IdPhotoPosition {
   NEW_STAFF_1_3M // Nhân viên mới 1-3 tháng
-  STAFF_OVER_3M  // Nhân viên trên 3 tháng
+  STAFF_OVER_3M // Nhân viên trên 3 tháng
   LEADER
   MANAGER
   BOD
 }
 
 enum IdPhotoStatus {
-  PENDING    // Bản ghi vừa tạo, chưa xử lý gì thêm
+  PENDING // Bản ghi vừa tạo, chưa xử lý gì thêm
   PROCESSING // Đang lưu ảnh vào bản ghi (dự phòng cho luồng xử lý bất đồng bộ sau này)
-  SUCCESS    // Tạo thành công, có đủ raw_image_data + processed_image_data
-  FAILED     // Lỗi trong lúc tạo bản ghi — xem error_message
+  SUCCESS // Tạo thành công, có đủ raw_image_data + processed_image_data
+  FAILED // Lỗi trong lúc tạo bản ghi — xem error_message
 }
 
 // ─────────────────────────────────────────────

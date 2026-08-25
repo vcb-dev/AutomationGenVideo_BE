@@ -3,6 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
 
+/**
+ * Phản hồi có thật sự là ảnh không?
+ *
+ * CDN của Facebook/TikTok khi chặn hotlink thường trả HTTP 200 kèm trang HTML báo lỗi chứ
+ * không trả mã lỗi. Không kiểm thì trang HTML đó được đẩy thẳng lên Cloudinary: tốn credit
+ * và tạo asset rác mà bản ghi DB vẫn tưởng là đã có ảnh.
+ */
+export function isImageContentType(contentType?: string | null): boolean {
+  return !!contentType && contentType.trim().toLowerCase().startsWith('image/');
+}
+
 @Injectable()
 export class CloudinaryStorageService {
   private readonly logger = new Logger(CloudinaryStorageService.name);
@@ -63,6 +74,12 @@ export class CloudinaryStorageService {
         },
       });
 
+      // Ném lỗi để rơi xuống nhánh fallback: Cloudinary tự fetch bằng IP của họ, đôi khi
+      // không bị CDN chặn như request đi từ server mình.
+      if (!isImageContentType(resp.headers['content-type'] as string)) {
+        throw new Error(`Phản hồi không phải ảnh (content-type: ${resp.headers['content-type']})`);
+      }
+
       const buffer = Buffer.from(resp.data);
       return new Promise<string | null>((resolve) => {
         const uploadStream = cloudinary.uploader.upload_stream(
@@ -71,7 +88,9 @@ export class CloudinaryStorageService {
             public_id: cleanPublicId,
             overwrite: true,
             resource_type: 'image',
-            transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+            // Chỉ quality: auto. fetch_format/f_auto là tuỳ chọn lúc PHÂN PHỐI, đặt ở bước
+            // upload thì Cloudinary bỏ qua — để lại chỉ gây hiểu nhầm là đã bật f_auto.
+            transformation: [{ quality: 'auto' }],
           },
           (error, result) => {
             if (error || !result) {
@@ -92,7 +111,7 @@ export class CloudinaryStorageService {
           public_id: cleanPublicId,
           overwrite: true,
           resource_type: 'image',
-          transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+          transformation: [{ quality: 'auto' }],
         });
         return result.secure_url;
       } catch (fallbackErr: any) {
