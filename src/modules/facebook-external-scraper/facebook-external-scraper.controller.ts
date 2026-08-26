@@ -88,4 +88,24 @@ export class FacebookExternalScraperController {
     }
     return this.service.scrapeByUrl(url);
   }
+
+  /**
+   * Đồng bộ tất cả fanpage.
+   *
+   * Chạy nền và trả ngay: cào hàng chục kênh, mỗi kênh nghỉ 5 giây giữa các lượt, nên chờ
+   * đồng bộ chắc chắn vượt timeout HTTP. Kết quả theo dõi qua scraping_status của từng kênh.
+   */
+  @Post('sync-all')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    if (this.service.isSyncAllRunning()) {
+      return { status: 'ok', already_running: true, message: 'Đang có một lượt đồng bộ chạy dở, chờ nó xong đã.' };
+    }
+    // KHÔNG await: cào hàng chục kênh, mỗi kênh nghỉ 5 giây, chắc chắn vượt timeout HTTP.
+    // Service tự ghi log kết quả; UI theo dõi qua scraping_status của từng kênh.
+    void this.service.syncAllPages().catch(() => undefined);
+    return { status: 'ok', message: 'Đã bắt đầu đồng bộ tất cả kênh. Theo dõi trạng thái trên từng thẻ.' };
+  }
+
 }

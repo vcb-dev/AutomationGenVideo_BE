@@ -540,11 +540,48 @@ export class TiktokScraperService {
     return { keywords, created, updated };
   }
 
+  /** Cron định kỳ: chỉ làm mới kênh đã đánh dấu chú ý. */
   async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
+    return this.refreshProfiles(true);
+  }
+
+  /**
+   * Nút "Đồng bộ tất cả" trên UI: làm mới MỌI kênh, không cần đánh dấu chú ý.
+   *
+   * Mỗi lượt gọi API bên thứ ba đều tính tiền, nên khoá lại không cho chạy hai lượt song
+   * song — người dùng nhấp đúp là trả tiền gấp đôi mà không được gì thêm.
+   */
+  async syncAllProfiles(): Promise<{ total: number; done: number; failed: number; already_running?: boolean }> {
+    if (this.syncAllRunning) {
+      return { total: 0, done: 0, failed: 0, already_running: true };
+    }
+    this.syncAllRunning = true;
+    try {
+      return await this.refreshProfiles(false);
+    } finally {
+      this.syncAllRunning = false;
+    }
+  }
+
+  private syncAllRunning = false;
+
+  /** Controller hỏi trước khi dispatch, để trả lời ngay thay vì chờ hết lượt cào. */
+  isSyncAllRunning(): boolean {
+    return this.syncAllRunning;
+  }
+
+  private async refreshProfiles(trackedOnly: boolean): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperTikTokProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: {
+        // Cron chỉ đụng kênh đã cào lần đầu: cào lần đầu tốn nhiều lượt API hơn hẳn cào
+        // delta, để cron tự ý làm là mở đường cho hoá đơn phình mà không ai theo dõi.
+        // Nút "Đồng bộ tất cả" thì ngược lại — có người bấm và đã xác nhận, nên phải với
+        // tới được cả kênh chưa có video nào.
+        ...(trackedOnly ? { is_tracked: true, is_initial_scraped: true } : {}),
+        scraping_status: { not: 'processing' },
+      },
       orderBy: { last_scraped_at: 'asc' },
     });
 
