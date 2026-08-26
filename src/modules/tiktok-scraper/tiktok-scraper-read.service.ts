@@ -24,7 +24,7 @@ interface TiktokVideoRow {
   post_id: string; shortcode: string; url: string; description: string; hashtags: string[];
   video_url: string | null; cdn_url: string | null; preview_image: string | null;
   video_duration: number; region: string;
-  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null;
+  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null; author_avatar_drive_url?: string | null;
   author_url: string; author_followers: bigint; author_is_verified: boolean;
   play_count: bigint; digg_count: bigint; comment_count: bigint; share_count: bigint; collect_count: bigint;
   music_title: string; search_keyword: string; date_posted: Date;
@@ -129,7 +129,7 @@ export class TiktokScraperReadService {
 
     const videos = await this.prisma.$queryRaw<TiktokVideoRow[]>`
       SELECT post_id, shortcode, url, description, hashtags, video_url, cdn_url, preview_image,
-             video_duration, region, author_id, author_username, author_display_name, author_avatar,
+             video_duration, region, author_id, author_username, author_display_name, author_avatar, author_avatar_drive_url,
              author_url, author_followers, author_is_verified, play_count, digg_count, comment_count,
              share_count, collect_count, music_title, search_keyword, date_posted
       FROM scraper_tiktok_videos
@@ -167,7 +167,7 @@ export class TiktokScraperReadService {
           id: v.author_id,
           username: v.author_username,
           display_name: v.author_display_name,
-          avatar_url: v.author_avatar,
+          avatar_url: v.author_avatar_drive_url || v.author_avatar,
           url: v.author_url,
           followers: Number(v.author_followers),
           is_verified: v.author_is_verified,

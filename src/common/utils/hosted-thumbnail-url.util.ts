@@ -5,11 +5,9 @@
  *   - ThumbnailMigrationService: bỏ qua dòng đã đẩy lên kho rồi.
  *   - upsertVideo của các scraper: giữ URL kho khi cào lại, KHÔNG ghi đè về CDN gốc.
  *
- * Trước đây bản kiểm tra chỉ nhận Google Drive. Khi chuyển sang Cloudinary, scraper cào
- * lại là ghi đè URL Cloudinary về CDN gốc, phút sau migration lại upload — vừa đốt quota
- * vừa để UI hiện URL CDN hay bị 403 trong lúc chờ.
- *
- * Google Drive vẫn nằm trong danh sách vì dữ liệu cũ còn trỏ vào đó.
+ * Google Drive là kho chính. `cloudinary.com` vẫn nằm trong danh sách vì 880 ảnh từ đợt thử
+ * Cloudinary còn trỏ vào đó và vẫn hiển thị được — bỏ ra khỏi danh sách thì scraper cào lại
+ * sẽ ghi đè chúng về URL CDN gốc, và ảnh đang dùng tốt bỗng thành 403 cho tới lượt cào sau.
  */
 const HOSTED_THUMBNAIL_HOSTS = [
   'cloudinary.com',

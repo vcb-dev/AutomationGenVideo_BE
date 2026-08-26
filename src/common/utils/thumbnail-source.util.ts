@@ -1,5 +1,5 @@
 /**
- * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên Cloudinary.
+ * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên kho ảnh (Google Drive).
  *
  * Ba CDN hỏng theo ba kiểu khác nhau. Kết luận dưới đây đo bằng request thật, không suy đoán:
  *
@@ -10,9 +10,9 @@
  *   kwimgs (Kuaishou)         nguyên URL → 200 nhưng content-type image/kvif
  *                             .kvif→.jpg → 400
  *                             bỏ query   → vẫn image/kvif
- *                             ⇒ định dạng riêng của Kuaishou, Cloudinary không giải mã
- *                               được ("Invalid image file"). Không có đường vòng bằng URL,
- *                               chỉ còn cách loại khỏi hàng đợi.
+ *                             ⇒ định dạng riêng của Kuaishou, kho ảnh lẫn trình duyệt đều
+ *                               không đọc được. Không có đường vòng bằng URL, chỉ còn cách
+ *                               loại khỏi hàng đợi.
  *
  *   tiktokcdn                 URL mới    → 200 image/jpeg
  *                             URL cũ     → 403 (x-expires đã qua)
@@ -23,7 +23,7 @@
 /** CDN mà chữ ký trong query là thứ gây lỗi chứ không phải điều kiện bắt buộc. */
 const STRIP_QUERY_HOSTS = ['rednotecdn.com'];
 
-/** Đuôi tệp Cloudinary không giải mã được. */
+/** Đuôi tệp kho ảnh và trình duyệt không đọc được. */
 const UNSUPPORTED_EXTENSIONS = ['.kvif'];
 
 export function normalizeThumbnailSourceUrl(url: string): string {
@@ -44,8 +44,8 @@ export function isUnsupportedThumbnailFormat(url?: string | null): boolean {
  * Mệnh đề SQL loại các định dạng không dùng được ngay từ truy vấn.
  *
  * Phải loại ở tầng SQL chứ không phải sau khi tải về: 4312/6177 thumbnail Kuaishou là .kvif,
- * để chúng lọt vào batch thì vừa đốt quota Cloudinary vừa làm log ngập lỗi mỗi phút, và tệ
- * nhất là chiếm chỗ của những dòng tải được.
+ * để chúng lọt vào batch thì vừa tốn lượt tải vừa làm log ngập lỗi mỗi phút, và tệ nhất là
+ * chiếm chỗ của những dòng tải được.
  */
 export function supportedThumbnailSql(expr: string): string {
   return UNSUPPORTED_EXTENSIONS.map((ext) => `${expr} NOT LIKE '%${ext}%'`).join(' AND ');
