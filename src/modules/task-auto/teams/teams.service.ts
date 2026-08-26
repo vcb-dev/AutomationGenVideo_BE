@@ -10,12 +10,13 @@ import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS,
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 import { findProductBySku, findTeamProductBySku, backfillTeamSourcesForNewTeamProduct } from '../../../common/utils/catalog-link.util'
 import { runOrNotFound } from '../../../common/utils/prisma-not-found.util'
+import { OmsIntegrationService } from '../../oms-integration/oms-integration.service'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
 @Injectable()
 export class TaskAutoTeamsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private oms: OmsIntegrationService) {}
 
   /** Tháng hiện tại (yyyy-MM) theo giờ VN — dùng để tự thêm item mới đẩy lên kho tổng vào kho tháng đang chạy */
   private currentMonth(): string {
@@ -387,6 +388,45 @@ export class TaskAutoTeamsService {
     const team = await this.findOneForAuth(teamId)
     this.assertCanManageProduct(team, userId, userRoles, 'add')
 
+    if (dto.oms_variant_id) {
+      if (!dto.oms_product_id) throw new BadRequestException('oms_product_id là bắt buộc khi có oms_variant_id')
+      const dup = await this.prisma.teamProduct.findFirst({
+        where: { team_id: teamId, oms_variant_id: dto.oms_variant_id },
+        select: { id: true },
+      })
+      if (dup) throw new ConflictException('Sản phẩm OMS này đã được kéo vào kho team')
+      if (!dto.brand_type) throw new BadRequestException('brand_type là bắt buộc khi kéo sản phẩm từ OMS')
+
+      const { product, variant } = await this.oms.getProductVariant(dto.oms_product_id, dto.oms_variant_id)
+      await this.assertTeamProductSkuAvailable(teamId, variant.sku)
+
+      const teamProduct = await this.prisma.teamProduct.create({
+        data: {
+          team_id: teamId,
+          oms_product_id: dto.oms_product_id,
+          oms_variant_id: dto.oms_variant_id,
+          sku: variant.sku,
+          name: dto.name ?? product.name,
+          brand_type: dto.brand_type,
+          image_url: dto.image_url ?? variant.image_url ?? product.image_url,
+          image_urls: dto.image_urls ?? product.images.map((i) => i.url),
+          price: dto.price ?? variant.price,
+          market: dto.market,
+          price_segment: dto.price_segment,
+          priority_score: dto.priority_score ?? 0,
+          cooldown_days: dto.cooldown_days,
+          material_id: dto.material_id,
+          product_line_id: dto.product_line_id,
+          classification_id: dto.classification_id,
+          is_active: dto.is_active ?? true,
+          added_by_id: userId,
+        },
+        include: this.teamProductInclude,
+      })
+      await backfillTeamSourcesForNewTeamProduct(this.prisma, teamId, teamProduct.sku, teamProduct.id)
+      return teamProduct
+    }
+
     if (dto.source_product_id) {
       const source = await resolveProductSnapshot(this.prisma, dto.source_product_id)
       if (!source) throw new NotFoundException('Không tìm thấy sản phẩm gốc')
@@ -427,6 +467,36 @@ export class TaskAutoTeamsService {
     })
     await backfillTeamSourcesForNewTeamProduct(this.prisma, teamId, teamProduct.sku, teamProduct.id)
     return teamProduct
+  }
+
+  /** Cập nhật lại sku/tên/giá/ảnh của 1 TeamProduct theo dữ liệu mới nhất từ OMS — giữ nguyên
+   *  field nghiệp vụ (material/classification/priority/cooldown...) đã được leader điền. */
+  async refreshTeamProductFromOms(teamId: string, teamProductId: string, userId: string, userRoles: string[]) {
+    const team = await this.findOneForAuth(teamId)
+    this.assertCanManageProduct(team, userId, userRoles, 'edit')
+
+    const entry = await this.prisma.teamProduct.findFirst({ where: { id: teamProductId, team_id: teamId } })
+    if (!entry) throw new NotFoundException('Sản phẩm không có trong kho team')
+    if (!entry.oms_product_id || !entry.oms_variant_id) {
+      throw new BadRequestException('Sản phẩm này không được kéo từ OMS, không thể làm mới')
+    }
+
+    const { product, variant } = await this.oms.getProductVariant(entry.oms_product_id, entry.oms_variant_id)
+    if (variant.sku !== entry.sku) {
+      await this.assertTeamProductSkuAvailable(teamId, variant.sku)
+    }
+
+    return this.prisma.teamProduct.update({
+      where: { id: teamProductId },
+      data: {
+        sku: variant.sku,
+        name: product.name,
+        price: variant.price,
+        image_url: variant.image_url ?? product.image_url,
+        image_urls: product.images.map((i) => i.url),
+      },
+      include: this.teamProductInclude,
+    })
   }
 
   async updateTeamProduct(teamId: string, teamProductId: string, dto: UpdateTeamProductDto, userId: string, userRoles: string[]) {

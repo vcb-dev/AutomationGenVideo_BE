@@ -18,7 +18,7 @@ describe('TaskAutoTasksService.getHeaderCounts', () => {
         }),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, countCalls };
   }
 

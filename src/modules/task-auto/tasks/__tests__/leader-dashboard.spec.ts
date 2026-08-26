@@ -41,7 +41,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats);
+    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats, {} as any);
     return { service, prisma };
   }
 
@@ -143,7 +143,7 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -255,7 +255,7 @@ describe('TaskAutoTasksService.getDashboard — chỉ hiện member là editor/c
         ),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -366,7 +366,7 @@ describe('TaskAutoTasksService — product_by_category (qua getDashboard)', () =
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -544,7 +544,7 @@ describe('TaskAutoTasksService — content_new / content_old (qua getDashboard)'
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -718,7 +718,7 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 

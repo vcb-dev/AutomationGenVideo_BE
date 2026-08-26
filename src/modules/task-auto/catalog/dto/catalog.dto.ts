@@ -240,6 +240,11 @@ export class CreateTeamProductDto {
   @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
   @IsString() @IsOptional() source_product_id?: string;
 
+  @ApiPropertyOptional({ description: 'Set kèm oms_variant_id để kéo 1 SKU cụ thể từ OMS (kho tổng) về kho team' })
+  @IsString() @IsOptional() oms_product_id?: string;
+  @ApiPropertyOptional({ description: 'ID variant (SKU thật) bên OMS — bắt buộc nếu có oms_product_id' })
+  @IsString() @IsOptional() oms_variant_id?: string;
+
   @ApiPropertyOptional() @IsString() @IsOptional() sku?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;

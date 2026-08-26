@@ -32,7 +32,7 @@ describe('TaskAutoTasksService — ghi nhận assigned_by_id ở create()/update
       notification: { create: jest.fn(async () => ({})) },
     };
     const push: any = { sendToUser: jest.fn(async () => ({})) };
-    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any, {} as any);
     return { service, prisma };
   }
 
