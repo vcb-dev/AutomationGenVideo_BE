@@ -13,7 +13,8 @@ export class AccountsController {
   @Get()
   @ApiOperation({ summary: 'Lấy danh sách tài khoản MXH đã kết nối' })
   findAll(@Request() req) {
-    return this.accountsService.findAll(req.user.id);
+    // ADMIN/MANAGER thấy toàn bộ kèm chủ sở hữu; LEADER/MEMBER chỉ thấy tài khoản mình gắn.
+    return this.accountsService.findAll(req.user.id, req.user.roles ?? []);
   }
 
   @Get('expiring')
