@@ -1,5 +1,5 @@
 /**
- * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên Cloudinary.
+ * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên kho ảnh (Google Drive).
  *
  * Ba CDN hỏng theo ba kiểu khác nhau. Kết luận dưới đây đo bằng request thật, không suy đoán:
  *

@@ -166,7 +166,7 @@ export class ThumbnailMigrationService {
 
       try {
         // Target ghi đè tại chỗ: cất URL CDN gốc lại cùng lúc. COALESCE để lần chạy sau
-        // không đè bản gốc bằng chính URL Cloudinary vừa ghi ở lần trước.
+        // không đè bản gốc bằng chính URL kho ảnh vừa ghi ở lần trước.
         if (originalColumn) {
           await this.prisma.$executeRawUnsafe(
             `UPDATE "${table}" SET "${destColumn}" = $1, "${originalColumn}" = COALESCE("${originalColumn}", $3) WHERE id = $2`,

@@ -5,13 +5,13 @@ import {
 } from '../thumbnail-source.util';
 
 /**
- * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên Cloudinary.
+ * Chuẩn hoá URL ảnh nguồn trước khi tải về đẩy lên kho ảnh (Google Drive).
  *
  * Ba CDN hỏng theo ba kiểu khác nhau, đều đã đo bằng request thật:
  *   - rednotecdn (XiaoHongShu): nguyên URL trả 498 {"code":1007}; bỏ query string thì ra
  *     JPEG 390KB. Tham số sign=/t= là thứ gây lỗi.
  *   - kwimgs (Kuaishou): trả 200 kèm content-type image/kvif — định dạng riêng của Kuaishou,
- *     Cloudinary không giải mã được nên báo "Invalid image file". Đổi đuôi sang .jpg thì
+ *     kho ảnh lẫn trình duyệt đều không đọc được. Đổi đuôi sang .jpg thì
  *     CDN trả 400, tức là không có đường vòng.
  *   - tiktokcdn: không chặn, chỉ là chữ ký x-expires hết hạn. Không sửa được bằng URL.
  */

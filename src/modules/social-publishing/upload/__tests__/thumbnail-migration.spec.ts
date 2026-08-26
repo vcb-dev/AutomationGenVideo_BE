@@ -65,8 +65,9 @@ describe('publicIdOf — không hai bảng nào được ghi đè ảnh của nh
 
 describe('isHostedThumbnailUrl — nhận diện ảnh đã nằm trong kho của mình', () => {
   it('nhận URL Cloudinary', () => {
-    // Thiếu nhánh này thì scraper cào lại sẽ ghi đè URL Cloudinary về CDN gốc, phút sau
-    // migration upload lại — vòng lặp đốt quota, và giữa hai bước UI hiện URL hay bị 403.
+    // Hơn 1.000 dòng trong DB còn trỏ vào Cloudinary từ đợt thử trước và vẫn hiển thị tốt.
+    // Bỏ nhánh này thì scraper cào lại sẽ ghi đè chúng về URL CDN gốc — ảnh đang dùng được
+    // bỗng thành 403 cho tới lượt cào sau.
     expect(isHostedThumbnailUrl('https://res.cloudinary.com/demo/image/upload/v1/a.jpg')).toBe(true);
   });
 
@@ -149,9 +150,9 @@ describe('ThumbnailMigrationService — dòng hỏng không được chặn cả
 
   it('target ghi đè tại chỗ phải cất URL CDN gốc lại trước khi đè lên', async () => {
     // 5 target inPlace ghi URL kho đè thẳng lên cột nguồn. Trước khi có cột lưu bản gốc,
-    // URL CDN ban đầu mất vĩnh viễn: Cloudinary xoá asset (Free plan) hoặc upload sai ảnh
-    // là không còn đường lấy lại, kể cả cào lại cũng không vì isHostedThumbnailUrl giữ
-    // nguyên URL kho. COALESCE để lần chạy sau không đè bản gốc bằng URL Cloudinary.
+    // URL CDN ban đầu mất vĩnh viễn: kho ảnh mất tệp hoặc upload sai ảnh là không còn
+    // đường lấy lại, kể cả cào lại cũng không vì isHostedThumbnailUrl giữ nguyên URL kho.
+    // COALESCE để lần chạy sau không đè bản gốc bằng chính URL kho vừa ghi.
     const inPlaceTarget = {
       table: 'scraper_douyin_videos',
       sourceColumn: 'preview_image',
