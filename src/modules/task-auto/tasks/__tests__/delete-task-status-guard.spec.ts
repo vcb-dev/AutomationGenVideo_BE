@@ -29,7 +29,7 @@ describe('TaskAutoTasksService.remove — xoá task ở mọi trạng thái, the
         ),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma, deleteCalls };
   }
 

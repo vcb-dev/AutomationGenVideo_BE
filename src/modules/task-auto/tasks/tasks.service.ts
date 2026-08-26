@@ -22,6 +22,7 @@ import {
 } from "./dto/task.dto";
 import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
+import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -42,6 +43,8 @@ const CATALOG_FIELDS = [
   "product_id",
   "editor_product_id",
   "team_product_id",
+  "oms_product_id",
+  "oms_variant_id",
   "source_outro_id",
   "source_extra_id",
   "source_workshop_id",
@@ -65,7 +68,59 @@ export class TaskAutoTasksService {
     private videoService: TaskAutoVideoService,
     private push: PushService,
     private linkStats: TaskPublishedLinkStatsService,
+    private oms: OmsIntegrationService,
   ) {}
+
+  /**
+   * Task chọn sản phẩm trực tiếp từ kho tổng (OMS) không có Product local nào để trỏ vào —
+   * hệ thống tự tìm-hoặc-tạo (upsert theo oms_variant_id) 1 EditorProduct cho editor được giao,
+   * rồi Task trỏ editor_product_id vào đó thay vì product_id. Field nghiệp vụ (material/
+   * classification/priority/cooldown...) để trống, editor/leader tự điền sau ở kho cá nhân.
+   */
+  private async findOrCreateEditorProductFromOms(
+    userId: string,
+    teamId: string,
+    omsProductId: string,
+    omsVariantId: string,
+  ): Promise<string> {
+    const existing = await this.prisma.editorProduct.findFirst({
+      where: { user_id: userId, oms_variant_id: omsVariantId },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+
+    const { product, variant } = await this.oms.getProductVariant(omsProductId, omsVariantId);
+
+    const skuTaken = await this.prisma.editorProduct.findFirst({
+      where: { user_id: userId, sku: variant.sku },
+      select: { id: true },
+    });
+    if (skuTaken) {
+      throw new BadRequestException(
+        `SKU "${variant.sku}" đã có sẵn trong kho cá nhân của editor này (không liên kết OMS) — không thể tự tạo, cần xử lý thủ công`,
+      );
+    }
+
+    const team = await this.prisma.team.findUnique({ where: { id: teamId }, select: { brand_type: true } });
+
+    const created = await this.prisma.editorProduct.create({
+      data: {
+        user_id: userId,
+        added_by_id: userId,
+        oms_product_id: omsProductId,
+        oms_variant_id: omsVariantId,
+        sku: variant.sku,
+        name: product.name,
+        brand_type: team?.brand_type ?? "DO_DA",
+        image_url: variant.image_url ?? product.image_url,
+        image_urls: product.images.map((i) => i.url),
+        price: variant.price,
+        is_active: true,
+      },
+      select: { id: true },
+    });
+    return created.id;
+  }
 
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
   // (create/update/submit/review) trả về task để FE cập nhật cache/detail panel.
@@ -756,6 +811,12 @@ export class TaskAutoTasksService {
       );
     }
 
+    if (dto.oms_variant_id && !dto.oms_product_id) {
+      throw new BadRequestException(
+        "oms_product_id là bắt buộc khi có oms_variant_id",
+      );
+    }
+
     const team = await this.prisma.team.findUnique({
       where: { id: dto.team_id },
     });
@@ -818,8 +879,29 @@ export class TaskAutoTasksService {
       }
     }
 
+    // Sản phẩm chọn trực tiếp từ kho tổng (OMS) không có Product local để trỏ vào. Nếu đã biết
+    // assignee ngay lúc tạo (self-assign hoặc dto truyền sẵn), materialize luôn vào kho cá nhân
+    // editor đó và dùng editor_product_id như bình thường; nếu chưa (task tạo PENDING), tạm giữ
+    // oms_product_id/oms_variant_id trên Task, materialize sau lúc gán assignee — xem update().
+    let resolvedEditorProductId = dto.editor_product_id;
+    let pendingOmsProductId: string | undefined;
+    let pendingOmsVariantId: string | undefined;
+    if (dto.oms_variant_id) {
+      if (dto.assignee_id) {
+        resolvedEditorProductId = await this.findOrCreateEditorProductFromOms(
+          dto.assignee_id,
+          dto.team_id,
+          dto.oms_product_id!,
+          dto.oms_variant_id,
+        );
+      } else {
+        pendingOmsProductId = dto.oms_product_id;
+        pendingOmsVariantId = dto.oms_variant_id;
+      }
+    }
+
     const hasProduct =
-      dto.product_id || dto.editor_product_id || dto.team_product_id;
+      dto.product_id || resolvedEditorProductId || dto.team_product_id || pendingOmsVariantId;
 
     // Không dùng interactive transaction ($transaction(async tx => ...)) ở đây:
     // DATABASE_URL chạy qua Supabase pgbouncer (transaction-pooling mode, port 6543),
@@ -838,8 +920,8 @@ export class TaskAutoTasksService {
             ? { team_content_id: dto.team_content_id }
             : {}),
           ...(dto.product_id ? { product_id: dto.product_id } : {}),
-          ...(dto.editor_product_id
-            ? { editor_product_id: dto.editor_product_id }
+          ...(resolvedEditorProductId
+            ? { editor_product_id: resolvedEditorProductId }
             : {}),
           ...(dto.team_product_id
             ? { team_product_id: dto.team_product_id }
@@ -861,8 +943,10 @@ export class TaskAutoTasksService {
         editor_content_id: dto.editor_content_id ?? null,
         team_content_id: dto.team_content_id ?? null,
         product_id: dto.product_id ?? null,
-        editor_product_id: dto.editor_product_id ?? null,
+        editor_product_id: resolvedEditorProductId ?? null,
         team_product_id: dto.team_product_id ?? null,
+        oms_product_id: pendingOmsProductId ?? null,
+        oms_variant_id: pendingOmsVariantId ?? null,
         content_line_id: dto.content_line_id ?? resolvedContentLineId,
         source_outro_id: dto.source_outro_id ?? null,
         source_extra_id: dto.source_extra_id ?? null,
@@ -907,7 +991,10 @@ export class TaskAutoTasksService {
   ) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { task_type: true, assignee_id: true, status: true, team_id: true },
+      select: {
+        task_type: true, assignee_id: true, status: true, team_id: true,
+        editor_product_id: true, oms_product_id: true, oms_variant_id: true,
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
 
@@ -964,6 +1051,45 @@ export class TaskAutoTasksService {
       // → assigned_by_id === assignee_id, không bị khoá xoá. Leader/admin/manager giao hoặc
       // reassign cho người khác → assigned_by_id khác assignee_id, bị khoá xoá với thành viên.
       data.assigned_by_id = dto.assignee_id ? userId : null;
+    }
+    if (dto.oms_variant_id) {
+      // Client đang chọn 1 sản phẩm OMS mới cho task này (sửa task EXTRA) — materialize ngay nếu
+      // đã biết assignee (kể cả khi assignee cũng đang được set cùng lúc trong request này).
+      if (!dto.oms_product_id) {
+        throw new BadRequestException(
+          "oms_product_id là bắt buộc khi có oms_variant_id",
+        );
+      }
+      const effectiveAssigneeId =
+        dto.assignee_id !== undefined ? dto.assignee_id : task.assignee_id;
+      if (effectiveAssigneeId) {
+        data.editor_product_id = await this.findOrCreateEditorProductFromOms(
+          effectiveAssigneeId,
+          task.team_id,
+          dto.oms_product_id,
+          dto.oms_variant_id,
+        );
+        data.oms_product_id = null;
+        data.oms_variant_id = null;
+      }
+      // else: chưa biết assignee — giữ nguyên oms_product_id/oms_variant_id (đã có trong `data`
+      // từ spread dto ở trên), materialize sau ở nhánh dưới khi assignee được set lần đầu.
+    } else if (
+      dto.assignee_id &&
+      dto.assignee_id !== task.assignee_id &&
+      task.oms_variant_id &&
+      !task.editor_product_id
+    ) {
+      // Task tạo PENDING với sản phẩm chọn từ kho tổng (OMS) chưa materialize được lúc tạo (chưa
+      // có assignee) — giờ assignee vừa được set lần đầu, materialize vào kho cá nhân của họ.
+      data.editor_product_id = await this.findOrCreateEditorProductFromOms(
+        dto.assignee_id,
+        task.team_id,
+        task.oms_product_id!,
+        task.oms_variant_id,
+      );
+      data.oms_product_id = null;
+      data.oms_variant_id = null;
     }
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;

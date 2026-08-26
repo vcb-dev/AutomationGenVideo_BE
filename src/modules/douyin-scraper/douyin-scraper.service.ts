@@ -2,13 +2,12 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../task-auto/notifications/notifications.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { DouyinAiClientService, ParsedDouyinVideo } from './douyin-ai-client.service';
 import { DouyinScraperReadService } from './douyin-scraper-read.service';
+import { isHostedThumbnailUrl } from '../../common/utils/hosted-thumbnail-url.util';
 
-function isDriveUrl(url?: string | null): boolean {
-  return !!url && (url.includes('drive.google.com') || url.includes('googleusercontent.com'));
-}
 
 const STALE_LOCK_MINUTES = 30;
 
@@ -63,7 +62,7 @@ export class DouyinScraperService {
   private async upsertVideo(v: ParsedDouyinVideo, keywordOverride?: string): Promise<{ created: boolean }> {
     const existing = await this.prisma.scraperDouyinVideo.findUnique({ where: { post_id: v.post_id } });
 
-    const preview_image = existing && isDriveUrl(existing.preview_image) ? existing.preview_image : v.thumbnail_url;
+    const preview_image = existing && isHostedThumbnailUrl(existing.preview_image) ? existing.preview_image : v.thumbnail_url;
     // keywordOverride ưu tiên hơn v.search_keyword: khi user gõ tiếng Việt rồi dịch sang
     // tiếng Trung để query, ta vẫn muốn LƯU tiếng Việt cho dễ đọc ở bộ lọc/gợi ý.
     // (Nhánh cào profile truyền override='@label' và v.search_keyword rỗng nên không đổi.)
@@ -292,6 +291,32 @@ export class DouyinScraperService {
     const newValue = !profile[field];
     await this.prisma.scraperDouyinProfile.update({ where: { id }, data: { [field]: newValue } });
     return newValue;
+  }
+
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Douyin là nền tảng duy nhất KHÔNG có khoá ngoại từ video sang profile: video nằm
+  // trong kho dùng chung, nối với kênh bằng chuỗi search_keyword = '@' + username do
+  // scrapeProfileVideos ghi vào. Hệ quả cần biết: video nào lần đầu vào kho qua tìm kiếm
+  // từ khoá sẽ giữ từ khoá đó (upsertVideo ưu tiên search_keyword cũ), nên dù sau này
+  // xuất hiện trong lần cào kênh thì vẫn KHÔNG bị xoá theo kênh.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperDouyinProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    // Chưa có username thì '@' + '' = '@' — đem đi deleteMany sẽ quét bừa sang kênh khác.
+    let videosDeleted = 0;
+    if (profile.username) {
+      const { count } = await this.prisma.scraperDouyinVideo.deleteMany({
+        where: { search_keyword: `@${profile.username}` },
+      });
+      videosDeleted = count;
+    }
+    await this.prisma.scraperDouyinProfile.delete({ where: { id } });
+
+    const name = profile.nickname || profile.username || profile.sec_user_id;
+    this.logger.warn(`[DOUYIN] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${videosDeleted} video.`);
+    return buildDeleteChannelResult(id, name, videosDeleted);
   }
 
   // Tự mở khóa profile bị kẹt ở 'processing' quá lâu (worker crash giữa chừng), tránh

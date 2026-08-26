@@ -21,7 +21,7 @@ describe('TaskAutoTeamsService — lọc content theo tuyến + chi tiết TeamC
         findUnique: jest.fn(async () => null),
       },
     };
-    const service = new TaskAutoTeamsService(prisma);
+    const service = new TaskAutoTeamsService(prisma, {} as any);
     return { service, prisma, getWhere: () => findManyCalls[0]?.where };
   }
 
