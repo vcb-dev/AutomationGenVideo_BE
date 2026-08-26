@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -40,6 +40,15 @@ export class FacebookExternalScraperController {
     const result = await this.readService.fanpageDetail(BigInt(fanpageId));
     if (!result) throw new HttpException({ error: 'Not found' }, HttpStatus.NOT_FOUND);
     return result;
+  }
+
+  // Xoá cứng fanpage: bản ghi + toàn bộ reels/lịch sử chỉ số biến mất vĩnh viễn.
+  // Chỉ ADMIN/LEADER, khớp phân quyền của scrape-reels và scrape-by-url.
+  @Delete(':fanpage_id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async remove(@Param('fanpage_id') fanpageId: string) {
+    return this.service.deleteFanpage(BigInt(fanpageId));
   }
 
   @Post(':fanpage_id/toggle')

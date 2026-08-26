@@ -8,6 +8,7 @@ import {
   KuaishouAiClientService, ParsedKuaishouProfile, ParsedKuaishouVideo, ParsedKuaishouSearchVideo,
 } from './kuaishou-ai-client.service';
 import { KuaishouScraperReadService } from './kuaishou-scraper-read.service';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
 const STALE_LOCK_MINUTES = 30;
 
@@ -444,6 +445,23 @@ export class KuaishouScraperService {
   }
 
   // Tự mở khóa profile bị kẹt ở 'processing' quá lâu (worker crash giữa chừng).
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Video/metrics gắn khoá ngoại onDelete Cascade nên Postgres tự dọn bảng con.
+  // Phải ĐẾM TRƯỚC khi xoá: đếm sau thì cascade đã quét sạch và con số báo về luôn là 0,
+  // trong khi FE dùng đúng con số này để nói người dùng vừa mất bao nhiêu video.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperKuaishouProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    const videosDeleted = await this.prisma.scraperKuaishouVideo.count({ where: { profile_id: id } });
+    await this.prisma.scraperKuaishouProfile.delete({ where: { id } });
+
+    const name = profile.nickname || profile.username || profile.user_id || '';
+    this.logger.warn(`[KUAISHOU] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${videosDeleted} video.`);
+    return buildDeleteChannelResult(id, name, videosDeleted);
+  }
+
   private async resetStaleLocks(): Promise<void> {
     const cutoff = new Date(Date.now() - STALE_LOCK_MINUTES * 60_000);
     const result = await this.prisma.scraperKuaishouProfile.updateMany({
