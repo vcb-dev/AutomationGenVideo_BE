@@ -12,7 +12,6 @@ import { MediaLibraryController } from './upload/media-library.controller';
 import { MediaLibraryService } from './upload/media-library.service';
 import { ChunkedUploadController } from './upload/chunked-upload.controller';
 import { ThumbnailMigrationService } from './upload/thumbnail-migration.service';
-import { CloudinaryStorageService } from './upload/cloudinary-storage.service';
 
 // Crypto
 import { CryptoService } from './crypto/crypto.service';
@@ -76,7 +75,6 @@ import { HashtagController } from './hashtag/hashtag.controller';
     // Core
     CryptoService,
     GoogleDriveStorageService,
-    CloudinaryStorageService,
     UploadService,
     MediaLibraryService,
     ThumbnailMigrationService,
@@ -103,6 +101,6 @@ import { HashtagController } from './hashtag/hashtag.controller';
     // Drafts
     DraftsService,
   ],
-  exports: [AccountsService, PublishService, GoogleDriveStorageService, CloudinaryStorageService],
+  exports: [AccountsService, PublishService, GoogleDriveStorageService],
 })
 export class SocialPublishingModule {}

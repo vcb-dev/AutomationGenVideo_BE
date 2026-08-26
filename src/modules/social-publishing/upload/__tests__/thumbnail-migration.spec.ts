@@ -1,9 +1,8 @@
 import { ThumbnailMigrationService, THUMBNAIL_TARGETS, publicIdOf } from '../thumbnail-migration.service';
 import { isHostedThumbnailUrl } from '../../../../common/utils/hosted-thumbnail-url.util';
-import { isImageContentType } from '../cloudinary-storage.service';
 
 /**
- * Đẩy thumbnail/avatar từ CDN gốc lên Cloudinary.
+ * Đẩy thumbnail/avatar từ CDN gốc lên Google Drive.
  *
  * AI service chỉ ghi URL CDN thô vào DB. CDN của Facebook/Douyin/TikTok chặn hotlink (403)
  * và URL còn kèm tham số hết hạn, nên BE phải tự tải ảnh về rồi đẩy lên kho của mình.
@@ -19,6 +18,41 @@ describe('publicIdOf — không hai bảng nào được ghi đè ảnh của nh
     const ids = THUMBNAIL_TARGETS.map((t) => publicIdOf(t, 42n));
 
     expect(new Set(ids).size).toBe(THUMBNAIL_TARGETS.length);
+  });
+
+  it('phủ hết bảng video của mọi nền tảng — thiếu bảng nào là nền tảng đó vĩnh viễn không có ảnh', () => {
+    // scraper_youtube_shorts từng bị bỏ quên: 38 short có URL ảnh đầy đủ nhưng 0% vào được
+    // kho, và chờ bao lâu cũng vô ích vì cron không bao giờ đọc tới bảng đó.
+    const VIDEO_TABLES = [
+      'scraper_facebook_reels',
+      'scraper_instagram_reels',
+      'scraper_youtube_shorts',
+      'scraper_tiktok_videos',
+      'scraper_tiktok_profile_videos',
+      'scraper_douyin_videos',
+      'scraper_xiaohongshu_videos',
+      'scraper_kuaishou_videos',
+      'scraper_bilibili_videos',
+    ];
+    const declared = THUMBNAIL_TARGETS.map((t) => t.table);
+
+    expect(VIDEO_TABLES.filter((t) => !declared.includes(t))).toEqual([]);
+  });
+
+  it('phủ hết cột ảnh tác giả — cột này hiển thị trên thẻ video nhưng từng không ai đẩy lên kho', () => {
+    // Năm bảng dưới đây lưu ảnh tác giả ngay trong bảng video (không lấy từ bảng profile),
+    // và read service trả thẳng ra UI. Không khai báo thì URL CDN gốc nằm đó tới lúc hết
+    // hạn rồi 403 — đo thực tế trên TikTok: 442/442 dòng author_avatar đều đã chết.
+    const AUTHOR_AVATAR_TABLES = [
+      'scraper_tiktok_videos',
+      'scraper_douyin_videos',
+      'scraper_xiaohongshu_videos',
+      'scraper_kuaishou_search_videos',
+      'scraper_bilibili_search_videos',
+    ];
+    const declared = THUMBNAIL_TARGETS.filter((t) => t.sourceColumn === 'author_avatar').map((t) => t.table);
+
+    expect(AUTHOR_AVATAR_TABLES.filter((t) => !declared.includes(t))).toEqual([]);
   });
 
   it('public_id gắn với folder nền tảng nên hai nền tảng có thể trùng tên tệp', () => {
@@ -53,28 +87,6 @@ describe('isHostedThumbnailUrl — nhận diện ảnh đã nằm trong kho củ
   });
 });
 
-describe('isImageContentType — chặn rác trước khi tốn lượt upload', () => {
-  it('nhận các định dạng ảnh CDN hay trả về', () => {
-    expect(isImageContentType('image/jpeg')).toBe(true);
-    expect(isImageContentType('image/webp')).toBe(true);
-    // CDN hay kèm charset hoặc viết hoa
-    expect(isImageContentType('IMAGE/PNG')).toBe(true);
-    expect(isImageContentType('image/avif; charset=utf-8')).toBe(true);
-  });
-
-  it('KHÔNG nhận trang lỗi HTML', () => {
-    // CDN Facebook/TikTok khi chặn hotlink thường trả HTTP 200 kèm trang HTML báo lỗi.
-    // Đẩy nguyên trang đó lên Cloudinary vừa tốn credit vừa tạo asset rác.
-    expect(isImageContentType('text/html; charset=utf-8')).toBe(false);
-    expect(isImageContentType('application/json')).toBe(false);
-  });
-
-  it('thiếu header thì không đoán bừa là ảnh', () => {
-    expect(isImageContentType(undefined)).toBe(false);
-    expect(isImageContentType('')).toBe(false);
-  });
-});
-
 describe('ThumbnailMigrationService — dòng hỏng không được chặn cả hàng đợi', () => {
   const TARGET = {
     table: 'scraper_facebook_reels',
@@ -93,15 +105,14 @@ describe('ThumbnailMigrationService — dòng hỏng không được chặn cả
       $queryRawUnsafe: jest.fn(async () => rows),
       $executeRawUnsafe: jest.fn(async () => 1),
     };
-    const googleDrive: any = { isAvailable: () => false, uploadThumbnailFromUrl: jest.fn() };
-    const cloudinary: any = {
+    const googleDrive: any = {
       isAvailable: () => true,
       uploadThumbnailFromUrl: jest.fn(async (url: string) =>
-        failsFor(url) ? null : 'https://res.cloudinary.com/x/a.jpg',
+        failsFor(url) ? '' : 'https://lh3.googleusercontent.com/d/abc',
       ),
     };
-    const service = new ThumbnailMigrationService(prisma, googleDrive, cloudinary);
-    return { service, prisma, cloudinary };
+    const service = new ThumbnailMigrationService(prisma, googleDrive);
+    return { service, prisma, uploader: googleDrive };
   }
 
   it('không thử lại ngay dòng vừa hỏng ở lượt chạy kế tiếp', async () => {
@@ -109,13 +120,13 @@ describe('ThumbnailMigrationService — dòng hỏng không được chặn cả
     // chết đó. URL CDN Facebook hết hạn là hỏng vĩnh viễn, nên migration đứng im mãi mãi
     // và không bao giờ chạm tới dòng cũ hơn.
     const rows = [{ id: 1n, src: 'https://scontent.fbcdn.net/hong.jpg' }];
-    const { service, cloudinary } = build(rows);
+    const { service, uploader } = build(rows);
 
     await (service as any).migrateTarget(TARGET);
-    expect(cloudinary.uploadThumbnailFromUrl).toHaveBeenCalledTimes(1);
+    expect(uploader.uploadThumbnailFromUrl).toHaveBeenCalledTimes(1);
 
     await (service as any).migrateTarget(TARGET);
-    expect(cloudinary.uploadThumbnailFromUrl).toHaveBeenCalledTimes(1);
+    expect(uploader.uploadThumbnailFromUrl).toHaveBeenCalledTimes(1);
   });
 
   it('dòng hỏng bị bỏ qua nhưng dòng lành phía sau vẫn được xử lý', async () => {
@@ -123,15 +134,15 @@ describe('ThumbnailMigrationService — dòng hỏng không được chặn cả
       { id: 1n, src: 'https://scontent.fbcdn.net/hong.jpg' },
       { id: 2n, src: 'https://scontent.fbcdn.net/lanh.jpg' },
     ];
-    const { service, cloudinary } = build(rows, (url) => url.includes('hong'));
+    const { service, uploader } = build(rows, (url) => url.includes('hong'));
 
     await (service as any).migrateTarget(TARGET);
 
     // Lượt sau dòng 1 đang trong thời gian chờ, dòng 2 vẫn phải được thử lại.
-    cloudinary.uploadThumbnailFromUrl.mockClear();
+    uploader.uploadThumbnailFromUrl.mockClear();
     await (service as any).migrateTarget(TARGET);
 
-    const triedUrls = cloudinary.uploadThumbnailFromUrl.mock.calls.map((c: any[]) => c[0]);
+    const triedUrls = uploader.uploadThumbnailFromUrl.mock.calls.map((c: any[]) => c[0]);
     expect(triedUrls).not.toContain('https://scontent.fbcdn.net/hong.jpg');
     expect(triedUrls).toContain('https://scontent.fbcdn.net/lanh.jpg');
   });

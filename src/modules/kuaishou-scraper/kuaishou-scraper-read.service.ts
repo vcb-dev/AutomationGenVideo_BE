@@ -22,7 +22,7 @@ interface KuaishouSearchVideoRow {
   post_id: string; url: string; description: string; hashtags: string[]; thumbnail_url: string | null;
   video_duration: number; view_count: bigint; like_count: bigint; comment_count: bigint; share_count: bigint;
   collect_count: bigint; search_keyword: string; date_posted: Date;
-  author_id: string; author_eid: string; author_username: string; author_avatar: string | null; author_is_verified: boolean;
+  author_id: string; author_eid: string; author_username: string; author_avatar: string | null; author_avatar_drive_url?: string | null; author_is_verified: boolean;
 }
 
 interface KuaishouVideoRow {
@@ -153,7 +153,7 @@ export class KuaishouScraperReadService {
     const videos = await this.prisma.$queryRaw<KuaishouSearchVideoRow[]>`
       SELECT post_id, url, description, hashtags, thumbnail_url, video_duration, view_count, like_count,
              comment_count, share_count, collect_count, search_keyword, date_posted,
-             author_id, author_eid, author_username, author_avatar, author_is_verified
+             author_id, author_eid, author_username, author_avatar, author_avatar_drive_url, author_is_verified
       FROM scraper_kuaishou_search_videos
       ${whereClause}
       ORDER BY ${orderCol} DESC
@@ -184,7 +184,7 @@ export class KuaishouScraperReadService {
           id: v.author_id,
           eid: v.author_eid,
           username: v.author_username,
-          avatar_url: v.author_avatar,
+          avatar_url: v.author_avatar_drive_url || v.author_avatar,
           is_verified: v.author_is_verified,
         },
       })),

@@ -483,13 +483,45 @@ export class FacebookExternalScraperService {
 
   // is_periodic_crawl là tiêu chí chọn lọc duy nhất; scraping_status chỉ dùng để loại trừ
   // fanpage đang cào dở (!= 'processing'), không so khớp cứng 1 giá trị cụ thể.
+  /** Cron định kỳ: chỉ làm mới fanpage đã bật cào định kỳ. */
   async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
+    return this.refreshPages(true);
+  }
+
+  /**
+   * Nút "Đồng bộ tất cả" trên UI: làm mới MỌI fanpage, không cần bật cào định kỳ.
+   *
+   * Facebook đi qua RapidAPI với quota rất hẹp (~400 lượt còn lại), nên khoá không cho chạy
+   * hai lượt song song — nhấp đúp là đốt quota gấp đôi mà không được thêm dữ liệu nào.
+   */
+  async syncAllPages(): Promise<{ total: number; done: number; failed: number; already_running?: boolean }> {
+    if (this.syncAllRunning) {
+      return { total: 0, done: 0, failed: 0, already_running: true };
+    }
+    this.syncAllRunning = true;
+    try {
+      return await this.refreshPages(false);
+    } finally {
+      this.syncAllRunning = false;
+    }
+  }
+
+  private syncAllRunning = false;
+
+  /** Controller hỏi trước khi dispatch, để trả lời ngay thay vì chờ hết lượt cào. */
+  isSyncAllRunning(): boolean {
+    return this.syncAllRunning;
+  }
+
+  private async refreshPages(periodicOnly: boolean): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
     const pages = await this.prisma.scraperFanpage.findMany({
       where: {
-        is_periodic_crawl: true,
-        is_initial_scraped: true,
+        // Cron chỉ đụng fanpage đã cào lần đầu (cào lần đầu tốn nhiều lượt RapidAPI hơn
+        // hẳn, mà quota chỉ còn ~400). Nút "Đồng bộ tất cả" có người bấm và đã xác nhận
+        // nên với tới được cả fanpage chưa cào.
+        ...(periodicOnly ? { is_periodic_crawl: true, is_initial_scraped: true } : {}),
         is_visible_on_ui: true,
         scraping_status: { not: 'processing' },
       },

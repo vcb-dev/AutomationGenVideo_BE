@@ -1,5 +1,5 @@
-import { FacebookExternalScraperService } from './facebook-external-scraper.service';
-import { FetchPageReelsResult, ParsedFanpageProfile } from './facebook-external-ai-client.service';
+import { FacebookExternalScraperService } from '../facebook-external-scraper.service';
+import { FetchPageReelsResult, ParsedFanpageProfile } from '../facebook-external-ai-client.service';
 
 /**
  * Xử lý profile TẠM khi RapidAPI không trả dữ liệu.
