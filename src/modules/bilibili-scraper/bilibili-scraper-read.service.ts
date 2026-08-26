@@ -16,7 +16,7 @@ interface BilibiliSearchVideoRow {
   post_id: string; url: string; description: string; hashtags: string[]; thumbnail_url: string | null;
   video_duration: number; view_count: bigint; like_count: bigint; comment_count: bigint; collect_count: bigint;
   danmaku_count: bigint; search_keyword: string; date_posted: Date;
-  author_id: string; author_username: string; author_avatar: string | null;
+  author_id: string; author_username: string; author_avatar: string | null; author_avatar_drive_url?: string | null;
 }
 
 interface BilibiliVideoRow {
@@ -97,7 +97,7 @@ export class BilibiliScraperReadService {
     const videos = await this.prisma.$queryRaw<BilibiliSearchVideoRow[]>`
       SELECT post_id, url, description, hashtags, thumbnail_url, video_duration, view_count, like_count,
              comment_count, collect_count, danmaku_count, search_keyword, date_posted,
-             author_id, author_username, author_avatar
+             author_id, author_username, author_avatar, author_avatar_drive_url
       FROM scraper_bilibili_search_videos
       ${whereClause}
       ORDER BY ${orderCol} DESC
@@ -127,7 +127,7 @@ export class BilibiliScraperReadService {
         author: {
           id: v.author_id,
           username: v.author_username,
-          avatar_url: v.author_avatar,
+          avatar_url: v.author_avatar_drive_url || v.author_avatar,
         },
       })),
     };

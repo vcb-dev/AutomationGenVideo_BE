@@ -22,7 +22,7 @@ interface DouyinVideoRow {
   post_id: string; url: string; description: string; hashtags: string[]; preview_image: string | null;
   video_duration: number; region: string; digg_count: bigint; comment_count: bigint; share_count: bigint;
   collect_count: bigint; music_title: string; search_keyword: string; date_posted: Date;
-  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null;
+  author_id: string; author_username: string; author_display_name: string; author_avatar: string | null; author_avatar_drive_url?: string | null;
   author_followers: bigint; author_is_verified: boolean;
 }
 
@@ -130,7 +130,7 @@ export class DouyinScraperReadService {
     const videos = await this.prisma.$queryRaw<DouyinVideoRow[]>`
       SELECT post_id, url, description, hashtags, preview_image, video_duration, region, digg_count,
              comment_count, share_count, collect_count, music_title, search_keyword, date_posted,
-             author_id, author_username, author_display_name, author_avatar, author_followers, author_is_verified
+             author_id, author_username, author_display_name, author_avatar, author_avatar_drive_url, author_followers, author_is_verified
       FROM scraper_douyin_videos
       ${whereClause}
       ORDER BY ${orderCol} DESC
@@ -162,7 +162,7 @@ export class DouyinScraperReadService {
           id: v.author_id,
           username: v.author_username,
           display_name: v.author_display_name,
-          avatar_url: v.author_avatar,
+          avatar_url: v.author_avatar_drive_url || v.author_avatar,
           followers: Number(v.author_followers),
           is_verified: v.author_is_verified,
         },

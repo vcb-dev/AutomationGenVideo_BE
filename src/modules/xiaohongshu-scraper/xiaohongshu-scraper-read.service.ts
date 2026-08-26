@@ -85,7 +85,7 @@ export class XiaohongshuScraperReadService {
       thumbnail_url: v.thumbnail_drive_url || v.thumbnail_url || '',
       author_id: v.author_id,
       author_name: v.author_name,
-      author_avatar: v.author_avatar || '',
+      author_avatar: v.author_avatar_drive_url || v.author_avatar || '',
       duration_seconds: v.duration_seconds,
       liked_count: Number(v.liked_count),
       collected_count: Number(v.collected_count),
