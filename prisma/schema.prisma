@@ -4098,6 +4098,12 @@ model ContentTransformHistory {
   /// Chi phí USD ước tính = token × đơn giá model (xem computeContentTransformCostUsd bên BE).
   /// Decimal(10,6) đủ độ chính xác cho vài phần triệu đô — 1 lượt chuyển đổi thường dưới $1.
   cost_usd      Decimal?        @db.Decimal(10, 6)
+  /// job_id của AI service cho lượt xử lý NỀN đang chạy (transcribe/upgrade — xem
+  /// content_transform_job_views.py bên AI). null = không có job nền (bản ghi của luồng đồng bộ
+  /// transform/rescore, hoặc job đã xong và kết quả đã được ghi vào bản ghi này).
+  ai_job_id     String?
+  /// Loại job nền: 'transcribe' | 'upgrade'. Để reconciliation cron biết cách map kết quả khi poll lại.
+  ai_job_kind   String?
   created_at    DateTime        @default(now())
   updated_at    DateTime        @updatedAt
 
@@ -4109,6 +4115,7 @@ model ContentTransformHistory {
   @@index([status])
   @@index([created_at])
   @@index([user_id, created_at]) // Query lịch sử theo user + phân trang
+  @@index([status, updated_at]) // reconciliation cron quét bản ghi PENDING quá hạn (job nền mất dấu)
   @@map("content_transform_histories")
 }
 
