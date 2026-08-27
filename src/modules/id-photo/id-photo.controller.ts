@@ -120,6 +120,23 @@ export class IdPhotoController {
     return this.idPhotoService.getHistory(query);
   }
 
+  // Khai báo TRƯỚC 'history/:id'-dạng route bên dưới, cùng lý do đã ghi ở
+  // ai-integration.controller.ts cho content-transform/history/team-summary. Đặt tên endpoint
+  // theo ĐÚNG quy ước bên đó ('<module>/history/team-summary') để hai module nhất quán.
+  //
+  // MANAGER được mở thêm ở RIÊNG endpoint này (ghi đè @Roles ở cấp class — RolesGuard dùng
+  // reflector.getAllAndOverride nên handler thắng class): Manager không tạo ảnh thẻ nhưng vẫn
+  // cần xem thống kê toàn bộ nhân sự, giống content-transform/history/team-summary.
+  @Get('history/team-summary')
+  @Roles(UserRole.LEADER, UserRole.ADMIN, UserRole.MANAGER)
+  @ApiOperation({
+    summary:
+      'Tổng quan: danh sách toàn bộ thành viên trong phạm vi quyền + tổng số lượt tạo ảnh thẻ của từng người (1 lần gọi)',
+  })
+  async getTeamSummary(@Req() req: any) {
+    return this.idPhotoService.getTeamSummary(req.user.id, req.user.roles);
+  }
+
   // ⚠ HAI route ':id' bên dưới PHẢI đứng SAU @Get('history'). Nest so khớp route theo ĐÚNG thứ
   // tự khai báo, nên đặt @Get(':id') lên trên thì '/id-photo/history' sẽ rơi vào đây với
   // id='history' và tab Lịch sử chết ngay lập tức. (@Get(':id/pdf-file') ở trên vô hại vì nó

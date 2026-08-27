@@ -7,6 +7,7 @@ import { AiIntegrationController } from './ai-integration.controller';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
+import { UsersModule } from '../users/users.module';
 
 @Global()
 @Module({
@@ -14,6 +15,9 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
     HttpModule.register({ timeout: 30000, maxRedirects: 5 }),
     ConfigModule,
     PrismaModule,
+    // Tái dùng UsersService.getTeamMembers() cho phạm vi quyền của thống kê đội nhóm
+    // (Leader thấy team mình / Manager-Admin thấy hết) thay vì viết lại cách lọc team mới.
+    UsersModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
