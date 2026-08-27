@@ -70,9 +70,9 @@ type ContentTransformScoreStatus = 'success' | 'failed' | 'pending' | null;
  * sai id, hoặc AI restart mất RAM fallback) → bên gọi coi là "mất dấu".
  */
 type ContentTransformJobStatus =
-  | { status: 'queued' | 'running' | 'cancelled'; kind: string | null; message: string | null }
-  | { status: 'completed'; kind: string | null; message: string | null; result: any }
-  | { status: 'error'; kind: string | null; message: string | null; error: string | null; result: any }
+  | { status: 'queued' | 'running' | 'cancelled'; kind: string | null; message: string | null; clientContext: any }
+  | { status: 'completed'; kind: string | null; message: string | null; result: any; clientContext: any }
+  | { status: 'error'; kind: string | null; message: string | null; error: string | null; result: any; clientContext: any }
   | { status: 'not_found' };
 
 /** Bản ghi cũ chấm bằng hệ 7 nhóm/23 tiêu chí + Hard Gate (đã ngừng dùng) không có `layers`. */
@@ -3036,7 +3036,7 @@ export class AiIntegrationService {
         }),
       );
       const status = data?.status;
-      const base = { kind: data?.kind ?? null, message: data?.message ?? null };
+      const base = { kind: data?.kind ?? null, message: data?.message ?? null, clientContext: data?.client_context ?? null };
       if (status === 'completed') return { status: 'completed', ...base, result: data?.result ?? null };
       if (status === 'error') {
         return { status: 'error', ...base, error: data?.error ?? data?.message ?? null, result: data?.result ?? null };
@@ -3075,6 +3075,286 @@ export class AiIntegrationService {
     }
   }
 
+  // ─── PR2: tạo job nền + poll-kèm-ghi-DB ─────────────────────────────────────
+
+  /**
+   * Bắt đầu transcribe file ở chế độ NỀN — POST multipart sang AI /transcribe-upload/start/,
+   * nhận job_id ngay. KHÔNG tạo bản ghi ContentTransformHistory (transcribe chỉ trả text, chưa
+   * phải 1 lượt "chuyển đổi"). FE giữ job_id + poll qua GET /ai/content-transform/jobs/:jobId.
+   */
+  async startTranscribeJob(file: Express.Multer.File): Promise<{ job_id: string }> {
+    const FormData = require('form-data');
+    const formData = new FormData();
+    formData.append('file', file.buffer, { filename: file.originalname, contentType: file.mimetype });
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(`${this.aiServiceUrl}/api/content/transcribe-upload/start/`, formData, {
+          headers: { ...formData.getHeaders(), ...this.videoDownloaderAuthHeaders() },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          // Chỉ đẩy file + spawn thread — không chờ transcribe. 120s dư cho file 200MB đường lên chậm.
+          timeout: 120000,
+        }),
+      );
+      if (!data?.job_id) {
+        throw new HttpException(data?.error_message || 'AI service không trả job_id', HttpStatus.BAD_GATEWAY);
+      }
+      return { job_id: data.job_id };
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      const msg = error.response?.data?.error_message || error.response?.data?.error || error.message;
+      throw new HttpException(msg || 'Không tạo được job transcribe', error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Bắt đầu nâng cấp kịch bản ở chế độ NỀN. Làm các bước ĐỒNG BỘ nhanh của upgradeContent
+   * (rate limit, resolve history, bắt buộc đã có điểm cũ, dựng prompt), tạo 1 bản ghi
+   * ContentTransformHistory PENDING làm "chỗ ghi kết quả" + gắn ai_job_id, rồi POST sang AI
+   * /transform-content/upgrade/start/. Phần chờ 2 lượt LLM đẩy sang thread nền của AI.
+   *
+   * Chỉ hỗ trợ path history_id (FE luôn gửi history_id). Path input_text/character_id/output_text
+   * thô + tự chấm baseline vẫn dùng endpoint đồng bộ cũ.
+   */
+  async startUpgradeJob(userId: string, roles: UserRole[], dto: UpgradeTransformDto): Promise<{ history_id: string; job_id: string }> {
+    this.checkContentTransformRateLimit(userId);
+
+    if (!dto.history_id) {
+      throw new BadRequestException('Chế độ nâng cấp nền chỉ nhận history_id');
+    }
+    const lockKey = dto.history_id;
+    if (this.contentTransformProcessingUpgrades.has(lockKey)) {
+      throw new ConflictException('Bản ghi này đang được nâng cấp, vui lòng chờ hoàn tất trước khi thử lại.');
+    }
+    this.contentTransformProcessingUpgrades.add(lockKey);
+
+    try {
+      const source = await this.getContentTransformHistoryDetail(dto.history_id, userId, roles);
+      if (!source.output_text) {
+        throw new BadRequestException('Bản ghi này chưa có kịch bản kết quả để nâng cấp');
+      }
+      const previousScoreResult = source.scoreResult ?? null;
+      if (!previousScoreResult) {
+        throw new BadRequestException(
+          'Bản ghi này chưa được chấm điểm. Vui lòng bấm "Chấm điểm content" trước khi nâng cấp.',
+        );
+      }
+
+      const character = await this.fetchContentTransformCharacterViaApi(source.character_id);
+      if (!character) {
+        throw new NotFoundException('Không tìm thấy nhân vật phù hợp');
+      }
+
+      const missing = this.extractMissingElements(previousScoreResult);
+      const upgradeSystemPrompt = buildPaastUpgradeSystemPrompt(previousScoreResult, missing);
+      const upgradeUserPrompt = buildPaastUpgradeUserPrompt(source.input_text, character.system_prompt, source.output_text);
+
+      // Bản ghi "chỗ ghi kết quả" — PENDING cho tới khi poll/reconcile ghi kết quả job vào.
+      const placeholder = await this.prisma.contentTransformHistory.create({
+        data: {
+          user_id: source.user_id,
+          character_id: character.id,
+          input_text: source.input_text,
+          input_type: source.input_type,
+          status: TransformStatus.PENDING,
+          ai_job_kind: 'upgrade',
+        },
+      });
+
+      let jobId: string;
+      try {
+        const { data } = await firstValueFrom(
+          this.httpService.post(
+            `${this.aiServiceUrl}/api/ai/transform-content/upgrade/start/`,
+            {
+              write_system_prompt: upgradeSystemPrompt,
+              write_user_prompt: upgradeUserPrompt,
+              max_tokens: 16000,
+              // Round-trip qua AI job store để poll/reconcile lấy lại được "previous" mà không
+              // cần thêm cột DB.
+              client_context: { source_history_id: dto.history_id },
+            },
+            { headers: this.videoDownloaderAuthHeaders(), timeout: 30000 },
+          ),
+        );
+        jobId = data?.job_id;
+        if (!jobId) throw new HttpException(data?.error || 'AI service không trả job_id', HttpStatus.BAD_GATEWAY);
+      } catch (error: any) {
+        // Không spawn được job → bản ghi placeholder thành FAILED ngay, không để nó kẹt PENDING.
+        await this.prisma.contentTransformHistory.update({
+          where: { id: placeholder.id },
+          data: {
+            status: TransformStatus.FAILED,
+            error_message:
+              error?.response?.data?.error || error?.message || 'Không tạo được job nâng cấp trên AI service',
+          },
+        });
+        if (error instanceof HttpException) throw error;
+        throw new HttpException(
+          error?.response?.data?.error || error?.message || 'Không tạo được job nâng cấp',
+          error?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      await this.prisma.contentTransformHistory.update({
+        where: { id: placeholder.id },
+        data: { ai_job_id: jobId },
+      });
+
+      return { history_id: placeholder.id, job_id: jobId };
+    } finally {
+      this.contentTransformProcessingUpgrades.delete(lockKey);
+    }
+  }
+
+  /**
+   * Poll job nền + GHI KẾT QUẢ vào DB khi job xong (endpoint FE gọi mỗi ~3s).
+   *
+   * - transcribe: chỉ chuyển tiếp trạng thái + trả `result.transcript` khi xong (không có bản ghi).
+   * - upgrade: khi job 'completed' → ghi kết quả vào bản ghi placeholder (guard status=PENDING
+   *   để chỉ ghi 1 lần), trả về shape `{ status, previous, upgraded }` KHỚP response của
+   *   upgradeContent đồng bộ. Khi job 'error' → placeholder → FAILED.
+   */
+  async pollContentTransformJob(jobId: string, userId: string, roles: UserRole[]): Promise<any> {
+    const job = await this.getContentTransformJobStatus(jobId);
+
+    if (job.status === 'not_found') return { status: 'not_found' };
+    if (job.status !== 'completed' && job.status !== 'error') {
+      // queued / running / cancelled — chưa có gì để ghi.
+      return { status: job.status, kind: job.kind, message: job.message };
+    }
+
+    // transcribe: không có bản ghi để ghi, trả thẳng.
+    if (job.kind !== 'upgrade') {
+      if (job.status === 'completed') {
+        return { status: 'completed', kind: job.kind, result: job.result };
+      }
+      return { status: 'error', kind: job.kind, message: job.error || job.message || 'Xử lý thất bại' };
+    }
+
+    // ── upgrade ──────────────────────────────────────────────────────────────
+    const placeholder = await this.prisma.contentTransformHistory.findFirst({
+      where: { ai_job_id: jobId },
+      include: { character: { select: { id: true, name: true, slug: true, avatar_url: true } } },
+    });
+    if (!placeholder) {
+      // Không tìm thấy bản ghi cho job này — hiếm (job upgrade luôn được startUpgradeJob tạo kèm
+      // bản ghi). Trả trạng thái job thô để FE không kẹt.
+      return { status: job.status, message: job.status === 'error' ? job.error || job.message : job.message };
+    }
+
+    if (job.status === 'error') {
+      await this.prisma.contentTransformHistory.updateMany({
+        where: { id: placeholder.id, status: TransformStatus.PENDING },
+        data: { status: TransformStatus.FAILED, error_message: job.error || job.message || 'Nâng cấp thất bại' },
+      });
+      return { status: 'error', message: job.error || job.message || 'Nâng cấp thất bại' };
+    }
+
+    // job.status === 'completed'
+    return this.finalizeUpgradeJob(jobId, placeholder, job.result, job.clientContext, userId, roles);
+  }
+
+  /**
+   * Ghi kết quả 1 job upgrade đã 'completed' vào bản ghi placeholder. Idempotent: guard
+   * `updateMany where status=PENDING` — poll lần 2 (hoặc reconcile chạy song song) thấy count 0
+   * thì chỉ trả lại bản ghi đã hoàn tất.
+   *
+   * `aiResult` = { output_text, score, score_error, usage, model_used } (shape của
+   * transform_content_upgrade_start / upgrade_scripted).
+   */
+  private async finalizeUpgradeJob(
+    jobId: string,
+    placeholder: any,
+    aiResult: any,
+    clientContext: any,
+    userId: string,
+    roles: UserRole[],
+  ): Promise<any> {
+    const newOutputText: string = aiResult?.output_text ?? '';
+    if (!newOutputText) {
+      await this.prisma.contentTransformHistory.updateMany({
+        where: { id: placeholder.id, status: TransformStatus.PENDING },
+        data: { status: TransformStatus.FAILED, error_message: 'AI trả kết quả nâng cấp rỗng. Vui lòng thử lại.' },
+      });
+      return { status: 'error', message: 'AI trả kết quả nâng cấp rỗng. Vui lòng thử lại.' };
+    }
+
+    let newScoreResult: ContentTransformScoreResult | null = (aiResult?.score ?? null) as any;
+    const freshScoreError: string | null = aiResult?.score_error ?? null;
+    let scoreStatus: 'success' | 'failed' = freshScoreError ? 'failed' : 'success';
+    let scoreError: string | null = freshScoreError
+      ? `Không thể chấm điểm nội dung này (có thể do timeout hoặc lỗi tạm thời từ AI). Vui lòng nâng cấp lại. Chi tiết: ${freshScoreError}`
+      : null;
+    let fromCache = false;
+
+    // Bất biến "cùng nội dung luôn ra cùng điểm" — tra cache sau khi đã có kết quả (lượt gọi AI
+    // đã chạy trong job, không tiết kiệm được nữa nhưng vẫn giữ nhất quán).
+    try {
+      const cached = await this.findContentTransformCachedScoreByOutput(placeholder.user_id, newOutputText);
+      if (cached) {
+        newScoreResult = cached.score_result as unknown as ContentTransformScoreResult;
+        scoreStatus = 'success';
+        scoreError = null;
+        fromCache = true;
+      }
+    } catch (err: any) {
+      this.logger.warn(`[upgrade-job finalize] tra cache thất bại: ${err?.message}`);
+    }
+
+    const { inputTokens, outputTokens, costUsd } = this.computeContentTransformCostUsd(aiResult?.usage || {});
+
+    // Guard idempotent — chỉ 1 lời gọi chuyển được PENDING → SUCCESS.
+    const claimed = await this.prisma.contentTransformHistory.updateMany({
+      where: { id: placeholder.id, status: TransformStatus.PENDING },
+      data: {
+        output_text: newOutputText,
+        status: TransformStatus.SUCCESS,
+        model_used: aiResult?.model_used || 'deepseek-v4-flash (upgrade)',
+        score_result: (newScoreResult ? this.withContentTransformLogicVersion(newScoreResult) : null) as any,
+        overall_score: newScoreResult?.total_score ?? null,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cost_usd: costUsd,
+      },
+    });
+
+    const finalRecord = await this.prisma.contentTransformHistory.findUnique({
+      where: { id: placeholder.id },
+      include: { character: { select: { id: true, name: true, slug: true, avatar_url: true } } },
+    });
+
+    // "previous" — lấy từ bản ghi nguồn (source_history_id round-trip qua AI job store). Không
+    // chặn kết quả nếu không lấy được (FE có fallback về điểm đang hiển thị).
+    let previous: any = null;
+    const sourceHistoryId = clientContext?.source_history_id;
+    if (sourceHistoryId) {
+      try {
+        const src = await this.getContentTransformHistoryDetail(sourceHistoryId, userId, roles);
+        previous = { output_text: src.output_text, scoreResult: src.scoreResult ?? null };
+      } catch (err: any) {
+        this.logger.warn(`[upgrade-job finalize] không lấy được bản ghi nguồn ${sourceHistoryId}: ${err?.message}`);
+      }
+    }
+
+    if (claimed.count === 0) {
+      this.logger.log(`[upgrade-job finalize] job ${jobId} đã được ghi trước đó — trả lại bản ghi hoàn tất`);
+    }
+
+    return {
+      status: 'completed',
+      previous,
+      upgraded: {
+        ...finalRecord,
+        scoreResult: finalRecord?.score_result ?? null,
+        scoreStatus,
+        scoreError,
+        fromCache,
+      },
+    };
+  }
+
   private reconcileContentTransformRunning = false;
   /** Bản ghi PENDING + có ai_job_id mà quá mốc này không được cập nhật → coi là "có thể mất dấu". */
   private readonly CONTENT_TRANSFORM_JOB_STALE_MS = 15 * 60_000;
@@ -3084,10 +3364,10 @@ export class AiIntegrationService {
    * restart giữa chừng khiến thread chết mà không ai ghi kết quả, hoặc FE đóng tab và không
    * còn poll để BE nhận biết job đã kết thúc.
    *
-   * PR1 chỉ xử lý trường hợp job KHÔNG CÒN trên AI service (not_found) / đã error / đã cancelled
-   * → đánh FAILED kèm message rõ ràng, để tab Lịch sử không hiển thị "đang xử lý" vĩnh viễn.
-   * Việc GHI KẾT QUẢ cho job 'completed' nhặt được ở đây thuộc PR2 (cần startUpgradeJob định
-   * hình shape bản ghi trước) — hiện để nguyên PENDING cho tới khi FE poll hoặc job hết TTL.
+   * - job not_found / error / cancelled → bản ghi → FAILED kèm message rõ ràng.
+   * - job 'completed' (FE đóng tab nên không ai poll để ghi) → chạy đúng đường finalizeUpgradeJob
+   *   như khi FE poll, để không mất kết quả người dùng đã tốn tiền AI.
+   * - job vẫn queued/running quá 15' → để nguyên, chờ hết TTL 4h rồi thành not_found.
    */
   @Cron('*/2 * * * *')
   async reconcileStuckContentTransformJobs(): Promise<void> {
@@ -3101,7 +3381,7 @@ export class AiIntegrationService {
           ai_job_id: { not: null },
           updated_at: { lt: staleBefore },
         },
-        select: { id: true, ai_job_id: true, ai_job_kind: true },
+        include: { character: { select: { id: true, name: true, slug: true, avatar_url: true } } },
         take: 50,
       });
       if (stuck.length === 0) return;
@@ -3116,11 +3396,20 @@ export class AiIntegrationService {
           continue;
         }
 
-        // queued/running/completed → để nguyên. completed sẽ được ghi kết quả ở PR2. queued/running
-        // quá 15' là bất thường nhưng chưa đủ chắc để kết luận chết — chờ job hết TTL 4h rồi lần
-        // sau sẽ thành not_found.
-        if (job.status !== 'not_found' && job.status !== 'error' && job.status !== 'cancelled') {
+        if (job.status === 'completed' && rec.ai_job_kind === 'upgrade') {
+          // FE không còn poll — tự ghi kết quả (cùng đường với pollContentTransformJob). userId của
+          // chủ bản ghi + roles rỗng: getContentTransformHistoryDetail cho phép chủ sở hữu xem.
+          try {
+            await this.finalizeUpgradeJob(rec.ai_job_id as string, rec, job.result, job.clientContext, rec.user_id, []);
+            this.logger.warn(`[content-transform reconcile] ${rec.id} → ghi kết quả upgrade (FE đã rời)`);
+          } catch (err: any) {
+            this.logger.error(`[content-transform reconcile] ghi kết quả ${rec.id} lỗi: ${err.message}`);
+          }
           continue;
+        }
+
+        if (job.status !== 'not_found' && job.status !== 'error' && job.status !== 'cancelled') {
+          continue; // queued/running, hoặc completed nhưng không phải upgrade — để nguyên
         }
 
         const message =
@@ -3132,7 +3421,7 @@ export class AiIntegrationService {
 
         const updated = await this.prisma.contentTransformHistory.updateMany({
           where: { id: rec.id, status: TransformStatus.PENDING },
-          data: { status: TransformStatus.FAILED, error_message: message, ai_job_id: null },
+          data: { status: TransformStatus.FAILED, error_message: message },
         });
         if (updated.count > 0) {
           this.logger.warn(`[content-transform reconcile] ${rec.id} → FAILED (${job.status})`);

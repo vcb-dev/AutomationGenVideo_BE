@@ -1035,15 +1035,48 @@ export class AiIntegrationController {
     return this.aiService.transcribeContentUpload(file, req.headers?.authorization, req.user);
   }
 
-  // ─── Job nền content-transform (transcribe/upgrade chạy lâu) — PR1: poll + cancel.
-  //     Endpoint tạo job (start) + đấu FE ở PR2. Xem content_transform_job_views.py bên AI.
+  // ─── Job nền content-transform (transcribe/upgrade chạy lâu): start + poll + cancel.
+  //     Endpoint đồng bộ transcribe / upgrade ở trên GIỮ NGUYÊN. Xem content_transform_job_views.py.
+
+  @Post('content-transform/transcribe/start')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 200 * 1024 * 1024 } }))
+  @ApiOperation({ summary: 'Bắt đầu transcribe file ở chế độ nền — trả job_id, poll qua content-transform/jobs/:jobId' })
+  async startTranscribeJob(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new HttpException('Không tìm thấy file upload', HttpStatus.BAD_REQUEST);
+    }
+    const ext = file.originalname.split('.').pop()?.toLowerCase() || '';
+    const allowedExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'];
+    if (!allowedExts.includes(ext)) {
+      throw new HttpException(
+        'Chỉ chấp nhận các định dạng file video (mp4, mov, avi, mkv, webm) hoặc audio (mp3, wav, m4a, aac, ogg, flac).',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!(file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/'))) {
+      throw new HttpException('Mimetype của file không hợp lệ.', HttpStatus.BAD_REQUEST);
+    }
+    return this.aiService.startTranscribeJob(file);
+  }
+
+  @Post('content-transform/upgrade/start')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bắt đầu nâng cấp kịch bản ở chế độ nền — trả { history_id, job_id }' })
+  async startUpgradeJob(@Req() req: any, @Body() dto: UpgradeTransformDto) {
+    return this.aiService.startUpgradeJob(req.user.id, req.user.roles, dto);
+  }
 
   @Get('content-transform/jobs/:jobId')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Poll trạng thái 1 job nền content-transform (transcribe/upgrade)' })
-  async getContentTransformJobStatus(@Param('jobId') jobId: string) {
-    return this.aiService.getContentTransformJobStatus(jobId);
+  @ApiOperation({ summary: 'Poll job nền content-transform + ghi kết quả vào DB khi xong' })
+  async pollContentTransformJob(@Req() req: any, @Param('jobId') jobId: string) {
+    return this.aiService.pollContentTransformJob(jobId, req.user.id, req.user.roles);
   }
 
   @Post('content-transform/jobs/:jobId/cancel')
