@@ -1,4 +1,5 @@
 import { Injectable, Logger, HttpException, HttpStatus, NotFoundException, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PlayUrlNoCreditError } from './play-url-errors';
 import { buildVoiceUsageDateRange } from './voice-usage-range';
 import { HttpService } from '@nestjs/axios';
@@ -62,6 +63,17 @@ interface MissingElement {
 type ContentTransformScoreResult = PaastAnalysisPayload;
 
 type ContentTransformScoreStatus = 'success' | 'failed' | 'pending' | null;
+
+/**
+ * Trạng thái 1 job nền content-transform (transcribe/upgrade), chuẩn hoá từ response của AI
+ * service (content_transform_job_views.py). `not_found` = job không còn trên AI (hết TTL 4h,
+ * sai id, hoặc AI restart mất RAM fallback) → bên gọi coi là "mất dấu".
+ */
+type ContentTransformJobStatus =
+  | { status: 'queued' | 'running' | 'cancelled'; kind: string | null; message: string | null }
+  | { status: 'completed'; kind: string | null; message: string | null; result: any }
+  | { status: 'error'; kind: string | null; message: string | null; error: string | null; result: any }
+  | { status: 'not_found' };
 
 /** Bản ghi cũ chấm bằng hệ 7 nhóm/23 tiêu chí + Hard Gate (đã ngừng dùng) không có `layers`. */
 function isPaastScoreResult(raw: any): raw is ContentTransformScoreResult {
@@ -2998,6 +3010,140 @@ export class AiIntegrationService {
   // endpoint /api/ai/paast/upgrade/ khi nâng cấp (xem buildPaastUpgradeSystemPrompt) vì kịch
   // bản ở đây bắt buộc giữ đúng giọng nhân vật, còn endpoint đó viết lại theo giọng trung tính.
   // ═══════════════════════════════════════════════════════════════════════════
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Job nền content-transform (transcribe/upgrade chạy lâu) — PR1: khung poll +
+  // cancel + reconciliation. Endpoint tạo job (start) + đấu FE ở PR2. AI service:
+  // AutomationGenVideo_AI/video_management/views/content_transform_job_views.py
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private contentTransformJobUrl(path: string): string {
+    return `${this.aiServiceUrl}/api/content/transform-jobs/${path}`;
+  }
+
+  /**
+   * Poll trạng thái 1 job nền trên AI service, chuẩn hoá về shape mà FE + reconciliation
+   * cùng đọc. job_id không còn (hết TTL 4h / AI restart mất RAM fallback / sai id) → trả
+   * `{ status: 'not_found' }` để bên gọi tự quyết (FE báo "mất dấu", cron đánh FAILED) thay
+   * vì ném lỗi 502 chung chung.
+   */
+  async getContentTransformJobStatus(jobId: string): Promise<ContentTransformJobStatus> {
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(this.contentTransformJobUrl(`${encodeURIComponent(jobId)}/`), {
+          headers: this.videoDownloaderAuthHeaders(),
+          timeout: 15000,
+        }),
+      );
+      const status = data?.status;
+      const base = { kind: data?.kind ?? null, message: data?.message ?? null };
+      if (status === 'completed') return { status: 'completed', ...base, result: data?.result ?? null };
+      if (status === 'error') {
+        return { status: 'error', ...base, error: data?.error ?? data?.message ?? null, result: data?.result ?? null };
+      }
+      if (status === 'queued' || status === 'running' || status === 'cancelled') {
+        return { status, ...base };
+      }
+      // AI trả 200 nhưng status lạ — coi như đang chạy để bên gọi poll tiếp, không kết luận sai.
+      this.logger.warn(`getContentTransformJobStatus(${jobId}): status lạ "${status}"`);
+      return { status: 'running', ...base };
+    } catch (error: any) {
+      if (error?.response?.status === HttpStatus.NOT_FOUND) return { status: 'not_found' };
+      this.logger.warn(`getContentTransformJobStatus(${jobId}) lỗi: ${error.message}`);
+      throw new HttpException(
+        error.response?.data?.error || error.message || 'Không kiểm tra được trạng thái xử lý',
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /** Đánh dấu huỷ 1 job nền (best-effort). 404 = job đã xong/không còn, không phải lỗi. */
+  async cancelContentTransformJob(jobId: string): Promise<{ status: string }> {
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(
+          this.contentTransformJobUrl(`${encodeURIComponent(jobId)}/cancel/`),
+          {},
+          { headers: this.videoDownloaderAuthHeaders(), timeout: 15000 },
+        ),
+      );
+      return { status: data?.status ?? 'cancelled' };
+    } catch (error: any) {
+      if (error?.response?.status === HttpStatus.NOT_FOUND) return { status: 'not_found' };
+      this.logger.warn(`cancelContentTransformJob(${jobId}) lỗi: ${error.message}`);
+      return { status: 'error' };
+    }
+  }
+
+  private reconcileContentTransformRunning = false;
+  /** Bản ghi PENDING + có ai_job_id mà quá mốc này không được cập nhật → coi là "có thể mất dấu". */
+  private readonly CONTENT_TRANSFORM_JOB_STALE_MS = 15 * 60_000;
+
+  /**
+   * Dọn các bản ghi ContentTransformHistory kẹt PENDING vì job nền "mất dấu": AI hoặc BE
+   * restart giữa chừng khiến thread chết mà không ai ghi kết quả, hoặc FE đóng tab và không
+   * còn poll để BE nhận biết job đã kết thúc.
+   *
+   * PR1 chỉ xử lý trường hợp job KHÔNG CÒN trên AI service (not_found) / đã error / đã cancelled
+   * → đánh FAILED kèm message rõ ràng, để tab Lịch sử không hiển thị "đang xử lý" vĩnh viễn.
+   * Việc GHI KẾT QUẢ cho job 'completed' nhặt được ở đây thuộc PR2 (cần startUpgradeJob định
+   * hình shape bản ghi trước) — hiện để nguyên PENDING cho tới khi FE poll hoặc job hết TTL.
+   */
+  @Cron('*/2 * * * *')
+  async reconcileStuckContentTransformJobs(): Promise<void> {
+    if (this.reconcileContentTransformRunning) return;
+    this.reconcileContentTransformRunning = true;
+    try {
+      const staleBefore = new Date(Date.now() - this.CONTENT_TRANSFORM_JOB_STALE_MS);
+      const stuck = await this.prisma.contentTransformHistory.findMany({
+        where: {
+          status: TransformStatus.PENDING,
+          ai_job_id: { not: null },
+          updated_at: { lt: staleBefore },
+        },
+        select: { id: true, ai_job_id: true, ai_job_kind: true },
+        take: 50,
+      });
+      if (stuck.length === 0) return;
+      this.logger.warn(`[content-transform reconcile] ${stuck.length} bản ghi PENDING quá hạn — kiểm tra job nền`);
+
+      for (const rec of stuck) {
+        let job: ContentTransformJobStatus;
+        try {
+          job = await this.getContentTransformJobStatus(rec.ai_job_id as string);
+        } catch (err: any) {
+          this.logger.warn(`[content-transform reconcile] bỏ qua ${rec.id}: poll lỗi ${err.message}`);
+          continue;
+        }
+
+        // queued/running/completed → để nguyên. completed sẽ được ghi kết quả ở PR2. queued/running
+        // quá 15' là bất thường nhưng chưa đủ chắc để kết luận chết — chờ job hết TTL 4h rồi lần
+        // sau sẽ thành not_found.
+        if (job.status !== 'not_found' && job.status !== 'error' && job.status !== 'cancelled') {
+          continue;
+        }
+
+        const message =
+          job.status === 'not_found'
+            ? 'Lượt xử lý bị mất dấu (máy chủ có thể đã khởi động lại). Vui lòng chạy lại.'
+            : job.status === 'cancelled'
+              ? 'Lượt xử lý đã bị huỷ.'
+              : (job as { error: string | null }).error || 'Xử lý thất bại. Vui lòng thử lại.';
+
+        const updated = await this.prisma.contentTransformHistory.updateMany({
+          where: { id: rec.id, status: TransformStatus.PENDING },
+          data: { status: TransformStatus.FAILED, error_message: message, ai_job_id: null },
+        });
+        if (updated.count > 0) {
+          this.logger.warn(`[content-transform reconcile] ${rec.id} → FAILED (${job.status})`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.error(`[content-transform reconcile] lỗi: ${err.message}`);
+    } finally {
+      this.reconcileContentTransformRunning = false;
+    }
+  }
 
   /** Chặn spam: tối đa CONTENT_TRANSFORM_RATE_LIMIT_MAX lần "Chuyển đổi"/"Nâng cấp" mỗi.../user. */
   private checkContentTransformRateLimit(userId: string): void {

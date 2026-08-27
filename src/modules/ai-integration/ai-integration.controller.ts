@@ -1035,6 +1035,26 @@ export class AiIntegrationController {
     return this.aiService.transcribeContentUpload(file, req.headers?.authorization, req.user);
   }
 
+  // ─── Job nền content-transform (transcribe/upgrade chạy lâu) — PR1: poll + cancel.
+  //     Endpoint tạo job (start) + đấu FE ở PR2. Xem content_transform_job_views.py bên AI.
+
+  @Get('content-transform/jobs/:jobId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Poll trạng thái 1 job nền content-transform (transcribe/upgrade)' })
+  async getContentTransformJobStatus(@Param('jobId') jobId: string) {
+    return this.aiService.getContentTransformJobStatus(jobId);
+  }
+
+  @Post('content-transform/jobs/:jobId/cancel')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Yêu cầu huỷ 1 job nền content-transform (best-effort)' })
+  async cancelContentTransformJob(@Param('jobId') jobId: string) {
+    return this.aiService.cancelContentTransformJob(jobId);
+  }
+
   @Get('content-transform/history')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
