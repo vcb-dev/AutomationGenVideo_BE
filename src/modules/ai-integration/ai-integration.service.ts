@@ -18,6 +18,7 @@ import {
   PaastAnalysisPayload,
   PaastStoredScore,
   PAAST_LOGIC_VERSION,
+  AiTokenUsage,
 } from './interfaces/paast-analysis.interface';
 import {
   buildPaastUpgradeSystemPrompt,
@@ -136,6 +137,32 @@ export class AiIntegrationService {
   // so với mức thường gặp (viết ~thực đo dưới 60s, chấm thường dưới 60s khi không phải retry).
   private readonly CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS = 420_000;
 
+  // ── Ngân sách cho /content-transform/transcribe (transcribeContentUpload) — endpoint
+  // /api/content/transcribe-upload/ bên AI service (Django) dùng Gemini Files API để đọc file
+  // upload tới 200MB, và tự đo được upload+poll+generate có thể tốn 100-240s cho video 5-9 phút
+  // (xem TRANSCRIBE_TOTAL_BUDGET_DEFAULT trong transcribe_views.py — Django đã có sẵn cơ chế
+  // ngân sách theo `timeout_seconds` từ lâu, mặc định 420s khi thiếu field này).
+  //
+  // BE trước đây hard-code timeout: 60000 (60s) và KHÔNG gửi `timeout_seconds` — thấp hơn nhiều
+  // so với thời gian Gemini thực sự cần, gây đúng lỗi "timeout of 60000ms exceeded" thấy trong
+  // log. FE (content-transform/page.tsx) đã sẵn timeout 510s = 420s + 90s biên upload, chờ đúng
+  // hằng số 420s này ở phía BE — chỉ riêng BE là chưa từng được cập nhật theo. Đặt lại đúng 420s
+  // để khớp cả 2 đầu, tránh lệch ngầm giữa BE/AI service/FE.
+  private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
+
+  /**
+   * Đơn giá USD/1 triệu token của model AI dùng cho content-transform (viết kịch bản + chấm
+   * PAAST — cả 2 bước hiện chạy CHUNG 1 model, xem DEEPSEEK_DEFAULT_MODEL bên AI service).
+   *
+   * Set qua env CONTENT_TRANSFORM_AI_INPUT_USD_PER_1M / CONTENT_TRANSFORM_AI_OUTPUT_USD_PER_1M.
+   * MẶC ĐỊNH LÀ 0 — cố tình KHÔNG bịa một con số USD nghe hợp lý làm placeholder, vì số đó sẽ
+   * hiện thẳng ra tab Thống kê như thể là giá thật. $0.00 rành mạch báo "chưa cấu hình", một con
+   * số bịa trông hợp lý thì không ai phát hiện ra là sai. Điền đúng bảng giá thật của nhà cung
+   * cấp/proxy đang dùng trước khi tin số "Chi phí AI" trên đó.
+   */
+  private readonly contentTransformAiInputUsdPer1M: number;
+  private readonly contentTransformAiOutputUsdPer1M: number;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -152,6 +179,16 @@ export class AiIntegrationService {
     );
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
     this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
+    this.contentTransformAiInputUsdPer1M =
+      Number(this.configService.get<string>('CONTENT_TRANSFORM_AI_INPUT_USD_PER_1M', '0')) || 0;
+    this.contentTransformAiOutputUsdPer1M =
+      Number(this.configService.get<string>('CONTENT_TRANSFORM_AI_OUTPUT_USD_PER_1M', '0')) || 0;
+    if (this.contentTransformAiInputUsdPer1M === 0 && this.contentTransformAiOutputUsdPer1M === 0) {
+      this.logger.warn(
+        'CONTENT_TRANSFORM_AI_INPUT_USD_PER_1M / CONTENT_TRANSFORM_AI_OUTPUT_USD_PER_1M chưa được set — ' +
+          '"Chi phí AI" ở tab Thống kê Chuyển đổi nội dung sẽ luôn hiện $0 (vẫn ghi đúng số token thật).',
+      );
+    }
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
     if (!this.minimaxApiKey) {
@@ -2975,6 +3012,22 @@ export class AiIntegrationService {
   }
 
   /**
+   * Quy đổi usage token thật (AI service trả nguyên văn từ DeepSeek) ra chi phí USD theo đơn giá
+   * cấu hình ở constructor. Token âm/thiếu field đều tính là 0 — usage rỗng ({}) là tình huống
+   * bình thường (vd bước chấm bị lỗi, không có gì để tính phí), không phải lỗi.
+   */
+  private computeContentTransformCostUsd(
+    usage?: AiTokenUsage | null,
+  ): { inputTokens: number; outputTokens: number; costUsd: number } {
+    const inputTokens = Math.max(0, Math.round(usage?.prompt_tokens || 0));
+    const outputTokens = Math.max(0, Math.round(usage?.completion_tokens || 0));
+    const costUsd =
+      (inputTokens / 1_000_000) * this.contentTransformAiInputUsdPer1M +
+      (outputTokens / 1_000_000) * this.contentTransformAiOutputUsdPer1M;
+    return { inputTokens, outputTokens, costUsd };
+  }
+
+  /**
    * Gọi thẳng endpoint chấm điểm PAAST của AI service — cùng endpoint mà analyzeContent() ở
    * trên dùng, nhưng trả payload thô KHÔNG ghi lịch sử (paast_analysis_history), vì bản ghi
    * lịch sử ở luồng này là contentTransformHistory, không phải paastAnalysisHistory.
@@ -2985,7 +3038,10 @@ export class AiIntegrationService {
    * chưa gây lỗi, nhưng lệch âm thầm ngay khi timeoutMs đổi mà quên đổi theo phía Django — cùng
    * loại bug đã từng xảy ra với transform-content (xem comment ở content_generation_views.py).
    */
-  private async callPaastAnalyzeApi(content: string, timeoutMs: number): Promise<PaastAnalysisPayload> {
+  private async callPaastAnalyzeApi(
+    content: string,
+    timeoutMs: number,
+  ): Promise<{ payload: PaastAnalysisPayload; usage: AiTokenUsage }> {
     const response = await firstValueFrom(
       this.httpService.post(
         `${this.aiServiceUrl}/api/ai/paast/analyze/`,
@@ -2994,8 +3050,8 @@ export class AiIntegrationService {
       ),
     );
 
-    const { layers, total_score, cta_warning, verdict } = response.data;
-    return { layers, total_score, cta_warning, verdict };
+    const { layers, total_score, cta_warning, verdict, usage } = response.data;
+    return { payload: { layers, total_score, cta_warning, verdict }, usage: usage || {} };
   }
 
   /**
@@ -3014,18 +3070,21 @@ export class AiIntegrationService {
    * PAAST chấm trên chính kịch bản kết quả, không cần input_text hay system_prompt nhân vật —
    * đó là 2 tham số hệ chấm điểm cũ (7 nhóm/23 tiêu chí) cần, nay đã bỏ.
    */
-  private async scoreContentWithRetry(outputText: string, logContext = 'chấm điểm'): Promise<ContentTransformScoreResult> {
+  private async scoreContentWithRetry(
+    outputText: string,
+    logContext = 'chấm điểm',
+  ): Promise<{ scoreResult: ContentTransformScoreResult; usage: AiTokenUsage }> {
     const maxAttempts = 3;
     const timeoutsMs = [120000, 120000, 120000];
     let lastError: any;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const result = await this.callPaastAnalyzeApi(outputText, timeoutsMs[attempt - 1]);
+        const { payload, usage } = await this.callPaastAnalyzeApi(outputText, timeoutsMs[attempt - 1]);
         if (attempt > 1) {
           this.logger.warn(`[${logContext}] Thành công ở lần thử ${attempt}/${maxAttempts}`);
         }
-        return result;
+        return { scoreResult: payload, usage };
       } catch (err: any) {
         lastError = err;
 
@@ -3164,8 +3223,14 @@ export class AiIntegrationService {
       // (writeContentTransformWithRetry) — trước đây bước này KHÔNG có retry, 1 lần thất bại
       // (thường do timeout, xem callContentTransformAiService) là cả request thất bại ngay dù
       // thử lại thường sẽ thành công.
-      const outputText = await this.writeContentTransformWithRetry(character.system_prompt, dto.input_text, 16000, 'transform-write');
+      const { outputText, usage, modelUsed } = await this.writeContentTransformWithRetry(
+        character.system_prompt,
+        dto.input_text,
+        16000,
+        'transform-write',
+      );
       const durationMs = Date.now() - startTime;
+      const { inputTokens, outputTokens, costUsd } = this.computeContentTransformCostUsd(usage);
 
       // CHỦ Ý KHÔNG chấm điểm ở đây. Trước đây request này gọi AI 2 lượt nối nhau (viết kịch
       // bản rồi chấm điểm), mỗi lượt tự retry tới 3x120s => tối đa ~720s cho 1 lần bấm nút —
@@ -3178,8 +3243,11 @@ export class AiIntegrationService {
         data: {
           output_text: outputText,
           status: TransformStatus.SUCCESS,
-          model_used: 'deepseek-v4-flash',
+          model_used: modelUsed || 'deepseek-v4-flash',
           duration_ms: durationMs,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cost_usd: costUsd,
         },
         include: {
           character: {
@@ -3286,7 +3354,7 @@ export class AiIntegrationService {
     systemPrompt: string,
     inputText: string,
     options?: { maxTokens?: number; temperature?: number; timeoutMs?: number },
-  ): Promise<string> {
+  ): Promise<{ outputText: string; usage: AiTokenUsage; modelUsed: string | null }> {
     const url = `${this.aiServiceUrl}/api/ai/transform-content/`;
     const timeoutMs = options?.timeoutMs ?? 30000;
 
@@ -3308,7 +3376,11 @@ export class AiIntegrationService {
       ),
     );
 
-    return response.data.output_text;
+    return {
+      outputText: response.data.output_text,
+      usage: response.data.usage || {},
+      modelUsed: response.data.model_used ?? null,
+    };
   }
 
   /**
@@ -3322,7 +3394,7 @@ export class AiIntegrationService {
     userPrompt: string,
     maxTokens: number,
     logContext: string,
-  ): Promise<string> {
+  ): Promise<{ outputText: string; usage: AiTokenUsage; modelUsed: string | null }> {
     const maxAttempts = 3;
     const timeoutMs = 120000;
     let lastError: any;
@@ -3366,7 +3438,13 @@ export class AiIntegrationService {
     writeSystemPrompt: string,
     writeUserPrompt: string,
     maxTokens: number,
-  ): Promise<{ outputText: string; scoreResult: ContentTransformScoreResult | null; scoreError: string | null }> {
+  ): Promise<{
+    outputText: string;
+    scoreResult: ContentTransformScoreResult | null;
+    scoreError: string | null;
+    usage: AiTokenUsage;
+    modelUsed: string | null;
+  }> {
     const timeoutMs = this.CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS;
     const response = await firstValueFrom(
       this.httpService.post(
@@ -3382,11 +3460,15 @@ export class AiIntegrationService {
       ),
     );
 
-    const { output_text, score, score_error } = response.data;
+    const { output_text, score, score_error, usage, model_used } = response.data;
     return {
       outputText: output_text,
       scoreResult: (score ?? null) as ContentTransformScoreResult | null,
       scoreError: score_error ?? null,
+      // Tổng token của CẢ viết lại lẫn chấm PAAST bản mới (Django đã cộng dồn — xem
+      // upgrade_scripted bên AI service).
+      usage: usage || {},
+      modelUsed: model_used ?? null,
     };
   }
 
@@ -3416,6 +3498,11 @@ export class AiIntegrationService {
       let currentOutputText: string;
       let previousScoreResult: ContentTransformScoreResult | null = null;
       let ownerUserId = userId;
+      // Chỉ có giá trị khi chạy nhánh "chấm baseline" bên dưới (path input_text/character_id/
+      // output_text thô, KHÔNG qua history_id — khi có history_id, previousScoreResult luôn đã
+      // có sẵn hoặc request đã bị chặn ở trên). Cộng vào chi phí của bản ghi MỚI: về phía người
+      // dùng, 1 lần bấm "Nâng cấp" ở đây tốn cả lượt chấm baseline lẫn lượt viết+chấm lại.
+      let baselineUsage: AiTokenUsage = {};
 
       if (dto.history_id) {
         const history = await this.getContentTransformHistoryDetail(dto.history_id, userId, roles);
@@ -3458,7 +3545,9 @@ export class AiIntegrationService {
       // nên ở đây vẫn để lỗi (sau retry) làm fail cả request, khác với bước chấm lại bản MỚI
       // bên dưới (được cho phép fail độc lập, không kéo sập cả kết quả nâng cấp).
       if (!previousScoreResult) {
-        previousScoreResult = await this.scoreContentWithRetry(currentOutputText, 'upgrade-baseline');
+        const baseline = await this.scoreContentWithRetry(currentOutputText, 'upgrade-baseline');
+        previousScoreResult = baseline.scoreResult;
+        baselineUsage = baseline.usage;
       }
 
       // Các tiêu chí đang `miss` lấy bằng đúng hàm extractMissingElements() ở trên (dùng chung
@@ -3474,8 +3563,13 @@ export class AiIntegrationService {
       // writeContentTransformWithRetry + scoreContentWithRetry tuần tự, mỗi lượt tự retry riêng
       // (tối đa 6 round-trip). Lỗi ở bước viết (chưa có gì để mất) làm request này throw thẳng —
       // giữ đúng hành vi cũ. Lỗi ở bước chấm KHÔNG throw, trả kèm score_error trong response.
-      const { outputText: newOutputText, scoreResult: freshScoreResult, scoreError: freshScoreError } =
-        await this.callContentTransformUpgradeAiService(upgradeSystemPrompt, upgradeUserPrompt, 16000);
+      const {
+        outputText: newOutputText,
+        scoreResult: freshScoreResult,
+        scoreError: freshScoreError,
+        usage: upgradeUsage,
+        modelUsed: upgradeModelUsed,
+      } = await this.callContentTransformUpgradeAiService(upgradeSystemPrompt, upgradeUserPrompt, 16000);
 
       let newScoreResult: ContentTransformScoreResult | null = freshScoreResult;
       let scoreStatus: 'success' | 'failed' = freshScoreError ? 'failed' : 'success';
@@ -3509,6 +3603,14 @@ export class AiIntegrationService {
 
       const durationMs = Date.now() - startTime;
 
+      // Chi phí AI của CẢ lượt "Nâng cấp" này: lượt viết lại + chấm PAAST bản mới (upgradeUsage,
+      // luôn có), cộng thêm lượt chấm baseline nếu nhánh input_text thô ở trên phải tự chấm trước
+      // (baselineUsage — rỗng {} ở path history_id vì đã có sẵn điểm, không tốn thêm lượt gọi nào).
+      const { inputTokens, outputTokens, costUsd } = this.computeContentTransformCostUsd({
+        prompt_tokens: (baselineUsage.prompt_tokens || 0) + (upgradeUsage.prompt_tokens || 0),
+        completion_tokens: (baselineUsage.completion_tokens || 0) + (upgradeUsage.completion_tokens || 0),
+      });
+
       const newHistory = await this.prisma.contentTransformHistory.create({
         data: {
           user_id: ownerUserId,
@@ -3516,10 +3618,13 @@ export class AiIntegrationService {
           input_text: inputText,
           output_text: newOutputText,
           status: TransformStatus.SUCCESS,
-          model_used: 'deepseek-v4-flash (upgrade)',
+          model_used: upgradeModelUsed || 'deepseek-v4-flash (upgrade)',
           duration_ms: durationMs,
           score_result: (newScoreResult ? this.withContentTransformLogicVersion(newScoreResult) : null) as any,
           overall_score: newScoreResult?.total_score ?? null,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cost_usd: costUsd,
         },
         include: {
           character: {
@@ -3579,6 +3684,9 @@ export class AiIntegrationService {
     // Bật khi kết quả trả về là điểm CŨ dùng lại, không phải lượt chấm mới — FE hiển thị ghi chú
     // để người dùng không tưởng nhầm vừa có một lượt chấm mới chạy.
     let fromCache = false;
+    // Token của lượt chấm THẬT vừa chạy — rỗng khi dùng lại điểm cache (không gọi AI, không tốn
+    // gì thêm) hoặc khi chấm lỗi (không có usage nào để cộng).
+    let scoreUsage: AiTokenUsage = {};
     try {
       // Tái dùng điểm đã chấm cho ĐÚNG nội dung này nếu có — đây là cách duy nhất đảm bảo
       // "cùng nội dung luôn ra cùng điểm". Hạ temperature về 0 chỉ thu hẹp dao động chứ không
@@ -3594,7 +3702,9 @@ export class AiIntegrationService {
 
       if (!scoreResult) {
         try {
-          scoreResult = await this.scoreContentWithRetry(history.output_text, 'rescore');
+          const scored = await this.scoreContentWithRetry(history.output_text, 'rescore');
+          scoreResult = scored.scoreResult;
+          scoreUsage = scored.usage;
         } catch (err: any) {
           scoreError = this.buildContentTransformScoreErrorMessage(err);
         }
@@ -3606,6 +3716,9 @@ export class AiIntegrationService {
         return { ...history, scoreResult: history.scoreResult, scoreStatus: 'failed' as const, scoreError, fromCache: false };
       }
 
+      // Cộng DỒN vào chi phí đã có sẵn của bản ghi (từ lượt viết ở /transform) — bản ghi này
+      // giờ "tốn" cả viết lẫn chấm, không phải ghi đè. Rỗng khi fromCache=true (không gọi AI).
+      const scoreCost = this.computeContentTransformCostUsd(scoreUsage);
       const updatedHistory = await this.prisma.contentTransformHistory.update({
         where: { id: history.id },
         data: {
@@ -3613,6 +3726,9 @@ export class AiIntegrationService {
           // cũng tra cache được ở lần sau mà không phải dò ngược sang bản ghi nguồn.
           score_result: this.withContentTransformLogicVersion(scoreResult) as any,
           overall_score: scoreResult.total_score ?? null,
+          input_tokens: (history.input_tokens || 0) + scoreCost.inputTokens,
+          output_tokens: (history.output_tokens || 0) + scoreCost.outputTokens,
+          cost_usd: Number(history.cost_usd || 0) + scoreCost.costUsd,
         },
         include: {
           character: {
@@ -3734,7 +3850,13 @@ export class AiIntegrationService {
    * tạm field này), và xu hướng theo ngày trong `range` gần nhất kèm tổng của kỳ liền trước để FE
    * tính badge % thay đổi (cho card "Tổng lượt chuyển đổi" / "Trung bình mỗi người").
    */
-  async getContentTransformTeamSummary(callerId: string, roles: UserRole[], range: TeamSummaryRange = '30d') {
+  async getContentTransformTeamSummary(
+    callerId: string,
+    roles: UserRole[],
+    range: TeamSummaryRange = '30d',
+    from?: string,
+    to?: string,
+  ) {
     // Phạm vi quyền lấy nguyên từ UsersService.getTeamMembers() (Leader: các user có User.team
     // khớp tên team mình lead; Manager/Admin: toàn bộ user) — cùng danh sách mà dropdown "Chọn
     // thành viên" cũ đã dùng, nên không phát sinh cách xét quyền mới.
@@ -3745,44 +3867,69 @@ export class AiIntegrationService {
         members: [],
         totalMembers: 0,
         totalTransforms: 0,
+        totalCostUsd: 0,
         byInputType: [],
-        trend: { range, points: [], periodTotal: 0, previousPeriodTotal: 0 },
+        trend: { range, points: [], periodTotal: 0, previousPeriodTotal: 0, periodCostUsd: 0, previousPeriodCostUsd: 0 },
       };
     }
 
     const memberIds = members.map((m) => m.id);
-    const periodDays = range === '7d' ? 7 : range === '90d' ? 90 : 30;
 
     // Mốc ngày theo UTC 00:00 — nhất quán nội bộ giữa các lần gọi (không phụ thuộc giờ hệ thống
     // của tiến trình BE), đủ dùng cho biểu đồ xu hướng theo NGÀY (không cần khớp múi giờ người xem).
-    const startOfToday = new Date();
-    startOfToday.setUTCHours(0, 0, 0, 0);
-    const rangeEnd = new Date(startOfToday);
-    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 1); // đầu ngày mai — cận trên loại trừ, gồm trọn hôm nay
-    const rangeStart = new Date(rangeEnd);
-    rangeStart.setUTCDate(rangeStart.getUTCDate() - periodDays);
+    let rangeStart: Date;
+    let rangeEnd: Date;
+    let periodDays: number;
+
+    if (range === 'custom' && from && to) {
+      // DTO đã validate from/to là chuỗi ngày hợp lệ (IsDateString) khi range=custom.
+      const fromDate = new Date(`${from}T00:00:00.000Z`);
+      const toDate = new Date(`${to}T00:00:00.000Z`);
+      // Người dùng có thể chọn ngược (to trước from) — tự hoán đổi thay vì báo lỗi, đỡ FE phải tự validate.
+      rangeStart = fromDate <= toDate ? fromDate : toDate;
+      const rawEnd = fromDate <= toDate ? toDate : fromDate;
+      rangeEnd = new Date(rawEnd);
+      rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 1); // cận trên loại trừ, gồm trọn ngày kết thúc
+      // Chặn khoảng quá rộng (tối đa 366 ngày) để tránh bucket loop + quét lịch sử vô hạn.
+      const maxRangeEnd = new Date(rangeStart);
+      maxRangeEnd.setUTCDate(maxRangeEnd.getUTCDate() + 366);
+      if (rangeEnd > maxRangeEnd) rangeEnd = maxRangeEnd;
+      periodDays = Math.round((rangeEnd.getTime() - rangeStart.getTime()) / 86_400_000);
+    } else {
+      periodDays = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+      const startOfToday = new Date();
+      startOfToday.setUTCHours(0, 0, 0, 0);
+      rangeEnd = new Date(startOfToday);
+      rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 1); // đầu ngày mai — cận trên loại trừ, gồm trọn hôm nay
+      rangeStart = new Date(rangeEnd);
+      rangeStart.setUTCDate(rangeStart.getUTCDate() - periodDays);
+    }
     const previousRangeStart = new Date(rangeStart);
     previousRangeStart.setUTCDate(previousRangeStart.getUTCDate() - periodDays);
 
-    // 1 lần groupBy cho toàn bộ thành viên thay vì đếm riêng từng người (tổng all-time).
+    // 1 lần groupBy cho toàn bộ thành viên thay vì đếm riêng từng người (tổng all-time) — gộp
+    // luôn _sum cost_usd vào CÙNG query này (không thêm round-trip) để có "Chi phí AI" all-time
+    // theo từng thành viên, cùng kiểu tổng hợp all-time với totalTransforms ở cột bên cạnh.
     const [grouped, byInputTypeRaw, trendRows] = await Promise.all([
       this.prisma.contentTransformHistory.groupBy({
         by: ['user_id'],
         where: { user_id: { in: memberIds } },
         _count: { _all: true },
         _max: { created_at: true },
+        _sum: { cost_usd: true },
       }),
       this.prisma.contentTransformHistory.groupBy({
         by: ['input_type'],
         where: { user_id: { in: memberIds } },
         _count: { _all: true },
       }),
-      // Chỉ lấy created_at trong khoảng [kỳ trước, kỳ hiện tại) để bucket theo ngày ở JS — Prisma
-      // groupBy không truncate được DateTime về "ngày", và dữ liệu nội bộ ở quy mô này không cần
-      // raw SQL date_trunc.
+      // Chỉ lấy created_at/cost_usd trong khoảng [kỳ trước, kỳ hiện tại) để bucket theo ngày ở
+      // JS — Prisma groupBy không truncate được DateTime về "ngày", và dữ liệu nội bộ ở quy mô
+      // này không cần raw SQL date_trunc. cost_usd đi kèm để tính % thay đổi chi phí theo kỳ,
+      // cùng cách periodTotal/previousPeriodTotal đang tính cho lượt chuyển đổi.
       this.prisma.contentTransformHistory.findMany({
         where: { user_id: { in: memberIds }, created_at: { gte: previousRangeStart, lt: rangeEnd } },
-        select: { created_at: true },
+        select: { created_at: true, cost_usd: true },
       }),
     ]);
 
@@ -3800,6 +3947,10 @@ export class AiIntegrationService {
         is_active: m.is_active ?? true,
         totalTransforms: stat?._count?._all ?? 0,
         lastTransformAt: stat?._max?.created_at ?? null,
+        // All-time, cùng phạm vi tổng hợp với totalTransforms ở trên (không lọc theo range đang
+        // xem). Bản ghi tạo trước khi có cột cost_usd góp 0 vào tổng này — không phải vì miễn
+        // phí, mà vì chưa được theo dõi (xem migration 20260825000000_add_content_transform_cost_tracking).
+        costUsd: Number(stat?._sum?.cost_usd ?? 0),
       };
     });
 
@@ -3819,30 +3970,60 @@ export class AiIntegrationService {
     // biểu đồ — chỉ dùng để FE so % thay đổi.
     const dayKey = (d: Date) => d.toISOString().slice(0, 10);
     const pointsByDay = new Map<string, number>();
+    const costByDay = new Map<string, number>();
     for (let i = 0; i < periodDays; i++) {
       const d = new Date(rangeStart);
       d.setUTCDate(d.getUTCDate() + i);
       pointsByDay.set(dayKey(d), 0);
+      costByDay.set(dayKey(d), 0);
     }
     let periodTotal = 0;
     let previousPeriodTotal = 0;
+    // Cùng cách tính periodTotal/previousPeriodTotal nhưng cộng dồn cost_usd thay vì đếm bản ghi
+    // — cho badge "% thay đổi" của ô "Tổng chi phí AI" so với kỳ liền trước, và sparkline theo
+    // ngày của cùng ô đó (costByDay, cùng cách bucket với pointsByDay).
+    let periodCostUsd = 0;
+    let previousPeriodCostUsd = 0;
     for (const row of trendRows) {
+      const rowCost = Number(row.cost_usd || 0);
       if (row.created_at >= rangeStart) {
         const key = dayKey(row.created_at);
-        if (pointsByDay.has(key)) pointsByDay.set(key, (pointsByDay.get(key) || 0) + 1);
+        if (pointsByDay.has(key)) {
+          pointsByDay.set(key, (pointsByDay.get(key) || 0) + 1);
+          costByDay.set(key, (costByDay.get(key) || 0) + rowCost);
+        }
         periodTotal++;
+        periodCostUsd += rowCost;
       } else {
         previousPeriodTotal++;
+        previousPeriodCostUsd += rowCost;
       }
     }
-    const points = Array.from(pointsByDay.entries()).map(([date, count]) => ({ date, count }));
+    const points = Array.from(pointsByDay.entries()).map(([date, count]) => ({
+      date,
+      count,
+      costUsd: costByDay.get(date) || 0,
+    }));
 
     return {
       members: rows,
       totalMembers: rows.length,
       totalTransforms: rows.reduce((sum, r) => sum + r.totalTransforms, 0),
+      // All-time — cùng phạm vi với totalTransforms ở trên, xem comment ở costUsd trong `rows`.
+      totalCostUsd: rows.reduce((sum, r) => sum + r.costUsd, 0),
       byInputType,
-      trend: { range, points, periodTotal, previousPeriodTotal },
+      // from/to = khoảng ngày THỰC TẾ đã áp dụng (kể cả sau khi tự hoán đổi/chặn 366 ngày ở trên) —
+      // FE dùng để hiển thị nhãn khoảng ngày khi range=custom.
+      trend: {
+        range,
+        from: dayKey(rangeStart),
+        to: dayKey(new Date(rangeEnd.getTime() - 1)),
+        points,
+        periodTotal,
+        previousPeriodTotal,
+        periodCostUsd,
+        previousPeriodCostUsd,
+      },
     };
   }
 
@@ -4002,26 +4183,47 @@ export class AiIntegrationService {
     return this.attachContentTransformScoreFields(history);
   }
 
-  /** Chuyển đổi file video/audio thành văn bản (dùng cho luồng chuyển đổi content). */
-  async transcribeContentUpload(file: Express.Multer.File, authorization?: string): Promise<any> {
+  /**
+   * Chuyển đổi file video/audio thành văn bản (dùng cho luồng chuyển đổi content).
+   *
+   * Trước đây forward nguyên Bearer JWT của FE sang AI — nhưng token đó phụ thuộc vào
+   * hạn dùng/claims phía FE và từng gây 403 khó chẩn đoán khi lệch cấu hình JWT_SECRET
+   * hoặc token gần hết hạn giữa lúc upload file lớn. Đổi sang dùng internal system token
+   * (cùng cơ chế `videoDownloaderAuthHeaders()` đã chạy ổn cho video-downloader), tự BE ký
+   * bằng jwtService của chính nó — không còn phụ thuộc vào token của user gọi request gốc.
+   *
+   * timeout/`timeout_seconds`: xem CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS. Gửi kèm
+   * `timeout_seconds` để AI service dùng ĐÚNG ngân sách BE thực sự chờ (cùng quy ước đã dùng ở
+   * callContentTransformAiService/callPaastAnalyzeApi), thay vì im lặng rơi về mặc định riêng
+   * của nó rồi lệch ngầm về sau. Timeout của axios ở đây được nới thêm 60s so với ngân sách gửi
+   * cho AI service — ngân sách đó chỉ tính từ lúc Django VÀO VIEW (tức SAU KHI đã nhận xong toàn
+   * bộ file), còn đồng hồ axios ở đây bắt đầu chạy từ lúc BE bắt đầu ĐẨY formData sang AI, nên
+   * cần chừa thêm thời gian truyền file (tới 200MB) trước khi Django kịp bắt đầu tính giờ của
+   * chính nó — vẫn nằm dưới timeout 510s phía FE nên không tạo ra khoảng lệch mới.
+   */
+  async transcribeContentUpload(file: Express.Multer.File): Promise<any> {
     const FormData = require('form-data');
     const url = `${this.aiServiceUrl}/api/content/transcribe-upload/`;
+
+    const aiBudgetMs = this.CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS;
+    const requestTimeoutMs = aiBudgetMs + 60_000;
 
     const formData = new FormData();
     formData.append('file', file.buffer, {
       filename: file.originalname,
       contentType: file.mimetype,
     });
+    formData.append('timeout_seconds', String(Math.ceil(aiBudgetMs / 1000)));
 
     try {
       const response = await firstValueFrom(
         this.httpService.post(url, formData, {
-          // AI endpoint yêu cầu IsAuthenticated — forward nguyên Bearer JWT của FE,
-          // AI validate bằng chung JWT_SECRET (core.authentication.NestJWTAuthentication).
-          headers: { ...formData.getHeaders(), ...(authorization ? { Authorization: authorization } : {}) },
+          // AI endpoint yêu cầu IsAuthenticated (NestJWTAuthentication, chung JWT_SECRET
+          // với BE) — dùng internal system token thay vì forward JWT gốc của user.
+          headers: { ...formData.getHeaders(), ...this.videoDownloaderAuthHeaders() },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          timeout: 60000, // 60s timeout
+          timeout: requestTimeoutMs,
         }),
       );
       return response.data;

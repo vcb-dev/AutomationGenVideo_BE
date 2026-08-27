@@ -112,3 +112,16 @@ export interface PaastMissingElement {
   criterion: string;
   suggestion: string;
 }
+
+/**
+ * Token usage THẬT của 1 lệnh gọi AI (hoặc tổng đã cộng dồn của nhiều lệnh gọi, khi 1 request
+ * tốn nhiều lượt LLM — vd chấm PAAST chạy 5 lệnh song song). Nguyên văn field `usage` DeepSeek
+ * trả về (`prompt_tokens`/`completion_tokens`/`total_tokens`), KHÔNG lưu vào score_result —
+ * dùng riêng để BE tính chi phí AI (xem computeContentTransformCostUsd), tách khỏi payload chấm
+ * điểm PAAST vốn được cache/so khớp theo nội dung.
+ */
+export interface AiTokenUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}

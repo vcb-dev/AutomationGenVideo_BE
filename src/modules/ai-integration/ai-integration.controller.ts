@@ -978,7 +978,7 @@ export class AiIntegrationController {
     }),
   )
   @ApiOperation({ summary: 'Chuyển đổi file video/audio thành văn bản' })
-  async transcribeContentTransformUpload(@Req() req: any, @UploadedFile() file: Express.Multer.File) {
+  async transcribeContentTransformUpload(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new HttpException('Không tìm thấy file upload', HttpStatus.BAD_REQUEST);
     }
@@ -997,9 +997,9 @@ export class AiIntegrationController {
       throw new HttpException('Mimetype của file không hợp lệ.', HttpStatus.BAD_REQUEST);
     }
 
-    // AI transcribe-upload giờ yêu cầu IsAuthenticated (NestJWTAuthentication) — forward
-    // nguyên JWT của FE để AI validate bằng chung JWT_SECRET với BE.
-    return this.aiService.transcribeContentUpload(file, req.headers?.authorization);
+    // AI transcribe-upload yêu cầu IsAuthenticated (NestJWTAuthentication) — BE tự ký
+    // internal system token thay vì forward JWT gốc của user (xem transcribeContentUpload()).
+    return this.aiService.transcribeContentUpload(file);
   }
 
   @Get('content-transform/history')
@@ -1019,13 +1019,19 @@ export class AiIntegrationController {
   @ApiOperation({
     summary:
       'Tổng quan: danh sách toàn bộ thành viên trong phạm vi quyền + tổng số lượt chuyển đổi content của từng người, ' +
-      'xu hướng theo ngày (7D/30D/90D) và phân loại theo input_type — phục vụ tab Thống kê (1 lần gọi)',
+      'xu hướng theo ngày (7 ngày/30 ngày/90 ngày hoặc khoảng ngày tùy chọn) và phân loại theo input_type — phục vụ tab Thống kê (1 lần gọi)',
   })
   async getContentTransformTeamSummary(
     @Req() req: any,
     @Query() query: ContentTransformTeamSummaryQueryDto,
   ) {
-    return this.aiService.getContentTransformTeamSummary(req.user.id, req.user.roles, query.range);
+    return this.aiService.getContentTransformTeamSummary(
+      req.user.id,
+      req.user.roles,
+      query.range,
+      query.from,
+      query.to,
+    );
   }
 
   @Get('content-transform/history/member/:userId')

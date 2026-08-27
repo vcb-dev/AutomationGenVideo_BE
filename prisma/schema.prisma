@@ -4089,6 +4089,15 @@ model ContentTransformHistory {
   score_result  Json?
   /// Điểm tổng /100, tách riêng để lọc/sắp xếp mà không cần parse JSON
   overall_score Int?
+  /// Tổng token input/output THẬT đã dùng cho bản ghi này — cộng dồn qua các lượt gọi AI liên
+  /// quan (viết ở /transform, rồi CỘNG THÊM lượt chấm ở /rescore nếu có; /upgrade tính riêng cho
+  /// bản ghi mới nó tạo ra). null = bản ghi tạo trước khi có cơ chế theo dõi chi phí — hiển thị
+  /// "—" ở FE, không phải 0.
+  input_tokens  Int?
+  output_tokens Int?
+  /// Chi phí USD ước tính = token × đơn giá model (xem computeContentTransformCostUsd bên BE).
+  /// Decimal(10,6) đủ độ chính xác cho vài phần triệu đô — 1 lượt chuyển đổi thường dưới $1.
+  cost_usd      Decimal?        @db.Decimal(10, 6)
   created_at    DateTime        @default(now())
   updated_at    DateTime        @updatedAt
 
