@@ -22,7 +22,17 @@ describe('AiIntegrationService.transcribeContentUpload', () => {
       get: jest.fn((key: string, def?: string) => (key === 'AI_SERVICE_URL' ? 'http://ai.test:8001' : def)),
     };
     const jwtService: any = { sign: jest.fn(() => 'fake.jwt.token') };
-    const service = new AiIntegrationService(httpService, configService, jwtService, {} as any, {} as any);
+    // Sáu tham số theo đúng constructor: prisma, driveStorage và usersService không được dùng
+    // trong nhánh đang test nên để rỗng. Thiếu một cái là cả suite không biên dịch được, và
+    // suite không chạy thì CI vẫn xanh ở mắt thường — đó là cách bug này lọt qua lần trước.
+    const service = new AiIntegrationService(
+      httpService,
+      configService,
+      jwtService,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
     return { service, httpService, jwtService };
   }
 
