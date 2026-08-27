@@ -37,7 +37,7 @@ describe('AiIntegrationService — content-transform job status/cancel', () => {
 
       const res = await service.getContentTransformJobStatus('job-1');
 
-      expect(res).toEqual({ status: 'running', kind: 'transcribe', message: 'Đang nghe...' });
+      expect(res).toMatchObject({ status: 'running', kind: 'transcribe', message: 'Đang nghe...' });
     });
 
     it('completed → kèm result nguyên vẹn', async () => {

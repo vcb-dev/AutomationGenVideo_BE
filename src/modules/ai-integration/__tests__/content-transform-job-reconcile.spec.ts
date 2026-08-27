@@ -9,11 +9,12 @@ import { AiIntegrationService } from '../ai-integration.service';
  *
  * Khoá các quyết định:
  *  1. Chỉ quét bản ghi PENDING + có ai_job_id + updated_at quá 15 phút.
- *  2. Job không còn trên AI (not_found) → FAILED kèm message "mất dấu" + xoá ai_job_id.
- *  3. Job đã 'error'/'cancelled' → FAILED kèm message tương ứng.
- *  4. Job vẫn 'queued'/'running'/'completed' → ĐỂ NGUYÊN (PR1 chưa ghi kết quả completed).
- *  5. Ghi có guard status=PENDING (updateMany) — không đè lên bản ghi FE vừa poll xong.
- *  6. Không có bản ghi kẹt → không gọi AI service lần nào.
+ *  2. Job not_found / error / cancelled → FAILED kèm message tương ứng, guard status=PENDING.
+ *  3. Job 'completed' + kind 'upgrade' (FE đã rời) → tự ghi kết quả (finalizeUpgradeJob).
+ *  4. Job vẫn queued/running → ĐỂ NGUYÊN.
+ *  5. Poll 1 bản ghi lỗi → bỏ qua, vẫn xử lý bản còn lại.
+ *  6. Không có bản ghi kẹt → không gọi AI service.
+ *  7. Guard chống chạy chồng.
  */
 describe('AiIntegrationService — reconcile stuck content-transform jobs', () => {
   function buildService(stuckRows: any[]) {
@@ -24,7 +25,14 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
     const jwtService: any = { sign: jest.fn(() => 'jwt') };
     const updateMany = jest.fn((_args: any) => Promise.resolve({ count: 1 }));
     const findMany = jest.fn((_args: any) => Promise.resolve(stuckRows));
-    const prisma: any = { contentTransformHistory: { findMany, updateMany } };
+    const findFirst = jest.fn((_args: any) => Promise.resolve(null));
+    const findUnique = jest.fn((_args: any) => Promise.resolve({ id: 'x', score_result: null }));
+    const create = jest.fn((_args: any) => Promise.resolve({ id: 'new' }));
+    const update = jest.fn((_args: any) => Promise.resolve({}));
+    const prisma: any = {
+      contentTransformHistory: { findMany, updateMany, findFirst, findUnique, create, update },
+      paastAnalysisHistory: { findFirst: jest.fn(async () => null) },
+    };
     const service = new AiIntegrationService(httpService, configService, jwtService, prisma, {} as any, {} as any);
     return { service, httpService, findMany, updateMany };
   }
@@ -54,9 +62,9 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
     );
   });
 
-  it('job không còn trên AI (404) → FAILED "mất dấu" + xoá ai_job_id, guard status=PENDING', async () => {
+  it('job không còn trên AI (404) → FAILED "mất dấu", guard status=PENDING', async () => {
     const { service, httpService, updateMany } = buildService([
-      { id: 'rec-1', ai_job_id: 'job-1', ai_job_kind: 'transcribe' },
+      { id: 'rec-1', user_id: 'u1', ai_job_id: 'job-1', ai_job_kind: 'transcribe' },
     ]);
     httpService.get.mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })));
 
@@ -67,14 +75,13 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
       data: {
         status: TransformStatus.FAILED,
         error_message: expect.stringContaining('mất dấu'),
-        ai_job_id: null,
       },
     });
   });
 
   it('job đã error trên AI → FAILED kèm message lỗi thật', async () => {
     const { service, httpService, updateMany } = buildService([
-      { id: 'rec-2', ai_job_id: 'job-2', ai_job_kind: 'upgrade' },
+      { id: 'rec-2', user_id: 'u1', ai_job_id: 'job-2', ai_job_kind: 'upgrade' },
     ]);
     httpService.get.mockReturnValueOnce(
       of({ data: { status: 'error', message: 'DeepSeek đang lỗi ở phía nhà cung cấp.', error: 'DeepSeek đang lỗi ở phía nhà cung cấp.' } }),
@@ -92,14 +99,34 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
     );
   });
 
-  it('job vẫn running/completed trên AI → KHÔNG động vào (PR1 chưa ghi kết quả completed)', async () => {
+  it('job completed + kind upgrade (FE đã rời) → tự ghi kết quả, KHÔNG đánh FAILED', async () => {
     const { service, httpService, updateMany } = buildService([
-      { id: 'rec-3', ai_job_id: 'job-3', ai_job_kind: 'transcribe' },
-      { id: 'rec-4', ai_job_id: 'job-4', ai_job_kind: 'upgrade' },
+      { id: 'rec-u', user_id: 'u1', ai_job_id: 'job-u', ai_job_kind: 'upgrade', character: { id: 'c1' } },
     ]);
-    httpService.get
-      .mockReturnValueOnce(of({ data: { status: 'running', message: 'Đang xử lý...' } }))
-      .mockReturnValueOnce(of({ data: { status: 'completed', result: { transcript: 'x' } } }));
+    httpService.get.mockReturnValueOnce(
+      of({
+        data: {
+          status: 'completed',
+          kind: 'upgrade',
+          client_context: { source_history_id: 'src-1' },
+          result: { output_text: 'kịch bản mới', score: { total_score: 90 }, score_error: null, usage: {}, model_used: 'x' },
+        },
+      }),
+    );
+
+    await service.reconcileStuckContentTransformJobs();
+
+    // finalizeUpgradeJob dùng updateMany chuyển PENDING → SUCCESS (không phải FAILED)
+    const calls = updateMany.mock.calls.map((c: any[]) => c[0]);
+    expect(calls.some((c) => c.data?.status === TransformStatus.SUCCESS)).toBe(true);
+    expect(calls.some((c) => c.data?.status === TransformStatus.FAILED)).toBe(false);
+  });
+
+  it('job vẫn running trên AI → KHÔNG động vào', async () => {
+    const { service, httpService, updateMany } = buildService([
+      { id: 'rec-3', user_id: 'u1', ai_job_id: 'job-3', ai_job_kind: 'transcribe' },
+    ]);
+    httpService.get.mockReturnValueOnce(of({ data: { status: 'running', message: 'Đang xử lý...' } }));
 
     await service.reconcileStuckContentTransformJobs();
 
@@ -108,8 +135,8 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
 
   it('poll 1 bản ghi lỗi → bỏ qua bản đó, vẫn xử lý bản còn lại', async () => {
     const { service, httpService, updateMany } = buildService([
-      { id: 'rec-5', ai_job_id: 'job-5', ai_job_kind: 'transcribe' },
-      { id: 'rec-6', ai_job_id: 'job-6', ai_job_kind: 'transcribe' },
+      { id: 'rec-5', user_id: 'u1', ai_job_id: 'job-5', ai_job_kind: 'transcribe' },
+      { id: 'rec-6', user_id: 'u1', ai_job_id: 'job-6', ai_job_kind: 'transcribe' },
     ]);
     httpService.get
       .mockReturnValueOnce(throwError(() => ({ response: { status: 502 }, message: 'down' })))
