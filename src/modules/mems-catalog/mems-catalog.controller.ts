@@ -5,6 +5,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   Request,
@@ -24,7 +25,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
-import { CreateAssetDto, CreateCategoryDto, CreateModelDto, InspectAssetDto } from './dto';
+import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
 import { AssetPhotoService, MEMS_PHOTO_DIR } from './asset-photo.service';
 import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
@@ -50,6 +51,20 @@ export class MemsCatalogController {
   @ApiOperation({ summary: 'Chi tiết thiết bị kèm nhật ký vòng đời (MH-03)' })
   assetDetail(@Param('assetCode') assetCode: string) {
     return this.service.assetDetail(assetCode);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Patch('assets/:assetCode')
+  @ApiOperation({ summary: 'Chỉnh sửa thông tin thiết bị' })
+  updateAsset(@Param('assetCode') assetCode: string, @Body() dto: UpdateAssetDto) {
+    return this.service.updateAsset(assetCode, dto);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Delete('assets/:assetCode')
+  @ApiOperation({ summary: 'Xóa thiết bị khỏi kho' })
+  deleteAsset(@Param('assetCode') assetCode: string) {
+    return this.service.deleteAsset(assetCode);
   }
 
   @Get('assets/:assetCode/photos')
@@ -165,6 +180,27 @@ export class MemsCatalogController {
   @ApiOperation({ summary: 'Vị trí lưu trữ trong kho' })
   listLocations() {
     return this.service.listLocations();
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Post('locations')
+  @ApiOperation({ summary: 'Tạo vị trí lưu kho mới (Tủ/Kệ/Ngăn)' })
+  createLocation(@Body() dto: CreateLocationDto) {
+    return this.service.createLocation(dto);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Patch('locations/:id')
+  @ApiOperation({ summary: 'Sửa tên vị trí lưu kho' })
+  updateLocation(@Param('id') id: string, @Body() dto: UpdateLocationDto) {
+    return this.service.updateLocation(id, dto);
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Delete('locations/:id')
+  @ApiOperation({ summary: 'Xóa/ngừng dùng vị trí lưu kho' })
+  deleteLocation(@Param('id') id: string) {
+    return this.service.deleteLocation(id);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
