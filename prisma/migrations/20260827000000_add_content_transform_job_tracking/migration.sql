@@ -9,10 +9,16 @@
 -- đồng bộ transform/rescore, hoặc job đã xong và kết quả đã ghi vào bản ghi).
 --
 -- Index (status, updated_at): cho cron quét nhanh bản ghi status=PENDING + updated_at quá hạn.
+--
+-- SQL bên dưới lấy nguyên văn từ `prisma migrate diff --from-schema-datamodel <base> \
+--   --to-schema-datamodel prisma/schema.prisma --script` (engine giống hệt `migrate dev`,
+-- chỉ khác là không cần shadow DB — shadow DB của repo đang hỏng, xem MIGRATION_DEBT.md).
+-- Đã áp thử trên PostgreSQL 15 thật: ALTER + CREATE INDEX chạy sạch, dữ liệu cũ nguyên vẹn,
+-- cột mới = NULL; chạy lại lần 2 fail trong transaction (rollback, không hỏng dữ liệu).
 
-ALTER TABLE "content_transform_histories"
-  ADD COLUMN "ai_job_id" TEXT,
-  ADD COLUMN "ai_job_kind" TEXT;
+-- AlterTable
+ALTER TABLE "content_transform_histories" ADD COLUMN     "ai_job_id" TEXT,
+ADD COLUMN     "ai_job_kind" TEXT;
 
-CREATE INDEX "content_transform_histories_status_updated_at_idx"
-  ON "content_transform_histories"("status", "updated_at");
+-- CreateIndex
+CREATE INDEX "content_transform_histories_status_updated_at_idx" ON "content_transform_histories"("status", "updated_at");
