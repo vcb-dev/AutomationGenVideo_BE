@@ -3408,8 +3408,22 @@ export class AiIntegrationService {
           continue;
         }
 
-        if (job.status !== 'not_found' && job.status !== 'error' && job.status !== 'cancelled') {
-          continue; // queued/running, hoặc completed nhưng không phải upgrade — để nguyên
+        // completed nhưng không phải upgrade (transcribe không có bản ghi) — không nên xảy ra, bỏ qua.
+        if (job.status === 'completed') continue;
+
+        // queued/running mà bản ghi đã PENDING quá 15' → job treo (watchdog phía AI cắt ở
+        // ~budget+90s ≈ 10', nên còn "running" ở mốc 15' là bất thường). Đánh FAILED thay vì
+        // chờ vô thời hạn.
+        if (job.status === 'queued' || job.status === 'running') {
+          const failed = await this.prisma.contentTransformHistory.updateMany({
+            where: { id: rec.id, status: TransformStatus.PENDING },
+            data: {
+              status: TransformStatus.FAILED,
+              error_message: 'Lượt xử lý chạy quá lâu và có thể đã treo. Vui lòng thử lại.',
+            },
+          });
+          if (failed.count > 0) this.logger.warn(`[content-transform reconcile] ${rec.id} → FAILED (treo, AI vẫn báo ${job.status})`);
+          continue;
         }
 
         const message =
