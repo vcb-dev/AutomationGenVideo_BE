@@ -1,5 +1,5 @@
 import { of } from 'rxjs';
-import { AiIntegrationService } from '../ai-integration.service';
+import { AiIntegrationService } from './ai-integration.service';
 
 describe('AiIntegrationService.getVoiceUsageStats', () => {
   function buildService(rows: any[] = []) {

@@ -1,4 +1,4 @@
-import { TeamDerivedSyncService } from '../team-derived-sync.service';
+import { TeamDerivedSyncService } from './team-derived-sync.service';
 
 describe('TeamDerivedSyncService', () => {
   it('dọn dẹp các dòng team_members mồ côi và đồng bộ users.team khi resync', async () => {
