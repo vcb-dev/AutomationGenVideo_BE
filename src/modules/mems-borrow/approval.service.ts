@@ -8,7 +8,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto';
-import { ApprovalPlan, canSign, nextStep, planApprovals } from './approval-rules';
+import { ApprovalPlan, BorrowPurpose, canSign, nextStep, planApprovals } from './approval-rules';
 
 /** Người đang ký, lấy từ token — cần cả id lẫn vai trò để đối chiếu với cấp đang tới lượt. */
 export interface Approver {
@@ -29,18 +29,27 @@ export class ApprovalService {
     from_time: Date;
     to_time: Date;
     place: string;
+    purpose?: BorrowPurpose | string | null;
   }): ApprovalPlan {
     return planApprovals({
       totalValue: this.estimateValue(request.lines),
       fromTime: request.from_time,
       toTime: request.to_time,
       place: request.place,
+      // Phiếu tạo trước khi có cột này đọc ra null — coi như việc công ty, giữ nguyên một cấp.
+      purpose: request.purpose === 'PERSONAL' ? 'PERSONAL' : 'WORK',
     });
   }
 
   async list(filter: { status?: string }) {
+    const statuses = filter.status ? filter.status.split(',').map((s) => s.trim()) : [];
     const requests = await this.prisma.memsBorrowRequest.findMany({
-      where: filter.status ? { status: filter.status as any } : {},
+      where:
+        statuses.length > 1
+          ? { status: { in: statuses as any } }
+          : statuses.length === 1
+            ? { status: statuses[0] as any }
+            : {},
       include: {
         department: true,
         lines: { include: { model: { include: { category: true } } } },
@@ -48,7 +57,21 @@ export class ApprovalService {
       },
       orderBy: { created_at: 'desc' },
     });
-    return requests.map((r) => this.decorate(r));
+
+    const userIds = Array.from(
+      new Set([
+        ...requests.map((r) => r.owner_id),
+        ...requests.flatMap((r) => r.approvals.map((a) => a.decided_by)),
+      ].filter(Boolean)),
+    );
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, full_name: true, email: true },
+    });
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    return requests.map((r) => this.decorate(r, userMap));
   }
 
   async detail(id: string) {
@@ -66,7 +89,21 @@ export class ApprovalService {
       },
     });
     if (!request) throw new NotFoundException(`Không có phiếu ${id}`);
-    return this.decorate(request);
+
+    const userIds = Array.from(
+      new Set([
+        request.owner_id,
+        ...request.approvals.map((a) => a.decided_by),
+      ].filter(Boolean)),
+    );
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, full_name: true, email: true },
+    });
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    return this.decorate(request, userMap);
   }
 
   async approve(requestId: string, approver: Approver, dto: ApproveRequestDto) {
@@ -177,13 +214,26 @@ export class ApprovalService {
   }
 
   /** Gắn kế hoạch chữ ký và tiến độ ký để FE không phải tự suy. */
-  private decorate(request: any) {
+  private decorate(request: any, userMap?: Map<string, { id: string; full_name: string; email: string }>) {
     const plan = this.planFor(request);
     const approvedLevels = (request.approvals ?? []).filter(
       (a: any) => a.decision === 'APPROVED',
     ).length;
+    const owner = userMap?.get(request.owner_id);
+    const approvalsWithUser = (request.approvals ?? []).map((a: any) => {
+      const decider = userMap?.get(a.decided_by);
+      return {
+        ...a,
+        decided_by_name: decider?.full_name ?? null,
+        decided_by_email: decider?.email ?? null,
+      };
+    });
+
     return {
       ...request,
+      owner_name: owner?.full_name ?? '—',
+      owner_email: owner?.email ?? null,
+      approvals: approvalsWithUser,
       total_value: this.estimateValue(request.lines),
       required_levels: plan.steps.length,
       /** Ai phải ký cấp nào — FE hiện đúng tên vai trò thay vì chỉ nói "cần 2 cấp". */

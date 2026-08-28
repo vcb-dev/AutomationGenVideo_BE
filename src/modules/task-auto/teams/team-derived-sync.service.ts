@@ -32,6 +32,15 @@ export class TeamDerivedSyncService implements OnModuleInit {
   @Cron('0 10,40 * * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async resyncDriftedUserTeams(): Promise<void> {
     if (!this.prisma.isHealthy) return
+
+    // Dọn dẹp các dòng team_members mồ côi (team đã bị xóa nhưng còn sót lại)
+    await this.prisma.$executeRaw`
+      DELETE FROM team_members tm
+      WHERE NOT EXISTS (
+        SELECT 1 FROM teams t WHERE t.id = tm.team_id
+      )
+    `.catch((err) => this.logger.warn(`[TeamDerivedSync] clean orphaned memberships error: ${err.message}`));
+
     const n = await this.prisma.$executeRaw`
       UPDATE users u
       SET team = sub.expected_team

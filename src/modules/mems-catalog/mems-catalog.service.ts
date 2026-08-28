@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { CreateAssetDto, CreateCategoryDto, CreateModelDto } from './dto';
+import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
 
 @Injectable()
 export class MemsCatalogService {
@@ -82,10 +82,119 @@ export class MemsCatalogService {
   }
 
   /**
+   * Cập nhật thông tin thiết bị (Model, Serial, Tình trạng, Trạng thái, Vị trí, Giá, Ghi chú)
+   */
+  async updateAsset(assetCode: string, dto: UpdateAssetDto) {
+    const asset = await this.prisma.memsAsset.findUnique({
+      where: { asset_code: assetCode },
+      include: { model: { include: { category: true } }, location: true },
+    });
+    if (!asset) {
+      throw new NotFoundException(`Không tìm thấy thiết bị với mã ${assetCode}`);
+    }
+
+    // Nếu đổi serial number, kiểm tra xem có bị trùng với máy khác không
+    if (dto.serialNumber && dto.serialNumber !== asset.serial_number) {
+      const duplicated = await this.prisma.memsAsset.findUnique({
+        where: { serial_number: dto.serialNumber },
+      });
+      if (duplicated && duplicated.id !== asset.id) {
+        throw new ConflictException(`Số serial ${dto.serialNumber} đã thuộc thiết bị ${duplicated.asset_code}`);
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.memsAsset.update({
+        where: { id: asset.id },
+        data: {
+          model_id: dto.modelId ?? asset.model_id,
+          serial_number: dto.serialNumber ?? asset.serial_number,
+          location_id: dto.locationId !== undefined ? (dto.locationId || null) : asset.location_id,
+          purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : asset.purchase_date,
+          purchase_price: dto.purchasePrice !== undefined ? dto.purchasePrice : asset.purchase_price,
+          condition: (dto.condition as any) ?? asset.condition,
+          status: (dto.status as any) ?? asset.status,
+        },
+        include: {
+          model: { include: { category: true } },
+          location: true,
+          photos: { where: { is_primary: true }, take: 1 },
+        },
+      });
+
+      // Ghi nhật ký vòng đời
+      await tx.memsAssetEvent.create({
+        data: {
+          asset_id: asset.id,
+          kind: 'CONDITION_CHANGED',
+          title: 'Cập nhật thông tin',
+          detail: [
+            dto.condition && dto.condition !== asset.condition ? `Đổi tình trạng: ${dto.condition}` : null,
+            dto.status && dto.status !== asset.status ? `Đổi trạng thái: ${dto.status}` : null,
+            dto.note?.trim() || null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'Chỉnh sửa thông số/vị trí',
+          occurred_at: new Date(),
+        },
+      });
+
+      return updated;
+    });
+  }
+
+  /**
+   * Xóa thiết bị khỏi kho:
+   * Nếu đang có người mượn hoặc giữ chỗ -> Báo lỗi.
+   * Nếu đã có lịch sử mượn/sự cố -> Soft-delete (is_disabled = true).
+   */
+  async deleteAsset(assetCode: string) {
+    const asset = await this.prisma.memsAsset.findUnique({
+      where: { asset_code: assetCode },
+      include: {
+        reservations: { where: { status: { in: ['TENTATIVE', 'CONFIRMED'] } } },
+        handoverLines: { where: { handover: { request: { status: 'ON_LOAN' } } } },
+      },
+    });
+    if (!asset) {
+      throw new NotFoundException(`Không tìm thấy thiết bị với mã ${assetCode}`);
+    }
+
+    if (asset.status === 'ON_LOAN' || asset.reservations.length > 0 || asset.handoverLines.length > 0) {
+      throw new ConflictException(
+        `Thiết bị ${assetCode} đang được sử dụng hoặc có lịch giữ chỗ, không thể xóa!`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Soft delete: đánh dấu ngừng sử dụng để bảo toàn toàn bộ lịch sử kế toán/báo cáo
+      await tx.memsAsset.update({
+        where: { id: asset.id },
+        data: {
+          is_disabled: true,
+          status: 'DISPOSED',
+        },
+      });
+
+      await tx.memsAssetEvent.create({
+        data: {
+          asset_id: asset.id,
+          kind: 'CONDITION_CHANGED',
+          title: 'Xóa khỏi kho',
+          detail: 'Ngừng sử dụng thiết bị và chuyển trạng thái thanh lý/hủy',
+          occurred_at: new Date(),
+        },
+      });
+
+      return { success: true, message: `Đã xóa thiết bị ${assetCode} khỏi kho thành công.` };
+    });
+  }
+
+  /**
    * Danh mục, model và vị trí — ba nguồn cho dropdown của form nhập kho.
    *
    * Tách khỏi `listAssets` chứ không bắt FE gom nhóm từ danh sách máy: model vừa khai mà chưa
-   * nhập máy nào sẽ không xuất hiện trong danh sách máy, mà đó đúng là lúc người ta cần nó nhất.
+   * nhập máy nào sẽ không xuất hiện trong danh sách máy, mà đó đúng là lúc form nhập kho cần tới nó.
    */
   listCategories() {
     return this.prisma.memsCategory.findMany({
@@ -100,29 +209,24 @@ export class MemsCatalogService {
         is_disabled: false,
         ...(filter.categoryId ? { category_id: filter.categoryId } : {}),
       },
-      include: {
-        category: true,
-        accessories: { orderBy: { sort_order: 'asc' } },
-        _count: { select: { assets: true } },
-      },
-      orderBy: [{ category: { name: 'asc' } }, { name: 'asc' }],
-    });
-  }
-
-  listLocations() {
-    return this.prisma.memsLocation.findMany({
-      where: { is_disabled: false },
+      include: { category: true, accessories: true, _count: { select: { assets: true } } },
       orderBy: { name: 'asc' },
     });
   }
 
   /**
-   * Khai model mới kèm danh sách phụ kiện (NV-03).
+   * Khai một model mới trong danh mục.
    *
-   * Phụ kiện khai ngay tại đây chứ không để sau: biên bản bàn giao đối chiếu theo bảng này,
-   * model không có phụ kiện nào thì lúc nhận lại không ai biết đáng lẽ phải trả về những gì.
+   * Phụ kiện tạo LỒNG trong cùng lệnh `create` chứ không phải `createMany` riêng sau đó: lồng
+   * thì Prisma tự gói vào một giao dịch, còn tách rời thì model có thể ra đời mà phụ kiện thì
+   * không, và một model thiếu phụ kiện chuẩn sẽ làm mọi biên bản bàn giao sau đó thiếu theo.
+   *
+   * `sort_order` bám theo thứ tự người dùng nhập vì đó là thứ tự in trên biên bản bàn giao —
+   * để Prisma tự sắp thì thủ kho dò theo danh sách in ra sẽ lệch hàng.
    */
   async createModel(dto: CreateModelDto) {
+    // Schema không có ràng buộc duy nhất cho (category_id, name), nên bỏ kiểm tra ở đây là
+    // thật sự cho phép hai model trùng tên — dropdown chọn máy thành trò đoán mò.
     const duplicated = await this.prisma.memsAssetModel.findFirst({
       where: { category_id: dto.categoryId, name: dto.name },
       select: { id: true },
@@ -148,22 +252,68 @@ export class MemsCatalogService {
     });
   }
 
+  createLocation(dto: CreateLocationDto) {
+    return this.prisma.memsLocation.create({
+      data: {
+        name: dto.name.trim(),
+        parent_id: dto.parentId ?? null,
+      },
+    });
+  }
+
+  async updateLocation(id: string, dto: UpdateLocationDto) {
+    const loc = await this.prisma.memsLocation.findUnique({ where: { id } });
+    if (!loc) throw new NotFoundException('Không tìm thấy vị trí kho này');
+    return this.prisma.memsLocation.update({
+      where: { id },
+      data: {
+        name: dto.name.trim(),
+        parent_id: dto.parentId !== undefined ? (dto.parentId || null) : loc.parent_id,
+      },
+    });
+  }
+
+  async deleteLocation(id: string) {
+    const loc = await this.prisma.memsLocation.findUnique({
+      where: { id },
+      include: { assets: { where: { is_disabled: false } } },
+    });
+    if (!loc) throw new NotFoundException('Không tìm thấy vị trí kho này');
+    if (loc.assets.length > 0) {
+      throw new ConflictException(
+        `Vị trí này đang chứa ${loc.assets.length} thiết bị, vui lòng chuyển thiết bị sang vị trí khác trước khi xóa.`,
+      );
+    }
+    return this.prisma.memsLocation.update({
+      where: { id },
+      data: { is_disabled: true },
+    });
+  }
+
+  listLocations() {
+    return this.prisma.memsLocation.findMany({
+      where: { is_disabled: false },
+      include: { _count: { select: { assets: { where: { is_disabled: false } } } } },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   /**
-   * Chi tiết một máy tra theo MÃ chứ không theo id (MH-03).
+   * Chi tiết thiết bị kèm toàn bộ nhật ký vòng đời (MH-03).
    *
-   * Mã là thứ dán trên thân máy và in trong QR, nên đường dẫn tra theo mã thì thủ kho quét xong
-   * là ra thẳng trang. Bắt họ tra id sinh tự động là bắt qua một bước tìm kiếm thừa.
+   * Trả về cả máy khác cùng model: khi máy này hỏng hay đang có người mượn, người xem cần biết
+   * ngay kho còn phương án thay thế nào không (QĐ-01).
    */
   async assetDetail(assetCode: string) {
     const asset = await this.prisma.memsAsset.findUnique({
-      where: { asset_code: assetCode.toUpperCase() },
+      where: { asset_code: assetCode },
       include: {
-        model: { include: { category: true, accessories: { orderBy: { sort_order: 'asc' } } } },
+        model: { include: { category: true, accessories: true } },
         location: true,
         photos: { orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }] },
       },
     });
-    if (!asset) throw new NotFoundException(`Không có thiết bị mã ${assetCode}`);
+    if (!asset) throw new NotFoundException(`Không có máy ${assetCode}`);
 
     const events = await this.prisma.memsAssetEvent.findMany({
       where: { asset_id: asset.id },
@@ -171,12 +321,11 @@ export class MemsCatalogService {
       take: 50,
     });
 
-    // Phiếu đặt kế tiếp suy ra từ bảng giữ chỗ, KHÔNG phải một giá trị của cột trạng thái (QĐ-03).
     const nextReservation = await this.prisma.memsReservation.findFirst({
       where: {
         asset_id: asset.id,
-        status: { in: ['TENTATIVE', 'CONFIRMED'] as any },
-        buffer_to_time: { gt: new Date() },
+        status: { in: ['TENTATIVE', 'CONFIRMED'] },
+        from_time: { gte: new Date() },
       },
       orderBy: { from_time: 'asc' },
       include: { request_line: { include: { request: true } } },

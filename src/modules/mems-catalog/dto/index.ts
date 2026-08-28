@@ -41,6 +41,55 @@ export class CreateAssetDto {
   intakeNote?: string;
 }
 
+export class UpdateAssetDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  modelId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  serialNumber?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  purchaseDate?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  purchasePrice?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  locationId?: string;
+
+  @ApiPropertyOptional({
+    enum: ['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'],
+    description: 'Tình trạng vật lý thiết bị',
+  })
+  @IsOptional()
+  @IsIn(['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'])
+  condition?: string;
+
+  @ApiPropertyOptional({
+    enum: ['AVAILABLE', 'IN_USE', 'PENDING_INSPECTION', 'UNDER_MAINTENANCE', 'BROKEN', 'LOST', 'DISPOSED'],
+    description: 'Trạng thái hoạt động trong kho',
+  })
+  @IsOptional()
+  @IsIn(['AVAILABLE', 'IN_USE', 'PENDING_INSPECTION', 'UNDER_MAINTENANCE', 'BROKEN', 'LOST', 'DISPOSED'])
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Ghi chú cập nhật' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
 export class CreateCategoryDto {
   @ApiProperty()
   @IsString()
@@ -109,4 +158,28 @@ export class InspectAssetDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class CreateLocationDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  parentId?: string;
+}
+
+export class UpdateLocationDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  parentId?: string;
 }

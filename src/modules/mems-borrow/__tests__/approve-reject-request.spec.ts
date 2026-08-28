@@ -14,6 +14,7 @@ function buildDeps(over: Partial<any> = {}) {
     from_time: new Date('2026-08-12T08:00:00Z'),
     to_time: new Date('2026-08-13T18:00:00Z'),
     place: 'Studio',
+    purpose: 'WORK',
     approvals: [],
     lines: [{ quantity: 1, model: { reference_price: 10_000_000 } }],
     ...over,
@@ -44,8 +45,8 @@ describe('ApprovalService.approve', () => {
   });
 
   it('phiếu hai cấp: cấp một ký xong phiếu vẫn nằm chờ', async () => {
-    // Mang ra ngoài công ty nên cần thêm chữ ký admin; chuyển sang APPROVED sớm là bỏ qua cấp hai.
-    const { prisma, tx } = buildDeps({ place: 'Đà Nẵng' });
+    // Mượn cho việc riêng nên cần thêm chữ ký admin; chuyển sang APPROVED sớm là bỏ qua cấp hai.
+    const { prisma, tx } = buildDeps({ purpose: 'PERSONAL' });
     await new ApprovalService(prisma).approve('req-1', LEADER1, {});
 
     expect(tx.memsBorrowRequest.update).not.toHaveBeenCalled();
@@ -56,7 +57,7 @@ describe('ApprovalService.approve', () => {
 
   it('phiếu hai cấp: cấp hai ký xong mới thành APPROVED', async () => {
     const { prisma } = buildDeps({
-      place: 'Đà Nẵng',
+      purpose: 'PERSONAL',
       approvals: [{ decided_by: LEADER1.id, decision: 'APPROVED' }],
     });
     const result = await new ApprovalService(prisma).approve('req-1', ADMIN, {});
@@ -137,10 +138,10 @@ describe('ApprovalService — chốt chặn vai trò', () => {
     ).rejects.toThrow(/phải do LEADER ký/);
   });
 
-  it('leader KHÔNG ký thay được cấp của admin ở phiếu mang ra ngoài', async () => {
-    // Cửa canh tài sản ra khỏi công ty phải do admin gác, không thì chỉ là hình thức.
+  it('leader KHÔNG ký thay được cấp của admin ở phiếu mượn cá nhân', async () => {
+    // Cửa canh thiết bị rời khỏi việc công ty phải do admin gác, không thì chỉ là hình thức.
     const { prisma } = buildDeps({
-      place: 'Đà Nẵng',
+      purpose: 'PERSONAL',
       approvals: [{ decided_by: LEADER1.id, decision: 'APPROVED' }],
     });
     await expect(
@@ -156,7 +157,7 @@ describe('ApprovalService — chốt chặn vai trò', () => {
 
   it('cấp được ghi đúng số thứ tự trong kế hoạch, không phải đếm bản ghi', async () => {
     const { prisma, tx } = buildDeps({
-      place: 'Đà Nẵng',
+      purpose: 'PERSONAL',
       approvals: [{ decided_by: LEADER1.id, decision: 'APPROVED' }],
     });
     await new ApprovalService(prisma).approve('req-1', ADMIN, {});
