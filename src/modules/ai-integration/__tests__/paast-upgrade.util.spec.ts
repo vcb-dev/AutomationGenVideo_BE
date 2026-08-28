@@ -116,8 +116,35 @@ describe('buildPaastUpgradeSystemPrompt', () => {
   it('thiếu layers (undefined) thì hiện điểm 0 thay vì NaN/crash', () => {
     const prompt = buildPaastUpgradeSystemPrompt(basePayload({ layers: {} as any }), []);
 
-    expect(prompt).toContain('Prefer 0/20');
-    expect(prompt).toContain('Stick 0/20');
+    // Patch v2.1: trọng số 5 lớp không còn đều nhau (Prefer/Action 25, Acknowledge 20,
+    // Stick/Trust 15) — mẫu số fallback phải khớp default của từng lớp, không phải 20 đồng loạt.
+    expect(prompt).toContain('Prefer 0/25');
+    expect(prompt).toContain('Stick 0/15');
+  });
+
+  it('coherence.is_coherent=false thì in cảnh báo Prefer=0 kèm lý do — không có thì không in gì', () => {
+    const withCoherenceFalse = buildPaastUpgradeSystemPrompt(
+      basePayload({
+        layers: {
+          prefer: { score: 0, max: 25, coherence: { is_coherent: false, warning: 'Hook hứa hẹn A nhưng nửa sau lái sang B.' } },
+          action: { score: 12 }, acknowledge: { score: 12 }, stick: { score: 12 }, trust: { score: 12 },
+        } as any,
+      }),
+      [],
+    );
+    expect(withCoherenceFalse).toContain('LƯU Ý QUAN TRỌNG');
+    expect(withCoherenceFalse).toContain('Hook hứa hẹn A nhưng nửa sau lái sang B.');
+
+    const withCoherenceTrue = buildPaastUpgradeSystemPrompt(
+      basePayload({
+        layers: {
+          prefer: { score: 25, max: 25, coherence: { is_coherent: true } },
+          action: { score: 12 }, acknowledge: { score: 12 }, stick: { score: 12 }, trust: { score: 12 },
+        } as any,
+      }),
+      [],
+    );
+    expect(withCoherenceTrue).not.toContain('LƯU Ý QUAN TRỌNG');
   });
 
   it('gợi ý (suggestion) đi kèm tiêu chí khi có, bỏ qua khi không có', () => {

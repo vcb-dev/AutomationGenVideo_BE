@@ -1,6 +1,7 @@
 import { of } from 'rxjs';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { AiIntegrationService } from '../ai-integration.service';
+import { PAAST_LOGIC_VERSION } from '../interfaces/paast-analysis.interface';
 
 /**
  * PAAST sau khi dời từ PaastAnalyzerService sang AiIntegrationService (gộp module vì cùng là
@@ -38,14 +39,41 @@ describe('AiIntegrationService — PAAST', () => {
   }
 
   describe('findLatestByContent', () => {
-    it('không lọc theo user_id — chỉ theo nội dung + trạng thái SUCCESS', async () => {
+    // Patch v2.1: đổi từ findFirst sang findMany + lọc PAAST_LOGIC_VERSION phía JS (cùng cơ chế
+    // với findContentTransformCachedScoreByOutput) — công thức chấm điểm đổi (trọng số 5 lớp,
+    // hard-gate coherence cho Prefer) khiến bản ghi cũ không còn so sánh được với điểm hôm nay.
+    it('không lọc theo user_id — chỉ theo nội dung + trạng thái SUCCESS, lấy tối đa 5 bản ghi gần nhất', async () => {
       const { service, prisma } = buildService();
 
       await service.findLatestByContent('nội dung abc');
 
-      const arg = prisma.paastAnalysisHistory.findFirst.mock.calls[0][0];
+      const arg = prisma.paastAnalysisHistory.findMany.mock.calls[0][0];
       expect(arg.where).not.toHaveProperty('user_id');
       expect(arg.where).toEqual({ input_text: 'nội dung abc', status: 'SUCCESS' });
+      expect(arg.take).toBe(5);
+    });
+
+    it('bỏ qua bản ghi có logic_version khác/không có, trả bản ghi khớp đúng version hiện hành', async () => {
+      const stale = { id: 'old', analysis_result: { logic_version: 'v1' } };
+      const legacy = { id: 'legacy', analysis_result: {} }; // trước cả khi có cơ chế version
+      const current = { id: 'current', analysis_result: { logic_version: PAAST_LOGIC_VERSION } };
+      const { service } = buildService({
+        paastAnalysisHistory: { findMany: jest.fn(async () => [stale, legacy, current]) },
+      });
+
+      const result = await service.findLatestByContent('nội dung abc');
+
+      expect(result).toEqual(current);
+    });
+
+    it('không có bản ghi nào khớp version hiện hành thì trả null (buộc chấm lại)', async () => {
+      const { service } = buildService({
+        paastAnalysisHistory: { findMany: jest.fn(async () => [{ id: 'old', analysis_result: { logic_version: 'v1' } }]) },
+      });
+
+      const result = await service.findLatestByContent('nội dung abc');
+
+      expect(result).toBeNull();
     });
   });
 

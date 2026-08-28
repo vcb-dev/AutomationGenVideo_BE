@@ -30,6 +30,23 @@ export class PaastService {
   private readonly logger = new Logger(PaastService.name);
   private readonly aiServiceUrl: string;
 
+  // Timeout cho /analyze — 1 lệnh Django orchestrate 5 lệnh DeepSeek song song (mỗi lệnh có
+  // trần + tự thử lại riêng), thường xong trong ~9-15s/lệnh nên 60s luôn dư dả trong thực tế.
+  private readonly PAAST_ANALYZE_TIMEOUT_MS = 60_000;
+
+  // /analyze-v2 sinh thêm 16 hook (1 lệnh LLM riêng, đo thật ~14s) ngoài 5 lệnh phân loại.
+  private readonly PAAST_ANALYZE_V2_TIMEOUT_MS = 150_000;
+
+  // Timeout cho /upgrade — Django cần đủ ngân sách cho 2 lượt LLM NỐI TIẾP bên trong (viết bản
+  // nâng cấp RỒI chấm lại từ đầu, chia theo tỷ lệ 40% viết / 60% chấm — xem
+  // PaastAnalysisService.upgrade). 90s cũ luôn hỏng: viết là lệnh reasoning-enabled +
+  // max_tokens=16000, thực tế cần tới ~60s (đối chiếu log lịch sử: 100% lượt nâng cấp PAAST hỏng
+  // trong nhiều ngày, luôn dừng ở ~40s = write_budget khi ngân sách ngoài chỉ 90s). Content-
+  // transform đã gặp & sửa ĐÚNG bug này cho luồng nâng cấp song song của nó
+  // (CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS = 420_000, xem ai-integration.service.ts) — dùng lại
+  // đúng mốc đó ở đây thay vì đoán số mới.
+  private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -73,8 +90,13 @@ export class PaastService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/analyze/`,
-          { content: dto.content },
-          { timeout: 60000 },
+          {
+            content: dto.content,
+            // Gửi đúng ngân sách THẬT của BE — thiếu field này Django tự đoán bằng
+            // DEFAULT_ANALYZE_TIMEOUT_S=120s, thừa hơn hẳn 60s BE thực sự chờ.
+            timeout_seconds: Math.floor(this.PAAST_ANALYZE_TIMEOUT_MS / 1000),
+          },
+          { timeout: this.PAAST_ANALYZE_TIMEOUT_MS },
         ),
       );
 
@@ -133,10 +155,11 @@ export class PaastService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/analyze-v2/`,
-          { content },
-          // Sinh 16 hook là một lệnh gọi LLM riêng ngoài 5 lệnh phân loại — đo thật mất ~14
-          // giây, nên 60s của bản 1 là quá sát.
-          { timeout: 150000 },
+          {
+            content,
+            timeout_seconds: Math.floor(this.PAAST_ANALYZE_V2_TIMEOUT_MS / 1000),
+          },
+          { timeout: this.PAAST_ANALYZE_V2_TIMEOUT_MS },
         ),
       );
 
@@ -243,8 +266,9 @@ export class PaastService {
           {
             original_content: original.input_text,
             missing_elements: missingElements,
+            timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
           },
-          { timeout: 90000 },
+          { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },
         ),
       );
 

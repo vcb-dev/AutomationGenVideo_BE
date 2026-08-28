@@ -158,6 +158,13 @@ export class AiIntegrationService {
   // trường hợp xấu nhất ước tính ở trần 200MB (upload ~85s + poll ~90s + generate ~200s).
   private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
 
+  // Timeout cho PAAST /upgrade — Django cần đủ ngân sách cho 2 lượt LLM NỐI TIẾP bên trong (viết
+  // bản nâng cấp RỒI chấm lại từ đầu, chia 40% viết / 60% chấm — xem PaastAnalysisService.upgrade).
+  // 90s cũ luôn hỏng khi cần thử lại: viết là lệnh reasoning-enabled + max_tokens=16000, mỗi lượt
+  // write_budget riêng đã ~40-60s, cộng dồn qua các lần thử lại (MAX_SCRIPTED_WRITE_ATTEMPTS=3
+  // phía AI service) dễ vượt 90s. Dùng lại đúng mốc đã kiểm chứng ở CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -2737,12 +2744,23 @@ export class AiIntegrationService {
    *
    * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
    * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
+   *
+   * PHẢI khớp đúng PAAST_LOGIC_VERSION hiện hành (cùng nguyên tắc với
+   * findContentTransformCachedScoreByOutput ở dưới) — bản ghi chấm bằng công thức đời trước
+   * (trọng số 20 đều nhau, Prefer tuyến tính, không coherence/video_realism) không còn so sánh
+   * được với điểm chấm hôm nay. Không lọc theo version sẽ khiến content cũ bị "chấm lại" âm thầm
+   * bằng điểm/shape lỗi thời ngay khi công thức đổi (đúng lỗi patch v2.1 sửa).
    */
   async findLatestByContent(content: string) {
-    return this.prisma.paastAnalysisHistory.findFirst({
+    const candidates = await this.prisma.paastAnalysisHistory.findMany({
       where: { input_text: content, status: TransformStatus.SUCCESS },
       orderBy: { created_at: 'desc' },
+      take: 5,
     });
+
+    return (
+      candidates.find((c) => (c.analysis_result as any)?.logic_version === PAAST_LOGIC_VERSION) || null
+    );
   }
 
   /**
@@ -2767,13 +2785,13 @@ export class AiIntegrationService {
         ),
       );
 
-      const { layers, total_score, verdict, cta_warning } = response.data;
+      const { layers, video_realism, total_score, score_band, verdict, cta_warning } = response.data;
       const durationMs = Date.now() - startTime;
 
       return this.prisma.paastAnalysisHistory.update({
         where: { id: history.id },
         data: {
-          analysis_result: { layers, cta_warning, verdict },
+          analysis_result: { layers, video_realism, cta_warning, verdict, score_band, logic_version: PAAST_LOGIC_VERSION },
           total_score: total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
@@ -2901,8 +2919,14 @@ export class AiIntegrationService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/upgrade/`,
-          { original_content: original.input_text, missing_elements: missingElements },
-          { timeout: 90000 },
+          {
+            original_content: original.input_text,
+            missing_elements: missingElements,
+            // Gửi đúng ngân sách THẬT của BE — thiếu field này Django tự đoán bằng
+            // DEFAULT_ANALYZE_TIMEOUT_S=120s, ngắn hơn hẳn 420s BE thực sự chờ.
+            timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
+          },
+          { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },
         ),
       );
 
@@ -2913,7 +2937,15 @@ export class AiIntegrationService {
         where: { id: history.id },
         data: {
           input_text: upgraded,
-          analysis_result: { layers: new_analysis.layers, cta_warning: new_analysis.cta_warning, verdict: new_analysis.verdict, changes_added },
+          analysis_result: {
+            layers: new_analysis.layers,
+            video_realism: new_analysis.video_realism,
+            cta_warning: new_analysis.cta_warning,
+            verdict: new_analysis.verdict,
+            score_band: new_analysis.score_band,
+            logic_version: PAAST_LOGIC_VERSION,
+            changes_added,
+          },
           total_score: new_analysis.total_score,
           status: TransformStatus.SUCCESS,
           model_used: 'deepseek-chat',
@@ -3024,8 +3056,8 @@ export class AiIntegrationService {
       ),
     );
 
-    const { layers, total_score, cta_warning, verdict } = response.data;
-    return { layers, total_score, cta_warning, verdict };
+    const { layers, video_realism, total_score, score_band, cta_warning, verdict } = response.data;
+    return { layers, video_realism, total_score, score_band, cta_warning, verdict };
   }
 
   /**

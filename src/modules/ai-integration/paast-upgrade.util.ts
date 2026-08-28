@@ -49,10 +49,27 @@ export function buildPaastUpgradeSystemPrompt(analysis: PaastAnalysisPayload, mi
     '- Không bịa số liệu, không bịa nguồn, không gán quan điểm cho người khác.',
     '- Chỉ trả về kịch bản hoàn chỉnh sau khi sửa. Không giải thích, không thêm tiêu đề, không markdown.',
     '',
-    `Điểm PAAST hiện tại: ${analysis.total_score}/100 (Prefer ${analysis.layers?.prefer?.score ?? 0}/20, ` +
-      `Action ${analysis.layers?.action?.score ?? 0}/20, Acknowledge ${analysis.layers?.acknowledge?.score ?? 0}/20, ` +
-      `Stick ${analysis.layers?.stick?.score ?? 0}/20, Trust ${analysis.layers?.trust?.score ?? 0}/20).`,
+    // Trọng số 5 lớp KHÔNG còn đều nhau (patch v2.1): Prefer/Action 25, Acknowledge 20, Stick/Trust
+    // 15 — đọc "max" trực tiếp từ chính bản phân tích thay vì hard-code số cũ (20 đều nhau), để
+    // không in sai mẫu số nếu trọng số đổi tiếp trong tương lai.
+    `Điểm PAAST hiện tại: ${analysis.total_score}/100 (Prefer ${analysis.layers?.prefer?.score ?? 0}/${analysis.layers?.prefer?.max ?? 25}, ` +
+      `Action ${analysis.layers?.action?.score ?? 0}/${analysis.layers?.action?.max ?? 25}, ` +
+      `Acknowledge ${analysis.layers?.acknowledge?.score ?? 0}/${analysis.layers?.acknowledge?.max ?? 20}, ` +
+      `Stick ${analysis.layers?.stick?.score ?? 0}/${analysis.layers?.stick?.max ?? 15}, ` +
+      `Trust ${analysis.layers?.trust?.score ?? 0}/${analysis.layers?.trust?.max ?? 15}).`,
   ];
+
+  // Prefer = 0 vì content "đổi insight" giữa chừng (coherence.is_coherent = false) là lỗi NỀN
+  // TẢNG không nằm trong danh sách missing (Prefer không có khái niệm tiêu chí pass/miss) — nếu
+  // không nói rõ, AI viết nâng cấp sẽ không biết vì sao Prefer bằng 0 dù có insight primary.
+  if (analysis.layers?.prefer?.coherence?.is_coherent === false) {
+    lines.push(
+      '',
+      `LƯU Ý QUAN TRỌNG — Prefer đang bị chặn ở 0/${analysis.layers?.prefer?.max ?? 25} điểm vì nội dung ĐỔI TRỌNG TÂM giữa chừng ` +
+        `(chưa hội tụ về 1 insight chủ đạo xuyên suốt): ${analysis.layers?.prefer?.coherence?.warning ?? ''}`.trim(),
+      'Khi sửa, ưu tiên gọt bớt/điều chỉnh phần lệch hướng để cả bài quay về ĐÚNG 1 trọng tâm xuyên suốt từ hook đến payoff — không chỉ thêm câu mới.',
+    );
+  }
 
   const sorted = sortMissingByPriority(missing);
   if (sorted.length > 0) {
