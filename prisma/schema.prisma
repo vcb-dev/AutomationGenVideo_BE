@@ -4521,6 +4521,11 @@ enum MemsAssetCondition {
   IN_MAINTENANCE // Bảo trì
 }
 
+enum MemsBorrowPurpose {
+  WORK // Phục vụ công việc của công ty
+  PERSONAL // Việc riêng của người mượn — cần hai cấp duyệt: leader rồi admin
+}
+
 enum MemsRequestStatus {
   DRAFT // Nháp
   PENDING_APPROVAL // Chờ duyệt
@@ -4699,6 +4704,7 @@ model MemsBorrowRequest {
   department_id String            @db.Uuid
   project       String // BR-19: bắt buộc
   place         String
+  purpose       MemsBorrowPurpose @default(WORK) // PERSONAL thì cần hai cấp duyệt
   from_time     DateTime
   to_time       DateTime
   status        MemsRequestStatus @default(DRAFT)
