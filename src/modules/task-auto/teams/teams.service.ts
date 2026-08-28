@@ -266,6 +266,8 @@ export class TaskAutoTeamsService {
   }
 
   private teamContentInclude = {
+    // "Số lần được làm" = số task đã tạo trực tiếp từ content kho team này (đếm sống).
+    _count:         { select: { tasks: true } },
     added_by:       { select: { id: true, full_name: true } },
     content_line:   { select: { id: true, name: true } },
     classification: { select: { id: true, name: true } },
@@ -289,6 +291,8 @@ export class TaskAutoTeamsService {
     file_content_url: true, voice_url: true, content_line_id: true, classification_id: true,
     status: true, source_editor_content_id: true, source_content_id: true, added_by_id: true,
     added_at: true, updated_at: true,
+    // "Số lần được làm" = số task đã tạo trực tiếp từ content kho team này (đếm sống).
+    _count:         { select: { tasks: true } },
     added_by:       { select: { id: true, full_name: true } },
     content_line:   { select: { id: true, name: true } },
     classification: { select: { id: true, name: true } },
