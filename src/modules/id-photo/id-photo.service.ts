@@ -15,10 +15,13 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as PDFDocument from 'pdfkit';
+import { DateTime } from 'luxon';
 import { IdPhotoPosition, IdPhotoStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 import { registerVietnameseFonts } from '../../common/pdf/pdf-fonts';
+import { vietnamDateString } from '../../utils/date.utils';
+import { UsersService } from '../users/users.service';
 import { CreateIdPhotoDto } from './dto/create-id-photo.dto';
 import { UpdateIdPhotoDto } from './dto/update-id-photo.dto';
 import { IdPhotoHistoryQueryDto } from './dto/id-photo-history-query.dto';
@@ -104,6 +107,7 @@ export class IdPhotoService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly usersService: UsersService,
   ) {
     this.aiServiceUrl = resolveAiServiceUrl(this.configService);
   }
@@ -440,6 +444,127 @@ export class IdPhotoService {
     ]);
 
     return { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Thống kê — tổng quan đội nhóm
+  // ══════════════════════════════════════════════════════════════
+
+  /**
+   * Tổng số lượt TẠO ẢNH THẺ của TẤT CẢ thành viên trong phạm vi quyền của người gọi — để
+   * tab "Thống kê" hiện dữ liệu ngay khi mở, không phải chọn từng người qua dropdown.
+   *
+   * Bản sao 1-1 của AiIntegrationService#getContentTransformTeamSummary (content-transform),
+   * chỉ khác bảng đếm: đếm IdPhotoHistory theo `created_by` thay vì ContentTransformHistory
+   * theo `user_id`. Phạm vi quyền lấy nguyên từ UsersService.getTeamMembers() (Leader: các user
+   * có User.team khớp tên team mình lead; Manager/Admin: toàn bộ user) — KHÔNG dùng bảng quan hệ
+   * team_members vì bảng đó hiện rỗng trên thực tế (xem ghi chú trong users.service.ts).
+   *
+   * Lưu ý nghiệp vụ: `created_by` là NGƯỜI BẤM TẠO thẻ (LEADER/ADMIN), không phải nhân viên
+   * được lên thẻ — nhân viên trên thẻ nhập tay, không nhất thiết có tài khoản trong hệ thống.
+   *
+   * Phạm vi quyền chỉ có ĐÚNG 1 người là trường hợp RẤT PHỔ BIẾN (đa số team chỉ có 1 Leader).
+   * Biểu đồ "xếp hạng giữa nhiều người" vô nghĩa khi chỉ có 1 hàng, nên FE đổi sang xu hướng
+   * theo ngày + phân bổ theo cấp bậc thẻ — 2 field `trend`/`positionBreakdown` bên dưới CHỈ được
+   * tính (2 query thêm) khi rơi đúng nhánh 1 người này, để không cộng chi phí cho team đông
+   * (nơi 2 field này không được FE dùng tới).
+   */
+  async getTeamSummary(callerId: string, roles: UserRole[]) {
+    const members = (await this.usersService.getTeamMembers(callerId, roles)) as any[];
+
+    if (members.length === 0) {
+      return { members: [], totalMembers: 0, totalPhotos: 0 };
+    }
+
+    // 1 lần groupBy cho toàn bộ thành viên thay vì đếm riêng từng người.
+    const grouped = await this.prisma.idPhotoHistory.groupBy({
+      by: ['created_by'],
+      where: { created_by: { in: members.map((m) => m.id) } },
+      _count: { _all: true },
+      _max: { created_at: true },
+    });
+
+    const statsByUser = new Map(grouped.map((g) => [g.created_by, g]));
+
+    const rows = members.map((m) => {
+      const stat = statsByUser.get(m.id);
+      return {
+        id: m.id,
+        full_name: m.full_name,
+        email: m.email,
+        roles: m.roles,
+        team: m.team ?? null,
+        image_url: m.image_url ?? null,
+        is_active: m.is_active ?? true,
+        totalPhotos: stat?._count?._all ?? 0,
+        lastPhotoAt: stat?._max?.created_at ?? null,
+      };
+    });
+
+    // Nhiều lượt nhất lên trước; cùng số lượt thì xếp theo tên cho danh sách ổn định giữa các lần gọi.
+    rows.sort(
+      (a, b) => b.totalPhotos - a.totalPhotos || (a.full_name || '').localeCompare(b.full_name || '', 'vi'),
+    );
+
+    const summary = {
+      members: rows,
+      totalMembers: rows.length,
+      totalPhotos: rows.reduce((sum, r) => sum + r.totalPhotos, 0),
+    };
+
+    return rows.length === 1 ? { ...summary, ...(await this.getSoloBreakdown(rows[0].id)) } : summary;
+  }
+
+  /**
+   * Dữ liệu RIÊNG cho trường hợp phạm vi quyền chỉ có 1 người — xem getTeamSummary.
+   *
+   *  - `trend`: số lượt tạo ảnh thẻ theo NGÀY LỊCH VN (không phải ngày UTC — server có thể chạy
+   *    ở timezone khác), đủ 30 điểm liên tục kể cả ngày 0 lượt, để biểu đồ đường không bị đứt
+   *    đoạn ở những ngày không thao tác. Gom nhóm ở JS (không dùng date_trunc SQL): tập dữ liệu
+   *    của 1 người trong 30 ngày luôn nhỏ, và tránh lệch ngày ở biên UTC/VN như cảnh báo trong
+   *    utils/date.utils.ts.
+   *  - `positionBreakdown`: tổng số thẻ theo cấp bậc (IdPhotoPosition), KHÔNG giới hạn 30 ngày —
+   *    đây là bức tranh toàn thời gian (khớp với totalPhotos ở summary), khác hẳn `trend`. Giữ
+   *    ĐÚNG thứ tự cấp bậc của POSITION_LABEL (không sort theo số lượng) vì đây là dữ liệu ORDINAL
+   *    (thứ bậc có ý nghĩa) — sort theo count sẽ xoá mất trật tự thâm niên mà biểu đồ cần thể hiện.
+   */
+  private async getSoloBreakdown(
+    userId: string,
+  ): Promise<{ trend: { date: string; count: number }[]; positionBreakdown: { position: IdPhotoPosition; label: string; count: number }[] }> {
+    const todayVn = DateTime.now().setZone('Asia/Ho_Chi_Minh').startOf('day');
+    const sinceVn = todayVn.minus({ days: 29 }); // 30 ngày gần nhất, tính cả hôm nay
+
+    const [recentRecords, positionGrouped] = await Promise.all([
+      this.prisma.idPhotoHistory.findMany({
+        where: { created_by: userId, created_at: { gte: sinceVn.toJSDate() } },
+        select: { created_at: true },
+      }),
+      this.prisma.idPhotoHistory.groupBy({
+        by: ['position'],
+        where: { created_by: userId },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const dayCounts = new Map<string, number>();
+    for (const r of recentRecords) {
+      const key = vietnamDateString(r.created_at);
+      dayCounts.set(key, (dayCounts.get(key) ?? 0) + 1);
+    }
+    const trend: { date: string; count: number }[] = [];
+    for (let i = 0; i < 30; i++) {
+      const key = sinceVn.plus({ days: i }).toFormat('yyyy-MM-dd');
+      trend.push({ date: key, count: dayCounts.get(key) ?? 0 });
+    }
+
+    const countByPosition = new Map(positionGrouped.map((g) => [g.position, g._count._all]));
+    const positionBreakdown = (Object.keys(IdPhotoService.POSITION_LABEL) as IdPhotoPosition[]).map((p) => ({
+      position: p,
+      label: IdPhotoService.POSITION_LABEL[p],
+      count: countByPosition.get(p) ?? 0,
+    }));
+
+    return { trend, positionBreakdown };
   }
 
   /**

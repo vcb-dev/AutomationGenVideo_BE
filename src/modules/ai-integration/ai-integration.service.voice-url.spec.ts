@@ -24,7 +24,7 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
     const jwtService: any = { sign: jest.fn(() => 'fake.jwt.token') };
     const driveStorage: any = {};
 
-    const service = new AiIntegrationService(httpService, configService, jwtService, prisma, driveStorage);
+    const service = new AiIntegrationService(httpService, configService, jwtService, prisma, driveStorage, {} as any);
     return { service, httpService };
   }
 

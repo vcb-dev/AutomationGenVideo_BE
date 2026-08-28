@@ -31,6 +31,7 @@ describe('AiIntegrationService.deleteClonedVoice', () => {
       { sign: jest.fn(() => 'fake.jwt.token') } as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     return { service, httpService };
   }
