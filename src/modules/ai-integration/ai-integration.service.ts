@@ -2501,15 +2501,6 @@ export class AiIntegrationService {
             full_name: true,
             email: true,
             team: true,
-            team_memberships: {
-              select: {
-                team: {
-                  select: {
-                    name: true,
-                  },
-                },
-              },
-            },
           },
         },
       },
@@ -2524,16 +2515,11 @@ export class AiIntegrationService {
     for (const row of rows) {
       let entry = byUser.get(row.user_id);
       if (!entry) {
-        const membershipTeams = (row.user?.team_memberships || [])
-          .map((m: any) => m.team?.name)
-          .filter(Boolean);
-        const userTeam = row.user?.team || (membershipTeams.length > 0 ? membershipTeams.join(', ') : null);
-
         entry = {
           user_id: row.user_id,
           full_name: row.user?.full_name ?? row.user_id,
           email: row.user?.email ?? '',
-          team: userTeam,
+          team: row.user?.team ?? null,
           characters: 0,
           tts_count: 0,
           clone_count: 0,
