@@ -182,6 +182,41 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
       });
     });
 
+    it('lỗi vĩnh viễn thì FAILED ngay ở lượt đầu, không hẹn chạy lại', async () => {
+      const prisma = createPrismaMock();
+      const { service, publishService } = createService(prisma);
+      publishService.executeScheduled.mockRejectedValue(
+        new Error(
+          'Instagram createContainer (HTTP 400): {"error":{"message":"The image format is not supported.",' +
+          '"code":36001,"error_subcode":2207083,"is_transient":false}}',
+        ),
+      );
+
+      await (service as any).executePost(basePost({ retry_count: 0 }));
+
+      // Thử thêm 2 lượt chỉ tốn ~20 phút và khoá kênh đó, trong khi Meta đã báo rõ
+      // is_transient=false — lỗi không bao giờ tự khỏi.
+      const data = prisma.socialPost.updateMany.mock.calls.at(-1)![0].data;
+      expect(data).toMatchObject({
+        status: SocialPostStatus.FAILED,
+        retry_count: 1,
+        next_retry_at: null,
+        claimed_until: null,
+      });
+    });
+
+    it('lỗi tạm thời vẫn được hẹn chạy lại như cũ', async () => {
+      const prisma = createPrismaMock();
+      const { service, publishService } = createService(prisma);
+      publishService.executeScheduled.mockRejectedValue(new Error('{"error":{"code":613}}'));
+
+      await (service as any).executePost(basePost({ retry_count: 0 }));
+
+      const data = prisma.socialPost.updateMany.mock.calls.at(-1)![0].data;
+      expect(data.status).toBeUndefined(); // chưa chuyển FAILED
+      expect(data.next_retry_at.getTime()).toBeGreaterThan(Date.now());
+    });
+
     it('bài đã có result thì đánh dấu hoàn thành, không đăng lại', async () => {
       const prisma = createPrismaMock();
       const { service, publishService } = createService(prisma);

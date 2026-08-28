@@ -6,6 +6,7 @@ import { HistoryService } from '../history/history.service';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
+import { isPermanentPublishError } from '../publish/publish-error.util';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -440,8 +441,15 @@ export class ScheduleService {
       this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack:\n  ${stackLines}`);
       const retryCount = (post.retry_count ?? 0) + 1;
       const errorWithStack = `${err.message} | stack: ${(err.stack || '').split('\n').slice(1, 4).join(' | ')}`;
+      // Lỗi vĩnh viễn (sai định dạng media, token bị thu hồi, thiếu quyền) không tự khỏi:
+      // thử thêm 2 lượt chỉ tốn ~20 phút và khoá luôn kênh đó vì mỗi kênh chỉ chạy 1 bài
+      // một lúc. Chuyển FAILED ngay để người dùng biết mà sửa.
+      const isPermanent = isPermanentPublishError(err.message);
+      if (isPermanent) {
+        this.logger.warn(`[Worker] ⛔ Post ${post.id} lỗi vĩnh viễn — bỏ qua thử lại: ${err.message}`);
+      }
       try {
-        if (retryCount >= MAX_RETRIES) {
+        if (isPermanent || retryCount >= MAX_RETRIES) {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
             data: {
@@ -456,7 +464,11 @@ export class ScheduleService {
           this.history.getFailedPostAudience(post.user_id)
             .then((audience) => this.notifyStream.emitMany(audience))
             .catch(() => {});
-          this.logger.warn(`[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`);
+          this.logger.warn(
+            isPermanent
+              ? `[Worker] ❌ Post ${post.id} failed (lỗi vĩnh viễn, không thử lại): ${err.message}`
+              : `[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`,
+          );
         } else {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
