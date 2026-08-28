@@ -39,9 +39,7 @@ describe('AiIntegrationService — PAAST', () => {
   }
 
   describe('findLatestByContent', () => {
-    // Patch v2.1: đổi từ findFirst sang findMany + lọc PAAST_LOGIC_VERSION phía JS (cùng cơ chế
-    // với findContentTransformCachedScoreByOutput) — công thức chấm điểm đổi (trọng số 5 lớp,
-    // hard-gate coherence cho Prefer) khiến bản ghi cũ không còn so sánh được với điểm hôm nay.
+    // findMany + lọc PAAST_LOGIC_VERSION phía JS: bản ghi chấm bằng công thức đời trước bỏ qua.
     it('không lọc theo user_id — chỉ theo nội dung + trạng thái SUCCESS, lấy tối đa 5 bản ghi gần nhất', async () => {
       const { service, prisma } = buildService();
 

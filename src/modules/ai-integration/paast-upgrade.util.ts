@@ -49,9 +49,7 @@ export function buildPaastUpgradeSystemPrompt(analysis: PaastAnalysisPayload, mi
     '- Không bịa số liệu, không bịa nguồn, không gán quan điểm cho người khác.',
     '- Chỉ trả về kịch bản hoàn chỉnh sau khi sửa. Không giải thích, không thêm tiêu đề, không markdown.',
     '',
-    // Trọng số 5 lớp KHÔNG còn đều nhau (patch v2.1): Prefer/Action 25, Acknowledge 20, Stick/Trust
-    // 15 — đọc "max" trực tiếp từ chính bản phân tích thay vì hard-code số cũ (20 đều nhau), để
-    // không in sai mẫu số nếu trọng số đổi tiếp trong tương lai.
+    // Mẫu số lấy từ `max` của chính bản phân tích (trọng số 5 lớp không đều: 25/25/20/15/15).
     `Điểm PAAST hiện tại: ${analysis.total_score}/100 (Prefer ${analysis.layers?.prefer?.score ?? 0}/${analysis.layers?.prefer?.max ?? 25}, ` +
       `Action ${analysis.layers?.action?.score ?? 0}/${analysis.layers?.action?.max ?? 25}, ` +
       `Acknowledge ${analysis.layers?.acknowledge?.score ?? 0}/${analysis.layers?.acknowledge?.max ?? 20}, ` +
@@ -59,9 +57,8 @@ export function buildPaastUpgradeSystemPrompt(analysis: PaastAnalysisPayload, mi
       `Trust ${analysis.layers?.trust?.score ?? 0}/${analysis.layers?.trust?.max ?? 15}).`,
   ];
 
-  // Prefer = 0 vì content "đổi insight" giữa chừng (coherence.is_coherent = false) là lỗi NỀN
-  // TẢNG không nằm trong danh sách missing (Prefer không có khái niệm tiêu chí pass/miss) — nếu
-  // không nói rõ, AI viết nâng cấp sẽ không biết vì sao Prefer bằng 0 dù có insight primary.
+  // Prefer bị chặn ở 0 do incoherent không nằm trong danh sách `missing` — phải nói rõ ở prompt,
+  // nếu không AI nâng cấp không hiểu vì sao Prefer = 0 dù có insight primary.
   if (analysis.layers?.prefer?.coherence?.is_coherent === false) {
     lines.push(
       '',

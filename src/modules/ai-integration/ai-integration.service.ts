@@ -158,11 +158,8 @@ export class AiIntegrationService {
   // trường hợp xấu nhất ước tính ở trần 200MB (upload ~85s + poll ~90s + generate ~200s).
   private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
 
-  // Timeout cho PAAST /upgrade — Django cần đủ ngân sách cho 2 lượt LLM NỐI TIẾP bên trong (viết
-  // bản nâng cấp RỒI chấm lại từ đầu, chia 40% viết / 60% chấm — xem PaastAnalysisService.upgrade).
-  // 90s cũ luôn hỏng khi cần thử lại: viết là lệnh reasoning-enabled + max_tokens=16000, mỗi lượt
-  // write_budget riêng đã ~40-60s, cộng dồn qua các lần thử lại (MAX_SCRIPTED_WRITE_ATTEMPTS=3
-  // phía AI service) dễ vượt 90s. Dùng lại đúng mốc đã kiểm chứng ở CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  // PAAST /upgrade: 2 lượt LLM nối tiếp (viết rồi chấm lại), 90s cũ luôn hỏng ở ~40s write_budget.
+  // Cùng mốc với CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
   private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
 
   constructor(
@@ -2745,11 +2742,8 @@ export class AiIntegrationService {
    * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
    * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
    *
-   * PHẢI khớp đúng PAAST_LOGIC_VERSION hiện hành (cùng nguyên tắc với
-   * findContentTransformCachedScoreByOutput ở dưới) — bản ghi chấm bằng công thức đời trước
-   * (trọng số 20 đều nhau, Prefer tuyến tính, không coherence/video_realism) không còn so sánh
-   * được với điểm chấm hôm nay. Không lọc theo version sẽ khiến content cũ bị "chấm lại" âm thầm
-   * bằng điểm/shape lỗi thời ngay khi công thức đổi (đúng lỗi patch v2.1 sửa).
+   * Chỉ nhận bản ghi khớp `PAAST_LOGIC_VERSION` hiện hành — điểm chấm bằng công thức đời trước
+   * không còn so sánh được, để lọt sẽ trả cache lỗi thời khi công thức đổi.
    */
   async findLatestByContent(content: string) {
     const candidates = await this.prisma.paastAnalysisHistory.findMany({
@@ -2922,8 +2916,7 @@ export class AiIntegrationService {
           {
             original_content: original.input_text,
             missing_elements: missingElements,
-            // Gửi đúng ngân sách THẬT của BE — thiếu field này Django tự đoán bằng
-            // DEFAULT_ANALYZE_TIMEOUT_S=120s, ngắn hơn hẳn 420s BE thực sự chờ.
+            // Cho Django biết ngân sách thật của BE (mặc định nó tự đoán 120s).
             timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
           },
           { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },

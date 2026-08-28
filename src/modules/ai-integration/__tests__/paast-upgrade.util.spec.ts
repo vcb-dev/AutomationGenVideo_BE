@@ -116,8 +116,7 @@ describe('buildPaastUpgradeSystemPrompt', () => {
   it('thiếu layers (undefined) thì hiện điểm 0 thay vì NaN/crash', () => {
     const prompt = buildPaastUpgradeSystemPrompt(basePayload({ layers: {} as any }), []);
 
-    // Patch v2.1: trọng số 5 lớp không còn đều nhau (Prefer/Action 25, Acknowledge 20,
-    // Stick/Trust 15) — mẫu số fallback phải khớp default của từng lớp, không phải 20 đồng loạt.
+    // Trọng số 5 lớp không đều (25/25/20/15/15) — mẫu số fallback theo default từng lớp.
     expect(prompt).toContain('Prefer 0/25');
     expect(prompt).toContain('Stick 0/15');
   });
