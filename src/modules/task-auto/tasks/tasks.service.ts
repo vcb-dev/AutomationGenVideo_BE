@@ -6,7 +6,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
-import { Prisma } from "@prisma/client";
+import { Prisma, SocialPostStatus } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -1153,13 +1153,20 @@ export class TaskAutoTasksService {
   async submit(id: string, dto: SubmitTaskDto, userId: string) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { assignee_id: true, status: true },
+      select: { assignee_id: true, status: true, result_url: true },
     });
     if (!task) throw new NotFoundException("Task not found");
     if (task.assignee_id !== userId)
       throw new ForbiddenException("Not your task");
     if (!["ASSIGNED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Task is not in a submittable state");
+    }
+    // Bắt buộc phải có video (đã upload lên Drive lúc chọn file, set sẵn result_url) hoặc
+    // link video nhập tay (dto.result_url) — không cho nộp task tay không.
+    if (!dto.result_url && !task.result_url) {
+      throw new BadRequestException(
+        "Cần upload video hoặc nhập link video trước khi nộp task",
+      );
     }
 
     const updated = await this.prisma.task.update({
@@ -1202,6 +1209,10 @@ export class TaskAutoTasksService {
         reviewed_by_id: reviewerId,
         reviewed_at: new Date(),
         reject_reason: dto.reject_reason,
+        // Video gốc trên Drive sẽ bị xoá ngay dưới đây (deletePendingVideo) — xoá luôn
+        // result_url để tránh trỏ tới file đã không còn tồn tại (vd: khi resubmit hoặc
+        // khi task từng được lên lịch đăng lúc còn SUBMITTED).
+        ...(dto.action === "REJECTED" ? { result_url: null } : {}),
       },
       include: this.taskDetailInclude,
     });
@@ -1228,6 +1239,20 @@ export class TaskAutoTasksService {
         .catch((err) =>
           this.logger.warn(
             `[review] deletePendingVideo failed for task ${id}: ${err.message}`,
+          ),
+        );
+
+      // Task có thể đã được lên lịch đăng từ lúc còn SUBMITTED (trước khi duyệt) — video
+      // vừa bị xoá khỏi Drive ở trên nên các bài đang chờ (PENDING) chắc chắn sẽ publish lỗi.
+      // Huỷ luôn thay vì để worker cố publish rồi fail sau nhiều lần retry.
+      await this.prisma.socialPost
+        .updateMany({
+          where: { task_id: id, status: SocialPostStatus.PENDING },
+          data: { status: SocialPostStatus.CANCELLED, updated_at: new Date() },
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `[review] cancel scheduled posts failed for task ${id}: ${err.message}`,
           ),
         );
     }
