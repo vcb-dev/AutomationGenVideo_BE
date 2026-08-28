@@ -1,12 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { TaskAutoTasksService } from '../tasks.service';
 
-/**
- * submit() (assignee nộp task) — trước đây nộp được "tay không" (không video, không link), tạo ra
- * task SUBMITTED rỗng cho leader duyệt. Giờ bắt buộc phải có video: hoặc đã upload lên Drive từ
- * lúc chọn file (task.result_url set sẵn), hoặc nhập link video tay (dto.result_url). Thiếu cả
- * hai → BadRequestException, không đụng tới DB.
- */
+// Thiếu cả task.result_url (Drive) lẫn dto.result_url (link tay) → BadRequestException, không đụng DB.
 describe('TaskAutoTasksService.submit — bắt buộc có video trước khi nộp', () => {
   function build(task: any) {
     const prisma: any = {

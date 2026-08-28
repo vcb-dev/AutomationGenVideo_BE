@@ -293,8 +293,7 @@ export class TaskAutoCatalogService {
           origin: true,
           created_at: true,
           updated_at: true,
-          // "Số lần được làm" = số task đã tạo trực tiếp từ content kho tổng này (đếm sống,
-          // giảm theo nếu task bị xoá) — mirror Product._count.tasks ở findAllProducts.
+          // "Số lần được làm" — số task tạo trực tiếp từ content này (đếm sống).
           _count: { select: { tasks: true } },
           content_line: { select: { id: true, name: true } },
           classification: { select: { id: true, name: true } },
@@ -1064,7 +1063,6 @@ export class TaskAutoCatalogService {
           added_by_id: true,
           added_at: true,
           updated_at: true,
-          // "Số lần được làm" = số task đã tạo trực tiếp từ content kho cá nhân này (đếm sống).
           _count: { select: { tasks: true } },
           content_line: { select: { id: true, name: true } },
           classification: { select: { id: true, name: true } },

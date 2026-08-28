@@ -1161,8 +1161,7 @@ export class TaskAutoTasksService {
     if (!["ASSIGNED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Task is not in a submittable state");
     }
-    // Bắt buộc phải có video (đã upload lên Drive lúc chọn file, set sẵn result_url) hoặc
-    // link video nhập tay (dto.result_url) — không cho nộp task tay không.
+    // Không cho nộp tay không: cần video (result_url từ Drive) hoặc link nhập tay.
     if (!dto.result_url && !task.result_url) {
       throw new BadRequestException(
         "Cần upload video hoặc nhập link video trước khi nộp task",
@@ -1209,9 +1208,7 @@ export class TaskAutoTasksService {
         reviewed_by_id: reviewerId,
         reviewed_at: new Date(),
         reject_reason: dto.reject_reason,
-        // Video gốc trên Drive sẽ bị xoá ngay dưới đây (deletePendingVideo) — xoá luôn
-        // result_url để tránh trỏ tới file đã không còn tồn tại (vd: khi resubmit hoặc
-        // khi task từng được lên lịch đăng lúc còn SUBMITTED).
+        // deletePendingVideo() dưới đây xoá video Drive → result_url không còn trỏ file thật.
         ...(dto.action === "REJECTED" ? { result_url: null } : {}),
       },
       include: this.taskDetailInclude,
@@ -1242,9 +1239,7 @@ export class TaskAutoTasksService {
           ),
         );
 
-      // Task có thể đã được lên lịch đăng từ lúc còn SUBMITTED (trước khi duyệt) — video
-      // vừa bị xoá khỏi Drive ở trên nên các bài đang chờ (PENDING) chắc chắn sẽ publish lỗi.
-      // Huỷ luôn thay vì để worker cố publish rồi fail sau nhiều lần retry.
+      // Bài lên lịch từ lúc SUBMITTED sẽ publish lỗi vì video vừa bị xoá — huỷ luôn, khỏi retry.
       await this.prisma.socialPost
         .updateMany({
           where: { task_id: id, status: SocialPostStatus.PENDING },

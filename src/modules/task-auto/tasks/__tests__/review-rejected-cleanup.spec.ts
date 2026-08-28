@@ -1,13 +1,6 @@
 import { TaskAutoTasksService } from '../tasks.service';
 
-/**
- * review() khi action = REJECTED — video gốc trên Drive bị xoá (deletePendingVideo). Bổ sung 2
- * việc dọn kèm:
- *   1. Ghi task.result_url = null để không còn trỏ tới file đã xoá (tránh resubmit/lên lịch lỗi).
- *   2. Huỷ (CANCELLED) các SocialPost PENDING của task — task có thể đã được lên lịch đăng từ lúc
- *      còn SUBMITTED, để nguyên thì worker sẽ cố publish rồi fail nhiều lần.
- * action = APPROVED không được đụng tới result_url và không huỷ SocialPost nào.
- */
+// REJECTED: result_url = null + huỷ SocialPost PENDING. APPROVED: không đụng cả hai.
 describe('TaskAutoTasksService.review — dọn dẹp khi từ chối task', () => {
   function build() {
     const videoService: any = {

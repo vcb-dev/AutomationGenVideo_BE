@@ -1,10 +1,6 @@
 import { TaskAutoCatalogService } from '../catalog.service';
 
-/**
- * "Số lần được làm" của 1 content = số task đã tạo trực tiếp từ nó (đếm sống). BE trả qua
- * `_count.tasks`. Kiểm tra chi tiết content kho tổng (findOneContent) và kho cá nhân
- * (findOneEditorContent) đều select kèm `_count: { select: { tasks: true } }`.
- */
+// findOneContent + findOneEditorContent phải select kèm `_count: { tasks: true }`.
 describe('TaskAutoCatalogService — select content kèm _count.tasks', () => {
   function build() {
     const calls: Record<string, any> = {};

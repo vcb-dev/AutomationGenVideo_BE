@@ -6,13 +6,7 @@ import {
   CreateEditorContentDto,
 } from '../dto/catalog.dto';
 
-/**
- * Trước đây `title` của content là optional ở cả 3 DTO tạo content (kho tổng / kho team / kho cá
- * nhân) nên tạo được content "trống tiêu đề", rất khó nhận ra trên board/dropdown. Giờ:
- *   - CreateContentDto: title BẮT BUỘC (kho tổng luôn tạo mới, không có nguồn).
- *   - CreateTeamContentDto / CreateEditorContentDto: title bắt buộc KHI tạo mới (không truyền
- *     source_content_id) — khi copy từ kho khác thì tiêu đề lấy theo nguồn nên vẫn cho trống.
- */
+// CreateContentDto: title bắt buộc. Team/Editor: bắt buộc khi tạo mới (không có source_content_id).
 describe('DTO tạo content — bắt buộc nhập tiêu đề', () => {
   const errorsOn = async (dto: object, field: string) => {
     const errs = await validate(dto);
