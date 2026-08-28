@@ -11,16 +11,22 @@
  */
 
 /**
- * Phiên bản logic chấm điểm PAAST hiện hành.
- *
- * Được lưu KÈM vào từng bản ghi kết quả chấm (`logic_version`) và bắt buộc khớp khi tra cache.
- * Nhờ vậy khi công thức chấm đổi (đổi bộ tiêu chí, đổi cách quy đổi điểm, đổi prompt phân loại)
- * chỉ cần tăng hằng số này: mọi điểm cũ lập tức thành cache miss và được chấm lại thật, thay vì
- * lặng lẽ trả về điểm tính theo công thức đã lỗi thời.
- *
- * TĂNG version mỗi khi thay đổi bất cứ thứ gì làm cùng một nội dung phải ra điểm khác trước đây.
+ * Phiên bản logic chấm điểm. Lưu kèm mỗi bản ghi (`logic_version`), phải khớp khi tra cache —
+ * tăng hằng số này khi đổi công thức/tiêu chí/prompt để điểm cũ thành cache miss. (Lịch sử v2-v4
+ * xem git log.)
  */
-export const PAAST_LOGIC_VERSION = 'v1';
+export const PAAST_LOGIC_VERSION = 'v4';
+
+export type PaastLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
+export const PAAST_LEVEL_LABELS: Record<PaastLevel, string> = {
+  0: 'Không có',
+  1: 'Rất yếu',
+  2: 'Yếu',
+  3: 'Khá',
+  4: 'Mạnh',
+  5: 'Xuất sắc',
+};
 
 /** Trạng thái 1 insight ở lớp Prefer — đánh giá toàn bài, không phải pass/miss. */
 export type PaastPreferStatus = 'primary' | 'secondary' | 'off';
@@ -28,12 +34,17 @@ export type PaastPreferStatus = 'primary' | 'secondary' | 'off';
 /** Trạng thái 1 tiêu chí ở 4 lớp còn lại. `na` = không đánh giá được bằng text (cần production). */
 export type PaastCriterionStatus = 'pass' | 'miss' | 'na';
 
+export type PaastWowStrength = 'strong' | 'moderate' | 'weak';
+
 export interface PaastInsight {
   code: string;
   name_en: string;
   name_vi: string;
   status: PaastPreferStatus;
+  level: PaastLevel;
+  level_label: string;
   description: string;
+  reasoning: string;
   evidence_sentences: string[];
 }
 
@@ -42,20 +53,34 @@ export interface PaastCriterion {
   name_en: string;
   name_vi: string;
   status: PaastCriterionStatus;
+  /** `status='pass'` khi level ≥ 3; `null` chỉ khi `status='na'`. */
+  level: PaastLevel | null;
+  level_label: string | null;
   evidence: string;
+  reasoning: string;
+}
+
+export interface PaastCoherence {
+  is_coherent: boolean;
+  warning?: string;
 }
 
 /** Lớp Prefer (CRAVES) — chấm theo insight nổi bật của toàn bài. */
 export interface PaastLayerInsights {
   score: number;
+  max: number;
   primary_count: number;
   secondary_count: number;
   insights: PaastInsight[];
+  takeaway_statement: string;
+  wow_strength: PaastWowStrength;
+  coherence: PaastCoherence;
 }
 
 /** 4 lớp Action / Acknowledge / Stick / Trust — chấm theo từng tiêu chí. */
 export interface PaastLayerCriteria {
   score: number;
+  max: number;
   pass_count: number;
   text_detectable_count?: number;
   criteria: PaastCriterion[];
@@ -69,6 +94,17 @@ export interface PaastLayers {
   trust: PaastLayerCriteria;
 }
 
+/** Mô phỏng "xem như video thật" — độc lập với 5 lớp PAAST, luôn xuất hiện. */
+export interface PaastVideoRealism {
+  opening_beat: string;
+  pacing_note: string;
+  show_vs_tell: string;
+  payoff_note: string;
+  overall_feasibility: 'realistic' | 'needs-adjustment' | 'high-risk';
+}
+
+export type PaastScoreBand = 'ready' | 'close' | 'needs-work' | 'not-ready';
+
 /** Cảnh báo CTA lệch chuẩn New Media — chỉ cảnh báo, KHÔNG trừ vào điểm 100. */
 export interface PaastCtaWarning {
   detected: boolean;
@@ -78,7 +114,7 @@ export interface PaastCtaWarning {
 /**
  * Kết luận đạt/chưa đạt chuẩn PAAST — do AI service tính (compute_verdict), KHÔNG theo ngưỡng
  * điểm tổng: điểm cao vẫn có thể do dồn hết vào vài lớp trong khi bỏ trắng hẳn 1 lớp khác.
- * Đạt khi cả 5 lớp đều có ít nhất 1 tiêu chí đạt (riêng Prefer đòi ≥1 insight `primary`).
+ * Đạt khi cả 5 lớp đều có ít nhất 1 tiêu chí đạt; riêng Prefer đòi đúng 1 `primary` và coherent.
  */
 export interface PaastVerdict {
   passed: boolean;
@@ -89,9 +125,12 @@ export interface PaastVerdict {
 /** Payload thô AI service trả về ở /api/ai/paast/analyze/. */
 export interface PaastAnalysisPayload {
   layers: PaastLayers;
+  video_realism: PaastVideoRealism;
   total_score: number;
+  /** Optional cho bản ghi/response cũ. */
+  score_band?: PaastScoreBand;
   cta_warning: PaastCtaWarning;
-  /** Optional: bản ghi/response cũ chấm trước khi AI service có compute_verdict không có field này. */
+  /** Optional cho bản ghi/response cũ. */
   verdict?: PaastVerdict;
 }
 

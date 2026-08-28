@@ -49,10 +49,23 @@ export function buildPaastUpgradeSystemPrompt(analysis: PaastAnalysisPayload, mi
     '- Không bịa số liệu, không bịa nguồn, không gán quan điểm cho người khác.',
     '- Chỉ trả về kịch bản hoàn chỉnh sau khi sửa. Không giải thích, không thêm tiêu đề, không markdown.',
     '',
-    `Điểm PAAST hiện tại: ${analysis.total_score}/100 (Prefer ${analysis.layers?.prefer?.score ?? 0}/20, ` +
-      `Action ${analysis.layers?.action?.score ?? 0}/20, Acknowledge ${analysis.layers?.acknowledge?.score ?? 0}/20, ` +
-      `Stick ${analysis.layers?.stick?.score ?? 0}/20, Trust ${analysis.layers?.trust?.score ?? 0}/20).`,
+    // Mẫu số lấy từ `max` bản phân tích (5 lớp không đều: 25/25/20/15/15).
+    `Điểm PAAST hiện tại: ${analysis.total_score}/100 (Prefer ${analysis.layers?.prefer?.score ?? 0}/${analysis.layers?.prefer?.max ?? 25}, ` +
+      `Action ${analysis.layers?.action?.score ?? 0}/${analysis.layers?.action?.max ?? 25}, ` +
+      `Acknowledge ${analysis.layers?.acknowledge?.score ?? 0}/${analysis.layers?.acknowledge?.max ?? 20}, ` +
+      `Stick ${analysis.layers?.stick?.score ?? 0}/${analysis.layers?.stick?.max ?? 15}, ` +
+      `Trust ${analysis.layers?.trust?.score ?? 0}/${analysis.layers?.trust?.max ?? 15}).`,
   ];
+
+  // incoherent chặn Prefer=0 nhưng không nằm trong `missing` — phải nói riêng ở prompt.
+  if (analysis.layers?.prefer?.coherence?.is_coherent === false) {
+    lines.push(
+      '',
+      `LƯU Ý QUAN TRỌNG — Prefer đang bị chặn ở 0/${analysis.layers?.prefer?.max ?? 25} điểm vì nội dung ĐỔI TRỌNG TÂM giữa chừng ` +
+        `(chưa hội tụ về 1 insight chủ đạo xuyên suốt): ${analysis.layers?.prefer?.coherence?.warning ?? ''}`.trim(),
+      'Khi sửa, ưu tiên gọt bớt/điều chỉnh phần lệch hướng để cả bài quay về ĐÚNG 1 trọng tâm xuyên suốt từ hook đến payoff — không chỉ thêm câu mới.',
+    );
+  }
 
   const sorted = sortMissingByPriority(missing);
   if (sorted.length > 0) {

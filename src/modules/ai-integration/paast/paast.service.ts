@@ -30,6 +30,15 @@ export class PaastService {
   private readonly logger = new Logger(PaastService.name);
   private readonly aiServiceUrl: string;
 
+  // /analyze: 5 lệnh DeepSeek song song, ~9-15s/lệnh.
+  private readonly PAAST_ANALYZE_TIMEOUT_MS = 60_000;
+
+  // /analyze-v2: thêm 1 lệnh sinh 16 hook (~14s).
+  private readonly PAAST_ANALYZE_V2_TIMEOUT_MS = 150_000;
+
+  // /upgrade: 2 lượt LLM nối tiếp, 90s cũ luôn hỏng — cùng mốc CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
+
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
@@ -73,8 +82,12 @@ export class PaastService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/analyze/`,
-          { content: dto.content },
-          { timeout: 60000 },
+          {
+            content: dto.content,
+            // Django đoán 120s nếu thiếu field này.
+            timeout_seconds: Math.floor(this.PAAST_ANALYZE_TIMEOUT_MS / 1000),
+          },
+          { timeout: this.PAAST_ANALYZE_TIMEOUT_MS },
         ),
       );
 
@@ -133,10 +146,11 @@ export class PaastService {
       const response = await firstValueFrom(
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/analyze-v2/`,
-          { content },
-          // Sinh 16 hook là một lệnh gọi LLM riêng ngoài 5 lệnh phân loại — đo thật mất ~14
-          // giây, nên 60s của bản 1 là quá sát.
-          { timeout: 150000 },
+          {
+            content,
+            timeout_seconds: Math.floor(this.PAAST_ANALYZE_V2_TIMEOUT_MS / 1000),
+          },
+          { timeout: this.PAAST_ANALYZE_V2_TIMEOUT_MS },
         ),
       );
 
@@ -243,8 +257,9 @@ export class PaastService {
           {
             original_content: original.input_text,
             missing_elements: missingElements,
+            timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
           },
-          { timeout: 90000 },
+          { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },
         ),
       );
 
