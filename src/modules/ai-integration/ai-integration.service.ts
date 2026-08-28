@@ -28,6 +28,7 @@ import { ContentTransformHistoryQueryDto } from './dto/content-transform-history
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
 import { UsersService } from '../users/users.service';
+import { VoiceQuotaService } from './voice-quota.service';
 
 /** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
 export interface VideoDetailResult {
@@ -165,6 +166,7 @@ export class AiIntegrationService {
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
     private readonly usersService: UsersService,
+    private readonly voiceQuotaService?: VoiceQuotaService,
   ) {
     this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
@@ -1806,7 +1808,7 @@ export class AiIntegrationService {
   /**
    * Get available voices, including custom cloned ones and system ones.
    */
-  async listVoices(): Promise<any> {
+  async listVoices(userId?: string): Promise<any> {
     const url = `${this.voiceAiServiceUrl}/api/voice/list/`;
     this.logger.log(`Calling AI Service: GET ${url}`);
     try {
@@ -1821,12 +1823,15 @@ export class AiIntegrationService {
           })
         )
       );
-      // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
+      // Kèm đơn giá và hạn mức tạo voice để FE hiển thị ngay khi tải trang
       if (data && typeof data === 'object') {
         data.pricing = {
           vnd_per_1k_chars: this.minimaxVndPer1kChars,
           vnd_per_clone: this.minimaxVndPerClone,
         };
+        if (this.voiceQuotaService) {
+          data.quota = await this.voiceQuotaService.getQuota(userId);
+        }
       }
       return data;
     } catch (error: any) {
@@ -1838,7 +1843,10 @@ export class AiIntegrationService {
   /**
    * Clone a voice from uploaded sample audio
    */
-  async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
+  async cloneVoice(file: any, voiceName: string, gender = 'female', userId?: string): Promise<any> {
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
     const FormData = require('form-data');
     const url = `${this.voiceAiServiceUrl}/api/voice/clone/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
@@ -1883,7 +1891,10 @@ export class AiIntegrationService {
    * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
    * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
    */
-  async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
+  async cloneVoiceStart(file: any, voiceName: string, gender = 'female', userId?: string): Promise<any> {
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
     const FormData = require('form-data');
     const url = `${this.voiceAiServiceUrl}/api/voice/clone/start/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
@@ -2407,6 +2418,11 @@ export class AiIntegrationService {
    * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
+    // Kiểm tra và trừ hạn mức tạo voice trong ngày (mặc định 8 lượt/ngày)
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
+
     const url = `${this.voiceAiServiceUrl}/api/voice/tts/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
 

@@ -114,6 +114,7 @@ model User {
   push_subscriptions               PushSubscription[]             @relation("PushSubscriptionOf")
   owned_channels                   Channel[]                      @relation("ChannelOwnerUser")
   ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
+  daily_voice_quotas               UserDailyVoiceQuota[]          @relation("UserDailyVoiceQuotaOf")
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
@@ -214,6 +215,32 @@ model AiVoiceUsage {
   @@index([created_at])
   @@index([kind])
   @@map("ai_voice_usage")
+}
+
+/// Hạn mức tạo Voice trong ngày theo từng user (mặc định 8 lượt/ngày).
+/// Khi hết 8 lượt, chỉ Admin mới có quyền cấp thêm (tối đa không quá 8 lượt/lần).
+model UserDailyVoiceQuota {
+  id            String   @id @default(uuid())
+  user_id       String   @db.Uuid
+  /// Ngày định dạng YYYY-MM-DD theo giờ VN
+  date          String   @db.VarChar(10)
+  /// Số lượt mặc định trong ngày (mặc định = 8)
+  default_limit Int      @default(8)
+  /// Số lượt đã sử dụng trong ngày
+  used_count    Int      @default(0)
+  /// Số lượt admin đã cấp thêm trong ngày
+  granted_extra Int      @default(0)
+  /// Admin thực hiện cấp thêm lượt
+  granted_by_id String?  @db.Uuid
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  user User @relation("UserDailyVoiceQuotaOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, date])
+  @@index([user_id])
+  @@index([date])
+  @@map("user_daily_voice_quotas")
 }
 
 model Video {
