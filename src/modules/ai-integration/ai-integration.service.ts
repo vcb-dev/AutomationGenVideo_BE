@@ -61,17 +61,6 @@ interface MissingElement {
  */
 type ContentTransformScoreResult = PaastAnalysisPayload;
 
-/**
- * Trạng thái chấm điểm của 1 bản ghi, dùng chung cho /transform, /rescore, /upgrade và các
- * endpoint lịch sử:
- *  - `null`    : bản ghi chưa từng có output_text (vd transform hỏng ngay từ bước viết) —
- *                không áp dụng khái niệm chấm điểm.
- *  - `pending` : ĐÃ có kịch bản kết quả nhưng CHƯA chấm điểm. Đây là trạng thái bình thường
- *                ngay sau /transform kể từ khi tách "viết kịch bản" và "chấm điểm" thành 2
- *                request riêng — KHÔNG phải lỗi, người dùng bấm "Chấm điểm content" để chấm.
- *  - `success` : đã chấm xong, có scoreResult theo khung PAAST.
- *  - `failed`  : lần chấm vừa rồi thất bại (sau khi đã tự retry), hoặc bản ghi dùng hệ điểm cũ.
- */
 type ContentTransformScoreStatus = 'success' | 'failed' | 'pending' | null;
 
 /** Bản ghi cũ chấm bằng hệ 7 nhóm/23 tiêu chí + Hard Gate (đã ngừng dùng) không có `layers`. */
@@ -159,8 +148,7 @@ export class AiIntegrationService {
   // trường hợp xấu nhất ước tính ở trần 200MB (upload ~85s + poll ~90s + generate ~200s).
   private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
 
-  // PAAST /upgrade: 2 lượt LLM nối tiếp (viết rồi chấm lại), 90s cũ luôn hỏng ở ~40s write_budget.
-  // Cùng mốc với CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  // PAAST /upgrade: 2 lượt LLM nối tiếp, 90s cũ luôn hỏng — cùng mốc CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
   private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
 
   constructor(
@@ -2743,9 +2731,7 @@ export class AiIntegrationService {
    *
    * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
    * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
-   *
-   * Chỉ nhận bản ghi khớp `PAAST_LOGIC_VERSION` hiện hành — điểm chấm bằng công thức đời trước
-   * không còn so sánh được, để lọt sẽ trả cache lỗi thời khi công thức đổi.
+   * Chỉ nhận bản ghi khớp `PAAST_LOGIC_VERSION` — bản chấm bằng công thức cũ không dùng lại.
    */
   async findLatestByContent(content: string) {
     const candidates = await this.prisma.paastAnalysisHistory.findMany({
@@ -2918,7 +2904,7 @@ export class AiIntegrationService {
           {
             original_content: original.input_text,
             missing_elements: missingElements,
-            // Cho Django biết ngân sách thật của BE (mặc định nó tự đoán 120s).
+            // Django đoán 120s nếu thiếu field này.
             timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
           },
           { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },

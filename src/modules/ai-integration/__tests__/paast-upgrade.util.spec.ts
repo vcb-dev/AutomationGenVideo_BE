@@ -116,7 +116,6 @@ describe('buildPaastUpgradeSystemPrompt', () => {
   it('thiếu layers (undefined) thì hiện điểm 0 thay vì NaN/crash', () => {
     const prompt = buildPaastUpgradeSystemPrompt(basePayload({ layers: {} as any }), []);
 
-    // Trọng số 5 lớp không đều (25/25/20/15/15) — mẫu số fallback theo default từng lớp.
     expect(prompt).toContain('Prefer 0/25');
     expect(prompt).toContain('Stick 0/15');
   });

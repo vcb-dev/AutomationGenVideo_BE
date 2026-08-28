@@ -30,14 +30,13 @@ export class PaastService {
   private readonly logger = new Logger(PaastService.name);
   private readonly aiServiceUrl: string;
 
-  // /analyze: 5 lệnh DeepSeek song song, ~9-15s/lệnh → 60s dư dả.
+  // /analyze: 5 lệnh DeepSeek song song, ~9-15s/lệnh.
   private readonly PAAST_ANALYZE_TIMEOUT_MS = 60_000;
 
-  // /analyze-v2: thêm 1 lệnh sinh 16 hook (~14s) ngoài 5 lệnh phân loại.
+  // /analyze-v2: thêm 1 lệnh sinh 16 hook (~14s).
   private readonly PAAST_ANALYZE_V2_TIMEOUT_MS = 150_000;
 
-  // /upgrade: 2 lượt LLM nối tiếp (viết rồi chấm lại). 90s cũ luôn hỏng ở ~40s write_budget —
-  // dùng lại mốc đã kiểm chứng của CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  // /upgrade: 2 lượt LLM nối tiếp, 90s cũ luôn hỏng — cùng mốc CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
   private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
 
   constructor(
@@ -85,7 +84,7 @@ export class PaastService {
           `${this.aiServiceUrl}/api/ai/paast/analyze/`,
           {
             content: dto.content,
-            // Cho Django biết ngân sách thật của BE (mặc định nó tự đoán 120s).
+            // Django đoán 120s nếu thiếu field này.
             timeout_seconds: Math.floor(this.PAAST_ANALYZE_TIMEOUT_MS / 1000),
           },
           { timeout: this.PAAST_ANALYZE_TIMEOUT_MS },
