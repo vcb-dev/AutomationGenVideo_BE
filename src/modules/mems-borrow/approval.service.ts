@@ -8,7 +8,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto';
-import { ApprovalPlan, canSign, nextStep, planApprovals } from './approval-rules';
+import { ApprovalPlan, BorrowPurpose, canSign, nextStep, planApprovals } from './approval-rules';
 
 /** Người đang ký, lấy từ token — cần cả id lẫn vai trò để đối chiếu với cấp đang tới lượt. */
 export interface Approver {
@@ -29,12 +29,15 @@ export class ApprovalService {
     from_time: Date;
     to_time: Date;
     place: string;
+    purpose?: BorrowPurpose | string | null;
   }): ApprovalPlan {
     return planApprovals({
       totalValue: this.estimateValue(request.lines),
       fromTime: request.from_time,
       toTime: request.to_time,
       place: request.place,
+      // Phiếu tạo trước khi có cột này đọc ra null — coi như việc công ty, giữ nguyên một cấp.
+      purpose: request.purpose === 'PERSONAL' ? 'PERSONAL' : 'WORK',
     });
   }
 

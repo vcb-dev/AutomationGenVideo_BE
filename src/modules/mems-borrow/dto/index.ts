@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsISO8601,
   IsNotEmpty,
@@ -49,6 +50,17 @@ export class CreateBorrowRequestDto {
   @IsString()
   @IsNotEmpty()
   place: string;
+
+  @ApiPropertyOptional({
+    enum: ['WORK', 'PERSONAL'],
+    default: 'WORK',
+    description:
+      'PERSONAL là mượn phục vụ việc riêng — phiếu sẽ cần hai chữ ký: leader rồi admin. ' +
+      'Bỏ trống thì coi là việc của công ty.',
+  })
+  @IsOptional()
+  @IsIn(['WORK', 'PERSONAL'])
+  purpose?: 'WORK' | 'PERSONAL';
 
   @ApiProperty()
   @IsISO8601()

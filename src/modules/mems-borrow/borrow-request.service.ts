@@ -84,6 +84,8 @@ export class BorrowRequestService {
           department_id: departmentId,
           project: dto.project,
           place: dto.place,
+          // Client cũ chưa gửi trường này; mặc định việc công ty để phiếu vẫn một cấp duyệt.
+          purpose: dto.purpose ?? 'WORK',
           from_time: fromTime,
           to_time: toTime,
           status: 'PENDING_APPROVAL',

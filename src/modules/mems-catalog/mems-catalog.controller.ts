@@ -5,6 +5,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   Request,
@@ -24,10 +25,30 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
-import { CreateAssetDto, CreateCategoryDto, CreateModelDto, InspectAssetDto } from './dto';
+import {
+  CreateAssetDto,
+  CreateCategoryDto,
+  CreateLocationDto,
+  CreateModelDto,
+  InspectAssetDto,
+  UpdateAssetDto,
+  UpdateLocationDto,
+} from './dto';
 import { AssetPhotoService, MEMS_PHOTO_DIR } from './asset-photo.service';
 import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
+
+/**
+ * Ai được KHAI BÁO kho: tạo danh mục, khai model, nhập máy mới.
+ *
+ * Manager cố ý nằm ngoài. Manager điều phối công việc hằng ngày — duyệt phiếu, kiểm tra máy trả
+ * về — nhưng khai một model hay nhập một chiếc máy là chuyện tài sản: sai ở đây thì mọi phép
+ * đếm khả dụng về sau lệch theo, và không bước nào phía sau bắt lại được.
+ *
+ * Để thành hằng số dùng chung thay vì gõ lại từng chỗ: ba endpoint này phải cùng một mức quyền,
+ * mà gõ tay thì lần thêm endpoint thứ tư người ta copy nhầm dòng cũ.
+ */
+const CATALOG_WRITE_ROLES = [UserRole.LEADER, UserRole.ADMIN] as const;
 
 @ApiTags('MEMS — Kho thiết bị')
 @ApiBearerAuth()
@@ -50,6 +71,20 @@ export class MemsCatalogController {
   @ApiOperation({ summary: 'Chi tiết thiết bị kèm nhật ký vòng đời (MH-03)' })
   assetDetail(@Param('assetCode') assetCode: string) {
     return this.service.assetDetail(assetCode);
+  }
+
+  @Roles(...CATALOG_WRITE_ROLES)
+  @Patch('assets/:assetCode')
+  @ApiOperation({ summary: 'Sửa thông tin thiết bị — chỉ leader và admin' })
+  updateAsset(@Param('assetCode') assetCode: string, @Body() dto: UpdateAssetDto) {
+    return this.service.updateAsset(assetCode, dto);
+  }
+
+  @Roles(...CATALOG_WRITE_ROLES)
+  @Delete('assets/:assetCode')
+  @ApiOperation({ summary: 'Ngừng dùng thiết bị, xoá mềm — chỉ leader và admin' })
+  deleteAsset(@Param('assetCode') assetCode: string) {
+    return this.service.deleteAsset(assetCode);
   }
 
   @Get('assets/:assetCode/photos')
@@ -135,9 +170,9 @@ export class MemsCatalogController {
     return this.inspection.inspect(assetCode, req.user.id, dto);
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(...CATALOG_WRITE_ROLES)
   @Post('assets')
-  @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01)' })
+  @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01) — chỉ leader và admin' })
   createAsset(@Body() dto: CreateAssetDto) {
     return this.service.createAsset(dto);
   }
@@ -154,9 +189,9 @@ export class MemsCatalogController {
     return this.service.listModels({ categoryId });
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(...CATALOG_WRITE_ROLES)
   @Post('models')
-  @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03)' })
+  @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03) — chỉ leader và admin' })
   createModel(@Body() dto: CreateModelDto) {
     return this.service.createModel(dto);
   }
@@ -167,9 +202,30 @@ export class MemsCatalogController {
     return this.service.listLocations();
   }
 
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(...CATALOG_WRITE_ROLES)
+  @Post('locations')
+  @ApiOperation({ summary: 'Thêm vị trí lưu kho (tủ, kệ, ngăn) — chỉ leader và admin' })
+  createLocation(@Body() dto: CreateLocationDto) {
+    return this.service.createLocation(dto);
+  }
+
+  @Roles(...CATALOG_WRITE_ROLES)
+  @Patch('locations/:id')
+  @ApiOperation({ summary: 'Đổi tên hoặc chuyển chỗ một vị trí — chỉ leader và admin' })
+  updateLocation(@Param('id') id: string, @Body() dto: UpdateLocationDto) {
+    return this.service.updateLocation(id, dto);
+  }
+
+  @Roles(...CATALOG_WRITE_ROLES)
+  @Delete('locations/:id')
+  @ApiOperation({ summary: 'Ngừng dùng một vị trí, xoá mềm — chỉ leader và admin' })
+  deleteLocation(@Param('id') id: string) {
+    return this.service.deleteLocation(id);
+  }
+
+  @Roles(...CATALOG_WRITE_ROLES)
   @Post('categories')
-  @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02)' })
+  @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02) — chỉ leader và admin' })
   createCategory(@Body() dto: CreateCategoryDto) {
     return this.service.createCategory(dto);
   }
