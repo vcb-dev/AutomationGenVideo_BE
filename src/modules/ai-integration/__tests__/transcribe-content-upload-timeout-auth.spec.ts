@@ -22,9 +22,14 @@ describe('AiIntegrationService.transcribeContentUpload', () => {
       get: jest.fn((key: string, def?: string) => (key === 'AI_SERVICE_URL' ? 'http://ai.test:8001' : def)),
     };
     const jwtService: any = { sign: jest.fn(() => 'fake.jwt.token') };
-    // 6 tham số: httpService, configService, jwtService, prisma, driveStorage, usersService —
-    // transcribe không đụng 3 tham số cuối nên để {} as any.
-    const service = new AiIntegrationService(httpService, configService, jwtService, {} as any, {} as any, {} as any);
+    const service = new AiIntegrationService(
+      httpService,
+      configService,
+      jwtService,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
     return { service, httpService, jwtService };
   }
 
