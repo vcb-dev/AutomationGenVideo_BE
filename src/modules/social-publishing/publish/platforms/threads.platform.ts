@@ -1,9 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
-
-function isVideoUrl(url: string): boolean {
-  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
-}
+import { isVideoUrl } from '../media-url.util';
 
 @Injectable()
 export class ThreadsPublisher {
