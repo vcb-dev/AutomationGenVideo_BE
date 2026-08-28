@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { NotFoundException } from '@nestjs/common';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { ScheduleService, CLAIM_LEASE_MS } from './schedule.service';
@@ -348,6 +351,68 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
       const { service } = createService(prisma);
 
       await expect(service.retry('p1', 'u1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('cleanupOrphanFiles — chỉ đụng file tạm', () => {
+    let uploadDir: string;
+    const previousUploadDir = process.env.SOCIAL_UPLOAD_DIR;
+    const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+
+    const writeAged = (name: string) => {
+      const filePath = path.join(uploadDir, name);
+      fs.writeFileSync(filePath, 'x');
+      fs.utimesSync(filePath, new Date(threeHoursAgo), new Date(threeHoursAgo));
+      return filePath;
+    };
+
+    beforeEach(() => {
+      uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'social-upload-'));
+      process.env.SOCIAL_UPLOAD_DIR = uploadDir;
+    });
+
+    afterEach(() => {
+      fs.rmSync(uploadDir, { recursive: true, force: true });
+      if (previousUploadDir === undefined) delete process.env.SOCIAL_UPLOAD_DIR;
+      else process.env.SOCIAL_UPLOAD_DIR = previousUploadDir;
+    });
+
+    it('xoá file tạm quá hạn do luồng đăng bài sinh ra', async () => {
+      const files = ['gd_1_abc_FILEID.mp4', 'tc_1_video.mp4', 'tmp_1_x_anh.jpg'].map(writeAged);
+      const { service } = createService(createPrismaMock());
+
+      await service.cleanupOrphanFiles();
+
+      for (const filePath of files) expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('KHÔNG xoá media gốc của người dùng', async () => {
+      // Khi Google Drive chưa cấu hình, UploadService lưu file gốc vào chính thư mục
+      // này với tên thật và media_urls trỏ vào đó. Quét sạch theo tuổi sẽ làm bài lên
+      // lịch đăng sau hơn 2 giờ mất file → đăng lỗi 3 lần rồi FAILED.
+      const userMedia = ['video khach hang.mp4', 'anh bia.jpg', 'Ky vang 2026.png'].map(writeAged);
+      const { service } = createService(createPrismaMock());
+
+      await service.cleanupOrphanFiles();
+
+      for (const filePath of userMedia) expect(fs.existsSync(filePath)).toBe(true);
+    });
+
+    it('giữ lại file tạm còn mới', async () => {
+      const fresh = path.join(uploadDir, 'gd_moi_tai.mp4');
+      fs.writeFileSync(fresh, 'x');
+      const { service } = createService(createPrismaMock());
+
+      await service.cleanupOrphanFiles();
+
+      expect(fs.existsSync(fresh)).toBe(true);
+    });
+
+    it('không vỡ khi thư mục upload chưa tồn tại', async () => {
+      process.env.SOCIAL_UPLOAD_DIR = path.join(uploadDir, 'chua-co');
+      const { service } = createService(createPrismaMock());
+
+      await expect(service.cleanupOrphanFiles()).resolves.toBeUndefined();
     });
   });
 

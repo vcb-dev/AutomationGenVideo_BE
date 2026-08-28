@@ -34,6 +34,21 @@ function extractDriveFileId(url: string): string | null {
   return m?.[1] || null;
 }
 
+/**
+ * File tạm do luồng đăng bài tự sinh ra, xoá được sau khi đăng xong:
+ *   gd_*  — tải từ Google Drive về để đưa cho mạng xã hội
+ *   tc_*  — bản transcode cho Instagram/Threads
+ *   tmp_* — file trung gian lúc upload lên Drive
+ *
+ * Mọi tên khác đều KHÔNG được đụng tới. Khi Google Drive chưa cấu hình,
+ * UploadService lưu file gốc của người dùng vào chính thư mục này với tên thật
+ * (xem upload.service.ts::saveBuffer) và media_urls trỏ vào đó — quét sạch theo
+ * tuổi sẽ xoá mất media của bài đã lên lịch đăng sau hơn 2 giờ.
+ */
+function isDisposableUploadFile(filename: string): boolean {
+  return /^(gd|tc|tmp)_/.test(filename);
+}
+
 /** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
 function retryDelayMs(attempt: number): number {
   return Math.min(5 * Math.pow(3, attempt - 1) * 60 * 1000, 2 * 60 * 60 * 1000);
@@ -547,6 +562,7 @@ export class ScheduleService {
     const now = Date.now();
     let deleted = 0;
     let failed = 0;
+    let skipped = 0;
 
     let entries: string[];
     try {
@@ -557,6 +573,10 @@ export class ScheduleService {
     }
 
     for (const name of entries) {
+      if (!isDisposableUploadFile(name)) {
+        skipped++;
+        continue;
+      }
       const filePath = path.join(uploadBase, name);
       try {
         const stat = fs.statSync(filePath);
@@ -571,7 +591,10 @@ export class ScheduleService {
     }
 
     if (deleted > 0 || failed > 0) {
-      this.logger.log(`[CleanupOrphanFiles] Đã xóa ${deleted} file rác trên đĩa (${failed} lỗi) — thư mục: ${uploadBase}`);
+      this.logger.log(
+        `[CleanupOrphanFiles] Đã xóa ${deleted} file rác trên đĩa (${failed} lỗi, ` +
+        `${skipped} file không phải file tạm nên bỏ qua) — thư mục: ${uploadBase}`,
+      );
     }
   }
 }
