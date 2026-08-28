@@ -6,6 +6,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as FormData from 'form-data';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { isVideoUrl } from '../media-url.util';
+import { probeMedia, resolveFFmpegPath, FACEBOOK_REELS_LIMITS } from '../media-probe.util';
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +15,7 @@ const execFileAsync = promisify(execFile);
 export class FacebookPublisher {
   private readonly logger = new Logger(FacebookPublisher.name);
   private readonly BASE = 'https://graph.facebook.com/v21.0';
+  private readonly RUPLOAD_BASE = 'https://rupload.facebook.com/video-upload/v21.0';
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -51,12 +54,47 @@ export class FacebookPublisher {
     }
 
     const firstMedia = opts.mediaUrls[0];
-    const isVideo = /\.mp4(\?|$)/i.test(firstMedia);
+    const isVideo = isVideoUrl(firstMedia);
+
+    // Graph API không đăng được video chung với media khác trong một bài. Trước đây
+    // code chỉ xét mediaUrls[0] rồi return ngay ở nhánh video → các media còn lại bị
+    // bỏ im lặng: người dùng thấy "đăng thành công" nhưng bài thiếu nội dung.
+    if (opts.mediaUrls.length > 1 && opts.mediaUrls.some(isVideoUrl)) {
+      throw new Error(
+        `Facebook không đăng được video chung với media khác trong cùng một bài — ` +
+        `nhận ${opts.mediaUrls.length} media, trong đó có video. Hãy tách thành các bài riêng.`,
+      );
+    }
 
     // ── Video ──────────────────────────────────────────────────────
     if (isVideo) {
       const localFilePath = this.resolveLocalFilePath(firstMedia);
       let videoId: string;
+
+      // Reels feed là nguồn hiển thị cho người chưa follow Page; /videos chỉ tới
+      // người đã follow. Video đủ điều kiện (3–90s theo docs Meta) phải đi qua
+      // /video_reels, không thì mất hẳn nhánh phân phối đó.
+      const probe = await probeMedia(localFilePath ?? firstMedia);
+      const durationSec = probe?.durationSec ?? null;
+      const eligibleForReels =
+        durationSec !== null &&
+        durationSec >= FACEBOOK_REELS_LIMITS.minSec &&
+        durationSec <= FACEBOOK_REELS_LIMITS.maxSec;
+
+      if (eligibleForReels) {
+        this.logger.log(`[FB] Video ${durationSec!.toFixed(1)}s → đăng dạng Reel`);
+        videoId = await this.uploadReel(targetId, pageToken, opts.message, firstMedia, localFilePath);
+        setImmediate(() =>
+          this.uploadThumbnailAsync(videoId, firstMedia, localFilePath, pageToken)
+            .catch((e: any) => this.logger.warn(`[FB] uploadThumbnailAsync error: ${e.message}`)),
+        );
+        return { postId: videoId, url: `https://facebook.com/reel/${videoId}` };
+      }
+
+      this.logger.log(
+        `[FB] Video ${durationSec === null ? 'không đọc được thời lượng' : `${durationSec.toFixed(1)}s`}` +
+        ` → đăng dạng video thường (ngoài khoảng ${FACEBOOK_REELS_LIMITS.minSec}-${FACEBOOK_REELS_LIMITS.maxSec}s của Reels)`,
+      );
 
       if (localFilePath) {
         videoId = await this.uploadVideoResumable(localFilePath, targetId, pageToken, opts.message, privacyParam);
@@ -144,6 +182,93 @@ export class FacebookPublisher {
     return { postId: id, url: `https://facebook.com/${id}` };
   }
 
+  /**
+   * Đăng Reel qua Reels API — 3 pha theo docs Meta:
+   *   1. POST /{page-id}/video_reels?upload_phase=start   → video_id + upload_url
+   *   2. POST rupload.facebook.com/video-upload/{video_id} → nạp bytes hoặc header file_url
+   *   3. POST /{page-id}/video_reels?upload_phase=finish  → video_state=PUBLISHED
+   *
+   * Khác hẳn luồng /videos: pha 2 nằm trên host rupload, xác thực bằng header
+   * `Authorization: OAuth <token>` chứ không phải query param access_token.
+   */
+  private async uploadReel(
+    targetId: string,
+    pageToken: string,
+    description: string,
+    mediaUrl: string,
+    localFilePath: string | null,
+  ): Promise<string> {
+    // ── Pha 1: khởi tạo ──────────────────────────────────────────────
+    let startRes: any;
+    try {
+      startRes = await axios.post(`${this.BASE}/${targetId}/video_reels`, null, {
+        params: { upload_phase: 'start', access_token: pageToken },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook reel upload (start) failed: ${detail}`);
+    }
+
+    const videoId: string = startRes.data.video_id;
+    if (!videoId) {
+      throw new Error(`Facebook reel upload (start) không trả về video_id: ${JSON.stringify(startRes.data)}`);
+    }
+    // Docs trả kèm upload_url; tự dựng chỉ là đường lui khi thiếu.
+    const uploadUrl: string = startRes.data.upload_url || `${this.RUPLOAD_BASE}/${videoId}`;
+    this.logger.log(`[FB] Reel session videoId=${videoId}`);
+
+    // ── Pha 2: nạp video ─────────────────────────────────────────────
+    // Ưu tiên nạp bytes khi có file local — server Facebook từng tải URL Railway
+    // thất bại lúc nhiều bài đăng đồng thời (xem ghi chú ở nhánh carousel ảnh).
+    try {
+      if (localFilePath) {
+        const fileSize = fs.statSync(localFilePath).size;
+        this.logger.log(`[FB] Reel upload bytes: ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+        await axios.post(uploadUrl, fs.createReadStream(localFilePath), {
+          headers: {
+            Authorization: `OAuth ${pageToken}`,
+            offset: '0',
+            file_size: String(fileSize),
+            'Content-Type': 'application/octet-stream',
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 300000,
+        });
+      } else {
+        this.logger.log(`[FB] Reel upload qua file_url: ${mediaUrl}`);
+        await axios.post(uploadUrl, null, {
+          headers: { Authorization: `OAuth ${pageToken}`, file_url: mediaUrl },
+          timeout: 300000,
+        });
+      }
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook reel upload (transfer) failed: ${detail}`);
+    }
+
+    // ── Pha 3: xuất bản ──────────────────────────────────────────────
+    try {
+      await axios.post(`${this.BASE}/${targetId}/video_reels`, null, {
+        params: {
+          video_id: videoId,
+          upload_phase: 'finish',
+          video_state: 'PUBLISHED',
+          description,
+          access_token: pageToken,
+        },
+        timeout: 60000,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Facebook reel upload (finish) failed: ${detail}`);
+    }
+
+    this.logger.log(`[FB] ✅ Reel published videoId=${videoId}`);
+    return videoId;
+  }
+
   private async uploadThumbnailAsync(
     videoId: string,
     firstMedia: string,
@@ -177,9 +302,9 @@ export class FacebookPublisher {
 
     // 2. Fallback: FFmpeg cắt từ file local
     if (!buffer && localFilePath) {
-      const ffmpegPath = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
-        ? process.env.FFMPEG_PATH
-        : fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+      // Dùng bản dò chung — bản cũ ở đây bỏ sót fallback @ffmpeg-installer nên trên
+      // máy không có /usr/bin/ffmpeg thì lặng lẽ không cắt được ảnh bìa.
+      const ffmpegPath = resolveFFmpegPath();
 
       if (ffmpegPath) {
         try {
