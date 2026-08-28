@@ -122,15 +122,41 @@ describe('AiIntegrationService — reconcile stuck content-transform jobs', () =
     expect(calls.some((c) => c.data?.status === TransformStatus.FAILED)).toBe(false);
   });
 
-  it('job vẫn running trên AI → KHÔNG động vào', async () => {
+  it('job vẫn running trên AI mà bản ghi đã PENDING quá 15 phút → FAILED (coi như treo)', async () => {
     const { service, httpService, updateMany } = buildService([
-      { id: 'rec-3', user_id: 'u1', ai_job_id: 'job-3', ai_job_kind: 'transcribe' },
+      { id: 'rec-3', user_id: 'u1', ai_job_id: 'job-3', ai_job_kind: 'upgrade' },
     ]);
     httpService.get.mockReturnValueOnce(of({ data: { status: 'running', message: 'Đang xử lý...' } }));
 
     await service.reconcileStuckContentTransformJobs();
 
-    expect(updateMany).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'rec-3', status: TransformStatus.PENDING },
+        data: expect.objectContaining({ status: TransformStatus.FAILED, error_message: expect.stringContaining('treo') }),
+      }),
+    );
+  });
+
+  it('job completed + kind upgrade vẫn được finalize (không bị nhánh "treo" chặn)', async () => {
+    const findFirst = jest.fn(async () => ({ id: 'rec-c', user_id: 'u1', ai_job_id: 'job-c', character: {} }));
+    const updateMany = jest.fn(async () => ({ count: 1 }));
+    const findUnique = jest.fn(async () => ({ id: 'rec-c', output_text: 'x', score_result: null, character: {} }));
+    const { service, httpService } = buildService([
+      { id: 'rec-c', user_id: 'u1', ai_job_id: 'job-c', ai_job_kind: 'upgrade', character: {} },
+    ]);
+    (service as any).prisma.contentTransformHistory.findFirst = findFirst;
+    (service as any).prisma.contentTransformHistory.updateMany = updateMany;
+    (service as any).prisma.contentTransformHistory.findUnique = findUnique;
+    jest.spyOn(service, 'getContentTransformHistoryDetail').mockResolvedValue({ output_text: 'cũ', scoreResult: null } as any);
+    httpService.get.mockReturnValueOnce(
+      of({ data: { status: 'completed', kind: 'upgrade', client_context: {}, result: { output_text: 'x', score: null, score_error: null, usage: {}, model_used: 'm' } } }),
+    );
+
+    await service.reconcileStuckContentTransformJobs();
+
+    const calls = updateMany.mock.calls.map((c: any[]) => c[0]);
+    expect(calls.some((c) => c.data?.status === TransformStatus.SUCCESS)).toBe(true);
   });
 
   it('poll 1 bản ghi lỗi → bỏ qua bản đó, vẫn xử lý bản còn lại', async () => {
