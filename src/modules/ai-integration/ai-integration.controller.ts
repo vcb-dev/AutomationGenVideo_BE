@@ -16,11 +16,15 @@ import { ContentTransformHistoryQueryDto } from './dto/content-transform-history
 import { ContentTransformTeamSummaryQueryDto } from './dto/content-transform-team-summary-query.dto';
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
+import { VoiceQuotaService } from './voice-quota.service';
 
 @ApiTags('AI Integration')
 @Controller('ai')
 export class AiIntegrationController {
-  constructor(private readonly aiService: AiIntegrationService) { }
+  constructor(
+    private readonly aiService: AiIntegrationService,
+    private readonly voiceQuotaService: VoiceQuotaService,
+  ) { }
 
   @Post('chat')
   @HttpCode(HttpStatus.OK)
@@ -658,11 +662,37 @@ export class AiIntegrationController {
     return this.aiService.mixVideoUpload(req);
   }
 
+  @Get('voice/quota')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Lấy thông tin hạn mức tạo voice hôm nay của user (mặc định 8 lượt/ngày)' })
+  async getVoiceQuota(@Req() req: any) {
+    const userId = req.user?.id;
+    return this.voiceQuotaService.getQuota(userId);
+  }
+
+  @Post('voice/quota/grant')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Admin cấp thêm lượt tạo voice cho user (tối đa 8 lượt/lần)' })
+  async grantVoiceQuota(
+    @Body('user_id') targetUserId: string,
+    @Body('extra_count') extraCount: number,
+    @Req() req: any,
+  ) {
+    const userRoles = req.user?.roles || [];
+    if (!userRoles.includes('ADMIN')) {
+      throw new HttpException('Chỉ ADMIN mới có quyền cấp thêm lượt tạo voice', HttpStatus.FORBIDDEN);
+    }
+    if (!targetUserId) {
+      throw new HttpException('user_id is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.voiceQuotaService.grantExtraQuota(targetUserId, extraCount, req.user?.id);
+  }
+
   @Get('voice/list')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'List available voices' })
-  async listVoices() {
-    return this.aiService.listVoices();
+  async listVoices(@Req() req: any) {
+    return this.aiService.listVoices(req.user?.id);
   }
 
   @Post('voice/clone')
@@ -683,6 +713,7 @@ export class AiIntegrationController {
   async cloneVoice(
     @UploadedFile() file: Express.Multer.File,
     @Body('voice_name') voiceName: string,
+    @Req() req: any,
     @Body('gender') gender?: string,
   ) {
     if (!file) {
@@ -691,7 +722,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoice(file, voiceName, gender);
+    return this.aiService.cloneVoice(file, voiceName, gender, req.user?.id);
   }
 
   @Post('voice/clone/start')
@@ -712,6 +743,7 @@ export class AiIntegrationController {
   async cloneVoiceStart(
     @UploadedFile() file: Express.Multer.File,
     @Body('voice_name') voiceName: string,
+    @Req() req: any,
     @Body('gender') gender?: string,
   ) {
     if (!file) {
@@ -720,7 +752,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoiceStart(file, voiceName, gender);
+    return this.aiService.cloneVoiceStart(file, voiceName, gender, req.user?.id);
   }
 
   @Get('voice/clone/status/:jobId')
