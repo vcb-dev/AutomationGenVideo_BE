@@ -18,6 +18,8 @@ import { CryptoService } from './crypto/crypto.service';
 
 // Accounts
 import { AccountsController } from './accounts/accounts.controller';
+import { AvatarController } from './accounts/avatar.controller';
+import { AvatarService } from './accounts/avatar.service';
 import { AccountsService } from './accounts/accounts.service';
 
 // OAuth
@@ -63,6 +65,7 @@ import { HashtagController } from './hashtag/hashtag.controller';
     MediaLibraryController,
     ChunkedUploadController,
     AccountsController,
+    AvatarController,
     OAuthController,
     PublishController,
     ScheduleController,
@@ -80,6 +83,7 @@ import { HashtagController } from './hashtag/hashtag.controller';
     ThumbnailMigrationService,
     // Accounts
     AccountsService,
+    AvatarService,
     // OAuth
     OAuthService,
     FacebookOAuthStrategy,
