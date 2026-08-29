@@ -17,6 +17,18 @@ export type MediaProbe = {
 export type DurationLimits = { minSec: number; maxSec: number };
 
 /**
+ * Dấu nhận dạng gắn vào mọi lỗi do cổng kiểm tra media ném ra.
+ *
+ * Worker thử lại 3 lượt (5 → 15 → 45 phút) cho lỗi đăng bài. Nhưng video thiếu
+ * audio hay sai thời lượng thì thử bao nhiêu lần cũng vậy — mỗi kênh chỉ chạy một
+ * bài một lúc nên hơn một tiếng đó chặn luôn các bài khác cùng kênh.
+ *
+ * `isPermanentPublishError` chỉ đọc được mã lỗi số của Meta; lỗi của ta là chuỗi
+ * tiếng Việt nên cần dấu này để nhận ra và bỏ qua vòng thử lại.
+ */
+export const PRECHECK_ERROR_MARKER = '[MEDIA_PRECHECK_FAILED]';
+
+/**
  * Giới hạn thời lượng theo docs Meta (đã đối chiếu tháng 8/2025).
  * Facebook Reels: 3–90 giây. Instagram Reels: 3 giây – 15 phút.
  */

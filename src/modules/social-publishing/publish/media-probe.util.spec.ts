@@ -1,4 +1,5 @@
 import {
+  PRECHECK_ERROR_MARKER,
   parseProbeOutput,
   validateVideoForPublish,
   collectWarnings,
@@ -129,6 +130,13 @@ describe('collectWarnings — cảnh báo, không chặn', () => {
   it('cảnh báo khi không đọc được thời lượng', () => {
     const warnings = collectWarnings({ ...reelProbe, durationSec: null }, 'x.mp4');
     expect(warnings.some(w => w.includes('không đọc được thời lượng'))).toBe(true);
+  });
+});
+
+describe('PRECHECK_ERROR_MARKER', () => {
+  it('là chuỗi ổn định để isPermanentPublishError nhận ra và bỏ qua vòng thử lại 65 phút', () => {
+    // Đổi giá trị này phải sửa cả luật tương ứng trong publish-error.util.ts
+    expect(PRECHECK_ERROR_MARKER).toBe('[MEDIA_PRECHECK_FAILED]');
   });
 });
 

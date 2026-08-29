@@ -18,6 +18,7 @@ import {
   validateVideoForPublish,
   collectWarnings,
   INSTAGRAM_REELS_LIMITS,
+  PRECHECK_ERROR_MARKER,
 } from './media-probe.util';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -490,7 +491,9 @@ export class PublishService {
     }
 
     if (errors.length) {
-      throw new BadRequestException(`Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`);
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
     }
   }
 
