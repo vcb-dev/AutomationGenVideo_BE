@@ -78,10 +78,7 @@ export class FacebookPublisher {
       }
 
       // Upload thumbnail bất đồng bộ — không block publish
-      setImmediate(() =>
-        this.uploadThumbnailAsync(videoId, firstMedia, localFilePath, pageToken)
-          .catch((e: any) => this.logger.warn(`[FB] uploadThumbnailAsync error: ${e.message}`)),
-      );
+      setImmediate(() => this.uploadThumbnailWithRetry(videoId, firstMedia, localFilePath, pageToken));
 
       return { postId: videoId, url: `https://facebook.com/${videoId}` };
     }
@@ -132,6 +129,10 @@ export class FacebookPublisher {
     if (failReasons.length > 0) {
       // Không đăng thiếu ảnh một cách âm thầm — ném lỗi để hệ thống retry cả bài,
       // tránh trường hợp carousel hiển thị thiếu ảnh trên Facebook mà không ai biết.
+      // Dọn ảnh đã upload trước khi ném: chúng đang ở trạng thái published=false,
+      // không hiện trong bài nào nhưng vẫn nằm trên Page. Mỗi lần retry lại đẻ thêm
+      // một bộ nữa, tích tụ dần thành ảnh mồ côi không ai xoá.
+      await this.deleteOrphanPhotos(photoIds, pageToken);
       throw new Error(
         `Chỉ upload thành công ${photoIds.length}/${opts.mediaUrls.length} ảnh lên Facebook — ${failReasons.join('; ')}`,
       );
@@ -148,10 +149,64 @@ export class FacebookPublisher {
       res = await axios.post(`${this.BASE}/${targetId}/feed`, feedBody, { timeout: 60000 });
     } catch (err: any) {
       const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      // Ảnh đã upload nhưng bài không tạo được → cũng thành mồ côi, dọn luôn.
+      await this.deleteOrphanPhotos(photoIds, pageToken);
       throw new Error(`Facebook carousel feed post failed: ${detail}`);
     }
     const id = res.data.id;
     return { postId: id, url: `https://facebook.com/${id}` };
+  }
+
+  /**
+   * Xoá ảnh đã upload nhưng chưa gắn vào bài nào.
+   *
+   * Chỉ cố gắng hết sức: xoá không được thì ghi log chứ không che mất lỗi gốc —
+   * lỗi gốc mới là thứ người dùng cần thấy.
+   */
+  private async deleteOrphanPhotos(photoIds: string[], pageToken: string): Promise<void> {
+    for (const id of photoIds) {
+      try {
+        await axios.delete(`${this.BASE}/${id}`, {
+          params: { access_token: pageToken },
+          timeout: 15000,
+        });
+        this.logger.log(`[FB] Đã dọn ảnh mồ côi ${id}`);
+      } catch (e: any) {
+        const detail = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+        this.logger.warn(`[FB] Không xoá được ảnh mồ côi ${id}: ${detail}`);
+      }
+    }
+  }
+
+  /**
+   * Gọi uploadThumbnailAsync có thử lại.
+   *
+   * Chạy ngay sau khi đăng thì Facebook thường chưa xử lý xong video và trả lỗi;
+   * bản cũ bắn một lần rồi quên, ảnh bìa im lặng không bao giờ được đặt. Giãn dần
+   * 5s → 15s → 30s để đợi video xử lý xong.
+   */
+  private async uploadThumbnailWithRetry(
+    videoId: string,
+    firstMedia: string,
+    localFilePath: string | null,
+    pageToken: string,
+    maxAttempts = 3,
+  ): Promise<void> {
+    const delaysMs = [5000, 15000, 30000];
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await this.sleep(delaysMs[Math.min(attempt, delaysMs.length - 1)]);
+      try {
+        await this.uploadThumbnailAsync(videoId, firstMedia, localFilePath, pageToken);
+        return;
+      } catch (e: any) {
+        const isLast = attempt === maxAttempts - 1;
+        this.logger.warn(
+          `[FB] Đặt ảnh bìa cho ${videoId} thất bại (lần ${attempt + 1}/${maxAttempts})` +
+          `${isLast ? ' — bỏ cuộc, video vẫn đăng bình thường' : ', sẽ thử lại'}: ${e.message}`,
+        );
+      }
+    }
   }
 
   private async uploadThumbnailAsync(
