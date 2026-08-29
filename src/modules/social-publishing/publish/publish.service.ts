@@ -18,6 +18,7 @@ import {
   validateVideoForPublish,
   collectWarnings,
   INSTAGRAM_REELS_LIMITS,
+  PRECHECK_ERROR_MARKER,
   MediaProbe,
 } from './media-probe.util';
 import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
@@ -529,7 +530,9 @@ export class PublishService {
     }
 
     if (errors.length) {
-      throw new BadRequestException(`Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`);
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
     }
 
     return probes;
