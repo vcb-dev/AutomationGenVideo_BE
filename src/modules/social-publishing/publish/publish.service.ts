@@ -19,7 +19,9 @@ import {
   collectWarnings,
   INSTAGRAM_REELS_LIMITS,
   PRECHECK_ERROR_MARKER,
+  MediaProbe,
 } from './media-probe.util';
+import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -29,6 +31,15 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 type PreparedMedia = { url: string; tempFile: string | null };
+
+/** Thời lượng của video đầu tiên trong danh sách media — Facebook dùng để chọn Reels hay video thường */
+function firstVideoDuration(
+  mediaUrls: string[],
+  probes: Map<string, MediaProbe>,
+): number | null {
+  const videoUrl = mediaUrls.find(isVideoUrl);
+  return videoUrl ? probes.get(videoUrl)?.durationSec ?? null : null;
+}
 
 /** Semaphore đơn giản: giới hạn số tác vụ nặng (FFmpeg/transcode, Drive download) chạy đồng thời */
 class Semaphore {
@@ -86,6 +97,8 @@ function ensureExt(filename: string, ext: string): string {
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
+  // Đếm số lượt đăng đang dùng mỗi file tạm — bộ dọn rác không xoá file còn người dùng.
+  private readonly mediaInUse = new Map<string, number>();
 
   // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
   // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
@@ -295,53 +308,64 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
-    if (needsTranscode) {
-      const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
-      results.forEach((newUrl, i) => {
-        if (newUrl !== inputMediaUrls[i]) {
-          try {
-            const fname = new URL(newUrl).pathname.split('/').pop()!;
-            const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            if (fname) transcodedFiles.push(path.join(base, fname));
-          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
-        }
-      });
-      inputMediaUrls = results;
-    }
-
-    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
-    await this.precheckVideos(inputMediaUrls, account.platform);
-
-    const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
-    this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
-
-    let result: any;
     try {
-      result = await this.dispatchPublish(account.platform, token, {
-        message: dto.message,
-        mediaUrls: publicMediaUrls,
-        pageId: dto.pageId || extraData?.pageId,
-        privacy: dto.privacy,
-        extraData,
-        accountId: dto.accountId,
-        platformId: account.platform_id,
-        // Thiếu dòng này thì bài "đăng ngay" mất ảnh bìa tuỳ chọn, trong khi bài đặt
-        // lịch vẫn giữ (executeScheduled có truyền) — cùng chức năng, hai hành vi.
-        thumbUrl: dto.thumbUrl,
-      });
-    } catch (err: any) {
-      const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-      this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
-      await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
-      this.scheduleCleanupTranscoded(transcodedFiles);
-      throw new Error(apiErr);
-    }
+      if (needsTranscode) {
+        const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
+        results.forEach((newUrl, i) => {
+          if (newUrl !== inputMediaUrls[i]) {
+            try {
+              const fname = new URL(newUrl).pathname.split('/').pop()!;
+              const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+              if (fname) {
+                const filePath = path.join(base, fname);
+                transcodedFiles.push(filePath);
+                this.acquireMedia([filePath]);
+              }
+            } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
+          }
+        });
+        inputMediaUrls = results;
+      }
 
-    const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
-    this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
-    this.scheduleCleanupTranscoded(transcodedFiles);
-    return { success: true, platform: account.platform, result };
+      // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+      const probes = await this.precheckVideos(inputMediaUrls, account.platform);
+
+      const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
+      this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
+
+      let result: any;
+      try {
+        result = await this.dispatchPublish(account.platform, token, {
+          message: dto.message,
+          mediaUrls: publicMediaUrls,
+          pageId: dto.pageId || extraData?.pageId,
+          privacy: dto.privacy,
+          extraData,
+          accountId: dto.accountId,
+          platformId: account.platform_id,
+          // Thiếu dòng này thì bài "đăng ngay" mất ảnh bìa tuỳ chọn, trong khi bài đặt
+          // lịch vẫn giữ (executeScheduled có truyền) — cùng chức năng, hai hành vi.
+          thumbUrl: dto.thumbUrl,
+          videoDurationSec: firstVideoDuration(inputMediaUrls, probes),
+        });
+      } catch (err: any) {
+        const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
+        await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
+        throw new Error(apiErr);
+      }
+
+      const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
+      this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
+      return { success: true, platform: account.platform, result };
+    } finally {
+      this.releaseMedia(transcodedFiles);
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   /** Gọi bởi ScheduleService */
@@ -361,28 +385,33 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
-
-    if (needsTranscode) {
-      const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
-      results.forEach((newUrl: string, i: number) => {
-        if (newUrl !== inputMediaUrls[i]) {
-          try {
-            const fname = new URL(newUrl).pathname.split('/').pop()!;
-            const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-            if (fname) transcodedFiles.push(path.join(base, fname));
-          } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
-        }
-      });
-      inputMediaUrls = results;
-    }
-
-    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
-    await this.precheckVideos(inputMediaUrls, account.platform);
-
-    const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
-    this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
+    this.acquireMedia(transcodedFiles);
 
     try {
+      if (needsTranscode) {
+        const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
+        results.forEach((newUrl: string, i: number) => {
+          if (newUrl !== inputMediaUrls[i]) {
+            try {
+              const fname = new URL(newUrl).pathname.split('/').pop()!;
+              const base = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+              if (fname) {
+                const filePath = path.join(base, fname);
+                transcodedFiles.push(filePath);
+                this.acquireMedia([filePath]);
+              }
+            } catch (e: any) { this.logger.warn(`[Transcode] Không extract được tên file từ URL ${newUrl}: ${e.message}`); }
+          }
+        });
+        inputMediaUrls = results;
+      }
+
+      // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+      const probes = await this.precheckVideos(inputMediaUrls, account.platform);
+
+      const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
+      this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
+
       const result = await this.dispatchPublish(account.platform, token, {
         message: post.message,
         mediaUrls: publicMediaUrls,
@@ -392,6 +421,7 @@ export class PublishService {
         accountId: post.account_id,
         platformId: account.platform_id,
         thumbUrl: post.thumb_url || undefined,
+        videoDurationSec: firstVideoDuration(inputMediaUrls, probes),
       });
       this.logger.log(`[ExecuteScheduled] ✅ postId=${post.id} ${account.platform} "${account.name}" đăng thành công`);
       return result;
@@ -402,6 +432,7 @@ export class PublishService {
       enrichedErr.stack = err.stack;
       throw enrichedErr;
     } finally {
+      this.releaseMedia(transcodedFiles);
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
   }
@@ -463,21 +494,28 @@ export class PublishService {
    *
    * Không probe được (thiếu ffprobe, URL không tải nổi) thì chỉ ghi log, KHÔNG chặn —
    * để một máy thiếu ffprobe không làm sập toàn bộ chức năng đăng bài.
+   *
+   * Trả kết quả probe theo URL để publisher dùng lại — Facebook cần thời lượng để
+   * chọn giữa Reels và video thường, không phải chạy ffprobe thêm lần nữa.
    */
-  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
+  private async precheckVideos(
+    mediaUrls: string[],
+    platform: SocialPlatform,
+  ): Promise<Map<string, MediaProbe>> {
+    const probes = new Map<string, MediaProbe>();
     // Facebook có đường lui: video dài hơn 90s đăng dạng video thường thay vì Reels,
     // nên không áp giới hạn thời lượng. Instagram không có đường lui nào.
     const rule =
       platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
       platform === SocialPlatform.FACEBOOK ? { limits: null } :
       null;
-    if (!rule) return;
+    if (!rule) return probes;
 
     const requireAudio = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
     const ffprobePath = this.resolveFFprobePath();
     if (!ffprobePath) {
       this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
-      return;
+      return probes;
     }
 
     const errors: string[] = [];
@@ -491,6 +529,7 @@ export class PublishService {
         continue;
       }
 
+      probes.set(url, probe);
       for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
       errors.push(...validateVideoForPublish(probe, { ...rule, requireAudio, label }));
     }
@@ -500,6 +539,8 @@ export class PublishService {
         `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
       );
     }
+
+    return probes;
   }
 
   /**
@@ -613,11 +654,48 @@ export class PublishService {
     }
   }
 
-  private scheduleCleanupTranscoded(filePaths: string[]) {
+  /** Đánh dấu file tạm đang được một lượt đăng sử dụng */
+  private acquireMedia(filePaths: string[]): void {
+    for (const p of filePaths) this.mediaInUse.set(p, (this.mediaInUse.get(p) ?? 0) + 1);
+  }
+
+  /** Trả lại file tạm khi lượt đăng kết thúc */
+  private releaseMedia(filePaths: string[]): void {
+    for (const p of filePaths) {
+      const remaining = (this.mediaInUse.get(p) ?? 1) - 1;
+      if (remaining <= 0) this.mediaInUse.delete(p);
+      else this.mediaInUse.set(p, remaining);
+    }
+  }
+
+  /**
+   * Xoá file tạm sau 10 phút, nhưng bỏ qua file đang có lượt đăng khác dùng.
+   *
+   * driveLocalCache giữ kết quả tải Drive trong 10 phút, còn bộ dọn này đếm 10 phút
+   * từ lúc bài đăng xong — hai mốc lệch nhau. Lượt đăng thứ hai trúng cache ở phút
+   * thứ 9 sẽ nhận URL trỏ tới file bị xoá ngay sau đó. Đếm số lượt đang dùng thì
+   * không còn cửa đó nữa.
+   *
+   * Hoãn tối đa 3 lần rồi xoá dù sao, để một bộ đếm rò rỉ không giữ file mãi mãi.
+   */
+  private scheduleCleanupTranscoded(filePaths: string[], attempt = 1, maxAttempts = 3) {
     if (!filePaths.length) return;
     setTimeout(() => {
+      const stillInUse: string[] = [];
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
+        if (attempt < maxAttempts && (this.mediaInUse.get(p) ?? 0) > 0) {
+          stillInUse.push(p);
+          continue;
+        }
+        try {
+          if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); }
+        } catch (e: any) {
+          this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`);
+        }
+      }
+      if (stillInUse.length) {
+        this.logger.log(`[Transcode] Hoãn xoá ${stillInUse.length} file đang được dùng (lần ${attempt}/${maxAttempts})`);
+        this.scheduleCleanupTranscoded(stillInUse, attempt + 1, maxAttempts);
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }
@@ -637,6 +715,7 @@ export class PublishService {
     accountId?: string;
     platformId?: string;
     thumbUrl?: string;
+    videoDurationSec?: number | null;
   }) {
     const extra = opts.extraData || {};
 
@@ -652,6 +731,8 @@ export class PublishService {
           // Chỉ truyền privacy nếu KHÔNG phải page post (Page luôn public)
           privacy: extra.type === 'page' ? undefined : opts.privacy,
           extraData: extra,
+          // Dùng lại kết quả probe của cổng kiểm tra, khỏi chạy ffprobe lần hai
+          videoDurationSec: opts.videoDurationSec,
         });
 
       case SocialPlatform.INSTAGRAM: {
@@ -681,8 +762,11 @@ export class PublishService {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
         const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
-          title: opts.message.substring(0, 100),
+          // Tiêu đề lấy dòng đầu và bỏ hashtag thay vì cắt cụt 100 ký tự giữa từ;
+          // tags rút từ hashtag trong nội dung — trước đây luôn để rỗng.
+          title: buildYoutubeTitle(opts.message),
           description: opts.message,
+          tags: extractHashtags(opts.message),
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
           thumbUrl: opts.thumbUrl,
