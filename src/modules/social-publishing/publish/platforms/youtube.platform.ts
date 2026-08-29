@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { YOUTUBE_UPLOAD_BASE } from '../../platform-api.const';
+import { YOUTUBE_TITLE_MAX } from '../youtube-metadata.util';
 
 function parseContentLength(raw: unknown): number {
   const size = raw ? parseInt(String(raw), 10) : 0;
@@ -41,7 +43,7 @@ export class YoutubePublisher {
 
     const metadata = {
       snippet: {
-        title: (opts.title || 'Video').substring(0, 100),
+        title: (opts.title || 'Video').substring(0, YOUTUBE_TITLE_MAX),
         description: opts.description || '',
         tags: opts.tags ?? [],
       },
@@ -71,7 +73,7 @@ export class YoutubePublisher {
     let initRes: any;
     try {
       initRes = await axios.post(
-        'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+        `${YOUTUBE_UPLOAD_BASE}/videos?uploadType=resumable&part=snippet,status`,
         metadata,
         {
           headers: {
@@ -103,7 +105,7 @@ export class YoutubePublisher {
         const thumbRes = await axios.get(opts.thumbUrl, { responseType: 'stream', timeout: 30000 });
         const contentType = thumbRes.headers['content-type'] || 'image/jpeg';
         await axios.post(
-          `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}&uploadType=media`,
+          `${YOUTUBE_UPLOAD_BASE}/thumbnails/set?videoId=${videoId}&uploadType=media`,
           thumbRes.data,
           {
             headers: {

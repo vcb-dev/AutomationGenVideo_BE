@@ -1,5 +1,5 @@
-/** Giới hạn tiêu đề của YouTube */
-const YOUTUBE_TITLE_MAX = 100;
+/** Giới hạn tiêu đề của YouTube (docs Google) */
+export const YOUTUBE_TITLE_MAX = 100;
 /** YouTube bỏ qua tag vượt quá 500 ký tự tổng cộng — giữ ngưỡng an toàn */
 const YOUTUBE_TAGS_MAX = 15;
 

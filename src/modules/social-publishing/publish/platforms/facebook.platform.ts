@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_RUPLOAD_BASE } from '../../platform-api.const';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
@@ -7,15 +8,16 @@ import { promisify } from 'util';
 import * as FormData from 'form-data';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 import { isVideoUrl } from '../media-url.util';
-import { probeMedia, resolveFFmpegPath, FACEBOOK_REELS_LIMITS } from '../media-probe.util';
+import { withRetry, DEFAULT_MAX_ATTEMPTS, sleep } from '../retry.util';
+import { probeMedia, resolveFFmpegPath, FACEBOOK_REELS_LIMITS, CAROUSEL_MAX_ITEMS } from '../media-probe.util';
 
 const execFileAsync = promisify(execFile);
 
 @Injectable()
 export class FacebookPublisher {
   private readonly logger = new Logger(FacebookPublisher.name);
-  private readonly BASE = 'https://graph.facebook.com/v21.0';
-  private readonly RUPLOAD_BASE = 'https://rupload.facebook.com/video-upload/v21.0';
+  private readonly BASE = FACEBOOK_GRAPH_BASE;
+  private readonly RUPLOAD_BASE = FACEBOOK_RUPLOAD_BASE;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -143,6 +145,13 @@ export class FacebookPublisher {
     // (/api/social/media/...) thì upload thẳng bytes lên Facebook thay vì đưa URL
     // để Facebook tự tải — tránh lỗi code 100 "Invalid parameter" khi server fetch
     // của Facebook không tải được URL Railway lúc nhiều bài đăng đồng thời.
+    if (opts.mediaUrls.length > CAROUSEL_MAX_ITEMS) {
+      throw new Error(
+        `Facebook chỉ nhận tối đa ${CAROUSEL_MAX_ITEMS} media trong một bài — nhận ${opts.mediaUrls.length}. ` +
+        `Trước đây các ảnh thừa vẫn được upload rồi mới bị từ chối, để lại ảnh mồ côi trên Page.`,
+      );
+    }
+
     const photoIds: string[] = [];
     const failReasons: string[] = [];
     for (let i = 0; i < opts.mediaUrls.length; i++) {
@@ -156,7 +165,7 @@ export class FacebookPublisher {
         failReasons.push(`url[${i}]: ${reason}`);
         this.logger.warn(`[FB] Photo upload failed for url[${i}] sau khi retry: ${reason}`);
       }
-      if (i < opts.mediaUrls.length - 1) await this.sleep(400);
+      if (i < opts.mediaUrls.length - 1) await sleep(400);
     }
     if (photoIds.length === 0) throw new Error(`Tất cả ảnh upload thất bại — ${failReasons.join('; ')}`);
     if (failReasons.length > 0) {
@@ -316,7 +325,7 @@ export class FacebookPublisher {
     const delaysMs = [5000, 15000, 30000];
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await this.sleep(delaysMs[Math.min(attempt, delaysMs.length - 1)]);
+      await sleep(delaysMs[Math.min(attempt, delaysMs.length - 1)]);
       try {
         await this.uploadThumbnailAsync(videoId, firstMedia, localFilePath, pageToken);
         return;
@@ -530,30 +539,17 @@ export class FacebookPublisher {
     url: string,
     targetId: string,
     pageToken: string,
-    maxAttempts = 3,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
   ): Promise<string> {
-    let lastErr: any;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
-        if (res.data?.id) return res.data.id;
-        throw new Error('no id returned');
-      } catch (e: any) {
-        lastErr = e;
-        const status = e?.response?.status;
-        // Chỉ retry lỗi tạm thời: rate limit (429), lỗi server FB (5xx), hoặc không có status (timeout/network)
-        const retryable = !status || status === 429 || status >= 500;
-        if (attempt < maxAttempts && retryable) {
-          await this.sleep(attempt * 800);
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastErr;
+    return withRetry(async () => {
+      const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
+      if (!res.data?.id) throw new Error('no id returned');
+      return res.data.id as string;
+    }, {
+      maxAttempts,
+      onRetry: (e, attempt, wait) =>
+        this.logger.warn(`[FB] Upload ảnh lỗi (lượt ${attempt}), thử lại sau ${wait}ms: ${e.message}`),
+    });
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
 }

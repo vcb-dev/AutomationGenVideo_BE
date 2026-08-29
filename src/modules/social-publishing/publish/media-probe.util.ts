@@ -35,6 +35,13 @@ export const PRECHECK_ERROR_MARKER = '[MEDIA_PRECHECK_FAILED]';
 export const FACEBOOK_REELS_LIMITS: DurationLimits = { minSec: 3, maxSec: 90 };
 export const INSTAGRAM_REELS_LIMITS: DurationLimits = { minSec: 3, maxSec: 15 * 60 };
 
+/**
+ * Số media tối đa trong một bài carousel. Cùng con số cho Facebook, Instagram
+ * và Threads. Trước đây không được kiểm ở đâu: gửi 11 ảnh thì nền tảng từ chối
+ * ở giữa chừng, để lại ảnh mồ côi, và người dùng chỉ thấy lỗi khó hiểu.
+ */
+export const CAROUSEL_MAX_ITEMS = 10;
+
 /** Tỉ lệ khung hình lý tưởng cho Reels (9:16 ≈ 0.5625) */
 const REELS_ASPECT_RATIO = 9 / 16;
 const ASPECT_TOLERANCE = 0.05;

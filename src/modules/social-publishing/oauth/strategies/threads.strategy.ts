@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { THREADS_GRAPH_BASE, THREADS_GRAPH_ROOT } from '../../platform-api.const';
 import { SocialPlatform } from '@prisma/client';
 
 function buildRedirectUri(envVar: string, platform: string): string {
@@ -44,20 +45,20 @@ export class ThreadsOAuthStrategy {
       grant_type: 'authorization_code', redirect_uri: redirectUri, code,
     });
     try {
-      const shortRes = await axios.post('https://graph.threads.net/oauth/access_token', form.toString(), {
+      const shortRes = await axios.post(`${THREADS_GRAPH_ROOT}/oauth/access_token`, form.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         timeout: 15000,
       });
       const { access_token: shortToken } = shortRes.data;
 
-      const longRes = await axios.get('https://graph.threads.net/access_token', {
+      const longRes = await axios.get(`${THREADS_GRAPH_ROOT}/access_token`, {
         params: { grant_type: 'th_exchange_token', client_secret: appSecret, access_token: shortToken },
         timeout: 15000,
       });
       const accessToken = longRes.data.access_token;
       const expiresIn = longRes.data.expires_in || 5184000;
 
-      const profileRes = await axios.get('https://graph.threads.net/v1.0/me', {
+      const profileRes = await axios.get(`${THREADS_GRAPH_BASE}/me`, {
         params: { access_token: accessToken, fields: 'id,username,threads_profile_picture_url' },
         timeout: 15000,
       });

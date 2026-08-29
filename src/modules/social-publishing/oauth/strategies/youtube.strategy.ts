@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
+import { GOOGLE_OAUTH_DIALOG, YOUTUBE_API_BASE } from '../../platform-api.const';
 import { SocialPlatform } from '@prisma/client';
 
 /** Build redirect URI: ưu tiên env cụ thể, fallback về PUBLIC_BASE_URL/API_BASE_URL */
@@ -37,7 +38,7 @@ export class YoutubeOAuthStrategy {
       prompt: 'consent',
       state,
     });
-    return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+    return `${GOOGLE_OAUTH_DIALOG}?${params}`;
   }
 
   async exchangeCode(code: string): Promise<{
@@ -61,7 +62,7 @@ export class YoutubeOAuthStrategy {
     const u = profileRes.data;
 
     // YouTube channel info
-    const channelRes = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+    const channelRes = await axios.get(`${YOUTUBE_API_BASE}/channels`, {
       params: { part: 'snippet', mine: true },
       headers: { Authorization: `Bearer ${access_token}` },
       timeout: 15000,
