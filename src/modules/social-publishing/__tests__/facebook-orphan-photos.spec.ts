@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { FacebookPublisher } from './facebook.platform';
+import { FacebookPublisher } from '../publish/platforms/facebook.platform';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
