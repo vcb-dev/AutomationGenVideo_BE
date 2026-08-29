@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { FacebookPublisher } from './facebook.platform';
+import { FACEBOOK_RUPLOAD_BASE } from '../../platform-api.const';
 
 jest.mock('axios');
 jest.mock('../media-probe.util', () => ({
@@ -27,7 +28,7 @@ function setupAxios() {
   mockedAxios.post.mockImplementation((url: any, _data?: any, config?: any) => {
     calls.push({ url, params: config?.params });
     if (String(url).includes('/video_reels')) {
-      return Promise.resolve({ data: { video_id: 'REEL_123', upload_url: 'https://rupload.facebook.com/video-upload/v21.0/REEL_123' } } as any);
+      return Promise.resolve({ data: { video_id: 'REEL_123', upload_url: `${FACEBOOK_RUPLOAD_BASE}/REEL_123` } } as any);
     }
     if (String(url).includes('rupload.facebook.com')) {
       return Promise.resolve({ data: { success: true } } as any);

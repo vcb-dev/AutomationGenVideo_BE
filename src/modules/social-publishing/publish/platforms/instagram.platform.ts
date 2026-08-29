@@ -10,11 +10,14 @@ import { isVideoUrl } from '../media-url.util';
  *
  * 1. instagram_business  — kết nối qua Facebook OAuth
  *    Token: Facebook Page token
- *    API:   graph.facebook.com/v21.0/{ig-user-id}/media
+ *    API:   FACEBOOK_GRAPH_BASE/{ig-user-id}/media
  *
  * 2. instagram_direct    — kết nối qua Instagram Login (personal)
  *    Token: Instagram token
- *    API:   graph.instagram.com/v21.0/{ig-user-id}/media
+ *    API:   INSTAGRAM_GRAPH_BASE/{ig-user-id}/media
+ *
+ * Phiên bản API khai báo ở platform-api.const.ts — đừng ghi số vào đây, chú
+ * thích cắm cứng phiên bản sẽ lạc hậu ngay lần nâng cấp đầu tiên.
  */
 
 const FB_BASE = FACEBOOK_GRAPH_BASE;
