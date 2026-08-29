@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { InstagramOAuthStrategy } from './instagram.strategy';
+import { INSTAGRAM_GRAPH_BASE } from '../../platform-api.const';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -31,7 +32,7 @@ describe('InstagramOAuthStrategy — direct flow (Instagram Login)', () => {
 
     // Call profile phải là /me với long-lived token
     const profileCall = mockedAxios.get.mock.calls[1];
-    expect(profileCall[0]).toBe('https://graph.instagram.com/v21.0/me');
+    expect(profileCall[0]).toBe(`${INSTAGRAM_GRAPH_BASE}/me`);
     expect(profileCall[1]).toMatchObject({
       params: expect.objectContaining({ access_token: 'long-token' }),
     });

@@ -6,6 +6,7 @@ import { CryptoService } from '../crypto/crypto.service';
 import { InstagramScraperService } from '../../instagram-scraper/instagram-scraper.service';
 import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_GRAPH_ROOT } from '../platform-api.const';
 
 @Injectable()
 export class AccountsService implements OnModuleDestroy {
@@ -180,7 +181,7 @@ export class AccountsService implements OnModuleDestroy {
     const token = this.crypto.decrypt(account.access_token_enc);
 
     try {
-      const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+      const res = await axios.get(`${FACEBOOK_GRAPH_BASE}/me/accounts`, {
         params: {
           access_token: token,
           fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
@@ -194,7 +195,7 @@ export class AccountsService implements OnModuleDestroy {
         id: p.id,
         name: p.name,
         access_token: p.access_token, // trả về FE để FE gọi save-page; KHÔNG cache
-        picture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
+        picture: p.picture?.data?.url || `${FACEBOOK_GRAPH_ROOT}/${p.id}/picture?type=large`,
         instagram: p.instagram_business_account
           ? {
             id: p.instagram_business_account.id,
@@ -220,7 +221,7 @@ export class AccountsService implements OnModuleDestroy {
   private async fetchFacebookPagesWithTokens(accountId: string, userId: string) {
     const account = await this.findOneOwned(accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
-    const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+    const res = await axios.get(`${FACEBOOK_GRAPH_BASE}/me/accounts`, {
       params: {
         access_token: token,
         fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
@@ -250,7 +251,7 @@ export class AccountsService implements OnModuleDestroy {
             pageId: p.id,
             pageName: p.name,
             pageToken: p.access_token,
-            pagePicture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
+            pagePicture: p.picture?.data?.url || `${FACEBOOK_GRAPH_ROOT}/${p.id}/picture?type=large`,
             igId: p.instagram_business_account?.id,
             igName: p.instagram_business_account?.name,
             igUsername: p.instagram_business_account?.username,
@@ -291,7 +292,7 @@ export class AccountsService implements OnModuleDestroy {
       platformId: `page_${opts.pageId}`,
       name: opts.pageName,
       username: opts.pageId,
-      avatarUrl: opts.pagePicture || `https://graph.facebook.com/${opts.pageId}/picture?type=large`,
+      avatarUrl: opts.pagePicture || `${FACEBOOK_GRAPH_ROOT}/${opts.pageId}/picture?type=large`,
 
       accessToken: opts.pageToken,
       parentId: opts.parentAccountId,

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_OAUTH_DIALOG_UNVERSIONED } from '../../platform-api.const';
 import { SocialPlatform } from '@prisma/client';
 
 function buildRedirectUri(envVar: string, platform: string): string {
@@ -35,7 +36,7 @@ export class FacebookOAuthStrategy {
       response_type: 'code',
       state,
     });
-    return `https://www.facebook.com/dialog/oauth?${params}`;
+    return `${FACEBOOK_OAUTH_DIALOG_UNVERSIONED}?${params}`;
   }
 
   async exchangeCode(code: string): Promise<{
@@ -43,14 +44,14 @@ export class FacebookOAuthStrategy {
     accessToken: string; tokenExpiresAt: Date;
   }> {
     // 1. Short-lived token
-    const shortRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const shortRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: { client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, redirect_uri: this.redirectUri, code },
       timeout: 15000,
     });
     const shortToken = shortRes.data.access_token;
 
     // 2. Long-lived token (60 ngày)
-    const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const longRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: { grant_type: 'fb_exchange_token', client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, fb_exchange_token: shortToken },
       timeout: 15000,
     });
@@ -58,7 +59,7 @@ export class FacebookOAuthStrategy {
     const expiresIn = longRes.data.expires_in || 5184000; // 60 days default
 
     // 3. Profile
-    const profileRes = await axios.get('https://graph.facebook.com/v21.0/me', {
+    const profileRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/me`, {
       params: { access_token: accessToken, fields: 'id,name,picture.type(large)' },
       timeout: 15000,
     });

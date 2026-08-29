@@ -1,20 +1,26 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, INSTAGRAM_GRAPH_BASE } from '../../platform-api.const';
+import { CAROUSEL_MAX_ITEMS } from '../../platform-limits.const';
+import { withRetry, DEFAULT_MAX_ATTEMPTS } from '../retry.util';
 
 /**
  * Có 2 loại tài khoản Instagram:
  *
  * 1. instagram_business  — kết nối qua Facebook OAuth
  *    Token: Facebook Page token
- *    API:   graph.facebook.com/v21.0/{ig-user-id}/media
+ *    API:   FACEBOOK_GRAPH_BASE/{ig-user-id}/media
  *
  * 2. instagram_direct    — kết nối qua Instagram Login (personal)
  *    Token: Instagram token
- *    API:   graph.instagram.com/v21.0/{ig-user-id}/media
+ *    API:   INSTAGRAM_GRAPH_BASE/{ig-user-id}/media
+ *
+ * Phiên bản API khai báo ở platform-api.const.ts — đừng ghi số vào chú thích,
+ * nó sẽ lạc hậu ngay lần nâng cấp đầu tiên.
  */
 
-const FB_BASE = 'https://graph.facebook.com/v21.0';
-const IG_BASE = 'https://graph.instagram.com/v21.0';
+const FB_BASE = FACEBOOK_GRAPH_BASE;
+const IG_BASE = INSTAGRAM_GRAPH_BASE;
 
 function isVideoUrl(url: string): boolean {
   return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
@@ -42,6 +48,11 @@ export class InstagramPublisher {
     this.logger.log(`[IG] Publish — accountType=${accountType ?? 'direct'} base=${base} igUserId=${igUserId}`);
 
     if (mediaUrls.length === 0) throw new Error('Instagram yêu cầu ít nhất 1 media');
+    if (mediaUrls.length > CAROUSEL_MAX_ITEMS) {
+      throw new Error(
+        `Instagram chỉ nhận tối đa ${CAROUSEL_MAX_ITEMS} media trong một carousel — nhận ${mediaUrls.length}.`,
+      );
+    }
 
     const isVideo = isVideoUrl(mediaUrls[0]);
     let postId: string;
@@ -170,24 +181,13 @@ export class InstagramPublisher {
       isCarousel?: boolean;
       children?: string[];
     },
-    maxAttempts = 3,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
   ): Promise<string> {
-    let lastErr: any;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.createContainer(base, igUserId, token, opts);
-      } catch (err: any) {
-        lastErr = err;
-        const status = err.status;
-        const retryable = !status || status === 429 || status >= 500;
-        if (attempt < maxAttempts && retryable) {
-          await new Promise(r => setTimeout(r, attempt * 800));
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastErr;
+    return withRetry(() => this.createContainer(base, igUserId, token, opts), {
+      maxAttempts,
+      onRetry: (err, attempt, wait) =>
+        this.logger.warn(`[IG] Tạo container lỗi (lượt ${attempt}), thử lại sau ${wait}ms: ${err.message}`),
+    });
   }
 
   private async waitForContainer(
