@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
+function isVideoUrl(url: string): boolean {
+  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
+}
+
 /**
  * Có 2 loại tài khoản Instagram:
  *
@@ -15,10 +19,6 @@ import axios from 'axios';
 
 const FB_BASE = 'https://graph.facebook.com/v21.0';
 const IG_BASE = 'https://graph.instagram.com/v21.0';
-
-function isVideoUrl(url: string): boolean {
-  return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
-}
 
 @Injectable()
 export class InstagramPublisher {
@@ -134,11 +134,18 @@ export class InstagramPublisher {
       params.caption    = opts.caption;
       params.children   = opts.children!.join(',');
     } else if (opts.isVideo) {
-      params.media_type    = 'REELS';
-      params.video_url     = opts.mediaUrl;
-      params.share_to_feed = 'true';
-      if (opts.caption)        params.caption          = opts.caption;
-      if (opts.isCarouselItem) params.is_carousel_item = true;
+      params.video_url = opts.mediaUrl;
+      if (opts.isCarouselItem) {
+        // Docs Instagram: "To create carousel item containers, create image or video
+        // containers instead (reels are not supported)". Đặt REELS cho phần tử con —
+        // kèm share_to_feed vốn vô nghĩa với item con — làm container tạo lỗi.
+        params.media_type       = 'VIDEO';
+        params.is_carousel_item = true;
+      } else {
+        params.media_type    = 'REELS';
+        params.share_to_feed = 'true';
+      }
+      if (opts.caption) params.caption = opts.caption;
     } else {
       params.image_url = opts.mediaUrl;
       if (opts.caption)        params.caption          = opts.caption;
