@@ -1,12 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
+function parseContentLength(raw: unknown): number {
+  const size = raw ? parseInt(String(raw), 10) : 0;
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
 @Injectable()
 export class YoutubePublisher {
   private readonly logger = new Logger(YoutubePublisher.name);
 
   async publish(token: string, opts: {
     title: string; description?: string; privacy?: string; mediaUrls: string[];
+    tags?: string[];
     thumbUrl?: string;
     refreshToken?: string; tokenExpiresAt?: Date;
     onTokenRefreshed?: (newToken: string, expiresAt: Date) => void;
@@ -37,42 +43,28 @@ export class YoutubePublisher {
       snippet: {
         title: (opts.title || 'Video').substring(0, 100),
         description: opts.description || '',
-        tags: [],
+        tags: opts.tags ?? [],
       },
       status: { privacyStatus },
     };
 
-    // Lấy file size (thử HEAD trước, nếu không được thì fallback sang GET Range)
-    let fileSize = 0;
-    try {
-      const headRes = await axios.head(videoUrl, { timeout: 15000 });
-      const rawContentLength = headRes?.headers?.['content-length'];
-      fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
-    } catch (e: any) {
-      this.logger.warn(`[YouTube] HEAD request failed: ${e.message}, trying GET Range fallback...`);
-    }
+    // Mở luồng tải TRƯỚC rồi lấy kích thước từ chính response đó.
+    //
+    // Bản cũ đo kích thước bằng HEAD (hoặc GET Range) rồi mở một GET khác để tải:
+    // hai request riêng biệt có thể trả kích thước khác nhau (Drive redirect, CDN
+    // đổi bản) → Content-Length khai với YouTube lệch với số byte thực gửi đi,
+    // upload hỏng hoặc cụt. Một nguồn duy nhất thì không còn cửa lệch.
+    let videoStream = await this.openVideoStream(videoUrl);
+    let fileSize = parseContentLength(videoStream.headers['content-length']);
 
     if (fileSize === 0) {
-      try {
-        const getRangeRes = await axios.get(videoUrl, {
-          headers: { Range: 'bytes=0-0' },
-          timeout: 15000,
-        });
-        const contentRange = getRangeRes.headers['content-range'];
-        if (contentRange) {
-          fileSize = parseInt(contentRange.split('/').pop() || '0', 10);
-        }
-        if (fileSize === 0) {
-          const rawContentLength = getRangeRes.headers['content-length'];
-          fileSize = rawContentLength ? parseInt(String(rawContentLength), 10) : 0;
-        }
-      } catch (e: any) {
-        this.logger.error(`[YouTube] Fallback GET Range request failed: ${e.message}`);
+      // Nguồn không khai content-length — quay lại cách đo riêng, chấp nhận rủi ro cũ.
+      videoStream.data?.destroy?.();
+      fileSize = await this.probeFileSize(videoUrl);
+      if (fileSize === 0) {
+        throw new Error(`YouTube: không lấy được kích thước file từ URL ${videoUrl}`);
       }
-    }
-
-    if (fileSize === 0) {
-      throw new Error(`YouTube: không lấy được kích thước file từ URL ${videoUrl}`);
+      videoStream = await this.openVideoStream(videoUrl);
     }
 
     // Initiate resumable upload session
@@ -98,27 +90,9 @@ export class YoutubePublisher {
     const uploadUrl = initRes.headers.location;
     if (!uploadUrl) throw new Error('YouTube: không nhận được upload URL');
 
-    // Stream video trực tiếp vào upload — không load toàn bộ file vào RAM
-    const videoStream = await axios.get(videoUrl, { responseType: 'stream', timeout: 300000 });
-
-    let uploadRes: any;
-    try {
-      uploadRes = await axios.put(uploadUrl, videoStream.data, {
-        headers: {
-          'Content-Type': 'video/mp4',
-          ...(fileSize > 0 && { 'Content-Length': fileSize }),
-          Authorization: `Bearer ${accessToken}`,
-        },
-        timeout: 600000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-      });
-    } catch (err: any) {
-      const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-      throw new Error(`YouTube video upload failed: ${detail}`);
-    } finally {
-      try { videoStream?.data?.destroy(); } catch {}
-    }
+    const uploadRes = await this.uploadWithResume(
+      uploadUrl, videoUrl, videoStream, fileSize, accessToken,
+    );
 
     const videoId = uploadRes.data.id;
     if (!videoId) throw new Error('YouTube: upload thành công nhưng không nhận được video ID');
@@ -149,6 +123,143 @@ export class YoutubePublisher {
     }
 
     return { videoId, url: `https://youtube.com/watch?v=${videoId}` };
+  }
+
+  /** Mở luồng tải video, tuỳ chọn bắt đầu từ một mốc byte để tiếp tục dở dang */
+  private async openVideoStream(videoUrl: string, fromByte = 0): Promise<any> {
+    return axios.get(videoUrl, {
+      responseType: 'stream',
+      timeout: 300000,
+      ...(fromByte > 0 && { headers: { Range: `bytes=${fromByte}-` } }),
+    });
+  }
+
+  /** Đo kích thước bằng HEAD, không được thì GET Range — chỉ dùng khi luồng tải không khai content-length */
+  private async probeFileSize(videoUrl: string): Promise<number> {
+    try {
+      const headRes = await axios.head(videoUrl, { timeout: 15000 });
+      const size = parseContentLength(headRes?.headers?.['content-length']);
+      if (size > 0) return size;
+    } catch (e: any) {
+      this.logger.warn(`[YouTube] HEAD thất bại: ${e.message}, thử GET Range...`);
+    }
+
+    try {
+      const rangeRes = await axios.get(videoUrl, {
+        headers: { Range: 'bytes=0-0' },
+        timeout: 15000,
+      });
+      const contentRange = rangeRes.headers['content-range'];
+      if (contentRange) {
+        const total = parseInt(String(contentRange).split('/').pop() || '0', 10);
+        if (Number.isFinite(total) && total > 0) return total;
+      }
+      return parseContentLength(rangeRes.headers['content-length']);
+    } catch (e: any) {
+      this.logger.error(`[YouTube] GET Range thất bại: ${e.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Nạp video vào phiên resumable, tiếp tục từ mốc dở dang khi đứt giữa chừng.
+   *
+   * Bản cũ mở phiên `uploadType=resumable` nhưng PUT một phát toàn bộ stream —
+   * đứt là mất trắng, phải upload lại từ đầu. Với video vài trăm MB trên Railway
+   * thì đó là lỗi tốn kém.
+   *
+   * Cách tiếp tục theo giao thức Google: PUT rỗng kèm `Content-Range: bytes *\/<total>`
+   * để hỏi đã nhận tới đâu, rồi mở lại nguồn từ đúng mốc đó. Nguồn nào không hỗ trợ
+   * Range (không trả 206) thì dừng — không thể tiếp tục một cách an toàn.
+   */
+  private async uploadWithResume(
+    uploadUrl: string,
+    videoUrl: string,
+    initialStream: any,
+    fileSize: number,
+    accessToken: string,
+    maxAttempts = 3,
+  ): Promise<any> {
+    let stream = initialStream;
+    let offset = 0;
+    let lastErr: any;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await axios.put(uploadUrl, stream.data, {
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Length': fileSize - offset,
+            ...(offset > 0 && { 'Content-Range': `bytes ${offset}-${fileSize - 1}/${fileSize}` }),
+            Authorization: `Bearer ${accessToken}`,
+          },
+          timeout: 600000,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+      } catch (err: any) {
+        lastErr = err;
+        try { stream?.data?.destroy?.(); } catch { /* luồng đã đóng */ }
+
+        if (attempt >= maxAttempts) break;
+
+        const received = await this.queryUploadOffset(uploadUrl, fileSize, accessToken);
+        if (received === null) {
+          this.logger.warn('[YouTube] Không hỏi được mốc đã nhận — dừng, không thử lại');
+          break;
+        }
+        if (received >= fileSize) {
+          this.logger.warn('[YouTube] Server báo đã nhận đủ nhưng không trả kết quả — dừng');
+          break;
+        }
+
+        this.logger.warn(
+          `[YouTube] Upload đứt ở ${(received / 1024 / 1024).toFixed(1)}/${(fileSize / 1024 / 1024).toFixed(1)} MB ` +
+          `— tiếp tục (lần ${attempt + 1}/${maxAttempts})`,
+        );
+
+        const resumed = await this.openVideoStream(videoUrl, received);
+        if (resumed.status !== 206) {
+          try { resumed.data?.destroy?.(); } catch { /* luồng đã đóng */ }
+          this.logger.warn('[YouTube] Nguồn không hỗ trợ Range — không tiếp tục được, dừng');
+          break;
+        }
+        stream = resumed;
+        offset = received;
+      }
+    }
+
+    const detail = lastErr?.response?.data ? JSON.stringify(lastErr.response.data) : lastErr?.message;
+    throw new Error(`YouTube video upload failed: ${detail}`);
+  }
+
+  /** Hỏi phiên resumable đã nhận được bao nhiêu byte. null = không xác định được. */
+  private async queryUploadOffset(
+    uploadUrl: string,
+    fileSize: number,
+    accessToken: string,
+  ): Promise<number | null> {
+    try {
+      const res = await axios.put(uploadUrl, null, {
+        headers: {
+          'Content-Length': 0,
+          'Content-Range': `bytes */${fileSize}`,
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 30000,
+        // 308 Resume Incomplete là phản hồi bình thường của giao thức, không phải lỗi
+        validateStatus: (s) => s === 308 || (s >= 200 && s < 300),
+      });
+
+      if (res.status !== 308) return fileSize; // đã nhận đủ
+      const range = res.headers['range'];
+      if (!range) return 0; // chưa nhận byte nào
+      const end = parseInt(String(range).split('-').pop() || '', 10);
+      return Number.isFinite(end) ? end + 1 : null;
+    } catch (e: any) {
+      this.logger.warn(`[YouTube] Hỏi mốc upload thất bại: ${e.message}`);
+      return null;
+    }
   }
 
   private get clientId(): string {
