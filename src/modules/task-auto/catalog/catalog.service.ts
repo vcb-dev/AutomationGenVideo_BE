@@ -293,6 +293,8 @@ export class TaskAutoCatalogService {
           origin: true,
           created_at: true,
           updated_at: true,
+          // "Số lần được làm" — số task tạo trực tiếp từ content này (đếm sống).
+          _count: { select: { tasks: true } },
           content_line: { select: { id: true, name: true } },
           classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
@@ -335,6 +337,7 @@ export class TaskAutoCatalogService {
         content_line: true,
         classification: true,
         added_by: { select: { id: true, full_name: true } },
+        _count: { select: { tasks: true } },
         source_team_content: {
           select: {
             id: true,
@@ -1060,6 +1063,7 @@ export class TaskAutoCatalogService {
           added_by_id: true,
           added_at: true,
           updated_at: true,
+          _count: { select: { tasks: true } },
           content_line: { select: { id: true, name: true } },
           classification: { select: { id: true, name: true } },
           added_by: { select: { id: true, full_name: true } },
@@ -1081,6 +1085,7 @@ export class TaskAutoCatalogService {
         classification: true,
         added_by: { select: { id: true, full_name: true } },
         user: { select: { id: true, full_name: true } },
+        _count: { select: { tasks: true } },
       },
     });
     if (!c) throw new NotFoundException("EditorContent not found");
