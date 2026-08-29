@@ -1,5 +1,6 @@
 import {
   PRECHECK_ERROR_MARKER,
+  isFacebookReelsCandidate,
   parseProbeOutput,
   validateVideoForPublish,
   collectWarnings,
@@ -130,6 +131,27 @@ describe('collectWarnings — cảnh báo, không chặn', () => {
   it('cảnh báo khi không đọc được thời lượng', () => {
     const warnings = collectWarnings({ ...reelProbe, durationSec: null }, 'x.mp4');
     expect(warnings.some(w => w.includes('không đọc được thời lượng'))).toBe(true);
+  });
+});
+
+describe('isFacebookReelsCandidate — quyết định video có phải Reel không', () => {
+  it('trong khoảng 3–90 giây thì là Reel', () => {
+    expect(isFacebookReelsCandidate(3)).toBe(true);
+    expect(isFacebookReelsCandidate(30)).toBe(true);
+    expect(isFacebookReelsCandidate(90)).toBe(true);
+  });
+
+  it('dài hơn 90 giây KHÔNG phải Reel — Facebook đăng dạng video thường', () => {
+    expect(isFacebookReelsCandidate(91)).toBe(false);
+    expect(isFacebookReelsCandidate(200.5)).toBe(false);
+  });
+
+  it('ngắn hơn 3 giây cũng không phải Reel', () => {
+    expect(isFacebookReelsCandidate(2)).toBe(false);
+  });
+
+  it('không đọc được thời lượng thì coi như không phải Reel — Facebook sẽ lui về /videos', () => {
+    expect(isFacebookReelsCandidate(null)).toBe(false);
   });
 });
 

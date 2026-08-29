@@ -29,6 +29,21 @@ export type DurationLimits = { minSec: number; maxSec: number };
 export const PRECHECK_ERROR_MARKER = '[MEDIA_PRECHECK_FAILED]';
 
 /**
+ * Video này có được Facebook đăng dạng Reel không?
+ *
+ * Quan trọng vì yêu cầu "phải có âm thanh" CHỈ đúng với Reels. Video dài hơn 90
+ * giây đi vào /videos — video thường — mà video thường không tiếng là bình
+ * thường, chặn nó là chặn nhầm.
+ *
+ * Không đọc được thời lượng thì trả false: Facebook sẽ lui về /videos, nên coi
+ * như không phải Reel.
+ */
+export function isFacebookReelsCandidate(durationSec: number | null): boolean {
+  if (durationSec === null) return false;
+  return durationSec >= FACEBOOK_REELS_LIMITS.minSec && durationSec <= FACEBOOK_REELS_LIMITS.maxSec;
+}
+
+/**
  * Giới hạn thời lượng theo docs Meta (đã đối chiếu tháng 8/2025).
  * Facebook Reels: 3–90 giây. Instagram Reels: 3 giây – 15 phút.
  */

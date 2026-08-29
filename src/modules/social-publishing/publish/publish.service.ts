@@ -19,6 +19,7 @@ import {
   collectWarnings,
   INSTAGRAM_REELS_LIMITS,
   PRECHECK_ERROR_MARKER,
+  isFacebookReelsCandidate,
 } from './media-probe.util';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -473,7 +474,8 @@ export class PublishService {
       null;
     if (!rule) return;
 
-    const requireAudio = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
+    // Bật/tắt toàn cục; còn có đòi hay không thì xét theo từng video bên dưới.
+    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
     const ffprobePath = this.resolveFFprobePath();
     if (!ffprobePath) {
       this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
@@ -490,6 +492,13 @@ export class PublishService {
         this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
         continue;
       }
+
+      // Chỉ đòi có tiếng khi video THẬT SỰ đăng dạng Reel. Instagram không có
+      // dạng video thường nên luôn là Reel; Facebook thì tuỳ thời lượng.
+      const willBeReel = platform === SocialPlatform.INSTAGRAM
+        ? true
+        : isFacebookReelsCandidate(probe.durationSec);
+      const requireAudio = audioCheckEnabled && willBeReel;
 
       for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
       errors.push(...validateVideoForPublish(probe, { ...rule, requireAudio, label }));
