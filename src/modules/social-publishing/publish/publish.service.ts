@@ -72,6 +72,9 @@ function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
   if (mimetype === 'image/gif') return '.gif';
   if (mimetype === 'image/webp') return '.webp';
   if (mimetype === 'video/mp4') return '.mp4';
+  // Drive trả 'video/quicktime' cho .mov — thiếu dòng này thì file tải về bị đặt
+  // tên .mp4, và mọi bước sau nhận nhầm định dạng.
+  if (mimetype === 'video/quicktime') return '.mov';
   return fallback;
 }
 
@@ -408,7 +411,9 @@ export class PublishService {
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
     if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
-    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    // Dùng chung bộ nhận diện với các publisher. Bản cũ cắm cứng `.mp4` nên file .mov
+    // đi thẳng lên Instagram/Threads mà không qua transcode và bị nền tảng từ chối.
+    if (!isVideoUrl(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
