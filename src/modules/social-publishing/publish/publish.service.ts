@@ -73,6 +73,8 @@ function ensureExt(filename: string, ext: string): string {
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
+  // Đếm số lượt đăng đang dùng mỗi file tạm — bộ dọn rác không xoá file còn người dùng.
+  private readonly mediaInUse = new Map<string, number>();
 
   // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
   // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
@@ -276,6 +278,9 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
@@ -309,12 +314,14 @@ export class PublishService {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
       await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
+      this.releaseMedia(transcodedFiles);
       this.scheduleCleanupTranscoded(transcodedFiles);
       throw new Error(apiErr);
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
     this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
+    this.releaseMedia(transcodedFiles);
     this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
   }
@@ -336,6 +343,9 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
@@ -374,6 +384,7 @@ export class PublishService {
       enrichedErr.stack = err.stack;
       throw enrichedErr;
     } finally {
+      this.releaseMedia(transcodedFiles);
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
   }
@@ -534,11 +545,47 @@ export class PublishService {
     }
   }
 
-  private scheduleCleanupTranscoded(filePaths: string[]) {
+  /** Đánh dấu file tạm đang được một lượt đăng sử dụng */
+  private acquireMedia(filePaths: string[]): void {
+    for (const p of filePaths) this.mediaInUse.set(p, (this.mediaInUse.get(p) ?? 0) + 1);
+  }
+
+  /** Trả lại file tạm khi lượt đăng kết thúc */
+  private releaseMedia(filePaths: string[]): void {
+    for (const p of filePaths) {
+      const remaining = (this.mediaInUse.get(p) ?? 1) - 1;
+      if (remaining <= 0) this.mediaInUse.delete(p);
+      else this.mediaInUse.set(p, remaining);
+    }
+  }
+
+  /**
+   * Xoá file tạm sau 10 phút, nhưng bỏ qua file đang có lượt đăng khác dùng.
+   *
+   * driveLocalCache giữ kết quả tải Drive trong 10 phút tính từ lúc tải xong, còn
+   * bộ dọn này đếm 10 phút từ lúc bài đăng xong — hai mốc lệch nhau. Lượt đăng thứ
+   * hai trúng cache ở phút thứ 9 sẽ nhận URL trỏ tới file bị xoá ngay sau đó.
+   *
+   * Hoãn tối đa 3 lần rồi xoá dù sao, để một bộ đếm rò rỉ không giữ file mãi mãi.
+   */
+  private scheduleCleanupTranscoded(filePaths: string[], attempt = 1, maxAttempts = 3) {
     if (!filePaths.length) return;
     setTimeout(() => {
+      const stillInUse: string[] = [];
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
+        if (attempt < maxAttempts && (this.mediaInUse.get(p) ?? 0) > 0) {
+          stillInUse.push(p);
+          continue;
+        }
+        try {
+          if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); }
+        } catch (e: any) {
+          this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`);
+        }
+      }
+      if (stillInUse.length) {
+        this.logger.log(`[Transcode] Hoãn xoá ${stillInUse.length} file đang được dùng (lần ${attempt}/${maxAttempts})`);
+        this.scheduleCleanupTranscoded(stillInUse, attempt + 1, maxAttempts);
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }
