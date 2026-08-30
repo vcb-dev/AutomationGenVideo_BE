@@ -1,4 +1,4 @@
-import { ThreadsPublisher } from './threads.platform';
+import { ThreadsPublisher } from '../publish/platforms/threads.platform';
 import axios from 'axios';
 import * as fs from 'fs';
 import { Readable } from 'stream';

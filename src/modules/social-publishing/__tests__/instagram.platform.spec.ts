@@ -1,4 +1,4 @@
-import { InstagramPublisher } from './instagram.platform';
+import { InstagramPublisher } from '../publish/platforms/instagram.platform';
 import axios from 'axios';
 import * as fs from 'fs';
 import { Readable } from 'stream';
