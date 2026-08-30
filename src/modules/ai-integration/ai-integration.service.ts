@@ -3303,8 +3303,6 @@ export class AiIntegrationService {
       this.logger.warn(`[upgrade-job finalize] tra cache thất bại: ${err?.message}`);
     }
 
-    const { inputTokens, outputTokens, costUsd } = this.computeContentTransformCostUsd(aiResult?.usage || {});
-
     // Guard idempotent — chỉ 1 lời gọi chuyển được PENDING → SUCCESS.
     const claimed = await this.prisma.contentTransformHistory.updateMany({
       where: { id: placeholder.id, status: TransformStatus.PENDING },
@@ -3314,9 +3312,6 @@ export class AiIntegrationService {
         model_used: aiResult?.model_used || 'deepseek-v4-flash (upgrade)',
         score_result: (newScoreResult ? this.withContentTransformLogicVersion(newScoreResult) : null) as any,
         overall_score: newScoreResult?.total_score ?? null,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        cost_usd: costUsd,
       },
     });
 
