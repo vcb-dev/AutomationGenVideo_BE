@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { PublishService } from './publish.service';
+import { PublishService } from '../publish/publish.service';
 
 /**
  * Kiểm bộ đếm "file tạm đang được dùng" và hành vi hoãn xoá của bộ dọn rác.

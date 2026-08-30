@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { InstagramPublisher } from './instagram.platform';
+import { InstagramPublisher } from '../publish/platforms/instagram.platform';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
