@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { YoutubePublisher } from './youtube.platform';
+import { YoutubePublisher } from '../publish/platforms/youtube.platform';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;

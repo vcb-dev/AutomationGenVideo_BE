@@ -7,7 +7,7 @@ import {
   FACEBOOK_REELS_LIMITS,
   INSTAGRAM_REELS_LIMITS,
   MediaProbe,
-} from './media-probe.util';
+} from '../publish/media-probe.util';
 
 /** Dựng output ffprobe tối thiểu để test parse mà không cần ffprobe thật */
 function ffprobeJson(opts: { duration?: string; width?: number; height?: number; audio?: boolean }) {

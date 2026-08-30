@@ -1,4 +1,4 @@
-import { isVideoUrl, VIDEO_EXTENSIONS } from './media-url.util';
+import { isVideoUrl, VIDEO_EXTENSIONS } from '../publish/media-url.util';
 
 describe('isVideoUrl — nhận diện video dùng chung cho mọi platform', () => {
   // Duyệt theo danh sách thay vì viết cứng từng URL: thêm định dạng vào
