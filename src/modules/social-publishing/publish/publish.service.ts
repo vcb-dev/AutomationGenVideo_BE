@@ -21,6 +21,7 @@ import {
   PRECHECK_ERROR_MARKER,
   resolveFFmpegPath,
 } from './media-probe.util';
+import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -443,74 +444,6 @@ export class PublishService {
     return resolveFFprobePath();
   }
 
-  /** /api/social/media/<file> → đường dẫn trên đĩa, để probe khỏi phải đi vòng qua HTTP */
-  private resolveLocalMediaPath(mediaUrl: string): string | null {
-    if (!mediaUrl.includes('/api/social/media/')) return null;
-    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
-    if (!raw) return null;
-    const filename = path.basename(raw);
-    if (!filename) return null;
-    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
-    const filePath = path.join(uploadBase, filename);
-    return fs.existsSync(filePath) ? filePath : null;
-  }
-
-  /**
-   * Cổng kiểm tra video trước khi gọi API nền tảng.
-   *
-   * Lý do tồn tại: transcode dùng `-map 0:a:0?` nên video mất tiếng vẫn đi lọt và
-   * ra file câm mà không có cảnh báo nào; reel câm thì gần như không được phân phối.
-   * Đây là điểm duy nhất phát hiện được trước khi bài rời khỏi hệ thống.
-   *
-   * Không probe được (thiếu ffprobe, URL không tải nổi) thì chỉ ghi log, KHÔNG chặn —
-   * để một máy thiếu ffprobe không làm sập toàn bộ chức năng đăng bài.
-   */
-  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
-    // Facebook có đường lui: video dài hơn 90s đăng dạng video thường thay vì Reels,
-    // nên không áp giới hạn thời lượng. Instagram không có đường lui nào.
-    const rule =
-      platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
-      platform === SocialPlatform.FACEBOOK ? { limits: null } :
-      null;
-    if (!rule) return;
-
-    // Bật/tắt toàn cục; còn có đòi hay không thì xét theo từng video bên dưới.
-    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
-    const ffprobePath = this.resolveFFprobePath();
-    if (!ffprobePath) {
-      this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
-      return;
-    }
-
-    const errors: string[] = [];
-    for (const url of mediaUrls) {
-      if (!isVideoUrl(url)) continue;
-
-      const label = path.basename(new URL(url, 'http://local').pathname) || url;
-      const probe = await probeMedia(this.resolveLocalMediaPath(url) ?? url, ffprobePath);
-      if (!probe) {
-        this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
-        continue;
-      }
-
-      // Chỉ đòi có tiếng khi video THẬT SỰ đăng dạng Reel. Instagram không có
-      // dạng video thường nên luôn là Reel; Facebook thì tuỳ thời lượng.
-      const willBeReel = platform === SocialPlatform.INSTAGRAM
-        ? true
-        : isFacebookReelsCandidate(probe.durationSec);
-      const requireAudio = audioCheckEnabled && willBeReel;
-
-      for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
-      errors.push(...validateVideoForPublish(probe, { ...rule, requireAudio, label }));
-    }
-
-    if (errors.length) {
-      throw new BadRequestException(
-        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
-      );
-    }
-  }
-
   /**
    * Kiểm tra video đã đạt chuẩn IG/Threads chưa → nếu rồi thì bỏ qua transcode (tiết kiệm 10-40s).
    * Conservative: bất kỳ nghi ngờ nào (không probe được, đọc thiếu thông tin) → false (vẫn transcode).
@@ -765,8 +698,12 @@ export class PublishService {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
         const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
-          title: opts.message.substring(0, 100),
+          // buildYoutubeTitle/extractHashtags trước đây chỉ có test gọi — không code chạy
+          // nào dùng, nên tiêu đề vẫn bị cắt cụt giữa từ và tags luôn rỗng. Nối vào đây
+          // thì cải tiến mới thực sự có tác dụng.
+          title: buildYoutubeTitle(opts.message),
           description: opts.message,
+          tags: extractHashtags(opts.message),
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
           thumbUrl: opts.thumbUrl,
