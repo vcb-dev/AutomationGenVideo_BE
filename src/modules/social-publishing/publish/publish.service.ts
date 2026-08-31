@@ -282,6 +282,11 @@ export class PublishService {
     // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
     this.acquireMedia(transcodedFiles);
 
+    // try/finally BẮT BUỘC: giữa acquireMedia và lúc trả chỗ còn transcode và
+    // makeUrlsPublic — cả hai đều await và đều có thể ném lỗi. Không bọc thì bộ đếm
+    // rò vĩnh viễn, file bị giữ và mediaInUse phình dần. executeScheduled đã dùng
+    // finally, đường này thì chưa — nay đồng bộ lại.
+    try {
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
       results.forEach((newUrl, i) => {
@@ -314,16 +319,16 @@ export class PublishService {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
       await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
-      this.releaseMedia(transcodedFiles);
-      this.scheduleCleanupTranscoded(transcodedFiles);
       throw new Error(apiErr);
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
     this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
-    this.releaseMedia(transcodedFiles);
-    this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
+    } finally {
+      this.releaseMedia(transcodedFiles);
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   /** Gọi bởi ScheduleService */

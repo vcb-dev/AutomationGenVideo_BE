@@ -93,6 +93,26 @@ describe('PublishService — không xoá file tạm đang được lượt đăn
     expect(unlinkSpy).not.toHaveBeenCalled();
   });
 
+  it('lỗi giữa chừng vẫn phải trả chỗ — nếu không, bộ đếm rò và file bị giữ mãi', () => {
+    // Mô phỏng đúng đường đi của doPublishNow: giữ chỗ, rồi một bước await ném lỗi.
+    // Trước khi bọc try/finally, releaseMedia không bao giờ chạy trong ca này.
+    const chay = () => {
+      service.acquireMedia([FILE]);
+      try {
+        throw new Error('transcode hỏng');
+      } finally {
+        service.releaseMedia([FILE]);
+        service.scheduleCleanupTranscoded([FILE]);
+      }
+    };
+
+    expect(chay).toThrow('transcode hỏng');
+
+    // Đã trả chỗ nên bộ dọn xoá được ngay lượt đầu, không phải hoãn.
+    jest.advanceTimersByTime(TEN_MINUTES);
+    expect(unlinkSpy).toHaveBeenCalledWith(FILE);
+  });
+
   it('danh sách rỗng thì không hẹn giờ gì', () => {
     service.scheduleCleanupTranscoded([]);
     jest.advanceTimersByTime(TEN_MINUTES * 5);
