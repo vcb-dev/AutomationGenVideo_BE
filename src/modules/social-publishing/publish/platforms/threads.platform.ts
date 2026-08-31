@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { THREADS_GRAPH_BASE } from '../../platform-api.const';
+import { CAROUSEL_MAX_ITEMS } from '../../platform-limits.const';
+import { withRetry, DEFAULT_MAX_ATTEMPTS } from '../retry.util';
 
 function isVideoUrl(url: string): boolean {
   return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
@@ -8,12 +11,17 @@ function isVideoUrl(url: string): boolean {
 @Injectable()
 export class ThreadsPublisher {
   private readonly logger = new Logger(ThreadsPublisher.name);
-  private readonly BASE = 'https://graph.threads.net/v1.0';
+  private readonly BASE = THREADS_GRAPH_BASE;
 
   async publish(token: string, opts: {
     text: string; mediaUrls?: string[]; userId: string;
   }): Promise<{ postId: string; url?: string }> {
     const { userId, text, mediaUrls } = opts;
+    if (mediaUrls && mediaUrls.length > CAROUSEL_MAX_ITEMS) {
+      throw new Error(
+        `Threads chỉ nhận tối đa ${CAROUSEL_MAX_ITEMS} media trong một bài — nhận ${mediaUrls.length}.`,
+      );
+    }
     let result: { postId: string };
 
     if (!mediaUrls?.length) {
@@ -100,23 +108,12 @@ export class ThreadsPublisher {
 
   private async createContainerWithRetry(userId: string, token: string, opts: {
     text?: string; mediaType: string; mediaUrl?: string; isCarouselItem?: boolean; children?: string[];
-  }, maxAttempts = 3): Promise<string> {
-    let lastErr: any;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.createContainer(userId, token, opts);
-      } catch (err: any) {
-        lastErr = err;
-        const status = err.status;
-        const retryable = !status || status === 429 || status >= 500;
-        if (attempt < maxAttempts && retryable) {
-          await new Promise(r => setTimeout(r, attempt * 800));
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastErr;
+  }, maxAttempts = DEFAULT_MAX_ATTEMPTS): Promise<string> {
+    return withRetry(() => this.createContainer(userId, token, opts), {
+      maxAttempts,
+      onRetry: (err, attempt, wait) =>
+        this.logger.warn(`[Threads] Tạo container lỗi (lượt ${attempt}), thử lại sau ${wait}ms: ${err.message}`),
+    });
   }
 
   private async waitForContainer(containerId: string, token: string, maxMs = 180000) {

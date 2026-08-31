@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_OAUTH_DIALOG, INSTAGRAM_GRAPH_BASE, INSTAGRAM_GRAPH_ROOT, INSTAGRAM_OAUTH_DIALOG } from '../../platform-api.const';
 import { SocialPlatform } from '@prisma/client';
 
 /**
@@ -58,7 +59,7 @@ export class InstagramOAuthStrategy {
       // www.instagram.com — KHÔNG phải api.instagram.com (đó là endpoint của
       // Instagram Basic Display API đã bị Meta khai tử). Redirect URI được khai
       // trong Meta dashboard chỉ được product mới (www.instagram.com) nhận diện.
-      return `https://www.instagram.com/oauth/authorize?${params}`;
+      return `${INSTAGRAM_OAUTH_DIALOG}?${params}`;
     }
 
     // Flow 1: Via Facebook OAuth (default) — cho Business/Creator có FB Page
@@ -79,7 +80,7 @@ export class InstagramOAuthStrategy {
       response_type: 'code',
       state,
     });
-    return `https://www.facebook.com/v21.0/dialog/oauth?${params}`;
+    return `${FACEBOOK_OAUTH_DIALOG}?${params}`;
   }
 
   /**
@@ -111,14 +112,14 @@ export class InstagramOAuthStrategy {
     const appSecret = process.env.FB_APP_SECRET!;
 
     // Bước 1: Exchange code → short-lived Facebook User Access Token
-    const tokenRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const tokenRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: { client_id: appId, client_secret: appSecret, redirect_uri: this.redirectUri, code },
       timeout: 15000,
     });
     const shortToken: string = tokenRes.data.access_token;
 
     // Bước 2: Đổi sang long-lived user token (60 ngày)
-    const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const longRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: {
         grant_type: 'fb_exchange_token',
         client_id: appId,
@@ -131,7 +132,7 @@ export class InstagramOAuthStrategy {
     const userTokenExpiry: number = longRes.data.expires_in || 5184000;
 
     // Bước 3: Lấy danh sách Facebook Pages kèm Instagram Business Account
-    const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+    const pagesRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/me/accounts`, {
       params: {
         access_token: userToken,
         fields: 'id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}',
@@ -162,7 +163,7 @@ export class InstagramOAuthStrategy {
     let avatarUrl: string = igAccount.profile_picture_url;
 
     if (!username || !avatarUrl) {
-      const profileRes = await axios.get(`https://graph.facebook.com/v21.0/${igAccount.id}`, {
+      const profileRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/${igAccount.id}`, {
         params: { access_token: pageToken, fields: 'id,username,name,profile_picture_url' },
         timeout: 15000,
       });
@@ -220,7 +221,7 @@ export class InstagramOAuthStrategy {
     }
 
     // Bước 2: Đổi sang long-lived token (~60 ngày)
-    const longRes = await axios.get('https://graph.instagram.com/access_token', {
+    const longRes = await axios.get(`${INSTAGRAM_GRAPH_ROOT}/access_token`, {
       params: {
         grant_type: 'ig_exchange_token',
         client_secret: appSecret,
@@ -236,7 +237,7 @@ export class InstagramOAuthStrategy {
     // là ID kiểu cũ, không khớp scoped-ID mà graph.instagram.com dùng để định danh
     // object. Gọi thẳng ID đó ngay sau khi đổi token báo lỗi giả
     // "Object with ID ... does not exist" (code 100, subcode 33) dù token hợp lệ.
-    const profileRes = await axios.get('https://graph.instagram.com/v21.0/me', {
+    const profileRes = await axios.get(`${INSTAGRAM_GRAPH_BASE}/me`, {
       params: { access_token: accessToken, fields: 'id,username,name,profile_picture_url' },
       timeout: 15000,
     });
