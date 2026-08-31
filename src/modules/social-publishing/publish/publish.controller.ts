@@ -11,6 +11,7 @@ class PublishDto {
   @IsOptional() @IsArray() mediaUrls?: string[];
   @IsOptional() @IsString() pageId?: string;
   @IsOptional() @IsString() privacy?: string;
+  @IsOptional() @IsString() thumbUrl?: string;
 }
 
 @ApiTags('Social Publish')

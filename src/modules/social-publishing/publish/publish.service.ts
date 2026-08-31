@@ -19,6 +19,7 @@ import {
   isFacebookReelsCandidate,
   INSTAGRAM_REELS_LIMITS,
   PRECHECK_ERROR_MARKER,
+  resolveFFmpegPath,
 } from './media-probe.util';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -72,6 +73,9 @@ function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
   if (mimetype === 'image/gif') return '.gif';
   if (mimetype === 'image/webp') return '.webp';
   if (mimetype === 'video/mp4') return '.mp4';
+  // Drive trả 'video/quicktime' cho .mov — thiếu dòng này thì file tải về bị đặt
+  // tên .mp4, và mọi bước sau nhận nhầm định dạng.
+  if (mimetype === 'video/quicktime') return '.mov';
   return fallback;
 }
 
@@ -127,7 +131,10 @@ export class PublishService {
             continue;
           }
 
-          const converted = `${publicBaseUrl}${localUrl.pathname}`;
+          // Giữ nguyên query string: URL media có thể mang ?filename=... (dùng để nhận
+          // diện video) hoặc token truy cập. Cắt mất thì platform nhận nhầm loại media
+          // hoặc tải file thất bại — mà không có lỗi nào chỉ ra nguyên nhân.
+          const converted = `${publicBaseUrl}${localUrl.pathname}${localUrl.search}`;
           this.logger.log(`[makeUrlsPublic] ${url} → ${converted}`);
           resultUrls.push(converted);
         } catch (e) {
@@ -233,10 +240,11 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const dedupKey = `${userId}:${dto.accountId}:${crypto
       .createHash('sha1')
-      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}`)
+      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}|${dto.thumbUrl || ''}`)
       .digest('hex')}`;
 
     const existing = this.inFlightPublishNow.get(dedupKey);
@@ -259,6 +267,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const release = await this.publishNowSemaphore.acquire();
     try {
@@ -274,6 +283,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
@@ -317,6 +327,9 @@ export class PublishService {
         extraData,
         accountId: dto.accountId,
         platformId: account.platform_id,
+        // Thiếu dòng này thì bài "đăng ngay" mất ảnh bìa tuỳ chọn, trong khi bài đặt
+        // lịch vẫn giữ (executeScheduled có truyền) — cùng chức năng, hai hành vi.
+        thumbUrl: dto.thumbUrl,
       });
     } catch (err: any) {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
@@ -399,7 +412,9 @@ export class PublishService {
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
     if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
-    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    // Dùng chung bộ nhận diện với các publisher. Bản cũ cắm cứng `.mp4` nên file .mov
+    // đi thẳng lên Instagram/Threads mà không qua transcode và bị nền tảng từ chối.
+    if (!isVideoUrl(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
@@ -416,27 +431,84 @@ export class PublishService {
     return promise;
   }
 
-  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
+  /** Tìm FFmpeg — dùng bản chung ở media-probe.util (có thêm fallback @ffmpeg-installer) */
   private resolveFFmpegPath(): string | null {
-    const fromEnv = process.env.FFMPEG_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    // Fallback: ffmpeg đã cài qua apk/apt trong Docker
-    if (fs.existsSync('/usr/bin/ffmpeg')) return '/usr/bin/ffmpeg';
-    this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
-    return null;
+    const found = resolveFFmpegPath();
+    if (!found) this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
+    return found;
   }
 
-  /** Tìm ffprobe: env → cạnh ffmpeg → /usr/bin/ffprobe → null */
+  /** Tìm ffprobe — dùng bản chung ở media-probe.util (có thêm fallback @ffprobe-installer) */
   private resolveFFprobePath(): string | null {
-    const fromEnv = process.env.FFPROBE_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    const ffmpeg = process.env.FFMPEG_PATH;
-    if (ffmpeg && fs.existsSync(ffmpeg)) {
-      const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-      if (fs.existsSync(candidate)) return candidate;
+    return resolveFFprobePath();
+  }
+
+  /** /api/social/media/<file> → đường dẫn trên đĩa, để probe khỏi phải đi vòng qua HTTP */
+  private resolveLocalMediaPath(mediaUrl: string): string | null {
+    if (!mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Cổng kiểm tra video trước khi gọi API nền tảng.
+   *
+   * Lý do tồn tại: transcode dùng `-map 0:a:0?` nên video mất tiếng vẫn đi lọt và
+   * ra file câm mà không có cảnh báo nào; reel câm thì gần như không được phân phối.
+   * Đây là điểm duy nhất phát hiện được trước khi bài rời khỏi hệ thống.
+   *
+   * Không probe được (thiếu ffprobe, URL không tải nổi) thì chỉ ghi log, KHÔNG chặn —
+   * để một máy thiếu ffprobe không làm sập toàn bộ chức năng đăng bài.
+   */
+  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
+    // Facebook có đường lui: video dài hơn 90s đăng dạng video thường thay vì Reels,
+    // nên không áp giới hạn thời lượng. Instagram không có đường lui nào.
+    const rule =
+      platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
+      platform === SocialPlatform.FACEBOOK ? { limits: null } :
+      null;
+    if (!rule) return;
+
+    // Bật/tắt toàn cục; còn có đòi hay không thì xét theo từng video bên dưới.
+    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
+    const ffprobePath = this.resolveFFprobePath();
+    if (!ffprobePath) {
+      this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
+      return;
     }
-    if (fs.existsSync('/usr/bin/ffprobe')) return '/usr/bin/ffprobe';
-    return null;
+
+    const errors: string[] = [];
+    for (const url of mediaUrls) {
+      if (!isVideoUrl(url)) continue;
+
+      const label = path.basename(new URL(url, 'http://local').pathname) || url;
+      const probe = await probeMedia(this.resolveLocalMediaPath(url) ?? url, ffprobePath);
+      if (!probe) {
+        this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
+        continue;
+      }
+
+      // Chỉ đòi có tiếng khi video THẬT SỰ đăng dạng Reel. Instagram không có
+      // dạng video thường nên luôn là Reel; Facebook thì tuỳ thời lượng.
+      const willBeReel = platform === SocialPlatform.INSTAGRAM
+        ? true
+        : isFacebookReelsCandidate(probe.durationSec);
+      const requireAudio = audioCheckEnabled && willBeReel;
+
+      for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
+      errors.push(...validateVideoForPublish(probe, { ...rule, requireAudio, label }));
+    }
+
+    if (errors.length) {
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
+    }
   }
 
   /**
@@ -730,6 +802,7 @@ export class PublishService {
         user_id: userId, account_id: accountId, platform, source, status,
         message: dto.message, media_urls: dto.mediaUrls || [],
         page_id: dto.pageId, privacy: dto.privacy,
+        thumb_url: dto.thumbUrl,
         result, error_msg: errorMsg, executed_at: new Date(),
         updated_at: new Date(),
       },
@@ -750,7 +823,7 @@ export class PublishService {
    */
   async publishAsync(userId: string, dto: {
     accountId: string; message: string; mediaUrls?: string[];
-    pageId?: string; privacy?: string;
+    pageId?: string; privacy?: string; thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
 
@@ -763,6 +836,9 @@ export class PublishService {
         media_urls: dto.mediaUrls ?? [],
         page_id: dto.pageId,
         privacy: dto.privacy,
+        // Worker đọc lại post.thumb_url khi chạy executeScheduled — không lưu ở đây
+        // thì bài đăng qua đường async cũng mất ảnh bìa.
+        thumb_url: dto.thumbUrl,
         scheduled_at: new Date(), // đến hạn ngay lập tức
         source: SocialPostSource.IMMEDIATE,
         status: SocialPostStatus.PENDING,
