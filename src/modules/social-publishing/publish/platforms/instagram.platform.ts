@@ -165,10 +165,13 @@ export class InstagramPublisher {
           const initRes = await axios.post(`${base}/${igUserId}/media`, {
             access_token: token,
             upload_type: 'resumable',
-            media_type: 'REELS',
-            share_to_feed: 'true',
+            // Docs Instagram: "To create carousel item containers, create image or
+            // video containers instead (reels are not supported)". Phần tử con của
+            // carousel phải là VIDEO; đặt REELS làm container tạo lỗi. share_to_feed
+            // cũng vô nghĩa với item con vì chỉ container cha mới lên feed.
+            media_type: opts.isCarouselItem ? 'VIDEO' : 'REELS',
+            ...(opts.isCarouselItem ? { is_carousel_item: true } : { share_to_feed: 'true' }),
             ...(opts.caption ? { caption: opts.caption } : {}),
-            ...(opts.isCarouselItem ? { is_carousel_item: true } : {}),
           }, { timeout: 60000 });
 
           const containerId = initRes.data?.id;
@@ -196,11 +199,16 @@ export class InstagramPublisher {
         }
       }
 
-      params.media_type    = 'REELS';
-      params.video_url     = opts.mediaUrl;
-      params.share_to_feed = 'true';
-      if (opts.caption)        params.caption          = opts.caption;
-      if (opts.isCarouselItem) params.is_carousel_item = true;
+      params.video_url = opts.mediaUrl;
+      if (opts.isCarouselItem) {
+        // Cùng lý do như nhánh resumable ở trên — item con không nhận REELS.
+        params.media_type       = 'VIDEO';
+        params.is_carousel_item = true;
+      } else {
+        params.media_type    = 'REELS';
+        params.share_to_feed = 'true';
+      }
+      if (opts.caption) params.caption = opts.caption;
     } else {
       params.image_url = opts.mediaUrl;
       if (opts.caption)        params.caption          = opts.caption;
