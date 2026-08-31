@@ -82,6 +82,73 @@ describe('InstagramPublisher', () => {
       );
     });
 
+    it('phần tử con carousel dùng media_type VIDEO, KHÔNG phải REELS — docs Meta: "reels are not supported" cho carousel item', async () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(false); // không có local file → đi đường video_url
+
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { id: 'child_1' } })
+        .mockResolvedValueOnce({ data: { id: 'child_2' } })
+        .mockResolvedValueOnce({ data: { id: 'parent_1' } })
+        .mockResolvedValueOnce({ data: { id: 'carousel_post_1' } });
+      mockedAxios.get.mockResolvedValue({ data: { status_code: 'FINISHED', permalink: 'https://instagram.com/p/car1' } });
+
+      await publisher.publish('token_page', {
+        caption: 'Carousel',
+        mediaUrls: ['https://cdn.example.com/a.mp4', 'https://cdn.example.com/b.jpg'],
+        igUserId: 'ig_page_1',
+        accountType: 'instagram_business',
+      });
+
+      const videoChild = mockedAxios.post.mock.calls
+        .map((c) => c[1] as any)
+        .find((body) => body && body.video_url);
+
+      expect(videoChild.media_type).toBe('VIDEO');
+      expect(videoChild.is_carousel_item).toBe(true);
+      // share_to_feed vô nghĩa với item con — chỉ container cha mới lên feed
+      expect(videoChild.share_to_feed).toBeUndefined();
+    });
+
+    it('đường resumable cũng dùng VIDEO cho phần tử con carousel', async () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'statSync').mockReturnValue({ size: 1024 } as any);
+      jest.spyOn(fs, 'createReadStream').mockReturnValue(Readable.from(['x']) as any);
+
+      try {
+        mockedAxios.post
+          .mockResolvedValueOnce({ data: { id: 'c1', uri: 'https://rupload.facebook.com/x/1' } })
+          .mockResolvedValueOnce({ data: { success: true } })
+          .mockResolvedValueOnce({ data: { id: 'c2', uri: 'https://rupload.facebook.com/x/2' } })
+          .mockResolvedValueOnce({ data: { success: true } })
+          .mockResolvedValueOnce({ data: { id: 'parent_1' } })
+          .mockResolvedValueOnce({ data: { id: 'carousel_post_2' } });
+        mockedAxios.get.mockResolvedValue({ data: { status_code: 'FINISHED', permalink: 'https://instagram.com/p/car2' } });
+
+        await publisher.publish('token_page', {
+          caption: 'Carousel resumable',
+          mediaUrls: [
+            'http://localhost:3000/api/social/media/a.mp4',
+            'http://localhost:3000/api/social/media/b.mp4',
+          ],
+          igUserId: 'ig_page_1',
+          accountType: 'instagram_business',
+        });
+
+        const initCalls = mockedAxios.post.mock.calls
+          .map((c) => c[1] as any)
+          .filter((body) => body && body.upload_type === 'resumable');
+
+        expect(initCalls.length).toBeGreaterThan(0);
+        for (const body of initCalls) {
+          expect(body.media_type).toBe('VIDEO');
+          expect(body.is_carousel_item).toBe(true);
+          expect(body.share_to_feed).toBeUndefined();
+        }
+      } finally {
+        jest.restoreAllMocks();
+      }
+    });
+
     it('dùng resumable upload nhị phân trực tiếp khi có local file', async () => {
       jest.spyOn(fs, 'existsSync').mockReturnValue(true);
       jest.spyOn(fs, 'statSync').mockReturnValue({ size: 1024 * 1024 } as any);
