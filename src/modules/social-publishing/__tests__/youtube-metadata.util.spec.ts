@@ -1,4 +1,4 @@
-import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
+import { buildYoutubeTitle, extractHashtags } from '../publish/youtube-metadata.util';
 
 describe('buildYoutubeTitle', () => {
   it('lấy dòng đầu làm tiêu đề thay vì cắt cụt 100 ký tự giữa từ', () => {
