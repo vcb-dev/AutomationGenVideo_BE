@@ -3360,6 +3360,7 @@ model Task {
   video_script           TaskVideoScript?
   content_approvals      TaskContentApproval[]
   scheduled_posts        SocialPost[]
+  video_matches          TaskVideoMatch[]
 
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
   // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
@@ -3445,6 +3446,29 @@ model TaskPendingVideo {
   task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
 
   @@map("task_pending_videos")
+}
+
+/// Bản ghi kết quả job khớp tự động video kênh nội bộ (Facebook/Instagram kéo về hằng ngày)
+/// với task. MATCHED = đã gắn link vào Task.published_links; UNMATCHED/SKIPPED_AMBIGUOUS = đã
+/// xét nhưng không đủ tin cậy để gắn (giữ lại điểm số để audit + không xét lại mỗi sáng).
+/// Unique (platform, post_id): mỗi video chỉ xử lý một lần.
+model TaskVideoMatch {
+  id         String   @id @default(uuid())
+  task_id    String?
+  platform   String
+  post_id    String
+  url        String
+  score      Int      @default(0)
+  matched_by Json?
+  status     String   @default("MATCHED")
+  created_at DateTime @default(now())
+
+  task Task? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@unique([platform, post_id])
+  @@index([task_id])
+  @@index([status, created_at])
+  @@map("task_video_matches")
 }
 
 model TaskAssignment {
