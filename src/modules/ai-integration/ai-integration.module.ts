@@ -10,6 +10,7 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 import { UsersModule } from '../users/users.module';
 
 import { VoiceQuotaService } from './voice-quota.service';
+import { PaastService } from './paast/paast.service';
 
 @Global()
 @Module({
@@ -30,8 +31,8 @@ import { VoiceQuotaService } from './voice-quota.service';
     }),
   ],
   controllers: [AiIntegrationController],
-  providers: [AiIntegrationService, GoogleDriveStorageService, VoiceQuotaService],
-  exports: [AiIntegrationService, VoiceQuotaService],
+  providers: [AiIntegrationService, GoogleDriveStorageService, VoiceQuotaService, PaastService],
+  exports: [AiIntegrationService, VoiceQuotaService, PaastService],
 })
 export class AiIntegrationModule {}
 
