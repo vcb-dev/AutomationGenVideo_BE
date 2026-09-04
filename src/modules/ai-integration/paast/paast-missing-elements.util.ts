@@ -1,4 +1,4 @@
-/** Một tiêu chí PAAST đang `miss` — dùng làm input cho bước nâng cấp content. */
+/** Một tiêu chí PAAST đang `miss` — input cho bước nâng cấp content. */
 export interface MissingElement {
   layer: string;
   criterion: string;
@@ -6,11 +6,9 @@ export interface MissingElement {
 }
 
 /**
- * Trích các tiêu chí đang `miss` từ 1 bản phân tích PAAST (loại tiêu chí `na` của Stick — không
- * thể "nâng cấp" phần cần production bằng cách sửa text, business doc §11.2).
- *
- * Dùng chung cho cả PAAST Analyzer (PaastService.upgradeAnalysis) lẫn luồng content-transform
- * (AiIntegrationService.upgradeContent) — hai nơi cùng cần đúng danh sách tiêu chí thiếu này.
+ * Trích các tiêu chí `miss` từ 1 bản phân tích PAAST (bỏ tiêu chí `na` của Stick — phần cần
+ * production không sửa được bằng text, business doc §11.2). Dùng chung cho
+ * PaastService.upgradeAnalysis và AiIntegrationService.upgradeContent.
  */
 export function extractMissingElements(analysisResult: any): MissingElement[] {
   const layers = analysisResult?.layers || {};

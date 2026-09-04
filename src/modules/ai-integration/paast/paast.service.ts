@@ -16,19 +16,15 @@ import { PAAST_LOGIC_VERSION } from '../interfaces/paast-analysis.interface';
 import { extractMissingElements } from './paast-missing-elements.util';
 
 /**
- * PAAST — chấm điểm content theo khung PAAST (5 lớp x 6 tiêu chí). Tách khỏi AiIntegrationService
- * để file service chính gọn hơn: đây thuần orchestration gọi AI service (Django) qua aiServiceUrl
- * rồi lưu lịch sử vào bảng `paast_analysis_histories`.
- *
- * Được đăng ký làm provider trong AiIntegrationModule (@Global) nên inject được ở mọi nơi mà
- * không cần import module.
+ * Chấm content theo khung PAAST (5 lớp × 6 tiêu chí): gọi AI service (Django) rồi lưu lịch sử
+ * vào `paast_analysis_histories`. Provider @Global nên inject được ở mọi nơi.
  */
 @Injectable()
 export class PaastService {
   private readonly logger = new Logger(PaastService.name);
   private readonly aiServiceUrl: string;
 
-  // /upgrade chạy 2 lượt LLM nối tiếp trong Django — cùng mốc với CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  // /upgrade chạy 2 lượt LLM nối tiếp trong Django.
   private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
 
   constructor(
@@ -40,13 +36,8 @@ export class PaastService {
   }
 
   /**
-   * Tìm bản phân tích PAAST gần nhất khớp ĐÚNG nội dung này (nếu có) — để FE tránh gọi phân tích lại
-   * khi content không đổi, kể cả sau khi user reload trang (cache trong React state bị mất khi remount,
-   * nhưng bản ghi trong DB thì còn).
-   *
-   * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
-   * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
-   * Chỉ nhận bản ghi khớp `PAAST_LOGIC_VERSION` — bản chấm bằng công thức cũ không dùng lại.
+   * Bản phân tích gần nhất khớp ĐÚNG nội dung này — để FE khỏi chấm lại content không đổi.
+   * KHÔNG lọc theo user (kết quả chỉ phụ thuộc nội dung); chỉ nhận bản khớp `PAAST_LOGIC_VERSION`.
    */
   async findLatestByContent(content: string) {
     const candidates = await this.prisma.paastAnalysisHistory.findMany({
@@ -61,10 +52,8 @@ export class PaastService {
   }
 
   /**
-   * Nội dung để chấm PAAST: ưu tiên `content` client gửi thẳng; nếu nội dung nằm trong file
-   * (fileUrl — thường là link Google Docs của content dài) thì nhờ AI service trích text ra rồi
-   * dùng như content bình thường. Nhờ vậy toàn bộ luồng phía sau (lưu lịch sử, tìm bản đã chấm,
-   * nút "Nâng cấp") không cần biết tới file.
+   * Nội dung để chấm: ưu tiên `content`; nếu chỉ có `fileUrl` (link Google Docs) thì nhờ AI
+   * service trích text ra. Luồng phía sau không cần biết tới file.
    */
   async resolvePaastContent(dto: AnalyzeContentDto): Promise<string> {
     const direct = dto.content?.trim();
@@ -100,9 +89,7 @@ export class PaastService {
     return text;
   }
 
-  /**
-   * Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí), tính điểm 0-100, lưu lịch sử.
-   */
+  /** Chấm PAAST (điểm 0-100), lưu lịch sử. */
   async analyzeContent(userId: string, dto: AnalyzeContentDto) {
     const content = await this.resolvePaastContent(dto);
     const history = await this.prisma.paastAnalysisHistory.create({
@@ -152,14 +139,9 @@ export class PaastService {
   }
 
   /**
-   * Phân tích PAAST BẢN 2 — dùng cho video kênh nội bộ.
-   *
-   * Khác bản 1: không có thang điểm 0–100 (chỉ đếm element + kết luận đạt/chưa) và có thêm
-   * 16 hook gợi ý. Vẫn lưu chung bảng `paast_analysis_histories` vì cột `analysis_result` là
-   * JSON tự do; `total_score` để null — đó chính là dấu hiệu phân biệt bản 2 với bản 1, cùng
-   * với khoá `phien_ban` nằm trong JSON.
-   *
-   * Cố ý KHÔNG đụng analyzeContent() bản 1: task-auto đang chạy trên nó.
+   * PAAST bản 2 cho video nội bộ: không thang điểm (chỉ đếm element + đạt/chưa), thêm 16 hook.
+   * Lưu chung bảng — `total_score` null là dấu hiệu phân biệt bản 1. Không đụng analyzeContent()
+   * vì task-auto đang chạy trên đó.
    */
   async analyzeContentV2(userId: string, content: string) {
     const history = await this.prisma.paastAnalysisHistory.create({
@@ -172,8 +154,7 @@ export class PaastService {
         this.httpService.post(
           `${this.aiServiceUrl}/api/ai/paast/analyze-v2/`,
           { content },
-          // Sinh 16 hook là một lệnh gọi LLM riêng ngoài 5 lệnh phân loại — đo thật mất ~14
-          // giây, nên 60s của bản 1 là quá sát.
+          // Sinh 16 hook là 1 lệnh LLM riêng (~14s) nên 60s của bản 1 quá sát.
           { timeout: 150000 },
         ),
       );
@@ -202,9 +183,8 @@ export class PaastService {
   }
 
   /**
-   * Nâng cấp content dựa trên bản phân tích đã lưu, lưu kết quả thành 1 record lịch sử mới
-   * liên kết `upgraded_from_id` về bản gốc — không giả định điểm chắc chắn tăng
-   * (business doc §11.1: luôn tính lại điểm toàn bộ sau khi nâng cấp).
+   * Nâng cấp content từ 1 bản phân tích đã lưu; tạo record mới link `upgraded_from_id`, luôn
+   * tính lại điểm toàn bộ (business doc §11.1).
    */
   async upgradeAnalysis(userId: string, analysisId: string) {
     const original = await this.prisma.paastAnalysisHistory.findUnique({ where: { id: analysisId } });
@@ -235,7 +215,7 @@ export class PaastService {
           {
             original_content: original.input_text,
             missing_elements: missingElements,
-            // Django đoán 120s nếu thiếu field này.
+            // Django mặc định 120s nếu thiếu field này.
             timeout_seconds: Math.floor(this.PAAST_UPGRADE_TIMEOUT_MS / 1000),
           },
           { timeout: this.PAAST_UPGRADE_TIMEOUT_MS },
