@@ -1,10 +1,14 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
 
 @Injectable()
 export class MemsCatalogService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly photoUrls: MemsPhotoUrlSigner,
+  ) {}
 
   async createCategory(dto: CreateCategoryDto) {
     return this.prisma.memsCategory.create({
@@ -310,7 +314,12 @@ export class MemsCatalogService {
       include: {
         model: { include: { category: true, accessories: true } },
         location: true,
-        photos: { orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }] },
+        // Chỉ ảnh hồ sơ: ảnh biên bản bàn giao/nhận trả cũng nằm ở bảng này, không lọc thì một
+        // chiếc mượn nhiều lần sẽ có hàng chục tấm chứng cứ tràn vào thư viện ảnh của máy.
+        photos: {
+          where: { purpose: 'CATALOG' },
+          orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }],
+        },
       },
     });
     if (!asset) throw new NotFoundException(`Không có máy ${assetCode}`);
@@ -342,7 +351,8 @@ export class MemsCatalogService {
     });
 
     return {
-      asset,
+      // Ký URL ảnh: route phục vụ ảnh là công khai nên nó chỉ nhận đường dẫn có token còn hạn.
+      asset: { ...asset, photos: this.photoUrls.signAll(asset.photos) },
       events,
       next_reservation: nextReservation,
       siblings_available: siblingsAvailable,
@@ -351,7 +361,7 @@ export class MemsCatalogService {
 
   /** QĐ-07: mặc định ẩn bản ghi đã ngừng sử dụng, không xoá cứng bao giờ. */
   async listAssets(filter: { categoryId?: string; status?: string }) {
-    return this.prisma.memsAsset.findMany({
+    const assets = await this.prisma.memsAsset.findMany({
       where: {
         is_disabled: false,
         ...(filter.status ? { status: filter.status as any } : {}),
@@ -366,5 +376,11 @@ export class MemsCatalogService {
       },
       orderBy: { asset_code: 'asc' },
     });
+
+    // Ký URL ảnh đại diện, nếu không thì mọi ô ảnh trong bảng kho đều là 404.
+    return assets.map((asset) => ({
+      ...asset,
+      photos: this.photoUrls.signAll(asset.photos),
+    }));
   }
 }
