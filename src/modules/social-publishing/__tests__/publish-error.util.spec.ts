@@ -1,4 +1,4 @@
-import { isPermanentPublishError } from './publish-error.util';
+import { isPermanentPublishError } from '../publish/publish-error.util';
 
 /** Chuỗi lỗi thật Instagram trả về khi container media không đọc được URL ảnh. */
 const INSTAGRAM_INVALID_IMAGE =

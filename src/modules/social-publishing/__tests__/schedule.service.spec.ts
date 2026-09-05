@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { NotFoundException } from '@nestjs/common';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
-import { ScheduleService, CLAIM_LEASE_MS } from './schedule.service';
+import { ScheduleService, CLAIM_LEASE_MS } from '../schedule/schedule.service';
 
 /**
  * Trọng tâm: hạn giữ chỗ (`claimed_until`) phải tách bạch với mốc chạy lại
