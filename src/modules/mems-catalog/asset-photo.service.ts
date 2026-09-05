@@ -22,22 +22,6 @@ export const MEMS_PHOTO_DIR = path.join(process.cwd(), 'uploads', 'mems');
  */
 export const MEMS_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
-/**
- * Ảnh này chụp để làm gì.
- *
- * `CATALOG` là ảnh hồ sơ của máy, hiện trong thư viện ảnh và làm ảnh đại diện ở bảng kho.
- * `HANDOVER` và `RETURN` là chứng cứ của một lượt giao/nhận — chúng đi qua cùng endpoint tải
- * ảnh nên nếu không phân biệt thì mỗi lượt mượn lại đẩy thêm ảnh vào thư viện của máy, và ảnh
- * đại diện có thể rơi trúng một tấm chụp vết xước.
- */
-export const PHOTO_PURPOSE = {
-  CATALOG: 'CATALOG',
-  HANDOVER: 'HANDOVER',
-  RETURN: 'RETURN',
-} as const;
-
-export type PhotoPurpose = (typeof PHOTO_PURPOSE)[keyof typeof PHOTO_PURPOSE];
-
 @Injectable()
 export class AssetPhotoService {
   constructor(
