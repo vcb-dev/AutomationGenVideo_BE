@@ -44,12 +44,18 @@ function buildDeps(over: Partial<any> = {}) {
   return { prisma, drive, created };
 }
 
+/**
+ * Nội dung file mới là thứ quyết định loại ảnh, không phải `mimetype` hay đuôi trong
+ * `originalname` — cả hai thứ đó đều do phía gửi tự đặt. Nên fixture phải mang chữ ký JPEG thật.
+ */
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, ...new Array(16).fill(0)]);
+
 const file = (over: Partial<Express.Multer.File> = {}) =>
   ({
     originalname: 'anh.JPG',
     mimetype: 'image/jpeg',
     size: 1024,
-    buffer: Buffer.from('x'),
+    buffer: JPEG_BYTES,
     ...over,
   }) as Express.Multer.File;
 
@@ -93,17 +99,55 @@ describe('AssetPhotoService.upload', () => {
     expect(created.photos[0]).toMatchObject({ url: 'https://drive/abc', storage: 'google_drive' });
   });
 
-  it('từ chối file không phải ảnh', async () => {
+  it('từ chối file không phải ảnh, xét theo NỘI DUNG', async () => {
     const { prisma, drive } = buildDeps();
     await expect(
       new AssetPhotoService(prisma, drive).upload(
         'CAM-001',
         'nguoi-tai',
-        file({ mimetype: 'application/pdf' }),
+        file({ buffer: Buffer.from('%PDF-1.7 khong phai anh dau nhe') }),
         undefined,
         {},
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('khai gian mimetype và đuôi file KHÔNG qua được nữa', async () => {
+    // Bản cũ chỉ lọc `file.mimetype` — mà đó là header do phía gửi tự đặt. Đặt tên `.php`, khai
+    // `image/jpeg`, thế là ghi được file bất kỳ xuống thư mục kho và không có đường nào xoá.
+    const { prisma, drive } = buildDeps();
+    await expect(
+      new AssetPhotoService(prisma, drive).upload(
+        'CAM-001',
+        'nguoi-tai',
+        file({
+          originalname: 'shell.php',
+          mimetype: 'image/jpeg',
+          buffer: Buffer.from('<?php system($_GET[0]); ?>'),
+        }),
+        undefined,
+        {},
+      ),
+    ).rejects.toThrow(/không phải ảnh hợp lệ/i);
+  });
+
+  it('đuôi file lấy từ nội dung, không lấy từ tên người dùng gửi', async () => {
+    // Sinh đuôi theo `originalname` thì một file PNG đặt tên `.php` được lưu thành `.php` —
+    // route phục vụ ảnh có mẫu tên chặt nên không mở được nữa, thành rác vĩnh viễn trên đĩa.
+    const { prisma, drive, created } = buildDeps({ driveAvailable: false });
+    await new AssetPhotoService(prisma, drive).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file({
+        originalname: 'anh.php',
+        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(8).fill(0)]),
+      }),
+      undefined,
+      {},
+    );
+
+    expect(created.photos[0].url.endsWith('.png')).toBe(true);
+    expect(created.photos[0].url).not.toContain('.php');
   });
 
   it('từ chối ảnh quá 10MB và nói rõ phải làm gì', async () => {
