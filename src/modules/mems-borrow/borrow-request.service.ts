@@ -68,10 +68,16 @@ export class BorrowRequestService {
       // BR-13: kiểm tra khả dụng rồi ghi giữ chỗ phải nằm trong CÙNG một giao dịch có khoá.
       // Không có khoá thì hai người cùng xin chiếc máy cuối cùng sẽ cùng đọc "còn 1" rồi cùng
       // ghi giữ chỗ, và kho chỉ phát hiện thiếu vào đúng lúc bàn giao.
-      for (const line of dto.lines) {
+      // Khoá theo thứ tự ĐÃ SẮP, không theo thứ tự client gửi. Phiếu A xin [b, a] và phiếu B xin
+      // [a, b] cùng lúc thì A giữ b đợi a, B giữ a đợi b — Postgres phát hiện deadlock và giết
+      // một giao dịch, người dùng ăn 500 giữa lúc gửi phiếu. Sắp trước thì mọi giao dịch đi cùng
+      // một chiều nên chỉ xếp hàng, không bao giờ ôm chéo. Lọc trùng để một model khai hai dòng
+      // không xin khoá hai lần.
+      const modelIdsToLock = [...new Set(dto.lines.map((line) => line.modelId))].sort();
+      for (const modelId of modelIdsToLock) {
         await tx.$executeRawUnsafe(
           `SELECT pg_advisory_xact_lock(hashtext($1))`,
-          `mems:model:${line.modelId}`,
+          `mems:model:${modelId}`,
         );
       }
 

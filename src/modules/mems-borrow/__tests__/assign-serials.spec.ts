@@ -29,7 +29,16 @@ function buildDeps(over: Partial<any> = {}) {
       findUnique: jest.fn(async () => request),
       update: jest.fn(async ({ data }: any) => ({ ...request, ...data })),
     },
-    memsAsset: { findMany: jest.fn(async () => assets) },
+    // Lọc theo đúng `where.id.in` như Prisma thật. Bản trước trả về TOÀN BỘ danh sách bất kể
+    // bộ lọc, nên phiếu nhiều dòng bị hiểu nhầm là "có mã máy không tồn tại" — mock nói dối thì
+    // test đa dòng không dựng được.
+    memsAsset: {
+      findMany: jest.fn(async (args: any) => {
+        const wanted: string[] | undefined = args?.where?.id?.in;
+        return wanted ? assets.filter((a: any) => wanted.includes(a.id)) : assets;
+      }),
+    },
+
     memsReservation: { update: jest.fn(async ({ data }: any) => data) },
     memsRequestLine: { update: jest.fn(async ({ data }: any) => data) },
   };
@@ -57,6 +66,33 @@ describe('AssignmentService.assign', () => {
     await new AssignmentService(prisma, {} as any).assign('req-1', DTO);
 
     expect(tx.$executeRawUnsafe.mock.calls[0][1]).toBe('mems:model:model-1');
+  });
+
+  it('lấy hết khoá TRƯỚC khi đọc gì, theo thứ tự cố định', async () => {
+    // Hai lỗi cùng một gốc. Một: khoá nằm trong vòng lặp nên phiếu nhiều dòng đi xin khoá xen
+    // giữa các lần đọc, và thứ tự thì theo mảng client gửi — hai thủ kho gửi hai thứ tự ngược
+    // nhau là ôm chéo khoá, Postgres giết một giao dịch và người kia ăn 500. Hai: cùng một
+    // model ở hai dòng thì xin khoá hai lần vô ích.
+    const { prisma, tx } = buildDeps({
+      lines: [
+        { id: 'line-1', model_id: 'model-b', quantity: 1, reservations: [{ id: 'rsv-1', status: 'TENTATIVE' }] },
+        { id: 'line-2', model_id: 'model-a', quantity: 1, reservations: [{ id: 'rsv-2', status: 'TENTATIVE' }] },
+      ],
+      assets: [
+        { id: 'asset-1', asset_code: 'CAM-001', model_id: 'model-b', condition: 'GOOD', status: 'AVAILABLE', is_disabled: false },
+        { id: 'asset-2', asset_code: 'CAM-002', model_id: 'model-a', condition: 'GOOD', status: 'AVAILABLE', is_disabled: false },
+      ],
+    });
+
+    await new AssignmentService(prisma, {} as any).assign('req-1', {
+      lines: [
+        { lineId: 'line-1', assetIds: ['asset-1'] },
+        { lineId: 'line-2', assetIds: ['asset-2'] },
+      ],
+    });
+
+    const lockKeys = tx.$executeRawUnsafe.mock.calls.map((call: any[]) => String(call[1]));
+    expect(lockKeys).toEqual(['mems:model:model-a', 'mems:model:model-b']);
   });
 
   it('gán thiếu máy so với số lượng đã duyệt thì báo lỗi', async () => {

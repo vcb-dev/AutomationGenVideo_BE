@@ -92,6 +92,48 @@ describe('BorrowRequestService.create', () => {
     expect(tx.$executeRawUnsafe.mock.calls[0][0]).toContain('pg_advisory_xact_lock');
   });
 
+  it('khoá các model theo thứ tự cố định, không theo thứ tự client gửi', async () => {
+    // Deadlock kinh điển: phiếu A xin [model-b, model-a], phiếu B xin [model-a, model-b] cùng
+    // lúc. A giữ khoá b rồi đợi a, B giữ khoá a rồi đợi b — Postgres phát hiện và giết một
+    // giao dịch, người dùng nhận 500 giữa lúc gửi phiếu. Khoá theo thứ tự đã sắp thì hai bên
+    // luôn xếp hàng chứ không bao giờ ôm chéo nhau.
+    const { prisma, tx, availability } = buildDeps(9);
+    const service = new BorrowRequestService(prisma, availability);
+
+    await service.create('user-1', {
+      ...DTO,
+      lines: [
+        { modelId: 'model-b', quantity: 1 },
+        { modelId: 'model-a', quantity: 1 },
+      ],
+    });
+
+    const modelLockKeys = tx.$executeRawUnsafe.mock.calls
+      .map((call: any[]) => String(call[1]))
+      .filter((key: string) => key.startsWith('mems:model:'));
+
+    expect(modelLockKeys).toEqual(['mems:model:model-a', 'mems:model:model-b']);
+  });
+
+  it('cùng một model xuất hiện hai lần chỉ khoá một lần', async () => {
+    const { prisma, tx, availability } = buildDeps(9);
+    const service = new BorrowRequestService(prisma, availability);
+
+    await service.create('user-1', {
+      ...DTO,
+      lines: [
+        { modelId: 'model-1', quantity: 1 },
+        { modelId: 'model-1', quantity: 1 },
+      ],
+    });
+
+    const modelLockKeys = tx.$executeRawUnsafe.mock.calls
+      .map((call: any[]) => String(call[1]))
+      .filter((key: string) => key.startsWith('mems:model:'));
+
+    expect(modelLockKeys).toEqual(['mems:model:model-1']);
+  });
+
   it('thời điểm trả không sau thời điểm nhận thì báo lỗi', async () => {
     const { prisma, availability } = buildDeps(5);
     const service = new BorrowRequestService(prisma, availability);
