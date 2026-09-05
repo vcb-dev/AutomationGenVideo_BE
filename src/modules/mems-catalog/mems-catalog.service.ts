@@ -1,6 +1,27 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
+
+/**
+ * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.
+ *
+ * `ON_LOAN` do màn Bàn giao đặt, `POST_RETURN_CHECK` do màn Nhận trả đặt. Cho sửa tay thì hai
+ * màn đó mất ý nghĩa và máy đang ở ngoài có thể bị đánh dấu đã về mà không có biên bản nào.
+ */
+const WORKFLOW_ONLY_STATUSES = ['ON_LOAN', 'POST_RETURN_CHECK'];
+
+/**
+ * Lối duy nhất đưa một chiếc máy ra khỏi trạng thái do quy trình đặt, bằng tay.
+ *
+ * Máy mất thì phải ghi nhận được ngay — bắt chờ một biên bản nhận trả hay một buổi kiểm tra sẽ
+ * không bao giờ tới là nhốt luôn bản ghi. Và màn Kiểm tra chỉ chào ba kết luận Đạt/Bảo trì/Hỏng,
+ * không có Mất, nên nếu chặn nốt lối này thì chiếc biến mất khỏi bàn kiểm tra không ghi nhận
+ * được ở đâu cả.
+ *
+ * Mọi đích khác phải đi qua đúng màn của nó: rời `ON_LOAN` bằng màn Nhận trả, rời
+ * `POST_RETURN_CHECK` bằng màn Kiểm tra — chỉ ở đó kết luận Bảo trì mới sinh kèm lệnh bảo trì.
+ */
+const MANUAL_EXITS_FROM_WORKFLOW = ['LOST'];
 
 @Injectable()
 export class MemsCatalogService {
@@ -101,6 +122,70 @@ export class MemsCatalogService {
       if (duplicated && duplicated.id !== asset.id) {
         throw new ConflictException(`Số serial ${dto.serialNumber} đã thuộc thiết bị ${duplicated.asset_code}`);
       }
+
+      // BR-04 nói serial không sửa được sau khi tạo, nhưng khoá cứng từ giây đầu thì một lỗi
+      // chính tả lúc nhập kho không bao giờ sửa được — người ta sẽ xoá máy đi tạo lại và mất
+      // luôn nhật ký vòng đời.
+      //
+      // Mốc thật sự là lần BÀN GIAO ĐẦU TIÊN: từ đó serial đã nằm trong biên bản có chữ ký và
+      // trở thành mốc truy trách nhiệm. Đổi nó sau lúc ấy là làm lệch mọi biên bản đã in ra.
+      const handedOverTimes = await this.prisma.memsHandoverLine.count({
+        where: { asset_id: asset.id },
+      });
+      if (handedOverTimes > 0) {
+        throw new ConflictException(
+          `Máy ${asset.asset_code} đã được bàn giao ${handedOverTimes} lượt nên serial đã đi vào ` +
+            'biên bản, không đổi được nữa. Serial ghi sai thì ngừng dùng máy này và nhập lại bản ghi mới.',
+        );
+      }
+    }
+
+    // Giữ chỗ ghi ở MỨC MODEL (QĐ-01): phiếu đặt "một chiếc A7 IV", kho tự chọn chiếc nào. Nên
+    // đổi model của một chiếc đang được ghim vào phiếu là lặng lẽ rút nó khỏi phép đếm khả dụng
+    // của model cũ — không lỗi, không cảnh báo, và kho chỉ phát hiện lúc đứng ra bàn giao.
+    if (dto.modelId && dto.modelId !== asset.model_id) {
+      const activeReservations = await this.prisma.memsReservation.count({
+        where: {
+          asset_id: asset.id,
+          status: { in: ['TENTATIVE', 'CONFIRMED'] },
+        },
+      });
+      if (activeReservations > 0) {
+        throw new ConflictException(
+          `Máy ${asset.asset_code} đang được giữ chỗ cho ${activeReservations} lượt mượn, ` +
+            'không đổi model được. Huỷ hoặc hoàn tất các phiếu đó trước.',
+        );
+      }
+    }
+
+    // Đổi sang trạng thái do quy trình sinh ra là đi vòng qua màn Bàn giao / Nhận trả. Giữ
+    // nguyên giá trị đang có thì không tính là đổi — ô select ở form luôn gửi lại trạng thái
+    // hiện tại kèm mọi lần sửa serial hay vị trí.
+    const nextStatus = (dto.status as string | undefined) ?? asset.status;
+    if (nextStatus !== asset.status && WORKFLOW_ONLY_STATUSES.includes(nextStatus)) {
+      throw new BadRequestException(
+        `Trạng thái ${nextStatus} chỉ sinh ra từ màn Bàn giao hoặc Nhận trả, không đặt tay được`,
+      );
+    }
+    // Chặn cả chiều ĐI RA, không chỉ chiều đi vào.
+    //
+    // Bản trước chỉ cấm đặt tay SANG các trạng thái này, còn rời khỏi chúng thì bỏ ngỏ — nên một
+    // chiếc đang nằm ngoài công ty có thể bị sửa về Sẵn sàng: nó lập tức quay lại phép đếm khả
+    // dụng và danh sách máy gán được, trong khi phiếu vẫn Đang mượn và chưa ai mang máy về. Với
+    // `POST_RETURN_CHECK` thì đi vòng qua màn Kiểm tra còn bỏ luôn lệnh bảo trì mà kết luận Bảo
+    // trì phải sinh ra — chỉ đổi cột trạng thái thì máy nằm ở xưởng vẫn hiện là rảnh.
+    //
+    // Trừ đúng một lối: đánh dấu MẤT. Xem `MANUAL_EXITS_FROM_WORKFLOW`.
+    if (
+      nextStatus !== asset.status &&
+      WORKFLOW_ONLY_STATUSES.includes(asset.status) &&
+      !MANUAL_EXITS_FROM_WORKFLOW.includes(nextStatus)
+    ) {
+      const door = asset.status === 'ON_LOAN' ? 'Nhận trả' : 'Kiểm tra';
+      throw new BadRequestException(
+        `Máy đang ở trạng thái ${asset.status} do quy trình đặt. Đưa máy ra khỏi trạng thái này ` +
+          `bằng màn ${door}, hoặc đánh dấu Mất nếu máy không còn nữa.`,
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -113,7 +198,7 @@ export class MemsCatalogService {
           purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : asset.purchase_date,
           purchase_price: dto.purchasePrice !== undefined ? dto.purchasePrice : asset.purchase_price,
           condition: (dto.condition as any) ?? asset.condition,
-          status: (dto.status as any) ?? asset.status,
+          status: nextStatus as any,
         },
         include: {
           model: { include: { category: true } },
