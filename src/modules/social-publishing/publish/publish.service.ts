@@ -10,6 +10,16 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { HistoryService } from '../history/history.service';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
+import { isVideoUrl } from './media-url.util';
+import {
+  probeMedia,
+  resolveFFprobePath,
+  validateVideoForPublish,
+  collectWarnings,
+  isFacebookReelsCandidate,
+  INSTAGRAM_REELS_LIMITS,
+  PRECHECK_ERROR_MARKER,
+} from './media-probe.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -291,6 +301,9 @@ export class PublishService {
       inputMediaUrls = results;
     }
 
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
+
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
 
@@ -350,6 +363,9 @@ export class PublishService {
       });
       inputMediaUrls = results;
     }
+
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
@@ -459,9 +475,11 @@ export class PublishService {
       if (avg <= 0 || avg > 60) return false;
       if (Math.abs(avg - r) > 0.5) return false;
 
-      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được)
+      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được).
+      // Ngưỡng 20 chứ không phải 12 Mbps: transcode chỉ giữ tới 16 Mbps, nên video
+      // 12-20 Mbps mà đem nén lại là tự làm xấu đi. Để nguyên thì hơn.
       const bitRate = Number(v.bit_rate || 0);
-      if (bitRate > 12_000_000) return false;
+      if (bitRate > 20_000_000) return false;
 
       return true;
     } catch (e: any) {
@@ -506,10 +524,16 @@ export class PublishService {
         await execFileAsync(ffmpegPath, [
           '-y', '-i', inputPath,
           '-map', '0:v:0', '-map', '0:a:0?',
-          '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
-          '-profile:v', 'baseline', '-level', '4.0',
-          '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
-          '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'faster', '-threads', '4',
+          // profile high thay baseline: baseline tắt CABAC và B-frame nên nén kém hẳn.
+          // Đo trên nguồn 1080x1920: cùng crf, high chỉ tốn 8.2MB so với 13.0MB của
+          // baseline — dôi ra 37% dung lượng để đổi lấy chất lượng.
+          '-profile:v', 'high', '-level', '4.2',
+          '-crf', '20', '-maxrate', '16M', '-bufsize', '32M',
+          // -vsync CHỨ KHÔNG PHẢI -fps_mode: gói @ffmpeg-installer đi kèm là bản 2018,
+          // chưa có -fps_mode (chỉ từ ffmpeg 5.0). Dùng nó thì lệnh hỏng, _doTranscode
+          // nuốt lỗi rồi trả file gốc — transcode âm thầm không bao giờ chạy.
+          '-r', '30', '-vsync', 'cfr', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
           '-map_metadata', '-1', '-movflags', '+faststart',
           outputPath,
@@ -531,6 +555,73 @@ export class PublishService {
     } catch (err: any) {
       this.logger.warn(`[Transcode] Thất bại: ${err.message} — dùng file gốc`);
       return localUrl;
+    }
+  }
+
+  /** /api/social/media/<file> → đường dẫn trên đĩa, để probe khỏi đi vòng qua HTTP */
+  private resolveLocalMediaPath(mediaUrl: string): string | null {
+    if (!mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Cổng kiểm tra video trước khi gọi API nền tảng.
+   *
+   * Chặn sớm những thứ nền tảng chắc chắn từ chối, kèm thông báo nói rõ sai ở đâu —
+   * thay vì để Meta trả về `status=ERROR` không kèm lý do sau khi đã chờ cả phút.
+   *
+   * Không probe được thì chỉ ghi log, KHÔNG chặn.
+   */
+  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
+    // Instagram không có dạng video thường — mọi video đều là Reel.
+    // Facebook thì tuỳ thời lượng: quá 90s sẽ đăng dạng video thường.
+    const rule =
+      platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
+      platform === SocialPlatform.FACEBOOK ? { limits: null } :
+      null;
+    if (!rule) return;
+
+    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
+    const ffprobePath = resolveFFprobePath();
+    if (!ffprobePath) {
+      this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
+      return;
+    }
+
+    const errors: string[] = [];
+    for (const url of mediaUrls) {
+      if (!isVideoUrl(url)) continue;
+
+      const label = path.basename(new URL(url, 'http://local').pathname) || url;
+      const probe = await probeMedia(this.resolveLocalMediaPath(url) ?? url, ffprobePath);
+      if (!probe) {
+        this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
+        continue;
+      }
+
+      const isReel = platform === SocialPlatform.INSTAGRAM
+        ? true
+        : isFacebookReelsCandidate(probe.durationSec);
+
+      for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
+      errors.push(...validateVideoForPublish(probe, {
+        ...rule,
+        requireAudio: audioCheckEnabled && isReel,
+        isReel,
+        label,
+      }));
+    }
+
+    if (errors.length) {
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
     }
   }
 

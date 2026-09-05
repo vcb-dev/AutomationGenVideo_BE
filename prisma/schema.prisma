@@ -1457,7 +1457,12 @@ model SocialPost {
   scheduled_at  DateTime?
   executed_at   DateTime?
   retry_count   Int              @default(0)
+  /// Thời điểm bài được phép chạy lại sau khi đăng lỗi (exponential backoff).
   next_retry_at DateTime?
+  /// Hạn giữ chỗ của worker đang xử lý bài này. Worker gia hạn định kỳ trong lúc
+  /// chạy; tiến trình chết thì hạn tự hết và bài được nhận lại. TÁCH RIÊNG khỏi
+  /// next_retry_at: gộp chung khiến bài đang chờ retry bị đếm nhầm là đang xử lý.
+  claimed_until DateTime?
   result        Json?
   error_msg     String?
   thumb_url     String?
@@ -1474,6 +1479,7 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([claimed_until])
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
@@ -4146,6 +4152,12 @@ model ContentTransformHistory {
   score_result  Json?
   /// Điểm tổng /100, tách riêng để lọc/sắp xếp mà không cần parse JSON
   overall_score Int?
+  /// job_id của AI service cho lượt xử lý NỀN đang chạy (transcribe/upgrade — xem
+  /// content_transform_job_views.py bên AI). null = không có job nền (bản ghi của luồng đồng bộ
+  /// transform/rescore, hoặc job đã xong và kết quả đã được ghi vào bản ghi này).
+  ai_job_id     String?
+  /// Loại job nền: 'transcribe' | 'upgrade'. Để reconciliation cron biết cách map kết quả khi poll lại.
+  ai_job_kind   String?
   created_at    DateTime        @default(now())
   updated_at    DateTime        @updatedAt
 
@@ -4157,6 +4169,7 @@ model ContentTransformHistory {
   @@index([status])
   @@index([created_at])
   @@index([user_id, created_at]) // Query lịch sử theo user + phân trang
+  @@index([status, updated_at]) // reconciliation cron quét bản ghi PENDING quá hạn (job nền mất dấu)
   @@map("content_transform_histories")
 }
 
