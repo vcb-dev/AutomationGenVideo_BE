@@ -24,6 +24,7 @@ import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { Public } from '../auth/decorators/public.decorator';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
 import { AssetPhotoService, MEMS_PHOTO_DIR } from './asset-photo.service';
@@ -54,6 +55,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Patch('assets/:assetCode')
   @ApiOperation({ summary: 'Chỉnh sửa thông tin thiết bị' })
   updateAsset(@Param('assetCode') assetCode: string, @Body() dto: UpdateAssetDto) {
@@ -61,6 +63,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('assets/:assetCode')
   @ApiOperation({ summary: 'Xóa thiết bị khỏi kho' })
   deleteAsset(@Param('assetCode') assetCode: string) {
@@ -74,6 +77,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets/:assetCode/photos')
   @ApiOperation({ summary: 'Tải ảnh thiết bị lên' })
   @ApiConsumes('multipart/form-data')
@@ -88,6 +92,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('photos/:photoId/primary')
   @ApiOperation({ summary: 'Chọn ảnh đại diện hiện ở bảng kho' })
   setPrimaryPhoto(@Param('photoId') photoId: string) {
@@ -95,6 +100,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('photos/:photoId')
   @ApiOperation({ summary: 'Xoá một ảnh thiết bị' })
   removePhoto(@Param('photoId') photoId: string) {
@@ -133,6 +139,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Get('pending-inspection')
   @ApiOperation({ summary: 'Máy đang chờ kết luận kiểm tra (NV-14)' })
   pendingInspection() {
@@ -140,6 +147,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets/:assetCode/inspect')
   @ApiOperation({ summary: 'Kết luận kiểm tra, đưa máy ra khỏi bàn nhận (NV-14)' })
   inspect(
@@ -151,6 +159,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets')
   @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01)' })
   createAsset(@Body() dto: CreateAssetDto) {
@@ -170,6 +179,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('models')
   @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03)' })
   createModel(@Body() dto: CreateModelDto) {
@@ -183,6 +193,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('locations')
   @ApiOperation({ summary: 'Tạo vị trí lưu kho mới (Tủ/Kệ/Ngăn)' })
   createLocation(@Body() dto: CreateLocationDto) {
@@ -190,6 +201,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Patch('locations/:id')
   @ApiOperation({ summary: 'Sửa tên vị trí lưu kho' })
   updateLocation(@Param('id') id: string, @Body() dto: UpdateLocationDto) {
@@ -197,6 +209,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('locations/:id')
   @ApiOperation({ summary: 'Xóa/ngừng dùng vị trí lưu kho' })
   deleteLocation(@Param('id') id: string) {
@@ -204,6 +217,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('categories')
   @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02)' })
   createCategory(@Body() dto: CreateCategoryDto) {
