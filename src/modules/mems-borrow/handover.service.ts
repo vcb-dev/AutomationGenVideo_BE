@@ -89,6 +89,24 @@ export class HandoverService {
         }
       }
 
+      // Biên bản phải phủ HẾT số máy đã gán. Thiếu một chiếc thì phiếu vẫn chuyển sang Đang mượn
+      // và cửa bàn giao đóng lại vĩnh viễn (lần gọi sau bị chặn vì trạng thái không còn là
+      // PREPARING) — chiếc đó kẹt luôn: không giao được, không có gì để nhận trả, mà giữ chỗ của
+      // nó thì không bao giờ được nhả.
+      const handedIds = new Set(dto.units.map((u) => u.assetId));
+      const missing = [...pinnedAssetIds].filter((id) => !handedIds.has(id as string));
+      if (missing.length > 0) {
+        const codes = await tx.memsAsset.findMany({
+          where: { id: { in: missing as string[] } },
+          select: { asset_code: true },
+        });
+        throw new BadRequestException(
+          `Biên bản còn thiếu ${missing.length} máy đã gán cho phiếu: ${codes
+            .map((c) => c.asset_code)
+            .join(', ')}. Giao đủ một lượt, hoặc bỏ gán những máy không giao nữa.`,
+        );
+      }
+
       // Kiểm ảnh SAU khi đã chốt danh sách máy: máy không thuộc phiếu là lỗi cơ bản hơn, báo
       // "ảnh không thuộc máy này" trước sẽ chỉ người dùng đi sửa nhầm chỗ.
       //

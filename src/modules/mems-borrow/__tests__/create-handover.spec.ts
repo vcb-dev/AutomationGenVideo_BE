@@ -132,6 +132,22 @@ describe('HandoverService.create', () => {
     expect(tx.memsBorrowRequest.update).toHaveBeenCalled();
   });
 
+  it('biên bản thiếu máy đã gán thì bị chặn, nêu đích danh máy nào', async () => {
+    // Cho qua thì phiếu vẫn chuyển sang Đang mượn và cửa bàn giao đóng lại vĩnh viễn — lần gọi
+    // sau bị chặn vì trạng thái không còn là PREPARING. Chiếc bị bỏ quên kẹt luôn: không giao
+    // được, không có gì để nhận trả, mà giữ chỗ của nó thì không bao giờ được nhả.
+    const { prisma, tx } = buildDeps();
+    await expect(
+      new HandoverService(prisma).create('req-1', 'user-1', {
+        ...DTO,
+        units: [{ assetId: 'asset-1', condition: 'GOOD', photoKeys: [ANH_CUA_MAY_1] }],
+      }),
+    ).rejects.toThrow(/thiếu 1 máy.*ASSET-2/s);
+
+    expect(tx.memsHandover.create).not.toHaveBeenCalled();
+    expect(tx.memsBorrowRequest.update).not.toHaveBeenCalled();
+  });
+
   it('máy chưa được gán cho phiếu thì không có trong biên bản', async () => {
     const { prisma } = buildDeps();
     await expect(
