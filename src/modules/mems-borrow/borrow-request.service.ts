@@ -93,12 +93,18 @@ export class BorrowRequestService {
       });
 
       for (const line of dto.lines) {
-        const check = await this.availability.check({
-          modelId: line.modelId,
-          fromTime,
-          toTime,
-          quantity: line.quantity,
-        });
+        // Hỏi bằng chính `tx`: dòng sau phải thấy giữ chỗ mà dòng trước vừa ghi. Đọc bằng
+        // `this.prisma` là đọc trên kết nối khác, không thấy bản ghi chưa commit — hai dòng
+        // cùng một model sẽ cùng nhận về "còn đủ" và giữ chỗ gấp đôi số máy thực có.
+        const check = await this.availability.check(
+          {
+            modelId: line.modelId,
+            fromTime,
+            toTime,
+            quantity: line.quantity,
+          },
+          tx,
+        );
 
         const created = await tx.memsRequestLine.create({
           data: {
