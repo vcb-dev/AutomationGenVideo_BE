@@ -10,6 +10,18 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { HistoryService } from '../history/history.service';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
+import { isVideoUrl } from './media-url.util';
+import {
+  probeMedia,
+  resolveFFprobePath,
+  validateVideoForPublish,
+  collectWarnings,
+  isFacebookReelsCandidate,
+  INSTAGRAM_REELS_LIMITS,
+  PRECHECK_ERROR_MARKER,
+  resolveFFmpegPath,
+} from './media-probe.util';
+import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -62,6 +74,9 @@ function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
   if (mimetype === 'image/gif') return '.gif';
   if (mimetype === 'image/webp') return '.webp';
   if (mimetype === 'video/mp4') return '.mp4';
+  // Drive trả 'video/quicktime' cho .mov — thiếu dòng này thì file tải về bị đặt
+  // tên .mp4, và mọi bước sau nhận nhầm định dạng.
+  if (mimetype === 'video/quicktime') return '.mov';
   return fallback;
 }
 
@@ -73,6 +88,8 @@ function ensureExt(filename: string, ext: string): string {
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
+  // Đếm số lượt đăng đang dùng mỗi file tạm — bộ dọn rác không xoá file còn người dùng.
+  private readonly mediaInUse = new Map<string, number>();
 
   // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
   // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
@@ -117,7 +134,10 @@ export class PublishService {
             continue;
           }
 
-          const converted = `${publicBaseUrl}${localUrl.pathname}`;
+          // Giữ nguyên query string: URL media có thể mang ?filename=... (dùng để nhận
+          // diện video) hoặc token truy cập. Cắt mất thì platform nhận nhầm loại media
+          // hoặc tải file thất bại — mà không có lỗi nào chỉ ra nguyên nhân.
+          const converted = `${publicBaseUrl}${localUrl.pathname}${localUrl.search}`;
           this.logger.log(`[makeUrlsPublic] ${url} → ${converted}`);
           resultUrls.push(converted);
         } catch (e) {
@@ -223,10 +243,11 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const dedupKey = `${userId}:${dto.accountId}:${crypto
       .createHash('sha1')
-      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}`)
+      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}|${dto.thumbUrl || ''}`)
       .digest('hex')}`;
 
     const existing = this.inFlightPublishNow.get(dedupKey);
@@ -249,6 +270,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const release = await this.publishNowSemaphore.acquire();
     try {
@@ -264,6 +286,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
@@ -276,7 +299,15 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
+    // try/finally BẮT BUỘC: giữa acquireMedia và lúc trả chỗ còn transcode và
+    // makeUrlsPublic — cả hai đều await và đều có thể ném lỗi. Không bọc thì bộ đếm
+    // rò vĩnh viễn, file bị giữ và mediaInUse phình dần. executeScheduled đã dùng
+    // finally, đường này thì chưa — nay đồng bộ lại.
+    try {
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
       results.forEach((newUrl, i) => {
@@ -291,6 +322,9 @@ export class PublishService {
       inputMediaUrls = results;
     }
 
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
+
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
 
@@ -304,19 +338,24 @@ export class PublishService {
         extraData,
         accountId: dto.accountId,
         platformId: account.platform_id,
+        // Thiếu dòng này thì bài "đăng ngay" mất ảnh bìa tuỳ chọn, trong khi bài đặt
+        // lịch vẫn giữ (executeScheduled có truyền) — cùng chức năng, hai hành vi.
+        thumbUrl: dto.thumbUrl,
       });
     } catch (err: any) {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
       await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
-      this.scheduleCleanupTranscoded(transcodedFiles);
       throw new Error(apiErr);
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
     this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
-    this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
+    } finally {
+      this.releaseMedia(transcodedFiles);
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   /** Gọi bởi ScheduleService */
@@ -336,6 +375,9 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
@@ -350,6 +392,9 @@ export class PublishService {
       });
       inputMediaUrls = results;
     }
+
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
@@ -374,6 +419,7 @@ export class PublishService {
       enrichedErr.stack = err.stack;
       throw enrichedErr;
     } finally {
+      this.releaseMedia(transcodedFiles);
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
   }
@@ -383,7 +429,9 @@ export class PublishService {
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
     if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
-    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    // Dùng chung bộ nhận diện với các publisher. Bản cũ cắm cứng `.mp4` nên file .mov
+    // đi thẳng lên Instagram/Threads mà không qua transcode và bị nền tảng từ chối.
+    if (!isVideoUrl(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
@@ -400,27 +448,16 @@ export class PublishService {
     return promise;
   }
 
-  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
+  /** Tìm FFmpeg — dùng bản chung ở media-probe.util (có thêm fallback @ffmpeg-installer) */
   private resolveFFmpegPath(): string | null {
-    const fromEnv = process.env.FFMPEG_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    // Fallback: ffmpeg đã cài qua apk/apt trong Docker
-    if (fs.existsSync('/usr/bin/ffmpeg')) return '/usr/bin/ffmpeg';
-    this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
-    return null;
+    const found = resolveFFmpegPath();
+    if (!found) this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
+    return found;
   }
 
-  /** Tìm ffprobe: env → cạnh ffmpeg → /usr/bin/ffprobe → null */
+  /** Tìm ffprobe — dùng bản chung ở media-probe.util (có thêm fallback @ffprobe-installer) */
   private resolveFFprobePath(): string | null {
-    const fromEnv = process.env.FFPROBE_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    const ffmpeg = process.env.FFMPEG_PATH;
-    if (ffmpeg && fs.existsSync(ffmpeg)) {
-      const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    if (fs.existsSync('/usr/bin/ffprobe')) return '/usr/bin/ffprobe';
-    return null;
+    return resolveFFprobePath();
   }
 
   /**
@@ -459,9 +496,11 @@ export class PublishService {
       if (avg <= 0 || avg > 60) return false;
       if (Math.abs(avg - r) > 0.5) return false;
 
-      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được)
+      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được).
+      // Ngưỡng 20 chứ không phải 12 Mbps: transcode chỉ giữ tới 16 Mbps, nên video
+      // 12-20 Mbps mà đem nén lại là tự làm xấu đi. Để nguyên thì hơn.
       const bitRate = Number(v.bit_rate || 0);
-      if (bitRate > 12_000_000) return false;
+      if (bitRate > 20_000_000) return false;
 
       return true;
     } catch (e: any) {
@@ -506,10 +545,16 @@ export class PublishService {
         await execFileAsync(ffmpegPath, [
           '-y', '-i', inputPath,
           '-map', '0:v:0', '-map', '0:a:0?',
-          '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
-          '-profile:v', 'baseline', '-level', '4.0',
-          '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
-          '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'faster', '-threads', '4',
+          // profile high thay baseline: baseline tắt CABAC và B-frame nên nén kém hẳn.
+          // Đo trên nguồn 1080x1920: cùng crf, high chỉ tốn 8.2MB so với 13.0MB của
+          // baseline — dôi ra 37% dung lượng để đổi lấy chất lượng.
+          '-profile:v', 'high', '-level', '4.2',
+          '-crf', '20', '-maxrate', '16M', '-bufsize', '32M',
+          // -vsync CHỨ KHÔNG PHẢI -fps_mode: gói @ffmpeg-installer đi kèm là bản 2018,
+          // chưa có -fps_mode (chỉ từ ffmpeg 5.0). Dùng nó thì lệnh hỏng, _doTranscode
+          // nuốt lỗi rồi trả file gốc — transcode âm thầm không bao giờ chạy.
+          '-r', '30', '-vsync', 'cfr', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
           '-map_metadata', '-1', '-movflags', '+faststart',
           outputPath,
@@ -534,11 +579,114 @@ export class PublishService {
     }
   }
 
-  private scheduleCleanupTranscoded(filePaths: string[]) {
+  /** /api/social/media/<file> → đường dẫn trên đĩa, để probe khỏi đi vòng qua HTTP */
+  private resolveLocalMediaPath(mediaUrl: string): string | null {
+    if (!mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Cổng kiểm tra video trước khi gọi API nền tảng.
+   *
+   * Chặn sớm những thứ nền tảng chắc chắn từ chối, kèm thông báo nói rõ sai ở đâu —
+   * thay vì để Meta trả về `status=ERROR` không kèm lý do sau khi đã chờ cả phút.
+   *
+   * Không probe được thì chỉ ghi log, KHÔNG chặn.
+   */
+  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
+    // Instagram không có dạng video thường — mọi video đều là Reel.
+    // Facebook thì tuỳ thời lượng: quá 90s sẽ đăng dạng video thường.
+    const rule =
+      platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
+      platform === SocialPlatform.FACEBOOK ? { limits: null } :
+      null;
+    if (!rule) return;
+
+    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
+    const ffprobePath = resolveFFprobePath();
+    if (!ffprobePath) {
+      this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
+      return;
+    }
+
+    const errors: string[] = [];
+    for (const url of mediaUrls) {
+      if (!isVideoUrl(url)) continue;
+
+      const label = path.basename(new URL(url, 'http://local').pathname) || url;
+      const probe = await probeMedia(this.resolveLocalMediaPath(url) ?? url, ffprobePath);
+      if (!probe) {
+        this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
+        continue;
+      }
+
+      const isReel = platform === SocialPlatform.INSTAGRAM
+        ? true
+        : isFacebookReelsCandidate(probe.durationSec);
+
+      for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
+      errors.push(...validateVideoForPublish(probe, {
+        ...rule,
+        requireAudio: audioCheckEnabled && isReel,
+        isReel,
+        label,
+      }));
+    }
+
+    if (errors.length) {
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
+    }
+  }
+
+  /** Đánh dấu file tạm đang được một lượt đăng sử dụng */
+  private acquireMedia(filePaths: string[]): void {
+    for (const p of filePaths) this.mediaInUse.set(p, (this.mediaInUse.get(p) ?? 0) + 1);
+  }
+
+  /** Trả lại file tạm khi lượt đăng kết thúc */
+  private releaseMedia(filePaths: string[]): void {
+    for (const p of filePaths) {
+      const remaining = (this.mediaInUse.get(p) ?? 1) - 1;
+      if (remaining <= 0) this.mediaInUse.delete(p);
+      else this.mediaInUse.set(p, remaining);
+    }
+  }
+
+  /**
+   * Xoá file tạm sau 10 phút, nhưng bỏ qua file đang có lượt đăng khác dùng.
+   *
+   * driveLocalCache giữ kết quả tải Drive trong 10 phút tính từ lúc tải xong, còn
+   * bộ dọn này đếm 10 phút từ lúc bài đăng xong — hai mốc lệch nhau. Lượt đăng thứ
+   * hai trúng cache ở phút thứ 9 sẽ nhận URL trỏ tới file bị xoá ngay sau đó.
+   *
+   * Hoãn tối đa 3 lần rồi xoá dù sao, để một bộ đếm rò rỉ không giữ file mãi mãi.
+   */
+  private scheduleCleanupTranscoded(filePaths: string[], attempt = 1, maxAttempts = 3) {
     if (!filePaths.length) return;
     setTimeout(() => {
+      const stillInUse: string[] = [];
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
+        if (attempt < maxAttempts && (this.mediaInUse.get(p) ?? 0) > 0) {
+          stillInUse.push(p);
+          continue;
+        }
+        try {
+          if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); }
+        } catch (e: any) {
+          this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`);
+        }
+      }
+      if (stillInUse.length) {
+        this.logger.log(`[Transcode] Hoãn xoá ${stillInUse.length} file đang được dùng (lần ${attempt}/${maxAttempts})`);
+        this.scheduleCleanupTranscoded(stillInUse, attempt + 1, maxAttempts);
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }
@@ -602,8 +750,12 @@ export class PublishService {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
         const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
-          title: opts.message.substring(0, 100),
+          // buildYoutubeTitle/extractHashtags trước đây chỉ có test gọi — không code chạy
+          // nào dùng, nên tiêu đề vẫn bị cắt cụt giữa từ và tags luôn rỗng. Nối vào đây
+          // thì cải tiến mới thực sự có tác dụng.
+          title: buildYoutubeTitle(opts.message),
           description: opts.message,
+          tags: extractHashtags(opts.message),
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
           thumbUrl: opts.thumbUrl,
@@ -639,6 +791,7 @@ export class PublishService {
         user_id: userId, account_id: accountId, platform, source, status,
         message: dto.message, media_urls: dto.mediaUrls || [],
         page_id: dto.pageId, privacy: dto.privacy,
+        thumb_url: dto.thumbUrl,
         result, error_msg: errorMsg, executed_at: new Date(),
         updated_at: new Date(),
       },
@@ -659,7 +812,7 @@ export class PublishService {
    */
   async publishAsync(userId: string, dto: {
     accountId: string; message: string; mediaUrls?: string[];
-    pageId?: string; privacy?: string;
+    pageId?: string; privacy?: string; thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
 
@@ -672,6 +825,9 @@ export class PublishService {
         media_urls: dto.mediaUrls ?? [],
         page_id: dto.pageId,
         privacy: dto.privacy,
+        // Worker đọc lại post.thumb_url khi chạy executeScheduled — không lưu ở đây
+        // thì bài đăng qua đường async cũng mất ảnh bìa.
+        thumb_url: dto.thumbUrl,
         scheduled_at: new Date(), // đến hạn ngay lập tức
         source: SocialPostSource.IMMEDIATE,
         status: SocialPostStatus.PENDING,

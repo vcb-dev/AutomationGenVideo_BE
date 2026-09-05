@@ -3,6 +3,8 @@ import axios from 'axios';
 import { THREADS_GRAPH_BASE } from '../../platform-api.const';
 import { CAROUSEL_MAX_ITEMS } from '../../platform-limits.const';
 import { withRetry, DEFAULT_MAX_ATTEMPTS } from '../retry.util';
+import * as fs from 'fs';
+import * as path from 'path';
 
 function isVideoUrl(url: string): boolean {
   return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
@@ -12,6 +14,17 @@ function isVideoUrl(url: string): boolean {
 export class ThreadsPublisher {
   private readonly logger = new Logger(ThreadsPublisher.name);
   private readonly BASE = THREADS_GRAPH_BASE;
+
+  private resolveLocalFilePath(mediaUrl?: string): string | null {
+    if (!mediaUrl || !mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
 
   async publish(token: string, opts: {
     text: string; mediaUrls?: string[]; userId: string;
@@ -88,8 +101,46 @@ export class ThreadsPublisher {
     const params: any = { media_type: opts.mediaType, access_token: token };
     if (opts.text) params.text = opts.text;
     if (opts.mediaUrl) {
-      if (opts.mediaType === 'VIDEO') params.video_url = opts.mediaUrl;
-      else params.image_url = opts.mediaUrl;
+      if (opts.mediaType === 'VIDEO') {
+        const localFilePath = this.resolveLocalFilePath(opts.mediaUrl);
+        if (localFilePath) {
+          try {
+            const initRes = await axios.post(`${this.BASE}/${userId}/threads`, {
+              access_token: token,
+              upload_type: 'resumable',
+              media_type: 'VIDEO',
+              ...(opts.text ? { text: opts.text } : {}),
+              ...(opts.isCarouselItem ? { is_carousel_item: true } : {}),
+            }, { timeout: 30000 });
+
+            const containerId = initRes.data?.id;
+            const uploadUri = initRes.data?.uri;
+            if (containerId && uploadUri) {
+              const stat = fs.statSync(localFilePath);
+              const stream = fs.createReadStream(localFilePath);
+              await axios.post(uploadUri, stream, {
+                headers: {
+                  Authorization: `OAuth ${token}`,
+                  offset: '0',
+                  file_size: String(stat.size),
+                  'Content-Type': 'application/octet-stream',
+                },
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                timeout: 300000,
+              });
+              this.logger.log(`[Threads] Resumable direct upload thành công cho container: ${containerId}`);
+              return containerId;
+            }
+          } catch (resumableErr: any) {
+            const errDetail = resumableErr.response?.data ? JSON.stringify(resumableErr.response.data) : resumableErr.message;
+            this.logger.warn(`[Threads] Resumable upload thất bại (${errDetail}), fallback sang video_url...`);
+          }
+        }
+        params.video_url = opts.mediaUrl;
+      } else {
+        params.image_url = opts.mediaUrl;
+      }
     }
     if (opts.isCarouselItem) params.is_carousel_item = true;
     if (opts.children) params.children = opts.children.join(',');
