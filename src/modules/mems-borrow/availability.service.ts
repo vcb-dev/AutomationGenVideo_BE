@@ -24,6 +24,17 @@ const NOT_USABLE_STATUSES = [
   'DISPOSED',
 ] as const;
 
+/**
+ * Bốn bảng mà phép đếm khả dụng cần đọc — không hơn.
+ *
+ * Khai hẹp như vậy để cả `PrismaService` lẫn client của một giao dịch đang mở đều truyền vào
+ * được, mà người đọc vẫn thấy ngay hàm này chạm tới đúng những gì.
+ */
+export type AvailabilityReadClient = Pick<
+  PrismaService,
+  'memsAssetModel' | 'memsAsset' | 'memsReservation' | 'memsMaintenance'
+>;
+
 @Injectable()
 export class AvailabilityService {
   constructor(private readonly prisma: PrismaService) {}
@@ -34,8 +45,11 @@ export class AvailabilityService {
    * Đây là cửa duy nhất để hỏi khả dụng. Màn hình nào tự viết phép trừ riêng là sai — hai chỗ
    * tính hai kiểu thì người dùng sẽ thấy hai con số khác nhau cho cùng một chiếc máy.
    */
-  async check(args: CheckAvailabilityArgs): Promise<CheckAvailabilityOutput> {
-    const model = await this.prisma.memsAssetModel.findUniqueOrThrow({
+  async check(
+    args: CheckAvailabilityArgs,
+    client: AvailabilityReadClient = this.prisma,
+  ): Promise<CheckAvailabilityOutput> {
+    const model = await client.memsAssetModel.findUniqueOrThrow({
       where: { id: args.modelId },
       include: { category: true },
     });
@@ -43,7 +57,7 @@ export class AvailabilityService {
     const bufferMinutes = model.category.buffer_minutes;
     const bufferedTo = new Date(args.toTime.getTime() + bufferMinutes * 60_000);
 
-    const totalUsableAssets = await this.prisma.memsAsset.count({
+    const totalUsableAssets = await client.memsAsset.count({
       where: {
         model_id: args.modelId,
         is_disabled: false,
@@ -52,7 +66,7 @@ export class AvailabilityService {
     });
 
     // Điều kiện giao nhau đẩy xuống DB để không kéo cả bảng giữ chỗ về ứng dụng.
-    const reservations = await this.prisma.memsReservation.findMany({
+    const reservations = await client.memsReservation.findMany({
       where: {
         model_id: args.modelId,
         status: { in: ['TENTATIVE', 'CONFIRMED'] as any },
@@ -62,7 +76,7 @@ export class AvailabilityService {
       select: { from_time: true, buffer_to_time: true },
     });
 
-    const maintenances = await this.prisma.memsMaintenance.findMany({
+    const maintenances = await client.memsMaintenance.findMany({
       where: {
         asset: { model_id: args.modelId },
         from_time: { lt: bufferedTo },

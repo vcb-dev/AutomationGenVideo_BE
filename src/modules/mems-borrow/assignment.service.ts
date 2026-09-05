@@ -80,7 +80,14 @@ export class AssignmentService {
         throw new BadRequestException('Một máy được gán cho nhiều dòng trong cùng phiếu');
       }
 
-      for (const input of dto.lines) {
+      // Chốt dòng nào thuộc phiếu TRƯỚC, rồi lấy hết khoá một lượt theo thứ tự đã sắp.
+      //
+      // Bản trước xin khoá ngay giữa vòng lặp, theo đúng thứ tự mảng client gửi. Hai thủ kho
+      // chuẩn bị hai phiếu dùng chung hai model, gửi hai thứ tự ngược nhau, là ôm chéo khoá:
+      // Postgres phát hiện deadlock, giết một giao dịch và người đó ăn 500 giữa lúc soạn hàng.
+      // Sắp trước thì mọi giao dịch đi cùng một chiều nên chỉ xếp hàng. Lọc trùng để hai dòng
+      // cùng model không xin khoá hai lần.
+      const inputsWithLine = dto.lines.map((input) => {
         const line = request.lines.find((l) => l.id === input.lineId);
         if (!line) throw new BadRequestException(`Dòng ${input.lineId} không thuộc phiếu này`);
         if (input.assetIds.length !== line.quantity) {
@@ -88,12 +95,18 @@ export class AssignmentService {
             `Dòng cần ${line.quantity} máy nhưng gán ${input.assetIds.length}`,
           );
         }
+        return { input, line };
+      });
 
+      const modelIdsToLock = [...new Set(inputsWithLine.map(({ line }) => line.model_id))].sort();
+      for (const modelId of modelIdsToLock) {
         await tx.$executeRawUnsafe(
           `SELECT pg_advisory_xact_lock(hashtext($1))`,
-          `mems:model:${line.model_id}`,
+          `mems:model:${modelId}`,
         );
+      }
 
+      for (const { input, line } of inputsWithLine) {
         const assets = await tx.memsAsset.findMany({ where: { id: { in: input.assetIds } } });
         for (const asset of assets) {
           if (asset.model_id !== line.model_id) {
