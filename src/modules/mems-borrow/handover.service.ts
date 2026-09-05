@@ -69,6 +69,15 @@ export class HandoverService {
         );
       }
 
+      // Cùng một máy khai hai lần là hai dòng biên bản cho một chiếc. Khâu nhận trả dò bằng
+      // `find()` nên chỉ thấy dòng đầu; dòng thứ hai không bao giờ được nhận lại, `stillOut`
+      // không bao giờ về 0 và PHIẾU KHÔNG BAO GIỜ ĐÓNG ĐƯỢC. `assign` đã chặn ca này từ lâu,
+      // đây là cùng một lỗ ở cửa kế tiếp.
+      const handedOverIds = dto.units.map((u) => u.assetId);
+      if (new Set(handedOverIds).size !== handedOverIds.length) {
+        throw new BadRequestException('Một máy được khai hai lần trong cùng biên bản bàn giao');
+      }
+
       const pinnedAssetIds = new Set(
         request.lines.flatMap((l) => l.reservations.map((r) => r.asset_id).filter(Boolean)),
       );

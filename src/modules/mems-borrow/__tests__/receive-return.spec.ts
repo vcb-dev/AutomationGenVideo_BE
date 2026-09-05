@@ -237,3 +237,17 @@ describe('ReturnService.create', () => {
  * Ở đây hậu quả là hai dòng trả cho một chiếc máy, và nếu tình trạng tệ đi thì MỞ HAI bản ghi sự
  * cố quy trách nhiệm cho người mượn về cùng một vết xước.
  */
+
+describe('ReturnService.create — trùng mã máy trong biên bản', () => {
+  it('cùng một máy khai hai lần thì bị chặn, không ghi gì cả', async () => {
+    const { prisma, tx } = buildDeps();
+
+    await expect(
+      new ReturnService(prisma).create('req-1', 'user-1', {
+        units: [unit(), unit()],
+      }),
+    ).rejects.toThrow(/hai lần|trùng/i);
+
+    expect(tx.memsReturn.create).not.toHaveBeenCalled();
+  });
+});

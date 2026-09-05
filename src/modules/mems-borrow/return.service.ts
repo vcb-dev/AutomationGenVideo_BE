@@ -80,6 +80,13 @@ export class ReturnService {
       // mới xét từng máy, nên mọi lỗi giữa chừng đều phải trông vào việc giao dịch cuộn lại —
       // đúng thì đúng, nhưng nó giấu mất thứ tự ưu tiên giữa các lỗi và làm test khó nói rõ
       // "chưa ghi gì cả".
+      // Cùng một máy khai hai lần là hai dòng trả cho một chiếc — và nếu tình trạng tệ đi thì
+      // MỞ HAI bản ghi sự cố quy trách nhiệm cho người mượn về cùng một vết xước.
+      const returnedIds = dto.units.map((u) => u.assetId);
+      if (new Set(returnedIds).size !== returnedIds.length) {
+        throw new BadRequestException('Một máy được khai hai lần trong cùng biên bản nhận trả');
+      }
+
       const lineByAssetId = new Map<string, (typeof handoverLines)[number]>();
       for (const unit of dto.units) {
         const handoverLine = handoverLines.find((l) => l.asset_id === unit.assetId);

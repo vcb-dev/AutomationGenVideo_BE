@@ -228,3 +228,21 @@ describe('HandoverService.create', () => {
  * lại dò bằng `find()` nên chỉ thấy dòng đầu. Dòng thứ hai không bao giờ được nhận lại, `stillOut`
  * không bao giờ về 0, và PHIẾU KHÔNG BAO GIỜ ĐÓNG ĐƯỢC.
  */
+
+describe('HandoverService.create — trùng mã máy trong biên bản', () => {
+  it('cùng một máy khai hai lần thì bị chặn, không ghi gì cả', async () => {
+    const { prisma, tx } = buildDeps();
+
+    await expect(
+      new HandoverService(prisma).create('req-1', 'user-1', {
+        ...DTO,
+        units: [
+          { assetId: 'asset-1', condition: 'GOOD', photoKeys: [ANH_CUA_MAY_1] },
+          { assetId: 'asset-1', condition: 'GOOD', photoKeys: [ANH_CUA_MAY_1] },
+        ],
+      }),
+    ).rejects.toThrow(/hai lần|trùng/i);
+
+    expect(tx.memsHandover.create).not.toHaveBeenCalled();
+  });
+});
