@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
-import { AvatarService } from './avatar.service';
+import { AvatarService } from '../accounts/avatar.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
