@@ -2,6 +2,19 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 
+/**
+ * Ô select rỗng gửi lên chuỗi rỗng, không phải `null`.
+ *
+ * `@IsOptional()` chỉ bỏ qua `undefined` và `null`, nên chuỗi rỗng vẫn rơi vào `@IsUUID()` và
+ * ăn 400 — người dùng bấm "Chưa xếp chỗ" để gỡ máy khỏi vị trí thì không lưu được, mà đó lại
+ * là cách duy nhất để dọn một vị trí trước khi xoá nó.
+ *
+ * Đổi về `null` để `@IsOptional()` nhận, đồng thời tầng service phân biệt được "không gửi"
+ * (`undefined`, giữ nguyên giá trị cũ) với "gửi rỗng" (`null`, xoá giá trị).
+ */
+const EmptyStringToNull = () =>
+  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value));
+
 const ASSET_STATUSES = [
   'PENDING_INSPECTION',
   'AVAILABLE',
@@ -74,9 +87,10 @@ export class CreateAssetDto {
   purchasePrice?: number;
 
   @ApiPropertyOptional()
+  @EmptyStringToNull()
   @IsOptional()
   @IsUUID()
-  locationId?: string;
+  locationId?: string | null;
 
   @ApiPropertyOptional({
     enum: ['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'],
@@ -115,9 +129,10 @@ export class UpdateAssetDto {
   purchasePrice?: number;
 
   @ApiPropertyOptional()
+  @EmptyStringToNull()
   @IsOptional()
   @IsUUID()
-  locationId?: string;
+  locationId?: string | null;
 
   @ApiPropertyOptional({
     enum: ['GOOD', 'USED', 'NEEDS_CHECK', 'BROKEN', 'IN_MAINTENANCE'],
@@ -128,11 +143,11 @@ export class UpdateAssetDto {
   condition?: string;
 
   @ApiPropertyOptional({
-    enum: ['AVAILABLE', 'IN_USE', 'PENDING_INSPECTION', 'UNDER_MAINTENANCE', 'BROKEN', 'LOST', 'DISPOSED'],
+    enum: ASSET_STATUSES,
     description: 'Trạng thái hoạt động trong kho',
   })
   @IsOptional()
-  @IsIn(['AVAILABLE', 'IN_USE', 'PENDING_INSPECTION', 'UNDER_MAINTENANCE', 'BROKEN', 'LOST', 'DISPOSED'])
+  @IsIn(ASSET_STATUSES)
   status?: string;
 
   @ApiPropertyOptional({ description: 'Ghi chú cập nhật' })
@@ -153,9 +168,10 @@ export class CreateCategoryDto {
   name: string;
 
   @ApiPropertyOptional()
+  @EmptyStringToNull()
   @IsOptional()
   @IsUUID()
-  parentId?: string;
+  parentId?: string | null;
 
   @ApiPropertyOptional({ description: 'Buffer kiểm tra sau mỗi lượt trả, tính bằng phút (BR-12)' })
   @IsOptional()
@@ -218,9 +234,10 @@ export class CreateLocationDto {
   name: string;
 
   @ApiPropertyOptional()
+  @EmptyStringToNull()
   @IsOptional()
   @IsUUID()
-  parentId?: string;
+  parentId?: string | null;
 }
 
 export class UpdateLocationDto {
@@ -230,7 +247,8 @@ export class UpdateLocationDto {
   name: string;
 
   @ApiPropertyOptional()
+  @EmptyStringToNull()
   @IsOptional()
   @IsUUID()
-  parentId?: string;
+  parentId?: string | null;
 }
