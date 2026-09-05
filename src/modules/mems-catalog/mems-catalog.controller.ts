@@ -23,10 +23,15 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
-import { AssetPhotoService, MEMS_PHOTO_DIR } from './asset-photo.service';
+import {
+  AssetPhotoService,
+  MEMS_PHOTO_DIR,
+  PHOTO_PURPOSE,
+} from './asset-photo.service';
 import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
 
@@ -39,6 +44,7 @@ export class MemsCatalogController {
     private readonly service: MemsCatalogService,
     private readonly inspection: InspectionService,
     private readonly photos: AssetPhotoService,
+    private readonly photoUrls: MemsPhotoUrlSigner,
   ) {}
 
   @Get('assets')
@@ -83,8 +89,15 @@ export class MemsCatalogController {
     @Param('assetCode') assetCode: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('caption') caption?: string,
+    @Body('purpose') purpose?: string,
   ) {
-    return this.photos.upload(assetCode, req.user.id, file, caption, req.user);
+    // Giá trị lạ quy về ảnh hồ sơ thay vì ném lỗi: đây là trường phụ, chặn cứng nó sẽ làm hỏng
+    // cả lượt bàn giao chỉ vì một chữ viết sai.
+    const safePurpose =
+      purpose === PHOTO_PURPOSE.HANDOVER || purpose === PHOTO_PURPOSE.RETURN
+        ? purpose
+        : PHOTO_PURPOSE.CATALOG;
+    return this.photos.upload(assetCode, req.user.id, file, caption, req.user, safePurpose);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
@@ -112,9 +125,18 @@ export class MemsCatalogController {
   @Public()
   @Get('photos/:filename')
   @ApiOperation({ summary: 'Phục vụ ảnh lưu trên đĩa khi chưa cấu hình Google Drive' })
-  servePhoto(@Param('filename') filename: string, @Res() res: Response) {
+  servePhoto(
+    @Param('filename') filename: string,
+    @Res() res: Response,
+    @Query('t') token?: string,
+  ) {
     const safeName = path.basename(filename);
     if (!/^[A-Za-z0-9-]+_\d{10,}_[a-z0-9]{4,12}\.(jpg|jpeg|png|gif|webp|heic)$/i.test(safeName)) {
+      throw new NotFoundException('Không tìm thấy ảnh');
+    }
+    // Chữ ký là thứ DUY NHẤT còn canh cửa ở đây, vì route buộc phải công khai. Trả 404 chứ không
+    // 403: 403 xác nhận file có tồn tại, tức là vẫn rò rỉ một mẩu thông tin cho người đang dò.
+    if (!this.photoUrls.verify(safeName, token)) {
       throw new NotFoundException('Không tìm thấy ảnh');
     }
     const filePath = path.join(MEMS_PHOTO_DIR, safeName);
@@ -128,7 +150,9 @@ export class MemsCatalogController {
       '.heic': 'image/heic',
     };
     res.setHeader('Content-Type', mime[path.extname(safeName).toLowerCase()] || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'public, max-age=604800');
+    // `private`: chỉ trình duyệt của người xem được giữ bản sao. Trước đây là `public`, nghĩa là
+    // mọi proxy hay CDN trên đường đi đều được phép lưu và phục vụ lại ảnh serial thiết bị.
+    res.setHeader('Cache-Control', 'private, max-age=604800');
     fs.createReadStream(filePath).pipe(res);
   }
 

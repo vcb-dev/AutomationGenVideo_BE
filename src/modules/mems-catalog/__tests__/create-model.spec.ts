@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 function buildPrisma(duplicated: { id: string } | null = null) {
   const created: any = {};
@@ -27,7 +28,7 @@ describe('MemsCatalogService.createModel', () => {
   it('khai model kèm phụ kiện, giữ đúng thứ tự đã nhập', async () => {
     // Thứ tự phụ kiện là thứ tự hiện trên biên bản bàn giao, đảo lung tung thì thủ kho khó dò.
     const { prisma, created } = buildPrisma();
-    await new MemsCatalogService(prisma).createModel(DTO);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createModel(DTO);
 
     expect(created.args.data.accessories.create).toEqual([
       { name: 'Pin', sort_order: 0 },
@@ -40,14 +41,14 @@ describe('MemsCatalogService.createModel', () => {
     // Hai model cùng tên trong một danh mục làm dropdown chọn máy thành trò đoán mò.
     const { prisma } = buildPrisma({ id: 'model-cũ' });
     await expect(
-      new MemsCatalogService(prisma).createModel(DTO),
+      new MemsCatalogService(prisma, photoUrlSignerStub).createModel(DTO),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('lọc trùng theo cả danh mục lẫn tên, không chỉ theo tên', async () => {
     // findFirst lọc theo cả category_id, nên tên giống ở danh mục khác không đụng nhau.
     const { prisma } = buildPrisma();
-    await new MemsCatalogService(prisma).createModel(DTO);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createModel(DTO);
 
     expect(prisma.memsAssetModel.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -58,7 +59,7 @@ describe('MemsCatalogService.createModel', () => {
 
   it('không khai phụ kiện thì vẫn tạo được model', async () => {
     const { prisma, created } = buildPrisma();
-    await new MemsCatalogService(prisma).createModel({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createModel({
       categoryId: 'cat-1',
       name: 'Manfrotto 055',
     });
@@ -69,7 +70,7 @@ describe('MemsCatalogService.createModel', () => {
   it('bỏ trống hãng và giá thì lưu null, không lưu undefined', async () => {
     // Prisma bỏ qua undefined, cột sẽ giữ giá trị cũ khi dùng lại hàm này cho cập nhật sau này.
     const { prisma, created } = buildPrisma();
-    await new MemsCatalogService(prisma).createModel({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createModel({
       categoryId: 'cat-1',
       name: 'Manfrotto 055',
     });

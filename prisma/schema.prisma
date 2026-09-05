@@ -5002,6 +5002,13 @@ model MemsAssetPhoto {
   url         String
   /// google_drive hoặc local, ghi lại để sau này còn biết ảnh nào cần chuyển kho
   storage     String   @default("local")
+  /// CATALOG = ảnh hồ sơ của máy · HANDOVER, RETURN = ảnh chứng cứ của một lượt giao/nhận.
+  ///
+  /// Không có cột này thì mỗi lượt bàn giao lại đẩy thêm ảnh vào thư viện của máy: mượn 20 lần
+  /// là 60 tấm ảnh biên bản lẫn với ảnh catalogue, và ảnh đại diện ở bảng kho có thể rơi trúng
+  /// một tấm chụp vết xước. Để String thay vì enum DB: thêm loại mới sau này chỉ sửa code, không
+  /// phải đụng kiểu trong Postgres.
+  purpose     String   @default("CATALOG")
   caption     String?
   /// Ảnh đại diện hiện ở bảng kho. Mỗi máy chỉ nên có một, service tự bỏ cờ ở ảnh cũ.
   is_primary  Boolean  @default(false)
@@ -5012,5 +5019,6 @@ model MemsAssetPhoto {
   asset MemsAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
 
   @@index([asset_id, sort_order])
+  @@index([asset_id, purpose])
   @@map("mems_asset_photos")
 }

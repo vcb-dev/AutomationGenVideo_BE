@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 /**
  * Quản lý vị trí lưu kho (tủ, kệ, ngăn).
@@ -28,7 +29,7 @@ describe('MemsCatalogService.createLocation', () => {
     // "Tủ A " và "Tủ A" nhìn giống hệt nhau trên màn hình nhưng là hai vị trí khác nhau trong
     // sổ, và thủ kho sẽ không hiểu vì sao danh sách có hai dòng trùng.
     const { prisma } = buildPrisma();
-    await new MemsCatalogService(prisma).createLocation({ name: '  Tủ A  ' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createLocation({ name: '  Tủ A  ' } as any);
 
     expect(prisma.memsLocation.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ name: 'Tủ A' }) }),
@@ -37,7 +38,7 @@ describe('MemsCatalogService.createLocation', () => {
 
   it('không khai vị trí cha thì lưu null, không lưu undefined', async () => {
     const { prisma } = buildPrisma();
-    await new MemsCatalogService(prisma).createLocation({ name: 'Kệ B' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createLocation({ name: 'Kệ B' } as any);
 
     expect(prisma.memsLocation.create.mock.calls[0][0].data.parent_id).toBeNull();
   });
@@ -51,7 +52,7 @@ describe('MemsCatalogService.deleteLocation', () => {
     });
 
     await expect(
-      new MemsCatalogService(prisma).deleteLocation('loc-1'),
+      new MemsCatalogService(prisma, photoUrlSignerStub).deleteLocation('loc-1'),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(prisma.memsLocation.update).not.toHaveBeenCalled();
   });
@@ -59,7 +60,7 @@ describe('MemsCatalogService.deleteLocation', () => {
   it('vị trí trống thì xoá MỀM, giữ lại bản ghi cho lịch sử', async () => {
     // Xoá cứng thì mọi phiếu cũ từng trỏ vào vị trí này sẽ trỏ vào khoảng không.
     const { prisma } = buildPrisma();
-    await new MemsCatalogService(prisma).deleteLocation('loc-1');
+    await new MemsCatalogService(prisma, photoUrlSignerStub).deleteLocation('loc-1');
 
     expect(prisma.memsLocation.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: { is_disabled: true } }),
@@ -69,7 +70,7 @@ describe('MemsCatalogService.deleteLocation', () => {
   it('không có vị trí đó thì báo không tìm thấy', async () => {
     const { prisma } = buildPrisma({ location: null });
     await expect(
-      new MemsCatalogService(prisma).deleteLocation('loc-khong-ton-tai'),
+      new MemsCatalogService(prisma, photoUrlSignerStub).deleteLocation('loc-khong-ton-tai'),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

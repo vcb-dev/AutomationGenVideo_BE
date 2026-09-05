@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 /**
  * Sửa thông tin một máy đã nằm trong kho.
@@ -42,7 +43,7 @@ describe('MemsCatalogService.updateAsset', () => {
   it('không có máy mang mã đó thì báo không tìm thấy', async () => {
     const { prisma } = buildDeps({ asset: null });
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-999', { condition: 'GOOD' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-999', { condition: 'GOOD' } as any),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -54,7 +55,7 @@ describe('MemsCatalogService.updateAsset', () => {
     });
 
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
     ).rejects.toThrow(/CAM-007/);
     expect(tx.memsAsset.update).not.toHaveBeenCalled();
   });
@@ -63,7 +64,7 @@ describe('MemsCatalogService.updateAsset', () => {
     // Sửa tình trạng máy mà vẫn gửi kèm serial cũ là chuyện thường của form; coi đó là trùng
     // thì không ai sửa được gì.
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       serialNumber: 'SN-CU',
       condition: 'FAIR',
     } as any);
@@ -73,7 +74,7 @@ describe('MemsCatalogService.updateAsset', () => {
 
   it('trường bỏ trống thì giữ nguyên giá trị cũ, không ghi đè thành null', async () => {
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { condition: 'FAIR' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { condition: 'FAIR' } as any);
 
     const data = tx.memsAsset.update.mock.calls[0][0].data;
     expect(data.condition).toBe('FAIR');
@@ -84,7 +85,7 @@ describe('MemsCatalogService.updateAsset', () => {
 
   it('mỗi lần sửa đều ghi một mốc vào nhật ký vòng đời', async () => {
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { condition: 'FAIR' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { condition: 'FAIR' } as any);
 
     expect(tx.memsAssetEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
