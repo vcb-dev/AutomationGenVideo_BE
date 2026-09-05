@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateHandoverDto } from './dto';
+import { assertPhotoEvidence } from './photo-evidence';
 
 @Injectable()
 export class HandoverService {
@@ -78,6 +79,13 @@ export class HandoverService {
           );
         }
       }
+
+      // Kiểm ảnh SAU khi đã chốt danh sách máy: máy không thuộc phiếu là lỗi cơ bản hơn, báo
+      // "ảnh không thuộc máy này" trước sẽ chỉ người dùng đi sửa nhầm chỗ.
+      //
+      // Đếm số ảnh ở trên là chưa đủ: `photoKeys` do client gửi nên phép đếm không nói được tấm
+      // nào có thật. Kiểm bằng chính `tx` để thấy cả ảnh vừa tải lên trong cùng luồng.
+      await assertPhotoEvidence(tx, dto.units);
 
       const handover = await tx.memsHandover.create({
         data: {
