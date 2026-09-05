@@ -1,5 +1,56 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+
+const ASSET_STATUSES = [
+  'PENDING_INSPECTION',
+  'AVAILABLE',
+  'ON_LOAN',
+  'POST_RETURN_CHECK',
+  'UNDER_MAINTENANCE',
+  'BROKEN',
+  'LOST',
+  'DISPOSED',
+];
+
+/**
+ * Ô lọc để trống gửi lên chuỗi rỗng, không phải vắng mặt.
+ *
+ * Giao diện gửi `?status=&categoryId=` khi người dùng chọn lại "Mọi trạng thái". Nếu để chuỗi
+ * rỗng rơi vào `@IsIn`/`@IsUUID` thì bấm bỏ lọc là ăn 400.
+ */
+const EmptyStringToUndefined = () =>
+  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
+
+/**
+ * Tham số lọc của màn Danh sách kho.
+ *
+ * Trước đây controller nhận từng `@Query('...')` rời rồi ép `as any` xuống Prisma, nên một giá
+ * trị lạ không bị chặn ở tầng nào cả: Prisma ném lỗi, bộ lọc toàn cục xếp vào 500 và trả nguyên
+ * thông điệp của Prisma về client. Gom thành DTO để `ValidationPipe` toàn cục chặn từ đầu và
+ * trả đúng 400 kèm câu nói rõ giá trị nào hợp lệ.
+ */
+export class ListAssetsQueryDto {
+  @ApiPropertyOptional({ enum: ASSET_STATUSES })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsIn(ASSET_STATUSES)
+  status?: string;
+
+  @ApiPropertyOptional()
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+}
+
+export class ListModelsQueryDto {
+  @ApiPropertyOptional()
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+}
 
 export class CreateAssetDto {
   @ApiProperty()
