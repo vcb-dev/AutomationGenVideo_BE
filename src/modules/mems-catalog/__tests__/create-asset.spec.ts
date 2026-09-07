@@ -40,10 +40,9 @@ describe('MemsCatalogService.createAsset', () => {
     // Đổi so với trước: máy mới không còn LUÔN đi Chờ kiểm tra. Tình trạng khai lúc nhập mới là
     // thứ quyết định — khai Tốt thì không có gì để kiểm, bắt đi vòng chỉ làm kho đứng hình.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    await new MemsCatalogService(prisma).createAsset({
-      modelId: 'model-1',
-      serialNumber: 'SN-001',
-    });
+    const service = new MemsCatalogService(prisma);
+
+    await service.createAsset({ modelId: 'model-1', serialNumber: 'SN-001' });
 
     expect(prisma.memsAsset.create.mock.calls[0][0].data.status).toBe('AVAILABLE');
   });
