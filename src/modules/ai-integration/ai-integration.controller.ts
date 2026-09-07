@@ -17,6 +17,7 @@ import { ContentTransformTeamSummaryQueryDto } from './dto/content-transform-tea
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
 import { VoiceQuotaService } from './voice-quota.service';
+import { PaastService } from './paast/paast.service';
 
 @ApiTags('AI Integration')
 @Controller('ai')
@@ -24,6 +25,7 @@ export class AiIntegrationController {
   constructor(
     private readonly aiService: AiIntegrationService,
     private readonly voiceQuotaService: VoiceQuotaService,
+    private readonly paastService: PaastService,
   ) { }
 
   @Post('chat')
@@ -919,7 +921,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí, thang điểm 100)' })
   async analyzePaastContent(@Req() req: any, @Body() dto: AnalyzeContentDto) {
-    return this.aiService.analyzeContent(req.user.id, dto);
+    return this.paastService.analyzeContent(req.user.id, dto);
   }
 
   @Post('paast/find-by-content')
@@ -927,7 +929,9 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này (mọi user) — tránh chấm điểm lại content không đổi, kể cả khi người khác đã chấm' })
   async findPaastByContent(@Body() dto: AnalyzeContentDto) {
-    return this.aiService.findLatestByContent(dto.content);
+    // Content có thể nằm trong file (fileUrl) — trích text trước rồi mới tra bản đã chấm.
+    const content = await this.paastService.resolvePaastContent(dto);
+    return this.paastService.findLatestByContent(content);
   }
 
   @Post('paast/upgrade/:analysisId')
@@ -935,7 +939,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Nâng cấp content dựa trên các tiêu chí đang thiếu của 1 bản phân tích đã lưu' })
   async upgradePaastAnalysis(@Req() req: any, @Param('analysisId') analysisId: string) {
-    return this.aiService.upgradeAnalysis(req.user.id, analysisId);
+    return this.paastService.upgradeAnalysis(req.user.id, analysisId);
   }
 
   @Get('paast/history')
@@ -943,7 +947,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Lấy lịch sử phân tích PAAST của chính user đang login' })
   async getPaastUserHistory(@Req() req: any, @Query() query: HistoryQueryDto) {
-    return this.aiService.getPaastUserHistory(req.user.id, query);
+    return this.paastService.getPaastUserHistory(req.user.id, query);
   }
 
   @Get('paast/history/:id')
@@ -951,7 +955,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Lấy chi tiết một bản ghi lịch sử phân tích PAAST' })
   async getPaastHistoryDetail(@Req() req: any, @Param('id') id: string) {
-    return this.aiService.getPaastHistoryDetail(id, req.user.id);
+    return this.paastService.getPaastHistoryDetail(id, req.user.id);
   }
 
   // ═══════════════════════════════════════════════════════════════
