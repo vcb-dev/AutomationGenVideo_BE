@@ -12,6 +12,16 @@ import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, U
 const INTAKE_READY_CONDITIONS = ['GOOD', 'USED'];
 
 /**
+ * Máy vừa nhập vào kệ ngay hay đi bàn kiểm tra.
+ *
+ * Tách thành hàm thuần để test được luật này mà không phải dựng cả service — luật là thứ dễ sửa
+ * nhầm nhất ở đây, còn việc `createAsset` có gọi đúng nó không thì đã có test đi qua service phủ.
+ */
+export function intakeStatusFor(condition: string): 'AVAILABLE' | 'PENDING_INSPECTION' {
+  return INTAKE_READY_CONDITIONS.includes(condition) ? 'AVAILABLE' : 'PENDING_INSPECTION';
+}
+
+/**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.
  *
  * `ON_LOAN` do màn Bàn giao đặt, `POST_RETURN_CHECK` do màn Nhận trả đặt. Cho sửa tay thì hai
@@ -78,9 +88,7 @@ export class MemsCatalogService {
     // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';
-    const status = INTAKE_READY_CONDITIONS.includes(condition)
-      ? 'AVAILABLE'
-      : 'PENDING_INSPECTION';
+    const status = intakeStatusFor(condition);
 
     return this.prisma.$transaction(async (tx) => {
       // Đếm và ghi phải nằm trong cùng giao dịch có khoá, nếu không hai người cùng nhập kho sẽ
