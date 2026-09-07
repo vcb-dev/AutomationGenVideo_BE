@@ -102,14 +102,14 @@ export class MemsBorrowController {
   @Post('requests/:id/approve')
   @ApiOperation({ summary: 'Duyệt một cấp (NV-09)' })
   approve(@Request() req: any, @Param('id') id: string, @Body() dto: ApproveRequestDto) {
-    return this.approvals.approve(id, { id: req.user.id, roles: req.user.roles ?? [] }, dto);
+    return this.approvals.approve(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team }, dto);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @Post('requests/:id/reject')
   @ApiOperation({ summary: 'Từ chối phiếu, nhả giữ chỗ ngay (BR-32)' })
   reject(@Request() req: any, @Param('id') id: string, @Body() dto: RejectRequestDto) {
-    return this.approvals.reject(id, { id: req.user.id, roles: req.user.roles ?? [] }, dto);
+    return this.approvals.reject(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team }, dto);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
