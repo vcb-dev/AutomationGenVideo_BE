@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateHandoverDto } from './dto';
+import { assertPhotoEvidence } from './photo-evidence';
 
 @Injectable()
 export class HandoverService {
@@ -68,6 +69,15 @@ export class HandoverService {
         );
       }
 
+      // Cùng một máy khai hai lần là hai dòng biên bản cho một chiếc. Khâu nhận trả dò bằng
+      // `find()` nên chỉ thấy dòng đầu; dòng thứ hai không bao giờ được nhận lại, `stillOut`
+      // không bao giờ về 0 và PHIẾU KHÔNG BAO GIỜ ĐÓNG ĐƯỢC. `assign` đã chặn ca này từ lâu,
+      // đây là cùng một lỗ ở cửa kế tiếp.
+      const handedOverIds = dto.units.map((u) => u.assetId);
+      if (new Set(handedOverIds).size !== handedOverIds.length) {
+        throw new BadRequestException('Một máy được khai hai lần trong cùng biên bản bàn giao');
+      }
+
       const pinnedAssetIds = new Set(
         request.lines.flatMap((l) => l.reservations.map((r) => r.asset_id).filter(Boolean)),
       );
@@ -78,6 +88,31 @@ export class HandoverService {
           );
         }
       }
+
+      // Biên bản phải phủ HẾT số máy đã gán. Thiếu một chiếc thì phiếu vẫn chuyển sang Đang mượn
+      // và cửa bàn giao đóng lại vĩnh viễn (lần gọi sau bị chặn vì trạng thái không còn là
+      // PREPARING) — chiếc đó kẹt luôn: không giao được, không có gì để nhận trả, mà giữ chỗ của
+      // nó thì không bao giờ được nhả.
+      const handedIds = new Set(dto.units.map((u) => u.assetId));
+      const missing = [...pinnedAssetIds].filter((id) => !handedIds.has(id as string));
+      if (missing.length > 0) {
+        const codes = await tx.memsAsset.findMany({
+          where: { id: { in: missing as string[] } },
+          select: { asset_code: true },
+        });
+        throw new BadRequestException(
+          `Biên bản còn thiếu ${missing.length} máy đã gán cho phiếu: ${codes
+            .map((c) => c.asset_code)
+            .join(', ')}. Giao đủ một lượt, hoặc bỏ gán những máy không giao nữa.`,
+        );
+      }
+
+      // Kiểm ảnh SAU khi đã chốt danh sách máy: máy không thuộc phiếu là lỗi cơ bản hơn, báo
+      // "ảnh không thuộc máy này" trước sẽ chỉ người dùng đi sửa nhầm chỗ.
+      //
+      // Đếm số ảnh ở trên là chưa đủ: `photoKeys` do client gửi nên phép đếm không nói được tấm
+      // nào có thật. Kiểm bằng chính `tx` để thấy cả ảnh vừa tải lên trong cùng luồng.
+      await assertPhotoEvidence(tx, dto.units);
 
       const handover = await tx.memsHandover.create({
         data: {
