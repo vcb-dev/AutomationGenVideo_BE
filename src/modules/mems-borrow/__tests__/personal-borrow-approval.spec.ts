@@ -185,13 +185,6 @@ describe('BorrowRequestService.create — mục đích mượn', () => {
   function buildCreateDeps() {
     const tx = {
       $executeRawUnsafe: jest.fn(async (..._args: any[]) => 1),
-      // Bộ phận luôn suy từ người đăng nhập — client không còn khai được nữa.
-      memsMember: { findFirst: jest.fn(async () => ({ department_id: 'dept-1' })) },
-      user: { findUnique: jest.fn(async () => ({ team: 'MEDIA' })) },
-      memsDepartment: {
-        findFirst: jest.fn(async () => null),
-        findMany: jest.fn(async () => []),
-      },
       memsBorrowRequest: {
         count: jest.fn(async () => 0),
         create: jest.fn(async ({ data }: any) => ({ id: 'req-1', ...data })),
