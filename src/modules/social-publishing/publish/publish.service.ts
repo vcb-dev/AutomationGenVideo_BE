@@ -14,12 +14,14 @@ import { isVideoUrl } from './media-url.util';
 import {
   probeMedia,
   resolveFFprobePath,
+  resolveFFmpegPath,
   validateVideoForPublish,
   collectWarnings,
   isFacebookReelsCandidate,
   INSTAGRAM_REELS_LIMITS,
   PRECHECK_ERROR_MARKER,
 } from './media-probe.util';
+import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -416,27 +418,16 @@ export class PublishService {
     return promise;
   }
 
-  /** Tìm FFmpeg: ưu tiên env → /usr/bin/ffmpeg (Docker) → null */
+  /** Tìm FFmpeg — dùng bản chung ở media-probe.util (có thêm fallback @ffmpeg-installer) */
   private resolveFFmpegPath(): string | null {
-    const fromEnv = process.env.FFMPEG_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    // Fallback: ffmpeg đã cài qua apk/apt trong Docker
-    if (fs.existsSync('/usr/bin/ffmpeg')) return '/usr/bin/ffmpeg';
-    this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
-    return null;
+    const found = resolveFFmpegPath();
+    if (!found) this.logger.warn('[FFmpeg] Không tìm thấy ffmpeg — bỏ qua transcode/nén');
+    return found;
   }
 
-  /** Tìm ffprobe: env → cạnh ffmpeg → /usr/bin/ffprobe → null */
+  /** Tìm ffprobe — dùng bản chung ở media-probe.util (có thêm fallback @ffprobe-installer) */
   private resolveFFprobePath(): string | null {
-    const fromEnv = process.env.FFPROBE_PATH;
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-    const ffmpeg = process.env.FFMPEG_PATH;
-    if (ffmpeg && fs.existsSync(ffmpeg)) {
-      const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    if (fs.existsSync('/usr/bin/ffprobe')) return '/usr/bin/ffprobe';
-    return null;
+    return resolveFFprobePath();
   }
 
   /**
@@ -693,8 +684,12 @@ export class PublishService {
         const refreshToken = opts.accountId ? await this.getDecryptedRefreshToken(opts.accountId) : undefined;
         const ytAccount = opts.accountId ? await this.prisma.socialAccount.findUnique({ where: { id: opts.accountId }, select: { token_expires_at: true } }) : null;
         return this.yt.publish(token, {
-          title: opts.message.substring(0, 100),
+          // buildYoutubeTitle/extractHashtags trước đây chỉ có test gọi — không code chạy
+          // nào dùng, nên tiêu đề vẫn bị cắt cụt giữa từ và tags luôn rỗng. Nối vào đây
+          // thì cải tiến mới thực sự có tác dụng.
+          title: buildYoutubeTitle(opts.message),
           description: opts.message,
+          tags: extractHashtags(opts.message),
           privacy: opts.privacy,
           mediaUrls: opts.mediaUrls,
           thumbUrl: opts.thumbUrl,
