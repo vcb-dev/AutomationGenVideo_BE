@@ -9,12 +9,17 @@ import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto';
 import { ApprovalPlan, BorrowPurpose, canSign, nextStep, planApprovals } from './approval-rules';
+import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 
 /** Người đang ký, lấy từ token — cần cả id lẫn vai trò để đối chiếu với cấp đang tới lượt. */
 export interface Approver {
   id: string;
   roles: (UserRole | string)[];
+  team?: string | null;
 }
+
+/** Cùng hình dạng với `Approver`, nhưng dùng cho việc ĐỌC chứ không phải ký. */
+export type RequestViewer = Approver;
 
 @Injectable()
 export class ApprovalService {
@@ -41,15 +46,24 @@ export class ApprovalService {
     });
   }
 
-  async list(filter: { status?: string }) {
+  /**
+   * Danh sách phiếu. Thành viên thường chỉ thấy phiếu của chính mình.
+   *
+   * Lọc ở TẦNG TRUY VẤN chứ không lọc sau khi đọc: lọc sau vẫn kéo trọn bảng về bộ nhớ, và chỉ
+   * cần một chỗ quên lọc là lộ hết phiếu của cả công ty.
+   */
+  async list(filter: { status?: string }, viewer: RequestViewer) {
+    const ownerScope = isMediaLeaderOrAdminUser(viewer) ? {} : { owner_id: viewer.id };
     const statuses = filter.status ? filter.status.split(',').map((s) => s.trim()) : [];
     const requests = await this.prisma.memsBorrowRequest.findMany({
-      where:
-        statuses.length > 1
+      where: {
+        ...ownerScope,
+        ...(statuses.length > 1
           ? { status: { in: statuses as any } }
           : statuses.length === 1
             ? { status: statuses[0] as any }
-            : {},
+            : {}),
+      },
       include: {
         department: true,
         lines: { include: { model: { include: { category: true } } } },
@@ -74,7 +88,7 @@ export class ApprovalService {
     return requests.map((r) => this.decorate(r, userMap));
   }
 
-  async detail(id: string) {
+  async detail(id: string, viewer: RequestViewer) {
     const request = await this.prisma.memsBorrowRequest.findUnique({
       where: { id },
       include: {
@@ -89,6 +103,13 @@ export class ApprovalService {
       },
     });
     if (!request) throw new NotFoundException(`Không có phiếu ${id}`);
+
+    // Chặn SAU khi đọc chứ không gộp vào `where`: gộp vào thì phiếu người khác trả về 404, và
+    // 404 với 403 nói hai chuyện khác nhau — người dùng cần biết phiếu có tồn tại nhưng không
+    // phải của mình, thay vì tưởng mình gõ nhầm mã.
+    if (!isMediaLeaderOrAdminUser(viewer) && request.owner_id !== viewer.id) {
+      throw new ForbiddenException('Phiếu này không thuộc về bạn');
+    }
 
     const userIds = Array.from(
       new Set([
