@@ -17,6 +17,8 @@ function buildPrisma(opts: { categoryCode: string; existingCount: number; serial
       create: jest.fn(async ({ data }: any) => ({ id: 'new-asset', ...data })),
     },
     memsAssetEvent: { create: jest.fn(async ({ data }: any) => data) },
+    // Sinh mã thiết bị lấy khoá theo tiền tố danh mục trước khi đếm.
+    $executeRawUnsafe: jest.fn(async () => 1),
   };
   // Tạo máy và ghi nhật ký nhập kho nằm trong cùng một giao dịch.
   prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
@@ -33,14 +35,13 @@ describe('MemsCatalogService.createAsset', () => {
     expect(asset.asset_code).toBe('CAM-003');
   });
 
-  it('thiết bị mới luôn ở trạng thái Chờ kiểm tra', async () => {
-    // BR-05: không được đưa thẳng sang Sẵn sàng, kỹ thuật phải xác nhận trước.
+  it('thiết bị mới luôn ở trạng thái Sẵn sàng', async () => {
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
     const service = new MemsCatalogService(prisma);
 
     await service.createAsset({ modelId: 'model-1', serialNumber: 'SN-001' });
 
-    expect(prisma.memsAsset.create.mock.calls[0][0].data.status).toBe('PENDING_INSPECTION');
+    expect(prisma.memsAsset.create.mock.calls[0][0].data.status).toBe('AVAILABLE');
   });
 
   it('chặn serial đã tồn tại và chỉ ra thiết bị trùng', async () => {
@@ -85,8 +86,10 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
     expect(prisma.memsAsset.create.mock.calls[0][0].data.condition).toBe('USED');
   });
 
-  it('máy nhập về đã hỏng vẫn vào Chờ kiểm tra, không nhảy thẳng sang Hỏng', async () => {
-    // BR-05 nói về TRẠNG THÁI quy trình, còn hỏng là TÌNH TRẠNG vật lý — hai trục khác nhau.
+  it('máy khai là hỏng KHÔNG vào thẳng kệ mà đi Chờ kiểm tra', async () => {
+    // Hai trục khác nhau: `status` là vị trí quy trình, `condition` là chất lượng vật lý — nên
+    // tình trạng vẫn ghi đúng là BROKEN. Nhưng để nó ở Sẵn sàng thì phép đếm khả dụng hứa với
+    // người mượn kế tiếp một chiếc máy không dùng được, và không ai biết cho tới lúc bàn giao.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
     await new MemsCatalogService(prisma).createAsset({
       modelId: 'model-1',
@@ -97,6 +100,32 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
     const data = prisma.memsAsset.create.mock.calls[0][0].data;
     expect(data.status).toBe('PENDING_INSPECTION');
     expect(data.condition).toBe('BROKEN');
+  });
+
+  it('máy khai cần kiểm tra hoặc đang sửa cũng đi Chờ kiểm tra', async () => {
+    for (const condition of ['NEEDS_CHECK', 'IN_MAINTENANCE']) {
+      const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
+      await new MemsCatalogService(prisma).createAsset({
+        modelId: 'model-1',
+        serialNumber: `SN-${condition}`,
+        condition,
+      });
+
+      expect(prisma.memsAsset.create.mock.calls[0][0].data.status).toBe('PENDING_INSPECTION');
+    }
+  });
+
+  it('máy tốt hoặc chỉ có dấu hiệu sử dụng thì vào kệ ngay', async () => {
+    for (const condition of ['GOOD', 'USED']) {
+      const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
+      await new MemsCatalogService(prisma).createAsset({
+        modelId: 'model-1',
+        serialNumber: `SN-${condition}`,
+        condition,
+      });
+
+      expect(prisma.memsAsset.create.mock.calls[0][0].data.status).toBe('AVAILABLE');
+    }
   });
 
   it('ghi mốc Nhập kho vào nhật ký vòng đời', async () => {
