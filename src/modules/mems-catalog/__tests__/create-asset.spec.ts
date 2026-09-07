@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
-import { MemsCatalogService, intakeStatusFor } from '../mems-catalog.service';
+import { MemsCatalogService } from '../mems-catalog.service';
+import { intakeStatusFor } from '../intake-rules';
 
 function buildPrisma(opts: { categoryCode: string; existingCount: number; serialTaken?: boolean }) {
   const prisma: any = {

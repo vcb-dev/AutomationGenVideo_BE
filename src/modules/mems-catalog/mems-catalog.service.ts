@@ -1,25 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
-
-/**
- * Tình trạng vật lý cho phép máy vào kệ ngay khi nhập kho.
- *
- * Máy khai ngoài hai mức này phải qua bàn kiểm tra trước: BR-05 nói về TRẠNG THÁI quy trình,
- * còn hỏng là TÌNH TRẠNG vật lý — hai trục khác nhau, nhưng máy khai là hỏng mà vào thẳng
- * "Sẵn sàng" thì phép đếm khả dụng hứa với người mượn một chiếc máy không dùng được.
- */
-const INTAKE_READY_CONDITIONS = ['GOOD', 'USED'];
-
-/**
- * Máy vừa nhập vào kệ ngay hay đi bàn kiểm tra.
- *
- * Tách thành hàm thuần để test được luật này mà không phải dựng cả service — luật là thứ dễ sửa
- * nhầm nhất ở đây, còn việc `createAsset` có gọi đúng nó không thì đã có test đi qua service phủ.
- */
-export function intakeStatusFor(condition: string): 'AVAILABLE' | 'PENDING_INSPECTION' {
-  return INTAKE_READY_CONDITIONS.includes(condition) ? 'AVAILABLE' : 'PENDING_INSPECTION';
-}
+import { intakeStatusFor } from './intake-rules';
 
 /**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.
