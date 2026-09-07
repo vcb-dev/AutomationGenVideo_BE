@@ -14,12 +14,12 @@ import { isVideoUrl } from './media-url.util';
 import {
   probeMedia,
   resolveFFprobePath,
-  resolveFFmpegPath,
   validateVideoForPublish,
   collectWarnings,
   isFacebookReelsCandidate,
   INSTAGRAM_REELS_LIMITS,
   PRECHECK_ERROR_MARKER,
+  resolveFFmpegPath,
 } from './media-probe.util';
 import { buildYoutubeTitle, extractHashtags } from './youtube-metadata.util';
 import * as path from 'path';
@@ -74,6 +74,9 @@ function extensionForMime(mimetype?: string | null, fallback = '.mp4'): string {
   if (mimetype === 'image/gif') return '.gif';
   if (mimetype === 'image/webp') return '.webp';
   if (mimetype === 'video/mp4') return '.mp4';
+  // Drive trả 'video/quicktime' cho .mov — thiếu dòng này thì file tải về bị đặt
+  // tên .mp4, và mọi bước sau nhận nhầm định dạng.
+  if (mimetype === 'video/quicktime') return '.mov';
   return fallback;
 }
 
@@ -85,6 +88,8 @@ function ensureExt(filename: string, ext: string): string {
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
   private readonly driveLocalCache = new Map<string, Promise<PreparedMedia>>();
+  // Đếm số lượt đăng đang dùng mỗi file tạm — bộ dọn rác không xoá file còn người dùng.
+  private readonly mediaInUse = new Map<string, number>();
 
   // Giới hạn số request publishNow chạy đồng thời (FFmpeg transcode + Drive download
   // rất nặng CPU/RAM) — tránh nhiều người bấm "Đăng ngay" cùng lúc làm sập server.
@@ -129,7 +134,10 @@ export class PublishService {
             continue;
           }
 
-          const converted = `${publicBaseUrl}${localUrl.pathname}`;
+          // Giữ nguyên query string: URL media có thể mang ?filename=... (dùng để nhận
+          // diện video) hoặc token truy cập. Cắt mất thì platform nhận nhầm loại media
+          // hoặc tải file thất bại — mà không có lỗi nào chỉ ra nguyên nhân.
+          const converted = `${publicBaseUrl}${localUrl.pathname}${localUrl.search}`;
           this.logger.log(`[makeUrlsPublic] ${url} → ${converted}`);
           resultUrls.push(converted);
         } catch (e) {
@@ -235,10 +243,11 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const dedupKey = `${userId}:${dto.accountId}:${crypto
       .createHash('sha1')
-      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}`)
+      .update(`${dto.message}|${JSON.stringify(dto.mediaUrls || [])}|${dto.pageId || ''}|${dto.thumbUrl || ''}`)
       .digest('hex')}`;
 
     const existing = this.inFlightPublishNow.get(dedupKey);
@@ -261,6 +270,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const release = await this.publishNowSemaphore.acquire();
     try {
@@ -276,6 +286,7 @@ export class PublishService {
     mediaUrls?: string[];
     pageId?: string;
     privacy?: string;
+    thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
@@ -288,7 +299,15 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(dto.mediaUrls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
+    // try/finally BẮT BUỘC: giữa acquireMedia và lúc trả chỗ còn transcode và
+    // makeUrlsPublic — cả hai đều await và đều có thể ném lỗi. Không bọc thì bộ đếm
+    // rò vĩnh viễn, file bị giữ và mediaInUse phình dần. executeScheduled đã dùng
+    // finally, đường này thì chưa — nay đồng bộ lại.
+    try {
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map(u => this.transcodeVideoForPlatform(u)));
       results.forEach((newUrl, i) => {
@@ -319,19 +338,24 @@ export class PublishService {
         extraData,
         accountId: dto.accountId,
         platformId: account.platform_id,
+        // Thiếu dòng này thì bài "đăng ngay" mất ảnh bìa tuỳ chọn, trong khi bài đặt
+        // lịch vẫn giữ (executeScheduled có truyền) — cùng chức năng, hai hành vi.
+        thumbUrl: dto.thumbUrl,
       });
     } catch (err: any) {
       const apiErr = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       this.logger.error(`[PublishNow] ❌ ${account.platform} "${account.name}": ${apiErr}`);
       await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.FAILED, SocialPostSource.IMMEDIATE, undefined, apiErr);
-      this.scheduleCleanupTranscoded(transcodedFiles);
       throw new Error(apiErr);
     }
 
     const saved = await this.savePost(userId, dto.accountId, account.platform, dto, SocialPostStatus.COMPLETED, SocialPostSource.IMMEDIATE, result);
     this.archiveMediaAsync(saved.id, dto.mediaUrls || []).catch((err: any) => this.logger.warn(`[Archive] archiveMediaAsync failed: ${err.message}`));
-    this.scheduleCleanupTranscoded(transcodedFiles);
     return { success: true, platform: account.platform, result };
+    } finally {
+      this.releaseMedia(transcodedFiles);
+      this.scheduleCleanupTranscoded(transcodedFiles);
+    }
   }
 
   /** Gọi bởi ScheduleService */
@@ -351,6 +375,9 @@ export class PublishService {
     const prep = await this.prepareMediaUrlsForPublishing(post.media_urls || [], account.platform);
     let inputMediaUrls = prep.urls;
     const transcodedFiles: string[] = [...prep.tempFiles];
+    // Giữ chỗ ngay sau khi nhận file (kể cả khi trúng cache Drive) — nếu không, bộ dọn
+    // rác của một lượt đăng khác có thể xoá file ngay giữa lúc lượt này đang upload.
+    this.acquireMedia(transcodedFiles);
 
     if (needsTranscode) {
       const results = await Promise.all(inputMediaUrls.map((u: string) => this.transcodeVideoForPlatform(u)));
@@ -392,6 +419,7 @@ export class PublishService {
       enrichedErr.stack = err.stack;
       throw enrichedErr;
     } finally {
+      this.releaseMedia(transcodedFiles);
       this.scheduleCleanupTranscoded(transcodedFiles);
     }
   }
@@ -401,7 +429,9 @@ export class PublishService {
 
   private transcodeVideoForPlatform(localUrl: string): Promise<string> {
     if (!localUrl.includes('/api/social/media/')) return Promise.resolve(localUrl);
-    if (!/\.mp4(\?|$)/i.test(localUrl)) return Promise.resolve(localUrl);
+    // Dùng chung bộ nhận diện với các publisher. Bản cũ cắm cứng `.mp4` nên file .mov
+    // đi thẳng lên Instagram/Threads mà không qua transcode và bị nền tảng từ chối.
+    if (!isVideoUrl(localUrl)) return Promise.resolve(localUrl);
 
     // Nếu đang transcode URL này rồi (do request khác), chờ kết quả đó luôn
     if (this.transcodeCache.has(localUrl)) {
@@ -616,11 +646,47 @@ export class PublishService {
     }
   }
 
-  private scheduleCleanupTranscoded(filePaths: string[]) {
+  /** Đánh dấu file tạm đang được một lượt đăng sử dụng */
+  private acquireMedia(filePaths: string[]): void {
+    for (const p of filePaths) this.mediaInUse.set(p, (this.mediaInUse.get(p) ?? 0) + 1);
+  }
+
+  /** Trả lại file tạm khi lượt đăng kết thúc */
+  private releaseMedia(filePaths: string[]): void {
+    for (const p of filePaths) {
+      const remaining = (this.mediaInUse.get(p) ?? 1) - 1;
+      if (remaining <= 0) this.mediaInUse.delete(p);
+      else this.mediaInUse.set(p, remaining);
+    }
+  }
+
+  /**
+   * Xoá file tạm sau 10 phút, nhưng bỏ qua file đang có lượt đăng khác dùng.
+   *
+   * driveLocalCache giữ kết quả tải Drive trong 10 phút tính từ lúc tải xong, còn
+   * bộ dọn này đếm 10 phút từ lúc bài đăng xong — hai mốc lệch nhau. Lượt đăng thứ
+   * hai trúng cache ở phút thứ 9 sẽ nhận URL trỏ tới file bị xoá ngay sau đó.
+   *
+   * Hoãn tối đa 3 lần rồi xoá dù sao, để một bộ đếm rò rỉ không giữ file mãi mãi.
+   */
+  private scheduleCleanupTranscoded(filePaths: string[], attempt = 1, maxAttempts = 3) {
     if (!filePaths.length) return;
     setTimeout(() => {
+      const stillInUse: string[] = [];
       for (const p of filePaths) {
-        try { if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); } } catch (e: any) { this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`); }
+        if (attempt < maxAttempts && (this.mediaInUse.get(p) ?? 0) > 0) {
+          stillInUse.push(p);
+          continue;
+        }
+        try {
+          if (fs.existsSync(p)) { fs.unlinkSync(p); this.logger.log(`[Transcode] Đã xóa temp file: ${p}`); }
+        } catch (e: any) {
+          this.logger.warn(`[Transcode] Không xóa được temp file ${p}: ${e.message}`);
+        }
+      }
+      if (stillInUse.length) {
+        this.logger.log(`[Transcode] Hoãn xoá ${stillInUse.length} file đang được dùng (lần ${attempt}/${maxAttempts})`);
+        this.scheduleCleanupTranscoded(stillInUse, attempt + 1, maxAttempts);
       }
     }, 10 * 60 * 1000); // Tăng lên 10 phút để cache còn hiệu lực
   }
@@ -725,6 +791,7 @@ export class PublishService {
         user_id: userId, account_id: accountId, platform, source, status,
         message: dto.message, media_urls: dto.mediaUrls || [],
         page_id: dto.pageId, privacy: dto.privacy,
+        thumb_url: dto.thumbUrl,
         result, error_msg: errorMsg, executed_at: new Date(),
         updated_at: new Date(),
       },
@@ -745,7 +812,7 @@ export class PublishService {
    */
   async publishAsync(userId: string, dto: {
     accountId: string; message: string; mediaUrls?: string[];
-    pageId?: string; privacy?: string;
+    pageId?: string; privacy?: string; thumbUrl?: string;
   }) {
     const account = await this.accounts.findOne(dto.accountId, userId);
 
@@ -758,6 +825,9 @@ export class PublishService {
         media_urls: dto.mediaUrls ?? [],
         page_id: dto.pageId,
         privacy: dto.privacy,
+        // Worker đọc lại post.thumb_url khi chạy executeScheduled — không lưu ở đây
+        // thì bài đăng qua đường async cũng mất ảnh bìa.
+        thumb_url: dto.thumbUrl,
         scheduled_at: new Date(), // đến hạn ngay lập tức
         source: SocialPostSource.IMMEDIATE,
         status: SocialPostStatus.PENDING,
