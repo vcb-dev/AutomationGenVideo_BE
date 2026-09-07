@@ -13,8 +13,8 @@ export class BorrowRequestService {
   /**
    * Bộ phận của người mượn, suy từ chính người đăng nhập.
    *
-   * Client KHÔNG nên tự khai mình thuộc bộ phận nào — khai sai là quy trách nhiệm sai người,
-   * và giao diện cũng không có nguồn nào để lấy con số đó.
+   * Client KHÔNG khai bộ phận — khai sai là quy trách nhiệm sai người, và giao diện cũng không
+   * có nguồn nào để lấy con số đó. Hàm này là đường DUY NHẤT xác định bộ phận của một phiếu.
    *
    * Thứ tự tra, từ chắc chắn nhất tới suy đoán:
    *   1. Bảng thành viên MEMS, nếu ai đó đã gán
@@ -22,9 +22,7 @@ export class BorrowRequestService {
    *   3. Cả hệ thống chỉ có một bộ phận thì dùng luôn nó
    * Hết cả ba thì báo lỗi nói rõ phải làm gì, chứ không đoán bừa một bộ phận.
    */
-  private async resolveDepartment(tx: any, ownerId: string, given?: string): Promise<string> {
-    if (given) return given;
-
+  private async resolveDepartment(tx: any, ownerId: string): Promise<string> {
     const membership = await tx.memsMember.findFirst({
       where: { user_id: ownerId, is_disabled: false },
       select: { department_id: true },
@@ -81,7 +79,7 @@ export class BorrowRequestService {
         );
       }
 
-      const departmentId = await this.resolveDepartment(tx, ownerId, dto.departmentId);
+      const departmentId = await this.resolveDepartment(tx, ownerId);
       const requestCode = await this.nextRequestCode(tx, fromTime);
       const request = await tx.memsBorrowRequest.create({
         data: {

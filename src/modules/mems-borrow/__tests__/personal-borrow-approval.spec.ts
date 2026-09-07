@@ -133,7 +133,6 @@ describe('ApprovalService.approve — phiếu mượn cá nhân', () => {
 
 describe('BorrowRequestService.create — mục đích mượn', () => {
   const DTO = {
-    departmentId: 'dept-1',
     project: 'Chụp ảnh cưới người nhà',
     place: 'Nhà riêng',
     fromTime: '2026-08-15T02:00:00Z',
@@ -150,6 +149,13 @@ describe('BorrowRequestService.create — mục đích mượn', () => {
       },
       memsRequestLine: { create: jest.fn(async ({ data }: any) => ({ id: 'line-1', ...data })) },
       memsReservation: { createMany: jest.fn(async ({ data }: any) => ({ count: data.length })) },
+      // Bộ phận luôn suy từ người đăng nhập — client không còn khai được nữa.
+      memsMember: { findFirst: jest.fn(async () => ({ department_id: 'dept-1' })) },
+      user: { findUnique: jest.fn(async () => ({ team: 'MEDIA' })) },
+      memsDepartment: {
+        findFirst: jest.fn(async () => null),
+        findMany: jest.fn(async () => []),
+      },
     };
     const prisma: any = { $transaction: jest.fn(async (fn: any) => fn(tx)) };
     const availability: any = {

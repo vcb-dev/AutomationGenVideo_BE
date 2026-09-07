@@ -101,14 +101,21 @@ describe('BorrowRequestService — suy bộ phận từ người đăng nhập',
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('client vẫn truyền departmentId thì tôn trọng, không tra lại', async () => {
-    const { prisma, availability, captured, tx } = buildDeps({ membership: null });
+  it('client tự khai departmentId thì bị bỏ qua, vẫn suy từ người đăng nhập', async () => {
+    // Trước đây giá trị client gửi lên được nhận thẳng, không kiểm tra gì — nghĩa là ai cũng
+    // gán phiếu của mình cho một bộ phận bất kỳ, và khi máy hỏng thì trách nhiệm rơi sai chỗ.
+    // Giờ `CreateBorrowRequestDto` không còn trường đó: ValidationPipe toàn cục bật
+    // `forbidNonWhitelisted` nên request kèm nó bị chặn từ 400, còn tầng service thì không
+    // bao giờ đọc tới nữa.
+    const { prisma, availability, captured, tx } = buildDeps({
+      membership: { department_id: 'dep-mems' },
+    });
     await new BorrowRequestService(prisma, availability).create('user-1', {
       ...DTO,
       departmentId: 'dep-client-chon',
-    });
+    } as any);
 
-    expect(captured.request.department_id).toBe('dep-client-chon');
-    expect(tx.memsMember.findFirst).not.toHaveBeenCalled();
+    expect(captured.request.department_id).toBe('dep-mems');
+    expect(tx.memsMember.findFirst).toHaveBeenCalled();
   });
 });
