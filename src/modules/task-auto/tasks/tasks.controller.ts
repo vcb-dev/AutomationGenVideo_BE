@@ -26,6 +26,7 @@ import { TaskAutoTasksService } from "./tasks.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import { VideoScriptService } from "./video-script.service";
 import { ContentApprovalService } from "./content-approval.service";
+import { TaskVideoMatchService } from "./task-video-match.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -51,6 +52,7 @@ export class TaskAutoTasksController {
     private video: TaskAutoVideoService,
     private videoScript: VideoScriptService,
     private contentApproval: ContentApprovalService,
+    private videoMatch: TaskVideoMatchService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -93,6 +95,21 @@ export class TaskAutoTasksController {
   })
   createTask(@Body() dto: CreateTaskDto, @Request() req: any) {
     return this.tasks.create(dto, req.user.id, req.user.roles ?? []);
+  }
+
+  // Phải đứng trước "tasks/:id" — path 1 segment, nếu không route động :id nuốt mất.
+  @Post("tasks/match-videos")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({
+    summary:
+      "Chạy tay job khớp video kênh nội bộ (FB/IG) với task + gắn link bài đăng (thường chạy cron 07:45). Dùng để test/backfill.",
+  })
+  matchVideos(@Body() body: { since_days?: number; max_videos?: number }) {
+    return this.videoMatch.runDailyMatch({
+      sinceDays: body?.since_days,
+      maxVideos: body?.max_videos,
+    });
   }
 
   @Put("tasks/:id")
@@ -161,6 +178,15 @@ export class TaskAutoTasksController {
       req.user.id,
       req.user.roles ?? [],
     );
+  }
+
+  @Get("tasks/:id/video-matches")
+  @ApiOperation({
+    summary:
+      "Lịch sử job khớp video kênh nội bộ tự động cho task này (audit: link nào tự gắn, điểm số, vì sao bỏ)",
+  })
+  getVideoMatches(@Param("id") id: string) {
+    return this.videoMatch.listMatchesForTask(id);
   }
 
   @Delete("tasks/:id")
