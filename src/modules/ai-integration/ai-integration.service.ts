@@ -2865,7 +2865,7 @@ export class AiIntegrationService {
         throw new NotFoundException('Không tìm thấy nhân vật phù hợp');
       }
 
-      const missing = this.extractMissingElements(previousScoreResult);
+      const missing = extractMissingElements(previousScoreResult);
       const upgradeSystemPrompt = buildPaastUpgradeSystemPrompt(previousScoreResult, missing);
       const upgradeUserPrompt = buildPaastUpgradeUserPrompt(source.input_text, character.system_prompt, source.output_text);
 
