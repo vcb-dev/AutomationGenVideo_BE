@@ -17,7 +17,7 @@ export interface CheckAvailabilityOutput extends AvailabilityResult {
 }
 
 /** Trạng thái loại khỏi tổng máy dùng được (BR-14, cộng thêm BR-05 mà công thức gốc bỏ sót). */
-const NOT_USABLE_STATUSES = [
+export const NOT_USABLE_STATUSES = [
   'PENDING_INSPECTION',
   'BROKEN',
   'LOST',
