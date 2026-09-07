@@ -104,6 +104,28 @@ export class MemsCatalogService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Bảo trì bị loại khỏi khả dụng qua bảng `MemsMaintenance`, KHÔNG qua cột trạng thái.
+      // Chỉ đổi cột thì máy nằm ở xưởng vẫn hiện là rảnh trong mọi khoảng tương lai; còn chỉ
+      // đổi cột lúc quay về thì lệnh bảo trì bỏ ngỏ giữ máy bận vĩnh viễn. Phải chạm cả hai.
+      if ((dto.status ?? asset.status) === 'UNDER_MAINTENANCE' && asset.status !== 'UNDER_MAINTENANCE') {
+        await tx.memsMaintenance.create({
+          data: {
+            asset_id: asset.id,
+            reason: dto.note?.trim() || 'Chuyển bảo trì từ màn sửa thiết bị',
+            from_time: new Date(),
+            // Bỏ ngỏ điểm kết thúc: đoán bừa ngày trả xưởng thì tới hạn máy tự "rảnh" trong
+            // khi vẫn đang nằm ở chỗ thợ.
+            to_time: null,
+          },
+        });
+      }
+      if (asset.status === 'UNDER_MAINTENANCE' && (dto.status ?? asset.status) !== 'UNDER_MAINTENANCE') {
+        await tx.memsMaintenance.updateMany({
+          where: { asset_id: asset.id, to_time: null },
+          data: { to_time: new Date() },
+        });
+      }
+
       const updated = await tx.memsAsset.update({
         where: { id: asset.id },
         data: {
