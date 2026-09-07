@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE } from '../../platform-api.const';
+import { CAROUSEL_MAX_ITEMS } from '../../platform-limits.const';
+import { withRetry, DEFAULT_MAX_ATTEMPTS } from '../retry.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
@@ -12,7 +15,7 @@ const execFileAsync = promisify(execFile);
 @Injectable()
 export class FacebookPublisher {
   private readonly logger = new Logger(FacebookPublisher.name);
-  private readonly BASE = 'https://graph.facebook.com/v21.0';
+  private readonly BASE = FACEBOOK_GRAPH_BASE;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -103,6 +106,13 @@ export class FacebookPublisher {
     // (/api/social/media/...) thì upload thẳng bytes lên Facebook thay vì đưa URL
     // để Facebook tự tải — tránh lỗi code 100 "Invalid parameter" khi server fetch
     // của Facebook không tải được URL Railway lúc nhiều bài đăng đồng thời.
+    if (opts.mediaUrls.length > CAROUSEL_MAX_ITEMS) {
+      throw new Error(
+        `Facebook chỉ nhận tối đa ${CAROUSEL_MAX_ITEMS} media trong một bài — nhận ${opts.mediaUrls.length}. ` +
+        `Trước đây các ảnh thừa vẫn được upload rồi mới bị từ chối, để lại ảnh mồ côi trên Page.`,
+      );
+    }
+
     const photoIds: string[] = [];
     const failReasons: string[] = [];
     for (let i = 0; i < opts.mediaUrls.length; i++) {
@@ -344,27 +354,17 @@ export class FacebookPublisher {
     url: string,
     targetId: string,
     pageToken: string,
-    maxAttempts = 3,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
   ): Promise<string> {
-    let lastErr: any;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
-        if (res.data?.id) return res.data.id;
-        throw new Error('no id returned');
-      } catch (e: any) {
-        lastErr = e;
-        const status = e?.response?.status;
-        // Chỉ retry lỗi tạm thời: rate limit (429), lỗi server FB (5xx), hoặc không có status (timeout/network)
-        const retryable = !status || status === 429 || status >= 500;
-        if (attempt < maxAttempts && retryable) {
-          await this.sleep(attempt * 800);
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastErr;
+    return withRetry(async () => {
+      const res = await this.postPhoto(url, targetId, pageToken, { published: 'false' });
+      if (!res.data?.id) throw new Error('no id returned');
+      return res.data.id as string;
+    }, {
+      maxAttempts,
+      onRetry: (e, attempt, wait) =>
+        this.logger.warn(`[FB] Upload ảnh lỗi (lượt ${attempt}), thử lại sau ${wait}ms: ${e.message}`),
+    });
   }
 
   private sleep(ms: number): Promise<void> {
