@@ -3,13 +3,24 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import {
+  IMAGE_EXTENSION,
+  IMAGE_MIME,
+  SUPPORTED_IMAGE_LABEL,
+  sniffImageKind,
+} from '../../common/mems/image-file-type';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 /** Thư mục dự phòng khi chưa cấu hình Google Drive — giống cách task-auto đang làm. */
 export const MEMS_PHOTO_DIR = path.join(process.cwd(), 'uploads', 'mems');
 
-const ALLOWED_MIME = /^image\/(jpeg|png|gif|webp|heic)$/;
-const MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * Trần kích thước ảnh. Xuất ra ngoài để controller đặt luôn cho Multer.
+ *
+ * Kiểm ở tầng service là quá muộn: lúc đó Multer đã nạp trọn file vào RAM rồi, nên một video
+ * tải nhầm vẫn đủ hạ máy chủ trước khi dòng kiểm tra nào chạy tới.
+ */
+export const MEMS_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
 @Injectable()
 export class AssetPhotoService {
@@ -23,10 +34,9 @@ export class AssetPhotoService {
    * Kèm mốc thời gian và một đoạn ngẫu nhiên vì một máy có nhiều ảnh và người ta hay
    * tải lên hai file trùng tên gốc.
    */
-  private buildFileName(assetCode: string, originalName: string) {
-    const ext = path.extname(originalName).toLowerCase() || '.jpg';
+  private buildFileName(assetCode: string, extension: string) {
     const rand = Math.random().toString(36).slice(2, 8);
-    return `${assetCode}_${Date.now()}_${rand}${ext}`;
+    return `${assetCode}_${Date.now()}_${rand}${extension}`;
   }
 
   async list(assetCode: string) {
@@ -55,11 +65,16 @@ export class AssetPhotoService {
     user: unknown,
   ) {
     if (!file) throw new BadRequestException('Chưa chọn ảnh nào để tải lên');
-    if (!ALLOWED_MIME.test(file.mimetype)) {
-      throw new BadRequestException('Chỉ nhận ảnh jpg, png, gif, webp hoặc heic');
-    }
-    if (file.size > MAX_BYTES) {
+    if (file.size > MEMS_PHOTO_MAX_BYTES) {
       throw new BadRequestException('Ảnh vượt quá 10MB, chụp lại ở kích thước nhỏ hơn');
+    }
+
+    // Loại file suy từ NỘI DUNG, không từ `file.mimetype` (client tự khai) hay đuôi trong
+    // `file.originalname` (người dùng tự gõ). Tin hai thứ đó là ghi được file bất kỳ xuống đĩa
+    // chỉ bằng cách đổi tên và đặt lại header.
+    const kind = sniffImageKind(file.buffer);
+    if (!kind) {
+      throw new BadRequestException(`Tệp không phải ảnh hợp lệ. Chỉ nhận ${SUPPORTED_IMAGE_LABEL}`);
     }
 
     const asset = await this.prisma.memsAsset.findUnique({
@@ -68,7 +83,7 @@ export class AssetPhotoService {
     });
     if (!asset) throw new NotFoundException(`Không có thiết bị mã ${assetCode}`);
 
-    const filename = this.buildFileName(asset.asset_code, file.originalname);
+    const filename = this.buildFileName(asset.asset_code, IMAGE_EXTENSION[kind]);
     let url: string;
     let storage: string;
 
@@ -79,7 +94,7 @@ export class AssetPhotoService {
         const result = await this.googleDrive.uploadFromPath(
           tmpPath,
           filename,
-          file.mimetype,
+          IMAGE_MIME[kind],
           user,
           { subfolder: 'mems' },
         );
