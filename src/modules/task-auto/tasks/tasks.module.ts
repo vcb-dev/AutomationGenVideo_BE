@@ -9,6 +9,8 @@ import { TaskAutoTasksController } from './tasks.controller'
 import { VideoScriptService } from './video-script.service'
 import { ContentApprovalService } from './content-approval.service'
 import { TaskPublishedLinkStatsService } from './task-published-link-stats.service'
+import { TaskVideoMatchService } from './task-video-match.service'
+import { TaskVideoMatchCronService } from './task-video-match.cron'
 
 @Module({
   imports: [
@@ -18,7 +20,7 @@ import { TaskPublishedLinkStatsService } from './task-published-link-stats.servi
     MulterModule.register({ storage: memoryStorage() }),
   ],
   controllers: [TaskAutoTasksController],
-  providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService, TaskPublishedLinkStatsService],
+  providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService, TaskPublishedLinkStatsService, TaskVideoMatchService, TaskVideoMatchCronService],
   exports: [TaskAutoTasksService],
 })
 export class TasksModule {}

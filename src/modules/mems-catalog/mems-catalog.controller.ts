@@ -11,6 +11,7 @@ import {
   Request,
   Res,
   UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -26,10 +27,12 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import { MulterErrorFilter } from '../../common/mems/multer-error.filter';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
 import {
   AssetPhotoService,
   MEMS_PHOTO_DIR,
+  MEMS_PHOTO_MAX_BYTES,
   PHOTO_PURPOSE,
 } from './asset-photo.service';
 import { InspectionService } from './inspection.service';
@@ -83,7 +86,12 @@ export class MemsCatalogController {
   @Post('assets/:assetCode/photos')
   @ApiOperation({ summary: 'Tải ảnh thiết bị lên' })
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('photo'))
+  // Trần kích thước phải đặt ở ĐÂY chứ không chỉ trong service: Multer nạp trọn file vào RAM
+  // trước khi tầng service chạy, nên kiểm sau là đã muộn. Đổi lại, lỗi vượt trần giờ do Multer
+  // ném ra chứ không phải service — mà `MulterError` không phải `HttpException` nên filter toàn
+  // cục xếp vào 500. `MulterErrorFilter` dịch lại thành 400 kèm câu nhắc bằng tiếng Việt.
+  @UseFilters(MulterErrorFilter)
+  @UseInterceptors(FileInterceptor('photo', { limits: { fileSize: MEMS_PHOTO_MAX_BYTES } }))
   uploadPhoto(
     @Request() req: any,
     @Param('assetCode') assetCode: string,
