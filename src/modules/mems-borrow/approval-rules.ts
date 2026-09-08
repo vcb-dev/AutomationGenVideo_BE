@@ -13,6 +13,8 @@
  * chỉ mượn một buổi và dù máy rẻ.
  */
 
+import { isMediaTeam } from '../../common/mems/media-team';
+
 export type ApproverRole = 'LEADER' | 'ADMIN';
 
 /**
@@ -97,12 +99,24 @@ export function nextStep(plan: ApprovalPlan, approvedCount: number): ApprovalSte
 /**
  * Người này có quyền ký cấp đang tới lượt không.
  *
- * Cấp của admin thì chỉ admin ký — leader ký thay được thì cửa canh tài sản chỉ còn là hình
- * thức. Cấp của leader thì leader và manager luôn ký được, còn admin chỉ ký thay khi cấp đó
- * cho phép (phiếu công việc), xem `adminProxyAllowed`.
+ * Cấp của admin thì chỉ admin ký. Cấp của leader thì phải là leader/manager THUỘC TEAM MEDIA —
+ * kho là tài sản của bộ phận đó; leader bộ phận khác ký thì cửa duyệt không còn gắn với người
+ * chịu trách nhiệm về máy. Admin chỉ ký thay cấp leader khi cấp đó cho phép (phiếu công việc),
+ * xem `adminProxyAllowed`.
+ *
+ * `team` là tham số BẮT BUỘC, cố ý. Để nó tuỳ chọn thì mọi lời gọi quên truyền đều lặng lẽ
+ * biến cửa canh thành hình thức — chính là lỗi bản trước: `undefined` được coi là Media.
  */
-export function canSign(step: ApprovalStep, roles: string[]): boolean {
-  if (step.role === 'ADMIN') return roles.includes('ADMIN');
-  if (roles.includes('LEADER') || roles.includes('MANAGER')) return true;
-  return step.adminProxyAllowed && roles.includes('ADMIN');
+export function canSign(
+  step: ApprovalStep,
+  roles: string[],
+  team: string | null | undefined,
+): boolean {
+  const normRoles = roles.map((r) => r.toUpperCase());
+  if (step.role === 'ADMIN') return normRoles.includes('ADMIN');
+
+  const isLeaderOrManager = normRoles.includes('LEADER') || normRoles.includes('MANAGER');
+  if (isLeaderOrManager && isMediaTeam(team)) return true;
+
+  return step.adminProxyAllowed && normRoles.includes('ADMIN');
 }

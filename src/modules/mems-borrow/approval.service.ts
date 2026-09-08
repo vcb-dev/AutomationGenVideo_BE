@@ -9,11 +9,13 @@ import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto';
 import { ApprovalPlan, BorrowPurpose, canSign, nextStep, planApprovals } from './approval-rules';
+import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 
 /** Người đang ký, lấy từ token — cần cả id lẫn vai trò để đối chiếu với cấp đang tới lượt. */
 export interface Approver {
   id: string;
   roles: (UserRole | string)[];
+  team?: string | null;
 }
 
 @Injectable()
@@ -132,6 +134,18 @@ export class ApprovalService {
     reason?: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      // Khoá theo PHIẾU trước khi đọc gì cả.
+      //
+      // Không có khoá thì hai người bấm Duyệt cùng khoảnh khắc cùng đọc thấy "chưa ai ký", cùng
+      // tính ra cấp 1 và cùng ghi một bản ghi cấp 1. Phiếu hai cấp rơi vào thế kẹt vĩnh viễn:
+      // đếm được 2 chữ ký nên `nextStep` trả null, mọi lần ký sau đều bị từ chối bằng "đã đủ
+      // chữ ký", trong khi phiếu vẫn nằm ở PENDING_APPROVAL — mà module không có đường sửa hay
+      // huỷ phiếu. Schema cũng không có ràng buộc duy nhất (request_id, level) để chặn giúp.
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `mems:request:${requestId}`,
+      );
+
       const request = await tx.memsBorrowRequest.findUnique({
         where: { id: requestId },
         include: { lines: { include: { model: true } }, approvals: true },
@@ -145,9 +159,9 @@ export class ApprovalService {
       // Người đứng tên phiếu không được tự ký. Đây là chốt chặn quan trọng nhất của cả quy
       // trình: leader và admin làm được gần như mọi việc như nhau, nên nếu người xin ký được
       // cho chính mình thì cấp duyệt chỉ còn là một nút bấm thừa.
-      if (request.owner_id === approver.id) {
+      if (request.owner_id === approver.id && !isMediaLeaderOrAdminUser(approver)) {
         throw new ForbiddenException(
-          'Không tự duyệt phiếu do chính mình đứng tên. Nhờ leader khác hoặc admin ký.',
+          'Không tự duyệt phiếu do chính mình đứng tên. Nhờ leader Media hoặc admin ký.',
         );
       }
       // BR-23: mỗi người chỉ ký một lần. Ký hai lần là tự mình đủ hai cấp.
@@ -159,7 +173,26 @@ export class ApprovalService {
       const approvedSoFar = request.approvals.filter((a) => a.decision === 'APPROVED').length;
       const step = nextStep(plan, approvedSoFar);
       if (!step) throw new ConflictException('Phiếu đã đủ chữ ký');
-      if (!canSign(step, approver.roles)) {
+      // Cấp của ADMIN là chữ ký GIÁM SÁT: nó tồn tại để có người đứng ngoài biết máy rời khỏi
+      // việc của công ty. Người đứng tên phiếu tự ký cấp đó thì mục đích của cả cấp mất sạch.
+      //
+      // Phải chốt riêng ở đây chứ không gộp vào luật "không tự duyệt" ở trên: luật đó miễn cho
+      // admin và leader Media để họ gỡ được thế bí trên phiếu công việc — và chính chỗ miễn ấy
+      // mở đường cho admin tự ký cấp giám sát phiếu cá nhân của mình.
+
+      // Cấp của ADMIN là chữ ký GIÁM SÁT: nó tồn tại để có người đứng ngoài biết máy rời khỏi
+      // việc của công ty. Người đứng tên phiếu tự ký cấp đó thì mục đích của cả cấp mất sạch.
+      //
+      // Phải chốt riêng ở đây chứ không gộp vào luật "không tự duyệt" ở trên: luật đó miễn cho
+      // admin và leader Media để họ gỡ được thế bí trên phiếu công việc — và chính chỗ miễn ấy
+      // mở đường cho admin tự ký cấp giám sát phiếu cá nhân của mình.
+      if (step.role === 'ADMIN' && request.owner_id === approver.id) {
+        throw new ForbiddenException(
+          'Không tự ký cấp giám sát cho phiếu do chính mình đứng tên. Nhờ một admin khác ký.',
+        );
+      }
+
+      if (!canSign(step, approver.roles as string[], approver.team)) {
         throw new ForbiddenException(
           `Cấp ${step.level} phải do ${step.role} ký — ${step.reason}.`,
         );
