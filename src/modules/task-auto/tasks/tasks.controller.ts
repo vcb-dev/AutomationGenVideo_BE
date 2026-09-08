@@ -10,13 +10,9 @@ import {
   Query,
   UseGuards,
   Request,
-  UseInterceptors,
-  UploadedFile,
   Res,
   BadRequestException,
 } from "@nestjs/common";
-import { FileInterceptor } from "@nestjs/platform-express";
-import { memoryStorage } from "multer";
 import { Response } from "express";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
@@ -217,42 +213,42 @@ export class TaskAutoTasksController {
   }
 
   @Post("tasks/:id/upload-video/init")
-  @ApiOperation({ summary: "Khởi tạo upload video tạm (local, chưa lên Drive)" })
+  @ApiOperation({ summary: "Khởi tạo phiên upload video tạm — trả về Google Drive resumable uploadUrl" })
   initVideoUpload(
     @Param("id") id: string,
     @Body() body: { filename: string; mimetype: string; totalSize: number },
     @Request() req: any,
   ) {
-    return this.video.initChunkUpload(id, req.user.id, body);
+    return this.video.initChunkUpload(id, req.user.id, body, req.headers?.origin);
   }
 
-  @Post("tasks/:id/upload-video/chunk")
-  @ApiOperation({ summary: "Gửi một chunk của video lên server" })
-  @UseInterceptors(FileInterceptor("chunk", {
-    storage: memoryStorage(),
-    limits: { fileSize: 12 * 1024 * 1024 },
-  }))
-  async receiveVideoChunk(
-    @Param("id") id: string,
-    @UploadedFile() chunk: Express.Multer.File,
-    @Body("uploadId") uploadId: string,
-    @Body("chunkIndex") chunkIndex: string,
-    @Request() req: any,
-  ) {
-    if (!chunk) throw new BadRequestException("Thiếu dữ liệu chunk");
-    if (!uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.receiveChunk(uploadId, req.user.id, chunk.buffer, parseInt(chunkIndex, 10));
-  }
-
-  @Post("tasks/:id/upload-video/finish")
-  @ApiOperation({ summary: "Hoàn tất upload: ghép chunks, đăng ký video tạm" })
-  finishVideoUpload(
-    @Param("id") id: string,
+  @Post("tasks/:id/upload-video/status")
+  @ApiOperation({ summary: "Truy vấn tiến độ resumable trên Google Drive (dùng để resume khi chunk lỗi)" })
+  videoUploadStatus(
     @Body() body: { uploadId: string },
     @Request() req: any,
   ) {
     if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.finishChunkUpload(body.uploadId, req.user.id, id);
+    return this.video.chunkUploadStatus(body.uploadId, req.user.id);
+  }
+
+  @Post("tasks/:id/upload-video/chunk")
+  @ApiOperation({ summary: "Đã bỏ — FE upload chunk trực tiếp lên Google Drive resumable uploadUrl" })
+  receiveVideoChunk() {
+    throw new BadRequestException(
+      "Endpoint này đã bỏ. FE upload chunk trực tiếp lên Google Drive resumable uploadUrl trả về từ /upload-video/init.",
+    );
+  }
+
+  @Post("tasks/:id/upload-video/finish")
+  @ApiOperation({ summary: "Hoàn tất upload: xác nhận Drive đã nhận đủ, đăng ký video tạm" })
+  finishVideoUpload(
+    @Param("id") id: string,
+    @Body() body: { uploadId: string; driveFileId?: string },
+    @Request() req: any,
+  ) {
+    if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
+    return this.video.finishChunkUpload(body.uploadId, req.user.id, id, body.driveFileId);
   }
 
   @Get("tasks/:id/pending-video")
