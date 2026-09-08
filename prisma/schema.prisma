@@ -1457,7 +1457,12 @@ model SocialPost {
   scheduled_at  DateTime?
   executed_at   DateTime?
   retry_count   Int              @default(0)
+  /// Thời điểm bài được phép chạy lại sau khi đăng lỗi (exponential backoff).
   next_retry_at DateTime?
+  /// Hạn giữ chỗ của worker đang xử lý bài này. Worker gia hạn định kỳ trong lúc
+  /// chạy; tiến trình chết thì hạn tự hết và bài được nhận lại. TÁCH RIÊNG khỏi
+  /// next_retry_at: gộp chung khiến bài đang chờ retry bị đếm nhầm là đang xử lý.
+  claimed_until DateTime?
   result        Json?
   error_msg     String?
   thumb_url     String?
@@ -1474,6 +1479,7 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([claimed_until])
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
