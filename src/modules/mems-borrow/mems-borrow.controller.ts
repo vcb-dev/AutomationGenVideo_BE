@@ -130,6 +130,23 @@ export class MemsBorrowController {
     return this.handovers.prepareSheet(id);
   }
 
+  /**
+   * Cố ý KHÔNG có `@Roles`: người đứng tên phiếu phải tự huỷ được phiếu của mình, mà họ thường
+   * là MEMBER. Quyền chốt trong service — ở đó mới biết ai là chủ phiếu.
+   */
+  @Post('requests/:id/cancel')
+  @ApiOperation({
+    summary:
+      'Huỷ phiếu chưa giao máy. Chủ phiếu huỷ được khi phiếu chưa duyệt; quản lý kho huỷ được tới trước lúc bàn giao',
+  })
+  cancel(@Request() req: any, @Param('id') id: string) {
+    return this.requests.cancel(id, {
+      id: req.user.id,
+      roles: req.user.roles ?? [],
+      team: req.user.team,
+    });
+  }
+
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/handover')
