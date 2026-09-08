@@ -20,6 +20,8 @@ import {
   CreateBorrowRequestDto,
   CreateHandoverDto,
   CreateReturnDto,
+  BorrowHistoryQueryDto,
+  ListRequestsQueryDto,
   RejectRequestDto,
 } from './dto';
 
@@ -63,20 +65,8 @@ export class MemsBorrowController {
     summary:
       'Nhật ký toàn bộ lượt mượn của cả kho, lọc theo trạng thái và khoảng ngày (chỉ quản lý kho)',
   })
-  borrowHistoryLog(
-    @Query('status') status?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    return this.historyLog.list({
-      status,
-      from,
-      to,
-      page: page ? Number(page) : undefined,
-      pageSize: pageSize ? Number(pageSize) : undefined,
-    });
+  borrowHistoryLog(@Query() query: BorrowHistoryQueryDto) {
+    return this.historyLog.list(query);
   }
 
   @Get('assets/:id/borrow-history')
@@ -90,8 +80,8 @@ export class MemsBorrowController {
 
   @Get('requests')
   @ApiOperation({ summary: 'Danh sách phiếu mượn, lọc theo trạng thái (MH-09)' })
-  listRequests(@Query('status') status?: string) {
-    return this.approvals.list({ status });
+  listRequests(@Query() query: ListRequestsQueryDto) {
+    return this.approvals.list({ status: query.status });
   }
 
   @Get('requests/:id')

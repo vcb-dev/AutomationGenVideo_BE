@@ -28,7 +28,17 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { Public } from '../auth/decorators/public.decorator';
 import { MulterErrorFilter } from '../../common/mems/multer-error.filter';
-import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
+import {
+  CreateAssetDto,
+  CreateCategoryDto,
+  CreateLocationDto,
+  CreateModelDto,
+  InspectAssetDto,
+  ListAssetsQueryDto,
+  ListModelsQueryDto,
+  UpdateAssetDto,
+  UpdateLocationDto,
+} from './dto';
 import {
   AssetPhotoService,
   MEMS_PHOTO_DIR,
@@ -50,8 +60,8 @@ export class MemsCatalogController {
 
   @Get('assets')
   @ApiOperation({ summary: 'Danh sách thiết bị trong kho (MH-02)' })
-  listAssets(@Query('categoryId') categoryId?: string, @Query('status') status?: string) {
-    return this.service.listAssets({ categoryId, status });
+  listAssets(@Query() query: ListAssetsQueryDto) {
+    return this.service.listAssets({ categoryId: query.categoryId, status: query.status });
   }
 
   @Get('assets/:assetCode')
@@ -185,8 +195,8 @@ export class MemsCatalogController {
 
   @Get('models')
   @ApiOperation({ summary: 'Danh sách model, kèm phụ kiện và số máy đang có' })
-  listModels(@Query('categoryId') categoryId?: string) {
-    return this.service.listModels({ categoryId });
+  listModels(@Query() query: ListModelsQueryDto) {
+    return this.service.listModels({ categoryId: query.categoryId });
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
