@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 /**
  * Chức năng: xoá một thiết bị khỏi kho.
@@ -30,7 +31,7 @@ function buildDeps(over: Partial<any> = {}) {
     memsAsset: { findUnique: jest.fn(async (_args: any) => asset) },
     $transaction: jest.fn(async (fn: any) => fn(tx)),
   };
-  return { service: new MemsCatalogService(prisma), prisma, tx };
+  return { service: new MemsCatalogService(prisma, photoUrlSignerStub), prisma, tx };
 }
 
 describe('MemsCatalogService.deleteAsset — khi nào chặn', () => {

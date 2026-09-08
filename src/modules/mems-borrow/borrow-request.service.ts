@@ -1,7 +1,23 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AvailabilityService } from './availability.service';
 import { CreateBorrowRequestDto } from './dto';
+
+/**
+ * Giai đoạn còn huỷ được phiếu — tất cả đều là trước khi máy rời kho.
+ *
+ * Từ `ON_LOAN` trở đi thì đường về duy nhất là màn Nhận trả: huỷ ở đó là bỏ rơi những chiếc đang
+ * nằm ngoài công ty mà không còn phiếu nào theo dõi chúng.
+ */
+const CANCELLABLE_STATUSES: string[] = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'PREPARING'];
 
 @Injectable()
 export class BorrowRequestService {
@@ -153,5 +169,68 @@ export class BorrowRequestService {
     });
     const ymd = dayStart.toISOString().slice(0, 10).replace(/-/g, '');
     return `REQ-${ymd}-${String(used + 1).padStart(3, '0')}`;
+  }
+
+  /**
+   * Huỷ một phiếu chưa giao máy.
+   *
+   * Khác TỪ CHỐI ở người bấm và ở ý nghĩa: từ chối là quản lý kho nói "không cho mượn", còn huỷ
+   * là người mượn nói "tôi không cần nữa". Trước đây chỉ có đường thứ nhất, nên đặt nhầm ngày
+   * hoặc buổi quay bị dời thì phiếu nằm đó giữ chỗ cho tới khi có người từ chối hộ.
+   *
+   * Ai huỷ được:
+   *   - người đứng tên, khi phiếu CHƯA có chữ ký nào — sau khi duyệt thì kho đã bắt đầu soạn
+   *     hàng, rút lui phải qua người giữ kho;
+   *   - quản lý kho Media và admin, với mọi phiếu chưa bàn giao.
+   *
+   * Máy đã ra khỏi kho thì KHÔNG huỷ được: đường về duy nhất là màn Nhận trả. Cho huỷ ở đó là bỏ
+   * rơi những chiếc đang nằm ngoài công ty mà không còn phiếu nào theo dõi chúng.
+   */
+  async cancel(requestId: string, actor: { id: string; roles: (string | UserRole)[]; team?: string | null }) {
+    return this.prisma.$transaction(async (tx) => {
+      // Cùng khoá với `ApprovalService.decide`: không thì một người bấm Huỷ đúng lúc người kia
+      // bấm Duyệt, và phiếu vừa có chữ ký vừa mang trạng thái đã huỷ.
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `mems:request:${requestId}`,
+      );
+
+      const request = await tx.memsBorrowRequest.findUnique({ where: { id: requestId } });
+      if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
+
+      const isKeeper = isMediaLeaderOrAdminUser(actor);
+      const isOwner = request.owner_id === actor.id;
+      if (!isKeeper && !isOwner) {
+        throw new ForbiddenException('Phiếu này không thuộc về bạn');
+      }
+
+      if (!CANCELLABLE_STATUSES.includes(request.status)) {
+        throw new ConflictException(
+          `Phiếu ${request.request_code} đang ở trạng thái ${request.status}, không huỷ được nữa. ` +
+            'Máy đã giao thì nhận về bằng màn Nhận trả.',
+        );
+      }
+      if (!isKeeper && request.status !== 'PENDING_APPROVAL') {
+        throw new ForbiddenException(
+          `Phiếu ${request.request_code} đã được duyệt và kho đang soạn hàng. Nhờ quản lý kho huỷ giúp.`,
+        );
+      }
+
+      // Nhả giữ chỗ NGAY, giống BR-32 của từ chối: để sang lượt sau thì khoảng thời gian đó vẫn
+      // hiện là bận và không ai xin mượn được chiếc máy thực ra đang rảnh.
+      await tx.memsReservation.updateMany({
+        where: { request_line: { request_id: requestId }, status: { not: 'RELEASED' } },
+        data: { status: 'RELEASED' },
+      });
+      await tx.memsRequestLine.updateMany({
+        where: { request_id: requestId },
+        data: { status: 'CANCELLED' },
+      });
+
+      return tx.memsBorrowRequest.update({
+        where: { id: requestId },
+        data: { status: 'CANCELLED' },
+      });
+    });
   }
 }

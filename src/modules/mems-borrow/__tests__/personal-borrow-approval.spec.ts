@@ -34,15 +34,16 @@ describe('canSign — phiếu mượn cá nhân', () => {
     // còn là hình thức. Trên phiếu công việc thì vẫn cho ký thay (xem approval-plan.spec.ts).
     const plan = planApprovals({ ...base, purpose: 'PERSONAL' });
 
-    expect(canSign(plan.steps[0], ['ADMIN'])).toBe(false);
-    expect(canSign(plan.steps[0], ['LEADER'])).toBe(true);
-    expect(canSign(plan.steps[1], ['ADMIN'])).toBe(true);
+    expect(canSign(plan.steps[0], ['ADMIN'], null)).toBe(false);
+    expect(canSign(plan.steps[0], ['LEADER'], 'MEDIA')).toBe(true);
+    expect(canSign(plan.steps[1], ['ADMIN'], null)).toBe(true);
   });
 });
 
-const LEADER = { id: 'leader-1', roles: ['LEADER'] };
-const LEADER_KHAC = { id: 'leader-2', roles: ['LEADER'] };
-const ADMIN = { id: 'admin-1', roles: ['ADMIN'] };
+// Kho thiết bị là tài sản của bộ phận Media, nên người ký cấp leader phải thuộc team đó.
+const LEADER = { id: 'leader-1', roles: ['LEADER'], team: 'MEDIA' };
+const LEADER_KHAC = { id: 'leader-2', roles: ['LEADER'], team: 'MEDIA' };
+const ADMIN = { id: 'admin-1', roles: ['ADMIN'], team: null };
 
 function buildDeps(over: Partial<any> = {}) {
   const request = {
@@ -59,6 +60,8 @@ function buildDeps(over: Partial<any> = {}) {
     ...over,
   };
   const tx = {
+    // `decide` khoá theo phiếu trước khi đọc, để hai người ký cùng lúc không cùng ghi một cấp.
+    $executeRawUnsafe: jest.fn(async (..._args: any[]) => 1),
     memsBorrowRequest: {
       findUnique: jest.fn(async () => request),
       findUniqueOrThrow: jest.fn(async () => request),
@@ -111,6 +114,44 @@ describe('ApprovalService.approve — phiếu mượn cá nhân', () => {
     await expect(
       new ApprovalService(prisma).approve('req-1', LEADER_KHAC, {}),
     ).rejects.toThrow(/phải do ADMIN ký/);
+  });
+
+  it('admin KHÔNG tự ký cấp giám sát trên phiếu cá nhân của chính mình', async () => {
+    // Cấp hai tồn tại để có người ĐỨNG NGOÀI biết máy rời khỏi việc công ty. Người đứng tên
+    // phiếu tự ký cấp đó thì chữ ký giám sát chỉ còn là thủ tục — và admin đúng là người dễ
+    // rơi vào ca này nhất vì họ được miễn luật "không tự duyệt" để gỡ thế bí cho phiếu khác.
+    const { prisma, tx } = buildDeps({
+      owner_id: ADMIN.id,
+      approvals: [{ decided_by: LEADER.id, decision: 'APPROVED' }],
+    });
+
+    await expect(
+      new ApprovalService(prisma).approve('req-1', ADMIN, {}),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.memsApproval.create).not.toHaveBeenCalled();
+  });
+
+  it('admin khác vẫn ký được cấp giám sát cho phiếu cá nhân của admin này', async () => {
+    // Siết ở trên không được biến phiếu cá nhân của admin thành phiếu không ai ký nổi.
+    const ADMIN_KHAC = { id: 'admin-2', roles: ['ADMIN'], team: null };
+    const { prisma } = buildDeps({
+      owner_id: ADMIN.id,
+      approvals: [{ decided_by: LEADER.id, decision: 'APPROVED' }],
+    });
+
+    const result = await new ApprovalService(prisma).approve('req-1', ADMIN_KHAC, {});
+
+    expect(result.status).toBe('APPROVED');
+  });
+
+  it('leader Media vẫn tự duyệt được phiếu công việc của chính mình', async () => {
+    // Không siết nhầm sang ca đã cân nhắc từ trước: leader Media là người trực tiếp giữ kho,
+    // phiếu công việc một cấp của họ vẫn tự ký được.
+    const { prisma } = buildDeps({ purpose: 'WORK', owner_id: LEADER.id });
+
+    const result = await new ApprovalService(prisma).approve('req-1', LEADER, {});
+
+    expect(result.status).toBe('APPROVED');
   });
 
   it('phiếu công việc vẫn chỉ cần một chữ ký như cũ', async () => {
