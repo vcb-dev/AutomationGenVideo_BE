@@ -17,14 +17,14 @@ import { Response } from "express";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { GoogleDriveStorageService } from "../../social-publishing/upload/google-drive-storage.service";
 
 const PRODUCT_IMAGES_DIR = path.join(process.cwd(), "uploads", "products");
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoUploadController {
   constructor(private googleDrive: GoogleDriveStorageService) {}
