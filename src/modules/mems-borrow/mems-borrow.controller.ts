@@ -4,6 +4,7 @@ import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { ApprovalService } from './approval.service';
 import { AssignmentService } from './assignment.service';
 import { AvailabilityService } from './availability.service';
@@ -19,6 +20,8 @@ import {
   CreateBorrowRequestDto,
   CreateHandoverDto,
   CreateReturnDto,
+  BorrowHistoryQueryDto,
+  ListRequestsQueryDto,
   RejectRequestDto,
 } from './dto';
 
@@ -57,24 +60,13 @@ export class MemsBorrowController {
 
   @Get('borrow-history')
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @ApiOperation({
     summary:
       'Nhật ký toàn bộ lượt mượn của cả kho, lọc theo trạng thái và khoảng ngày (chỉ quản lý kho)',
   })
-  borrowHistoryLog(
-    @Query('status') status?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    return this.historyLog.list({
-      status,
-      from,
-      to,
-      page: page ? Number(page) : undefined,
-      pageSize: pageSize ? Number(pageSize) : undefined,
-    });
+  borrowHistoryLog(@Query() query: BorrowHistoryQueryDto) {
+    return this.historyLog.list(query);
   }
 
   @Get('assets/:id/borrow-history')
@@ -91,9 +83,9 @@ export class MemsBorrowController {
     summary:
       'Danh sách phiếu mượn, lọc theo trạng thái (MH-09) — thành viên chỉ thấy phiếu của mình',
   })
-  listRequests(@Request() req: any, @Query('status') status?: string) {
+  listRequests(@Request() req: any, @Query() query: ListRequestsQueryDto) {
     return this.approvals.list(
-      { status },
+      { status: query.status },
       { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team },
     );
   }
@@ -107,6 +99,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/approve')
   @ApiOperation({ summary: 'Duyệt một cấp (NV-09)' })
   approve(@Request() req: any, @Param('id') id: string, @Body() dto: ApproveRequestDto) {
@@ -114,6 +107,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/reject')
   @ApiOperation({ summary: 'Từ chối phiếu, nhả giữ chỗ ngay (BR-32)' })
   reject(@Request() req: any, @Param('id') id: string, @Body() dto: RejectRequestDto) {
@@ -121,6 +115,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Get('request-lines/:lineId/assignable-assets')
   @ApiOperation({ summary: 'Máy hợp lệ để gán cho một dòng phiếu (BR-25)' })
   assignable(@Param('lineId') lineId: string) {
@@ -128,6 +123,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/assign')
   @ApiOperation({ summary: 'Gán máy cụ thể cho phiếu đã duyệt (NV-10)' })
   assign(@Param('id') id: string, @Body() dto: AssignSerialsDto) {
@@ -135,6 +131,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Get('requests/:id/handover-sheet')
   @ApiOperation({ summary: 'Dữ liệu dựng biên bản bàn giao (MH-11)' })
   handoverSheet(@Param('id') id: string) {
@@ -142,6 +139,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/handover')
   @ApiOperation({ summary: 'Lập biên bản bàn giao (NV-11)' })
   handover(@Request() req: any, @Param('id') id: string, @Body() dto: CreateHandoverDto) {
@@ -149,6 +147,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Get('requests/:id/pending-returns')
   @ApiOperation({ summary: 'Những máy của phiếu còn đang ở ngoài (MH-13)' })
   pendingReturns(@Param('id') id: string) {
@@ -156,6 +155,7 @@ export class MemsBorrowController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('requests/:id/return')
   @ApiOperation({ summary: 'Tiếp nhận máy trả về, kết luận theo BR-42 (NV-13)' })
   receiveReturn(@Request() req: any, @Param('id') id: string, @Body() dto: CreateReturnDto) {

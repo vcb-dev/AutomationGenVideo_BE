@@ -24,14 +24,27 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { Public } from '../auth/decorators/public.decorator';
 import { MulterErrorFilter } from '../../common/mems/multer-error.filter';
-import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, InspectAssetDto, UpdateAssetDto, UpdateLocationDto } from './dto';
+import {
+  CreateAssetDto,
+  CreateCategoryDto,
+  CreateLocationDto,
+  CreateModelDto,
+  InspectAssetDto,
+  ListAssetsQueryDto,
+  ListModelsQueryDto,
+  UpdateAssetDto,
+  UpdateLocationDto,
+} from './dto';
 import {
   AssetPhotoService,
   MEMS_PHOTO_DIR,
   MEMS_PHOTO_MAX_BYTES,
+  PHOTO_PURPOSE,
 } from './asset-photo.service';
 import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
@@ -45,12 +58,13 @@ export class MemsCatalogController {
     private readonly service: MemsCatalogService,
     private readonly inspection: InspectionService,
     private readonly photos: AssetPhotoService,
+    private readonly photoUrls: MemsPhotoUrlSigner,
   ) {}
 
   @Get('assets')
   @ApiOperation({ summary: 'Danh sách thiết bị trong kho (MH-02)' })
-  listAssets(@Query('categoryId') categoryId?: string, @Query('status') status?: string) {
-    return this.service.listAssets({ categoryId, status });
+  listAssets(@Query() query: ListAssetsQueryDto) {
+    return this.service.listAssets({ categoryId: query.categoryId, status: query.status });
   }
 
   @Get('assets/:assetCode')
@@ -60,6 +74,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Patch('assets/:assetCode')
   @ApiOperation({ summary: 'Chỉnh sửa thông tin thiết bị' })
   updateAsset(@Param('assetCode') assetCode: string, @Body() dto: UpdateAssetDto) {
@@ -67,6 +82,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('assets/:assetCode')
   @ApiOperation({ summary: 'Xóa thiết bị khỏi kho' })
   deleteAsset(@Param('assetCode') assetCode: string) {
@@ -80,6 +96,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets/:assetCode/photos')
   @ApiOperation({ summary: 'Tải ảnh thiết bị lên' })
   @ApiConsumes('multipart/form-data')
@@ -94,11 +111,19 @@ export class MemsCatalogController {
     @Param('assetCode') assetCode: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('caption') caption?: string,
+    @Body('purpose') purpose?: string,
   ) {
-    return this.photos.upload(assetCode, req.user.id, file, caption, req.user);
+    // Giá trị lạ quy về ảnh hồ sơ thay vì ném lỗi: đây là trường phụ, chặn cứng nó sẽ làm hỏng
+    // cả lượt bàn giao chỉ vì một chữ viết sai.
+    const safePurpose =
+      purpose === PHOTO_PURPOSE.HANDOVER || purpose === PHOTO_PURPOSE.RETURN
+        ? purpose
+        : PHOTO_PURPOSE.CATALOG;
+    return this.photos.upload(assetCode, req.user.id, file, caption, req.user, safePurpose);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('photos/:photoId/primary')
   @ApiOperation({ summary: 'Chọn ảnh đại diện hiện ở bảng kho' })
   setPrimaryPhoto(@Param('photoId') photoId: string) {
@@ -106,6 +131,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('photos/:photoId')
   @ApiOperation({ summary: 'Xoá một ảnh thiết bị' })
   removePhoto(@Param('photoId') photoId: string) {
@@ -123,9 +149,18 @@ export class MemsCatalogController {
   @Public()
   @Get('photos/:filename')
   @ApiOperation({ summary: 'Phục vụ ảnh lưu trên đĩa khi chưa cấu hình Google Drive' })
-  servePhoto(@Param('filename') filename: string, @Res() res: Response) {
+  servePhoto(
+    @Param('filename') filename: string,
+    @Res() res: Response,
+    @Query('t') token?: string,
+  ) {
     const safeName = path.basename(filename);
     if (!/^[A-Za-z0-9-]+_\d{10,}_[a-z0-9]{4,12}\.(jpg|jpeg|png|gif|webp|heic)$/i.test(safeName)) {
+      throw new NotFoundException('Không tìm thấy ảnh');
+    }
+    // Chữ ký là thứ DUY NHẤT còn canh cửa ở đây, vì route buộc phải công khai. Trả 404 chứ không
+    // 403: 403 xác nhận file có tồn tại, tức là vẫn rò rỉ một mẩu thông tin cho người đang dò.
+    if (!this.photoUrls.verify(safeName, token)) {
       throw new NotFoundException('Không tìm thấy ảnh');
     }
     const filePath = path.join(MEMS_PHOTO_DIR, safeName);
@@ -139,11 +174,14 @@ export class MemsCatalogController {
       '.heic': 'image/heic',
     };
     res.setHeader('Content-Type', mime[path.extname(safeName).toLowerCase()] || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'public, max-age=604800');
+    // `private`: chỉ trình duyệt của người xem được giữ bản sao. Trước đây là `public`, nghĩa là
+    // mọi proxy hay CDN trên đường đi đều được phép lưu và phục vụ lại ảnh serial thiết bị.
+    res.setHeader('Cache-Control', 'private, max-age=604800');
     fs.createReadStream(filePath).pipe(res);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Get('pending-inspection')
   @ApiOperation({ summary: 'Máy đang chờ kết luận kiểm tra (NV-14)' })
   pendingInspection() {
@@ -151,6 +189,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets/:assetCode/inspect')
   @ApiOperation({ summary: 'Kết luận kiểm tra, đưa máy ra khỏi bàn nhận (NV-14)' })
   inspect(
@@ -162,6 +201,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('assets')
   @ApiOperation({ summary: 'Nhập kho thiết bị mới (NV-01)' })
   createAsset(@Body() dto: CreateAssetDto) {
@@ -176,11 +216,12 @@ export class MemsCatalogController {
 
   @Get('models')
   @ApiOperation({ summary: 'Danh sách model, kèm phụ kiện và số máy đang có' })
-  listModels(@Query('categoryId') categoryId?: string) {
-    return this.service.listModels({ categoryId });
+  listModels(@Query() query: ListModelsQueryDto) {
+    return this.service.listModels({ categoryId: query.categoryId });
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('models')
   @ApiOperation({ summary: 'Khai model mới kèm phụ kiện (NV-03)' })
   createModel(@Body() dto: CreateModelDto) {
@@ -194,6 +235,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('locations')
   @ApiOperation({ summary: 'Tạo vị trí lưu kho mới (Tủ/Kệ/Ngăn)' })
   createLocation(@Body() dto: CreateLocationDto) {
@@ -201,6 +243,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Patch('locations/:id')
   @ApiOperation({ summary: 'Sửa tên vị trí lưu kho' })
   updateLocation(@Param('id') id: string, @Body() dto: UpdateLocationDto) {
@@ -208,6 +251,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('locations/:id')
   @ApiOperation({ summary: 'Xóa/ngừng dùng vị trí lưu kho' })
   deleteLocation(@Param('id') id: string) {
@@ -215,6 +259,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Post('categories')
   @ApiOperation({ summary: 'Tạo danh mục thiết bị (NV-02)' })
   createCategory(@Body() dto: CreateCategoryDto) {
