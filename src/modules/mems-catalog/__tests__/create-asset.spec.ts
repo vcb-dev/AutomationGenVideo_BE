@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 function buildPrisma(opts: { categoryCode: string; existingCount: number; serialTaken?: boolean }) {
   const prisma: any = {
@@ -26,7 +27,7 @@ function buildPrisma(opts: { categoryCode: string; existingCount: number; serial
 describe('MemsCatalogService.createAsset', () => {
   it('sinh mã thiết bị theo tiền tố danh mục và số thứ tự', async () => {
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 2 });
-    const service = new MemsCatalogService(prisma);
+    const service = new MemsCatalogService(prisma, photoUrlSignerStub);
 
     const asset = await service.createAsset({ modelId: 'model-1', serialNumber: 'SN-999' });
 
@@ -36,7 +37,7 @@ describe('MemsCatalogService.createAsset', () => {
   it('thiết bị mới luôn ở trạng thái Chờ kiểm tra', async () => {
     // BR-05: không được đưa thẳng sang Sẵn sàng, kỹ thuật phải xác nhận trước.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    const service = new MemsCatalogService(prisma);
+    const service = new MemsCatalogService(prisma, photoUrlSignerStub);
 
     await service.createAsset({ modelId: 'model-1', serialNumber: 'SN-001' });
 
@@ -45,7 +46,7 @@ describe('MemsCatalogService.createAsset', () => {
 
   it('chặn serial đã tồn tại và chỉ ra thiết bị trùng', async () => {
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 1, serialTaken: true });
-    const service = new MemsCatalogService(prisma);
+    const service = new MemsCatalogService(prisma, photoUrlSignerStub);
 
     await expect(
       service.createAsset({ modelId: 'model-1', serialNumber: 'SN-999' }),
@@ -54,7 +55,7 @@ describe('MemsCatalogService.createAsset', () => {
 
   it('mã QR sinh cùng lúc và trùng với mã thiết bị', async () => {
     const prisma = buildPrisma({ categoryCode: 'LEN', existingCount: 4 });
-    const service = new MemsCatalogService(prisma);
+    const service = new MemsCatalogService(prisma, photoUrlSignerStub);
 
     const asset = await service.createAsset({ modelId: 'model-1', serialNumber: 'SN-777' });
 
@@ -65,7 +66,7 @@ describe('MemsCatalogService.createAsset', () => {
 describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () => {
   it('bỏ trống tình trạng thì hiểu là Tốt', () => {
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    return new MemsCatalogService(prisma)
+    return new MemsCatalogService(prisma, photoUrlSignerStub)
       .createAsset({ modelId: 'model-1', serialNumber: 'SN-001' })
       .then(() => {
         expect(prisma.memsAsset.create.mock.calls[0][0].data.condition).toBe('GOOD');
@@ -76,7 +77,7 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
     // Hàng đổi trả hay máy mua lại thường đã có vết; ép cứng là Tốt thì mọi lần đối chiếu
     // về sau đều lệch, và người mượn đầu tiên lãnh oan.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    await new MemsCatalogService(prisma).createAsset({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({
       modelId: 'model-1',
       serialNumber: 'SN-002',
       condition: 'USED',
@@ -88,7 +89,7 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
   it('máy nhập về đã hỏng vẫn vào Chờ kiểm tra, không nhảy thẳng sang Hỏng', async () => {
     // BR-05 nói về TRẠNG THÁI quy trình, còn hỏng là TÌNH TRẠNG vật lý — hai trục khác nhau.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    await new MemsCatalogService(prisma).createAsset({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({
       modelId: 'model-1',
       serialNumber: 'SN-003',
       condition: 'BROKEN',
@@ -102,7 +103,7 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
   it('ghi mốc Nhập kho vào nhật ký vòng đời', async () => {
     // Thiếu mốc này thì màn chi tiết của máy chưa ai mượn trông như máy không có quá khứ.
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    await new MemsCatalogService(prisma).createAsset({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({
       modelId: 'model-1',
       serialNumber: 'SN-004',
       condition: 'USED',
@@ -117,7 +118,7 @@ describe('MemsCatalogService.createAsset — tình trạng lúc nhập kho', () 
 
   it('không có ghi chú thì nhật ký vẫn nêu tình trạng, không để đuôi thừa', async () => {
     const prisma = buildPrisma({ categoryCode: 'CAM', existingCount: 0 });
-    await new MemsCatalogService(prisma).createAsset({
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({
       modelId: 'model-1',
       serialNumber: 'SN-005',
     });

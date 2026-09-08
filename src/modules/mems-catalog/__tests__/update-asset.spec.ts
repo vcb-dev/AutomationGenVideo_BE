@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 /**
  * Sửa thông tin một máy đã nằm trong kho.
@@ -55,7 +56,7 @@ describe('MemsCatalogService.updateAsset', () => {
   it('không có máy mang mã đó thì báo không tìm thấy', async () => {
     const { prisma } = buildDeps({ asset: null });
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-999', { condition: 'GOOD' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-999', { condition: 'GOOD' } as any),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -67,7 +68,7 @@ describe('MemsCatalogService.updateAsset', () => {
     });
 
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
     ).rejects.toThrow(/CAM-007/);
     expect(tx.memsAsset.update).not.toHaveBeenCalled();
   });
@@ -76,7 +77,7 @@ describe('MemsCatalogService.updateAsset', () => {
     // Sửa tình trạng máy mà vẫn gửi kèm serial cũ là chuyện thường của form; coi đó là trùng
     // thì không ai sửa được gì.
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       serialNumber: 'SN-CU',
       condition: 'FAIR',
     } as any);
@@ -86,7 +87,7 @@ describe('MemsCatalogService.updateAsset', () => {
 
   it('trường bỏ trống thì giữ nguyên giá trị cũ, không ghi đè thành null', async () => {
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { condition: 'FAIR' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { condition: 'FAIR' } as any);
 
     const data = tx.memsAsset.update.mock.calls[0][0].data;
     expect(data.condition).toBe('FAIR');
@@ -97,7 +98,7 @@ describe('MemsCatalogService.updateAsset', () => {
 
   it('mỗi lần sửa đều ghi một mốc vào nhật ký vòng đời', async () => {
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { condition: 'FAIR' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { condition: 'FAIR' } as any);
 
     expect(tx.memsAssetEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -115,7 +116,7 @@ describe('MemsCatalogService.updateAsset — đổi model khi máy đang đượ
     const { prisma, tx } = buildDeps({ activeReservations: 1 });
 
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-001', { modelId: 'model-2' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { modelId: 'model-2' } as any),
     ).rejects.toBeInstanceOf(ConflictException);
 
     expect(tx.memsAsset.update).not.toHaveBeenCalled();
@@ -124,7 +125,7 @@ describe('MemsCatalogService.updateAsset — đổi model khi máy đang đượ
   it('máy không còn giữ chỗ nào thì đổi model bình thường', async () => {
     const { prisma, tx } = buildDeps({ activeReservations: 0 });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { modelId: 'model-2' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { modelId: 'model-2' } as any);
 
     expect(tx.memsAsset.update.mock.calls[0][0].data.model_id).toBe('model-2');
   });
@@ -134,7 +135,7 @@ describe('MemsCatalogService.updateAsset — đổi model khi máy đang đượ
     // máy đang có phiếu không sửa nổi vị trí.
     const { prisma, tx } = buildDeps({ activeReservations: 3 });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       modelId: 'model-1',
       locationId: 'loc-9',
     } as any);
@@ -151,7 +152,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
       // nào, không ảnh, không ai ký — đúng thứ MEMS sinh ra để dẹp.
       const { prisma, tx } = buildDeps();
       await expect(
-        new MemsCatalogService(prisma).updateAsset('CAM-001', { status } as any),
+        new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status } as any),
       ).rejects.toThrow(/Bàn giao hoặc Nhận trả/);
 
       expect(tx.memsAsset.update).not.toHaveBeenCalled();
@@ -162,7 +163,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
     // Ô select hiện trạng thái đang có làm lựa chọn đầu tiên, nên form sửa vị trí của một máy
     // đang mượn luôn gửi kèm ON_LOAN. Chặn cứng thì không sửa nổi vị trí máy đang ở ngoài.
     const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'ON_LOAN' } });
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       status: 'ON_LOAN',
       locationId: 'loc-9',
     } as any);
@@ -179,7 +180,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
       const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'ON_LOAN' } });
 
       await expect(
-        new MemsCatalogService(prisma).updateAsset('CAM-001', { status } as any),
+        new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status } as any),
       ).rejects.toThrow(/Nhận trả/);
 
       expect(tx.memsAsset.update).not.toHaveBeenCalled();
@@ -195,7 +196,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
     // (`manualStatusOptionsFor`), nên chặn nốt là hiện nút mà bấm vào ăn 400.
     const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'ON_LOAN' } });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { status: 'LOST' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status: 'LOST' } as any);
 
     expect(tx.memsAsset.update.mock.calls[0][0].data.status).toBe('LOST');
   });
@@ -212,7 +213,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
       const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'POST_RETURN_CHECK' } });
 
       await expect(
-        new MemsCatalogService(prisma).updateAsset('CAM-001', { status } as any),
+        new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status } as any),
       ).rejects.toThrow(/Kiểm tra/);
 
       expect(tx.memsAsset.update).not.toHaveBeenCalled();
@@ -224,7 +225,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
     // một chiếc biến mất khỏi bàn kiểm tra không ghi nhận được ở đâu cả.
     const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'POST_RETURN_CHECK' } });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { status: 'LOST' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status: 'LOST' } as any);
 
     expect(tx.memsAsset.update.mock.calls[0][0].data.status).toBe('LOST');
   });
@@ -233,7 +234,7 @@ describe('MemsCatalogService.updateAsset — trạng thái do quy trình sinh ra
     // Không siết nhầm sang các trạng thái mà kho vẫn phải tự đặt được.
     const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'AVAILABLE' } });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { status: 'BROKEN' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status: 'BROKEN' } as any);
 
     expect(tx.memsAsset.update.mock.calls[0][0].data.status).toBe('BROKEN');
   });
@@ -251,7 +252,7 @@ describe('MemsCatalogService.updateAsset — serial sau khi máy đã đi vào b
   it('máy chưa từng bàn giao thì sửa serial được', async () => {
     const { prisma, tx } = buildDeps({ handoverCount: 0 });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any);
 
     expect(tx.memsAsset.update.mock.calls[0][0].data.serial_number).toBe('SN-MOI');
   });
@@ -260,7 +261,7 @@ describe('MemsCatalogService.updateAsset — serial sau khi máy đã đi vào b
     const { prisma, tx } = buildDeps({ handoverCount: 3 });
 
     await expect(
-      new MemsCatalogService(prisma).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
+      new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { serialNumber: 'SN-MOI' } as any),
     ).rejects.toThrow(/biên bản/);
 
     expect(tx.memsAsset.update).not.toHaveBeenCalled();
@@ -270,7 +271,7 @@ describe('MemsCatalogService.updateAsset — serial sau khi máy đã đi vào b
     // Form sửa luôn gửi kèm serial hiện tại khi người dùng chỉ đổi vị trí hay giá mua.
     const { prisma, tx } = buildDeps({ handoverCount: 3 });
 
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       serialNumber: 'SN-CU',
       locationId: 'loc-9',
     } as any);
