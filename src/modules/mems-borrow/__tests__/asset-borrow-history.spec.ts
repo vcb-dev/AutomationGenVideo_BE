@@ -61,7 +61,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'user-a', roles: ['MEMBER'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'user-a', roles: ['MEMBER'], team: 'Team K1' }, NOW);
 
     expect(rows).toHaveLength(1);
     expect(rows[0].borrowerId).toBe('user-a');
@@ -73,9 +73,72 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'user-a', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'user-a', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows).toHaveLength(2);
+  });
+
+  it('leader Team Media thấy toàn bộ lượt mượn của máy', async () => {
+    const { service } = buildService([
+      line({ ownerId: 'user-a', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
+      line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
+    ]);
+
+    const rows = await service.forAsset(
+      ASSET,
+      { id: 'user-a', roles: ['LEADER'], team: 'MEDIA' },
+      NOW,
+    );
+
+    expect(rows).toHaveLength(2);
+  });
+
+  it('leader bộ phận KHÁC chỉ thấy lượt mượn của chính mình', async () => {
+    // Kho là tài sản của bộ phận Media. Mang chức leader ở bộ phận khác không cho quyền đọc
+    // thói quen mượn máy của cả công ty — đúng luật mà `ApprovalService.list` đang áp dụng.
+    // Trước đây chỗ này xét vai trò bằng một danh sách viết tay KHÔNG hỏi team, nên cửa rộng
+    // nhất của module lại là cửa không ai canh.
+    const { service } = buildService([
+      line({ ownerId: 'user-a', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
+      line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
+    ]);
+
+    const rows = await service.forAsset(
+      ASSET,
+      { id: 'user-a', roles: ['LEADER'], team: 'Team K1' },
+      NOW,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].borrowerId).toBe('user-a');
+  });
+
+  it('manager bộ phận KHÁC cũng chỉ thấy lượt mượn của chính mình', async () => {
+    const { service } = buildService([
+      line({ ownerId: 'user-a', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
+      line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
+    ]);
+
+    const rows = await service.forAsset(
+      ASSET,
+      { id: 'user-a', roles: ['MANAGER'], team: 'Team K1' },
+      NOW,
+    );
+
+    expect(rows).toHaveLength(1);
+  });
+
+  it('leader không khai team thì KHÔNG được coi là quản lý kho', async () => {
+    // Ca khó nhất và cũng là ca từng làm hai bản luật bất đồng nhau: thiếu `team` phải hiểu là
+    // "không chứng minh được thuộc Media", không phải "cho qua".
+    const { service } = buildService([
+      line({ ownerId: 'user-a', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
+      line({ ownerId: 'user-b', receivedAt: '2026-07-20T09:00:00Z', returnedAt: '2026-07-25T09:00:00Z' }),
+    ]);
+
+    const rows = await service.forAsset(ASSET, { id: 'user-a', roles: ['LEADER'], team: null }, NOW);
+
+    expect(rows).toHaveLength(1);
   });
 
   it('sắp xếp lượt mới nhất lên đầu', async () => {
@@ -84,7 +147,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       line({ ownerId: 'user-b', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows[0].handedOverAt).toEqual(new Date('2026-08-02T09:00:00Z'));
   });
@@ -99,7 +162,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows[0].heldDays).toBe(7);
     expect(rows[0].lateDays).toBe(2);
@@ -111,7 +174,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       line({ ownerId: 'user-a', receivedAt: '2026-08-18T09:00:00Z', dueAt: '2026-08-25T09:00:00Z' }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows[0].status).toBe('HOLDING');
     expect(rows[0].returnedAt).toBeNull();
@@ -122,7 +185,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
       line({ ownerId: 'user-a', receivedAt: '2026-08-02T09:00:00Z', returnedAt: '2026-08-07T09:00:00Z' }),
     ]);
 
-    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows[0].borrowerName).toBe('Nguyễn Văn A');
   });
@@ -130,7 +193,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
   it('máy chưa ai mượn thì trả danh sách rỗng, không lỗi', async () => {
     const { service } = buildService([]);
 
-    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    const rows = await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(rows).toEqual([]);
   });
@@ -138,7 +201,7 @@ describe('AssetBorrowHistoryService.forAsset', () => {
   it('chỉ truy vấn đúng máy được hỏi', async () => {
     const { service, findMany } = buildService([]);
 
-    await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'] }, NOW);
+    await service.forAsset(ASSET, { id: 'x', roles: ['ADMIN'], team: null }, NOW);
 
     expect(findMany.mock.calls[0][0].where.asset_id).toBe(ASSET);
   });

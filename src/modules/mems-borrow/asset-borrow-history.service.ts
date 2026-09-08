@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 import { borrowDuration } from './borrow-duration';
 
 /**
@@ -13,16 +14,17 @@ import { borrowDuration } from './borrow-duration';
  * nó là logic thuần, tách ra thì test được mọi ca biên mà không cần dựng Prisma.
  */
 
-/** Vai được xem toàn bộ lịch sử của máy, không chỉ lượt của mình. */
-const FULL_ACCESS_ROLES: readonly string[] = [
-  UserRole.ADMIN,
-  UserRole.MANAGER,
-  UserRole.LEADER,
-];
-
 export interface HistoryViewer {
   id: string;
   roles: (UserRole | string)[];
+  /**
+   * Bắt buộc có mặt trong kiểu, cố ý — kể cả khi giá trị là `null`.
+   *
+   * Bản trước không có trường này, nên tầng lọc quyền ở đây KHÔNG có dữ liệu để hỏi "người này
+   * có thuộc Media không" và đành xét bằng một danh sách vai trò viết tay. Bỏ trường đi là mọi
+   * lời gọi lặng lẽ quay về luật lỏng đó.
+   */
+  team: string | null | undefined;
 }
 
 export interface AssetBorrowHistoryRow {
@@ -62,7 +64,12 @@ export class AssetBorrowHistoryService {
     // Lọc quyền NGAY sau khi lấy dữ liệu, trước mọi bước làm giàu: thành viên thường chỉ được
     // thấy lượt mượn của chính mình. Lọc ở tầng hiển thị thì dữ liệu người khác vẫn đã rời khỏi
     // máy chủ rồi.
-    const canSeeAll = viewer.roles?.some((role) => FULL_ACCESS_ROLES.includes(role)) ?? false;
+    //
+    // Dùng chung `isMediaLeaderOrAdminUser` với guard và `ApprovalService`, KHÔNG xét vai trò
+    // bằng danh sách riêng: bản trước cho mọi LEADER/MANAGER xem hết bất kể bộ phận, nên cùng
+    // một người bị `GET /mems/requests` ép về phiếu của chính mình lại đọc được trọn lịch sử
+    // mượn của cả công ty ở đây. Hai cửa nói ngược nhau thì cửa rộng hơn là cửa quyết định.
+    const canSeeAll = isMediaLeaderOrAdminUser(viewer);
     const visible = canSeeAll
       ? lines
       : lines.filter((line) => line.handover?.request?.owner_id === viewer.id);

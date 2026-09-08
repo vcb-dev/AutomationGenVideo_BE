@@ -75,19 +75,27 @@ export class MemsBorrowController {
       'Lịch sử máy này từng ai mượn — thành viên chỉ thấy lượt của mình, ADMIN/quản lý thấy tất',
   })
   assetBorrowHistory(@Param('id') id: string, @Request() req: any) {
-    return this.borrowHistory.forAsset(id, { id: req.user.id, roles: req.user.roles ?? [] });
+    return this.borrowHistory.forAsset(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team });
   }
 
   @Get('requests')
-  @ApiOperation({ summary: 'Danh sách phiếu mượn, lọc theo trạng thái (MH-09)' })
-  listRequests(@Query() query: ListRequestsQueryDto) {
-    return this.approvals.list({ status: query.status });
+  @ApiOperation({
+    summary:
+      'Danh sách phiếu mượn, lọc theo trạng thái (MH-09) — thành viên chỉ thấy phiếu của mình',
+  })
+  listRequests(@Request() req: any, @Query() query: ListRequestsQueryDto) {
+    return this.approvals.list(
+      { status: query.status },
+      { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team },
+    );
   }
 
   @Get('requests/:id')
-  @ApiOperation({ summary: 'Chi tiết một phiếu kèm số cấp duyệt cần có' })
-  requestDetail(@Param('id') id: string) {
-    return this.approvals.detail(id);
+  @ApiOperation({
+    summary: 'Chi tiết một phiếu kèm số cấp duyệt cần có — thành viên chỉ xem được phiếu của mình',
+  })
+  requestDetail(@Request() req: any, @Param('id') id: string) {
+    return this.approvals.detail(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team });
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
