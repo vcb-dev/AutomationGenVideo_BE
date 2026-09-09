@@ -53,6 +53,7 @@ import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 import { VideoLibraryModule } from './modules/video-library/video-library.module';
 import { IdPhotoModule } from './modules/id-photo/id-photo.module';
+import { SapoIntegrationModule } from './modules/sapo-integration/sapo-integration.module';
 
 @Module({
   imports: [
@@ -123,6 +124,7 @@ import { IdPhotoModule } from './modules/id-photo/id-photo.module';
     ScraperProxyModule,
     VideoLibraryModule,
     IdPhotoModule,
+    SapoIntegrationModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
