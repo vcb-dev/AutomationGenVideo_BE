@@ -115,6 +115,7 @@ model User {
   owned_channels                   Channel[]                      @relation("ChannelOwnerUser")
   ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
   daily_voice_quotas               UserDailyVoiceQuota[]          @relation("UserDailyVoiceQuotaOf")
+  voice_action_histories           VoiceActionHistory[]           @relation("VoiceActionHistoryOf")
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
@@ -241,6 +242,35 @@ model UserDailyVoiceQuota {
   @@index([user_id])
   @@index([date])
   @@map("user_daily_voice_quotas")
+}
+
+/// Lịch sử chi tiết mọi thao tác liên quan đến Voice của người dùng (TTS, Clone, Xóa, Dịch, Cấp Quota).
+/// Dành riêng cho Admin theo dõi và quản lý hoạt động tiện ích AI Voice.
+model VoiceActionHistory {
+  id            String   @id @default(uuid())
+  user_id       String   @db.Uuid
+  /// 'TTS' | 'CLONE' | 'DELETE' | 'TRANSLATE' | 'GRANT_QUOTA'
+  action_type   String   @db.VarChar(30)
+  /// 'SUCCESS' | 'FAILED' | 'PENDING'
+  status        String   @default("SUCCESS") @db.VarChar(20)
+  voice_id      String?  @db.VarChar(255)
+  voice_name    String?  @db.VarChar(255)
+  input_text    String?  @db.Text
+  output_url    String?  @db.Text
+  characters    Int      @default(0)
+  duration_ms   Int      @default(0)
+  details       Json?
+  error_message String?  @db.Text
+  created_at    DateTime @default(now())
+
+  user User @relation("VoiceActionHistoryOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([action_type])
+  @@index([status])
+  @@index([created_at])
+  @@index([user_id, created_at])
+  @@map("voice_action_histories")
 }
 
 model Video {
