@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
+import { intakeStatusFor } from './intake-rules';
 
 /**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.
@@ -73,8 +74,20 @@ export class MemsCatalogService {
     // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';
+    const status = intakeStatusFor(condition);
 
     return this.prisma.$transaction(async (tx) => {
+      // Đếm và ghi phải nằm trong cùng giao dịch có khoá, nếu không hai người cùng nhập kho sẽ
+      // cùng đọc ra N rồi cùng sinh mã N+1 — mà `asset_code` là cột duy nhất, người thứ hai ăn 500.
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `mems:asset-code:${prefix}`,
+      );
+      const existing = await tx.memsAsset.count({
+        where: { model: { category: { code: prefix } } },
+      });
+      const assetCode = `${prefix}-${String(existing + 1).padStart(3, '0')}`;
+
       const asset = await tx.memsAsset.create({
         data: {
           asset_code: assetCode,
@@ -84,7 +97,7 @@ export class MemsCatalogService {
           location_id: dto.locationId ?? null,
           purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
           purchase_price: dto.purchasePrice ?? null,
-          status: 'PENDING_INSPECTION', // BR-05
+          status: status as any,
           condition: condition as any,
         },
       });
