@@ -2,7 +2,6 @@ import { BadRequestException } from '@nestjs/common';
 import { BorrowRequestService } from '../borrow-request.service';
 
 const DTO = {
-  departmentId: 'dept-1',
   project: 'Quay TVC tháng 8',
   place: 'Studio A',
   fromTime: '2026-08-15T02:00:00Z',
@@ -15,6 +14,13 @@ function buildDeps(available: number) {
   const tx = {
     // Khai báo tham số để TypeScript cho phép đọc mock.calls[0][0] ở test kiểm tra khoá.
     $executeRawUnsafe: jest.fn(async (..._args: any[]) => 1),
+    // Bộ phận luôn suy từ người đăng nhập — client không còn khai được nữa.
+    memsMember: { findFirst: jest.fn(async () => ({ department_id: 'dept-1' })) },
+    user: { findUnique: jest.fn(async () => ({ team: 'MEDIA' })) },
+    memsDepartment: {
+      findFirst: jest.fn(async () => null),
+      findMany: jest.fn(async () => []),
+    },
     memsBorrowRequest: {
       count: jest.fn(async () => 0),
       create: jest.fn(async ({ data }: any) => ({ id: 'req-1', ...data })),
