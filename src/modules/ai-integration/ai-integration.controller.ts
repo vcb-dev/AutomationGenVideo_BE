@@ -761,6 +761,7 @@ export class AiIntegrationController {
     @Body('voice_name') voiceName: string,
     @Req() req: any,
     @Body('gender') gender?: string,
+    @Body('prompt_text') promptText?: string,
   ) {
     if (!file) {
       throw new HttpException('file is required', HttpStatus.BAD_REQUEST);

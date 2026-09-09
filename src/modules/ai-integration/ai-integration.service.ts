@@ -4045,7 +4045,7 @@ export class AiIntegrationService {
               id: true,
               email: true,
               full_name: true,
-              avatar: true,
+              image_url: true,
             },
           },
         },
