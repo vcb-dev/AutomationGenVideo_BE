@@ -4045,6 +4045,7 @@ export class AiIntegrationService {
               id: true,
               email: true,
               full_name: true,
+              team: true,
               image_url: true,
             },
           },
@@ -4055,12 +4056,16 @@ export class AiIntegrationService {
       }),
     ]);
 
+    const totalPages = Math.ceil(total / limit);
     return {
-      total,
-      page,
-      limit,
-      total_pages: Math.ceil(total / limit),
-      items,
+      success: true,
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
     };
   }
 }
