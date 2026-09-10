@@ -134,6 +134,7 @@ async function bootstrap() {
     )
     .setVersion("1.0")
     .addBearerAuth()
+    .addApiKey({ type: "apiKey", name: "X-API-Key", in: "header" }, "api-key")
     .addTag("auth", "Authentication endpoints")
     .addTag("users", "User management endpoints")
     .build();
