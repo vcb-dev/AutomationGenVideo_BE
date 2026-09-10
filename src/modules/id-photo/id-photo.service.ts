@@ -71,7 +71,7 @@ export class IdPhotoService {
    * Bản sao ở FE: id-photo/components/constants.ts#POSITION_OPTIONS — sửa 1 bên phải sửa bên kia. */
   private static readonly FRAME_COLOR_BY_POSITION: Record<IdPhotoPosition, string> = {
     NEW_STAFF_1_3M: '#FFFFFF', // Trắng
-    STAFF_OVER_3M: '#F5C518', // Vàng
+    STAFF_OVER_3M: '#CC9933', // Vàng đồng (khớp card-frame-gold.png dựng lại 2026-09-09)
     LEADER: '#2563EB', // Xanh
     MANAGER: '#DC2626', // Đỏ
     BOD: '#111827', // Đen
@@ -227,9 +227,8 @@ export class IdPhotoService {
           employee_name: dto.employeeName.trim(),
           employee_team: dto.employeeTeam.trim(),
           employee_id: dto.employeeId.trim(),
-          // Trống/chỉ khoảng trắng → lưu null để buildPdfBuffer bỏ hẳn phần tiền tố, tránh
-          // in ra tên bị thừa dấu cách ở đầu.
-          employee_title_prefix: dto.employeeTitlePrefix?.trim() || null,
+          // [ĐÃ NGỪNG DÙNG] `employee_title_prefix` không còn được nhận/ghi — cột để mặc định
+          // null cho bản ghi mới, dữ liệu tiền tố cũ vẫn nằm nguyên trong DB.
           position: dto.position,
           raw_image_data: this.toDataUri(entry.rawBuffer, entry.rawMimeType),
           processed_image_data: this.toDataUri(entry.processedBuffer, entry.processedMimeType),
@@ -302,9 +301,7 @@ export class IdPhotoService {
     if (dto.employeeName !== undefined) data.employee_name = dto.employeeName.trim();
     if (dto.employeeTeam !== undefined) data.employee_team = dto.employeeTeam.trim();
     if (dto.employeeId !== undefined) data.employee_id = dto.employeeId.trim();
-    // Gửi chuỗi rỗng = chủ ý XOÁ tiền tố → null, để buildPdfBuffer bỏ hẳn phần tiền tố thay vì
-    // in tên thừa dấu cách ở đầu (cùng quy ước với create()).
-    if (dto.employeeTitlePrefix !== undefined) data.employee_title_prefix = dto.employeeTitlePrefix.trim() || null;
+    // [ĐÃ NGỪNG DÙNG] `employee_title_prefix` không còn được nhận qua PATCH — không đụng tới cột.
     if (dto.position !== undefined) data.position = dto.position;
 
     if (Object.keys(data).length === 0) {
@@ -317,10 +314,6 @@ export class IdPhotoService {
       employee_name: (data.employee_name as string) ?? history.employee_name,
       employee_team: (data.employee_team as string) ?? history.employee_team,
       employee_id: (data.employee_id as string) ?? history.employee_id,
-      employee_title_prefix:
-        dto.employeeTitlePrefix !== undefined
-          ? (data.employee_title_prefix as string | null)
-          : history.employee_title_prefix,
       position: (data.position as IdPhotoPosition) ?? history.position,
       processed_image_data: history.processed_image_data,
     });
@@ -335,7 +328,6 @@ export class IdPhotoService {
         employee_name: true,
         employee_team: true,
         employee_id: true,
-        employee_title_prefix: true,
         position: true,
         status: true,
         pdf_url: true,
@@ -379,7 +371,6 @@ export class IdPhotoService {
       employee_name: history.employee_name,
       employee_team: history.employee_team,
       employee_id: history.employee_id,
-      employee_title_prefix: history.employee_title_prefix,
       position: history.position,
       processed_image_data: processedImageData,
     });
@@ -391,6 +382,37 @@ export class IdPhotoService {
     });
 
     return { ...updated, processedImageData };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Tái dùng cho luồng TẠO HÀNG LOẠT (module id-photo/batch) — worker nền không đi qua
+  // uploadId/tempStore lúc gọi AI (ảnh đã được persist vào IdPhotoHistory con ngay lúc tạo
+  // batch, xem IdPhotoBatchService.createBatch), nên cần 2 lối vào công khai vào đúng phần
+  // lõi đã có, KHÔNG copy lại logic gọi AI / parse ảnh.
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Lấy ảnh gốc đã upload (qua POST /id-photo/upload) ra khỏi bộ nhớ tạm dưới dạng data URI
+   * và XOÁ entry tạm luôn — dùng khi tạo batch: từng ảnh được ghi thẳng vào `raw_image_data`
+   * của IdPhotoHistory con nên không cần giữ thêm bản trong RAM.
+   */
+  consumeRawImageForBatch(uploadId: string): string {
+    const entry = this.getTempEntryOrThrow(uploadId);
+    const dataUri = this.toDataUri(entry.rawBuffer, entry.rawMimeType);
+    this.tempStore.delete(uploadId);
+    return dataUri;
+  }
+
+  /**
+   * Một lượt ghép áo cho worker batch: nhận ảnh gốc dạng data URI đã lưu trong DB, trả về ảnh
+   * đã ghép áo dạng data URI. Ném `HttpException` (kèm status HTTP thật của AI service) khi
+   * lỗi — worker dựa vào status để phân biệt 429/503 (rate limit → backoff+retry) với lỗi khác
+   * (→ FAILED, xử lý người tiếp theo).
+   */
+  async runMergeOutfitOnRawImageData(rawImageData: string, callerTag: string): Promise<string> {
+    const { buffer, mimeType } = this.parseDataUri(rawImageData);
+    const processed = await this.callMergeOutfitAi(buffer, mimeType, callerTag);
+    return this.toDataUri(processed.buffer, processed.mimeType);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -431,11 +453,12 @@ export class IdPhotoService {
           employee_name: true,
           employee_team: true,
           employee_id: true,
-          employee_title_prefix: true,
+          // employee_title_prefix: [ĐÃ NGỪNG DÙNG] — không trả về API nữa (cột DB vẫn còn cho dữ liệu cũ)
           position: true,
           status: true,
           error_message: true,
           pdf_url: true,
+          batch_job_id: true, // để tab Lịch sử hiện badge "Đợt tạo" + lọc theo đợt hàng loạt
           created_at: true,
           updated_at: true,
           createdByUser: { select: { id: true, full_name: true, email: true } },
@@ -587,11 +610,12 @@ export class IdPhotoService {
         employee_name: true,
         employee_team: true,
         employee_id: true,
-        employee_title_prefix: true,
+        // employee_title_prefix: [ĐÃ NGỪNG DÙNG] — không trả về API nữa (cột DB vẫn còn cho dữ liệu cũ)
         position: true,
         status: true,
         error_message: true,
         pdf_url: true,
+        batch_job_id: true,
         processed_image_data: true,
         created_at: true,
         updated_at: true,
@@ -740,91 +764,144 @@ export class IdPhotoService {
    * ảnh vuông + 3 dòng chữ đen trên nền trắng, không có logo/khiên/sao và không thể hiện
    * được màu cấp bậc.
    */
-  private buildPdfBuffer(history: {
-    employee_name: string;
-    employee_team: string;
-    employee_id: string;
-    employee_title_prefix?: string | null;
-    position: IdPhotoPosition;
-    processed_image_data: string | null;
-  }): Promise<Buffer> {
-    const { buffer: imageBuffer } = this.parseDataUri(history.processed_image_data!);
-    const bgColor = IdPhotoService.FRAME_COLOR_BY_POSITION[history.position];
-    // Thẻ nền Trắng: chữ trắng trên nền trắng sẽ mất hút — đổi sang chữ tối và thêm viền ngoài.
-    const isLightBg = bgColor.toUpperCase() === '#FFFFFF';
-    const textColor = isLightBg ? '#1F2937' : '#FFFFFF';
+  /** Khổ trang PDF thẻ — tỉ lệ thẻ nhựa CR80 dựng đứng (54 × 86 mm), in ra đúng khổ thẻ thật. */
+  private static readonly CARD_PAGE_SIZE: [number, number] = [420, 669];
 
+  private buildPdfBuffer(history: IdPhotoCardData): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       try {
-        // Tỉ lệ thẻ nhựa CR80 dựng đứng (54 × 86 mm) — in ra đúng khổ thẻ thật.
-        const W = 420;
-        const H = 669;
-        const doc = new (PDFDocument as any)({ size: [W, H], margin: 0 });
+        const doc = new (PDFDocument as any)({ size: IdPhotoService.CARD_PAGE_SIZE, margin: 0 });
         const chunks: Buffer[] = [];
         doc.on('data', (c: Buffer) => chunks.push(c));
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
 
-        const { regular, bold } = this.resolvePdfFonts(doc);
-
-        const L = IdPhotoService.CARD_LAYOUT;
-
-        // ── Nền thẻ = ẢNH KHUNG THẬT phủ kín trang ────────────────────────────
-        // Thay cho bản trước dựng khung bằng bezier: ảnh đã có sẵn dải ruy băng, đường cong
-        // lõm, logo và 6 sao nên không còn sai số hình học, và 5 màu đồng bộ tuyệt đối.
-        // Lót nền trắng trước: ảnh khung có 4 góc bo TRONG SUỐT, không lót thì 4 góc PDF bị
-        // rỗng (khi in hoặc xem trên nền tối sẽ lộ ra), thay vì trắng như thẻ thật.
-        doc.rect(0, 0, W, H).fill('#FFFFFF');
-
-        const framePath = this.resolveFramePath(history.position);
-        if (framePath) {
-          doc.image(framePath, 0, 0, { width: W, height: H });
-        } else {
-          // Thiếu file khung thì vẫn phải ra được PDF đọc được — nền phẳng theo màu cấp bậc.
-          doc.rect(0, 0, W, H).fill(bgColor);
-        }
-
-        // ── Ảnh chân dung cắt tròn, đặt đúng khung tròn rỗng của ảnh nền ──────
-        doc.save();
-        doc.circle(L.circleCx, L.circleCy, L.circleR).clip();
-        // cover: lấp đầy hình tròn, không méo ảnh
-        doc.image(imageBuffer, L.circleCx - L.circleR, L.circleCy - L.circleR, {
-          cover: [L.circleR * 2, L.circleR * 2],
-          align: 'center',
-          valign: 'center',
-        });
-        doc.restore();
-
-        // ── Họ tên: in hoa, đậm, căn giữa. Có tiền tố chức danh thì ghép "HĐ. TÊN" ──
-        const prefix = (history.employee_title_prefix || '').trim();
-        const displayName = `${prefix ? prefix + ' ' : ''}${(history.employee_name || '').trim()}`.toUpperCase();
-        const textW = W - 48;
-        // Auto-scale: thu nhỏ dần cho tới khi tên vừa ĐÚNG 1 dòng, tránh tên dài xuống dòng
-        // và đè lên dòng Team/ID hoặc cụm sao có sẵn trong ảnh nền.
-        let nameSize = L.nameFontSize;
-        doc.font(bold);
-        while (nameSize > 14 && doc.fontSize(nameSize).widthOfString(displayName) > textW) {
-          nameSize -= 1;
-        }
-        doc.fontSize(nameSize).fillColor(textColor);
-        doc.text(displayName, 24, L.nameY, { width: textW, align: 'center', lineBreak: false });
-
-        // ── Team + ID trên CÙNG một dòng (đúng mẫu thật) ──────────────────────
-        const teamIdText = `Team: ${history.employee_team}    ID: ${history.employee_id}`;
-        let teamSize = L.teamIdFontSize;
-        doc.font(regular);
-        while (teamSize > 10 && doc.fontSize(teamSize).widthOfString(teamIdText) > textW) {
-          teamSize -= 1;
-        }
-        doc.fontSize(teamSize).fillColor(textColor);
-        doc.text(teamIdText, 24, L.teamIdY, { width: textW, align: 'center', lineBreak: false });
-
-        // 6 sao KHÔNG vẽ ở đây nữa — đã có sẵn trong ảnh nền (bắt đầu từ y≈L.starTopY).
-
+        const fonts = this.resolvePdfFonts(doc);
+        this.drawIdCardPage(doc, history, fonts);
         doc.end();
       } catch (err) {
         reject(err);
       }
     });
   }
+
+  /**
+   * N thẻ → MỘT file PDF N trang, mỗi trang 1 người, cùng khổ CR80 — cho nút "Xuất PDF hàng
+   * loạt" sau khi batch xong. Tái dùng nguyên `drawIdCardPage` của luồng đơn lẻ nên từng trang
+   * ra y hệt PDF đơn lẻ. Bên gọi (IdPhotoBatchService) đã lọc bỏ người FAILED / chưa có ảnh.
+   */
+  async buildBatchPdfBuffer(histories: IdPhotoCardData[]): Promise<Buffer> {
+    if (histories.length === 0) {
+      throw new BadRequestException('Không có ảnh thẻ nào để xuất.');
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new (PDFDocument as any)({
+          size: IdPhotoService.CARD_PAGE_SIZE,
+          margin: 0,
+          autoFirstPage: false, // tự addPage từng người để không dư 1 trang trắng đầu file
+        });
+        const chunks: Buffer[] = [];
+        doc.on('data', (c: Buffer) => chunks.push(c));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+
+        const fonts = this.resolvePdfFonts(doc); // font đăng ký 1 lần, dùng chung mọi trang
+        for (const h of histories) {
+          doc.addPage({ size: IdPhotoService.CARD_PAGE_SIZE, margin: 0 });
+          this.drawIdCardPage(doc, h, fonts);
+        }
+        doc.end();
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Vẽ 1 trang PDF theo ĐÚNG bố cục thẻ nhân viên thật của công ty (mẫu thẻ khung vàng):
+   *
+   *   ┌──────────────────┐  nền = màu cấp bậc (FRAME_COLOR_BY_POSITION)
+   *   │   [logo sen]     │  vùng TRẮNG hình khiên: 2 cạnh thẳng đứng, đáy bo cung tròn
+   *   │   ( ảnh tròn )   │  ảnh chân dung cắt tròn, nằm trong khiên
+   *   │   HỌ VÀ TÊN      │  chữ trắng, in hoa, đậm
+   *   │ Team: x  ID: y   │  chữ trắng, CÙNG một dòng như mẫu thật
+   *   │   ☆ ☆ ☆ ☆        │  6 sao rỗng: 4 trên + 2 dưới (placeholder cố định)
+   *   │    ☆ ☆           │
+   *   └──────────────────┘  cung tròn trắng ở đáy
+   *
+   * KHÔNG tạo doc / KHÔNG gọi doc.end() — chỉ vẽ lên trang HIỆN TẠI của doc, để dùng được cho
+   * cả PDF đơn lẻ (1 trang) lẫn PDF hàng loạt (nhiều trang, xem buildBatchPdfBuffer).
+   */
+  private drawIdCardPage(doc: any, history: IdPhotoCardData, fonts: { regular: string; bold: string }): void {
+    const { buffer: imageBuffer } = this.parseDataUri(history.processed_image_data!);
+    const bgColor = IdPhotoService.FRAME_COLOR_BY_POSITION[history.position];
+    // Thẻ nền Trắng: chữ trắng trên nền trắng sẽ mất hút — đổi sang chữ tối và thêm viền ngoài.
+    const isLightBg = bgColor.toUpperCase() === '#FFFFFF';
+    const textColor = isLightBg ? '#1F2937' : '#FFFFFF';
+
+    const [W, H] = IdPhotoService.CARD_PAGE_SIZE;
+    const L = IdPhotoService.CARD_LAYOUT;
+
+    // ── Nền thẻ = ẢNH KHUNG THẬT phủ kín trang ────────────────────────────
+    // Thay cho bản trước dựng khung bằng bezier: ảnh đã có sẵn dải ruy băng, đường cong
+    // lõm, logo và 6 sao nên không còn sai số hình học, và 5 màu đồng bộ tuyệt đối.
+    // Lót nền trắng trước: ảnh khung có 4 góc bo TRONG SUỐT, không lót thì 4 góc PDF bị
+    // rỗng (khi in hoặc xem trên nền tối sẽ lộ ra), thay vì trắng như thẻ thật.
+    doc.rect(0, 0, W, H).fill('#FFFFFF');
+
+    const framePath = this.resolveFramePath(history.position);
+    if (framePath) {
+      doc.image(framePath, 0, 0, { width: W, height: H });
+    } else {
+      // Thiếu file khung thì vẫn phải ra được PDF đọc được — nền phẳng theo màu cấp bậc.
+      doc.rect(0, 0, W, H).fill(bgColor);
+    }
+
+    // ── Ảnh chân dung cắt tròn, đặt đúng khung tròn rỗng của ảnh nền ──────
+    doc.save();
+    doc.circle(L.circleCx, L.circleCy, L.circleR).clip();
+    // cover: lấp đầy hình tròn, không méo ảnh
+    doc.image(imageBuffer, L.circleCx - L.circleR, L.circleCy - L.circleR, {
+      cover: [L.circleR * 2, L.circleR * 2],
+      align: 'center',
+      valign: 'center',
+    });
+    doc.restore();
+
+    // ── Họ tên: in hoa, đậm, căn giữa. (Tiền tố chức danh đã ngừng dùng — chỉ in tên thường.) ──
+    const displayName = (history.employee_name || '').trim().toUpperCase();
+    const textW = W - 48;
+    // Auto-scale: thu nhỏ dần cho tới khi tên vừa ĐÚNG 1 dòng, tránh tên dài xuống dòng
+    // và đè lên dòng Team/ID hoặc cụm sao có sẵn trong ảnh nền.
+    let nameSize = L.nameFontSize;
+    doc.font(fonts.bold);
+    while (nameSize > 14 && doc.fontSize(nameSize).widthOfString(displayName) > textW) {
+      nameSize -= 1;
+    }
+    doc.fontSize(nameSize).fillColor(textColor);
+    doc.text(displayName, 24, L.nameY, { width: textW, align: 'center', lineBreak: false });
+
+    // ── Team + ID trên CÙNG một dòng (đúng mẫu thật) ──────────────────────
+    const teamIdText = `Team: ${history.employee_team}    ID: ${history.employee_id}`;
+    let teamSize = L.teamIdFontSize;
+    doc.font(fonts.regular);
+    while (teamSize > 10 && doc.fontSize(teamSize).widthOfString(teamIdText) > textW) {
+      teamSize -= 1;
+    }
+    doc.fontSize(teamSize).fillColor(textColor);
+    doc.text(teamIdText, 24, L.teamIdY, { width: textW, align: 'center', lineBreak: false });
+
+    // 6 sao KHÔNG vẽ ở đây nữa — đã có sẵn trong ảnh nền (bắt đầu từ y≈L.starTopY).
+  }
+}
+
+/** Dữ liệu tối thiểu để dựng 1 trang thẻ PDF — dùng cho cả luồng đơn lẻ lẫn hàng loạt. */
+interface IdPhotoCardData {
+  employee_name: string;
+  employee_team: string;
+  employee_id: string;
+  // [ĐÃ NGỪNG DÙNG] employee_title_prefix — không còn in lên thẻ. Không thêm lại.
+  position: IdPhotoPosition;
+  processed_image_data: string | null;
 }

@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IdPhotoPosition } from '@prisma/client';
 
@@ -34,16 +34,8 @@ export class UpdateIdPhotoDto {
   @IsNotEmpty({ message: 'employeeId không được để trống' })
   employeeId?: string;
 
-  @ApiPropertyOptional({
-    example: 'HĐ.',
-    description:
-      'Tiền tố chức danh in trước tên trên thẻ. Gửi chuỗi rỗng để XOÁ tiền tố đang có ' +
-      '(service quy về null) — khác với việc không gửi field, tức giữ nguyên giá trị cũ.',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  employeeTitlePrefix?: string;
+  // [ĐÃ NGỪNG DÙNG từ 2026-09-09] `employeeTitlePrefix` (tiền tố chức danh) đã bị bỏ khỏi
+  // nghiệp vụ. PATCH không nhận nữa; cột DB `employee_title_prefix` vẫn giữ cho dữ liệu cũ.
 
   @ApiPropertyOptional({
     enum: IdPhotoPosition,
