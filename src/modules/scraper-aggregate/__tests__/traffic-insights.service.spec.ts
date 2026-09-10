@@ -79,8 +79,8 @@ describe('TrafficInsightsService', () => {
       const result = await service.getTrafficInsights('123456789', '2026-09-07', 'day');
 
       expect(result.success).toBe(true);
-      // Views phải là 250 (khớp với chỉ số Lượt xem trên Meta Business Suite = page_posts_impressions_organic)
-      expect(result.views).toBe(250);
+      // Views tính theo công thức 1 + 2: page_video_views (100) + page_video_views_organic (80) = 180
+      expect(result.views).toBe(180);
       expect(result.videoViewsTotal).toBe(100);
       expect(result.videoViewsOrganic).toBe(80);
       expect(result.impressions).toBe(250);
@@ -90,7 +90,7 @@ describe('TrafficInsightsService', () => {
       expect(result.period?.to).toBe('2026-09-07');
     });
 
-    it('should fallback to video views if page_posts_impressions_organic is 0', async () => {
+    it('should calculate 1 + 2 (videoViewsTotal + videoViewsOrganic)', async () => {
       prismaMock.socialAccount.findFirst.mockResolvedValue({
         id: 'acc_fb_2',
         platform: 'FACEBOOK',
@@ -110,7 +110,7 @@ describe('TrafficInsightsService', () => {
 
       const result = await service.getTrafficInsights('987654321', '2026-09-07', 'day');
       expect(result.success).toBe(true);
-      expect(result.views).toBe(120);
+      expect(result.views).toBe(165);
       expect(result.videoViewsTotal).toBe(120);
     });
   });
