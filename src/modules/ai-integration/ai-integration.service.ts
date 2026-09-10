@@ -1827,7 +1827,7 @@ export class AiIntegrationService {
   /**
    * Clone a voice from uploaded sample audio
    */
-  async cloneVoice(file: any, voiceName: string, gender = 'female', userId?: string): Promise<any> {
+  async cloneVoice(file: any, voiceName: string, gender = 'female', userId?: string, promptText?: string): Promise<any> {
     if (userId && this.voiceQuotaService) {
       await this.voiceQuotaService.checkAndConsumeQuota(userId);
     }
@@ -1843,6 +1843,9 @@ export class AiIntegrationService {
       });
       formData.append('voice_name', voiceName);
       formData.append('gender', gender || 'female');
+      if (promptText?.trim()) {
+        formData.append('prompt_text', promptText.trim());
+      }
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
@@ -1864,6 +1867,9 @@ export class AiIntegrationService {
       );
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -1875,7 +1881,7 @@ export class AiIntegrationService {
    * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
    * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
    */
-  async cloneVoiceStart(file: any, voiceName: string, gender = 'female', userId?: string): Promise<any> {
+  async cloneVoiceStart(file: any, voiceName: string, gender = 'female', userId?: string, promptText?: string): Promise<any> {
     if (userId && this.voiceQuotaService) {
       await this.voiceQuotaService.checkAndConsumeQuota(userId);
     }
@@ -1891,6 +1897,9 @@ export class AiIntegrationService {
       });
       formData.append('voice_name', voiceName);
       formData.append('gender', gender || 'female');
+      if (promptText?.trim()) {
+        formData.append('prompt_text', promptText.trim());
+      }
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
@@ -1910,8 +1919,29 @@ export class AiIntegrationService {
           })
         )
       );
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'PENDING',
+          voice_name: voiceName,
+          details: { job_id: data?.job_id, gender, has_prompt_text: Boolean(promptText?.trim()) },
+        });
+      }
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'FAILED',
+          voice_name: voiceName,
+          error_message: error.message,
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to start voice clone', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -1949,6 +1979,26 @@ export class AiIntegrationService {
             this.logger.warn(`Failed to log clone usage for user ${userId}: ${logErr.message}`);
           }
         }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'SUCCESS',
+          voice_id: data.voice?.voice_id ?? null,
+          voice_name: data.voice?.name ?? null,
+          details: { job_id: jobId, expires_at: data.voice?.expires_at },
+        });
+      }
+      if (userId && data?.status === 'error') {
+        if (this.voiceQuotaService) {
+          await this.voiceQuotaService.refundQuota(userId);
+        }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'FAILED',
+          error_message: data?.error || 'MiniMax clone job failed',
+          details: { job_id: jobId },
+        });
       }
       return data;
     } catch (error: any) {
@@ -1963,7 +2013,7 @@ export class AiIntegrationService {
    * Timeout 60s (dài hơn poll status 15s): đường truyền tới api.minimax.io hay
    * chập chờn nên delete_voice bên AI đã có sẵn 3 lần thử x 30s.
    */
-  async deleteClonedVoice(voiceId: string): Promise<any> {
+  async deleteClonedVoice(voiceId: string, userId?: string): Promise<any> {
     const url = `${this.voiceAiServiceUrl}/api/voice/delete/${encodeURIComponent(voiceId)}/`;
     this.logger.log(`Calling AI Service: DELETE ${url}`);
 
@@ -1979,8 +2029,26 @@ export class AiIntegrationService {
           })
         )
       );
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'DELETE',
+          status: 'SUCCESS',
+          voice_id: voiceId,
+          details: { minimax_deleted: data.minimax_deleted },
+        });
+      }
       return data;
     } catch (error: any) {
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'DELETE',
+          status: 'FAILED',
+          voice_id: voiceId,
+          error_message: error.message,
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to delete voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -2401,14 +2469,14 @@ export class AiIntegrationService {
   /**
    * Generate Text-to-Speech using Minimax
    */
-  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string, emotion = 'calm'): Promise<any> {
     // Kiểm tra và trừ hạn mức tạo voice trong ngày (mặc định 8 lượt/ngày)
     if (userId && this.voiceQuotaService) {
       await this.voiceQuotaService.checkAndConsumeQuota(userId);
     }
 
     const url = `${this.voiceAiServiceUrl}/api/voice/tts/`;
-    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
+    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}, emotion=${emotion}`);
 
     try {
       const { data } = await firstValueFrom(
@@ -2418,7 +2486,8 @@ export class AiIntegrationService {
           speed,
           pitch,
           volume,
-          language
+          language,
+          emotion: emotion || 'calm',
         }, {
           headers: this.minimaxHeaders(),
           timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
@@ -2475,9 +2544,41 @@ export class AiIntegrationService {
         } catch (logErr: any) {
           this.logger.warn(`Failed to log TTS usage for user ${userId}: ${logErr.message}`);
         }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'TTS',
+          status: 'SUCCESS',
+          voice_id: voiceId,
+          input_text: text.slice(0, 500),
+          output_url: data?.audio_url || null,
+          characters: text.length,
+          details: {
+            speed,
+            pitch,
+            volume,
+            language,
+            emotion,
+            audio_file_id: data?.audio_file_id,
+          },
+        });
       }
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'TTS',
+          status: 'FAILED',
+          voice_id: voiceId,
+          input_text: text.slice(0, 500),
+          characters: text.length,
+          error_message: error.message,
+          details: { speed, pitch, volume, language, emotion },
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to generate voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -3844,5 +3945,127 @@ export class AiIntegrationService {
       const errMsg = error.response?.data?.error_message || error.response?.data?.error || error.message || 'Lỗi kết nối tới AI Service';
       throw new HttpException(errMsg, error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR);
     }
+  }
+
+  /**
+   * Ghi nhận lịch sử thao tác Voice vào bảng voice_action_histories.
+   * Chạy ngầm, lỗi ghi log không bao giờ được làm crash tác vụ chính.
+   */
+  async logVoiceAction(params: {
+    user_id: string;
+    action_type: 'TTS' | 'CLONE' | 'DELETE' | 'TRANSLATE' | 'GRANT_QUOTA';
+    status?: 'SUCCESS' | 'FAILED' | 'PENDING';
+    voice_id?: string | null;
+    voice_name?: string | null;
+    input_text?: string | null;
+    output_url?: string | null;
+    characters?: number;
+    duration_ms?: number;
+    details?: any;
+    error_message?: string | null;
+  }): Promise<void> {
+    try {
+      if (!this.prisma?.voiceActionHistory) return;
+      await this.prisma.voiceActionHistory.create({
+        data: {
+          user_id: params.user_id,
+          action_type: params.action_type,
+          status: params.status || 'SUCCESS',
+          voice_id: params.voice_id || null,
+          voice_name: params.voice_name || null,
+          input_text: params.input_text || null,
+          output_url: params.output_url || null,
+          characters: params.characters || 0,
+          duration_ms: params.duration_ms || 0,
+          details: params.details || null,
+          error_message: params.error_message || null,
+        },
+      });
+    } catch (err: any) {
+      this.logger.warn(`Failed to log voice action (${params.action_type}): ${err?.message}`);
+    }
+  }
+
+  /**
+   * Lấy danh sách lịch sử thao tác Voice (phân trang, lọc theo action_type, user_id, status, khoảng ngày, search).
+   * Dành cho role ADMIN.
+   */
+  async getVoiceActionHistory(query: {
+    page?: number;
+    limit?: number;
+    action_type?: string;
+    user_id?: string;
+    status?: string;
+    date_from?: string;
+    date_to?: string;
+    search?: string;
+  }): Promise<any> {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+    if (query.action_type && query.action_type !== 'ALL') {
+      where.action_type = query.action_type.toUpperCase();
+    }
+    if (query.user_id) {
+      where.user_id = query.user_id;
+    }
+    if (query.status && query.status !== 'ALL') {
+      where.status = query.status.toUpperCase();
+    }
+    if (query.date_from || query.date_to) {
+      const dateFilter: any = {};
+      if (query.date_from) {
+        dateFilter.gte = new Date(`${query.date_from}T00:00:00.000+07:00`);
+      }
+      if (query.date_to) {
+        dateFilter.lte = new Date(`${query.date_to}T23:59:59.999+07:00`);
+      }
+      where.created_at = dateFilter;
+    }
+    if (query.search?.trim()) {
+      const s = query.search.trim();
+      where.OR = [
+        { voice_name: { contains: s, mode: 'insensitive' } },
+        { input_text: { contains: s, mode: 'insensitive' } },
+        { voice_id: { contains: s, mode: 'insensitive' } },
+        { user: { full_name: { contains: s, mode: 'insensitive' } } },
+        { user: { email: { contains: s, mode: 'insensitive' } } },
+      ];
+    }
+
+    const [total, items] = await Promise.all([
+      this.prisma.voiceActionHistory.count({ where }),
+      this.prisma.voiceActionHistory.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              full_name: true,
+              team: true,
+              image_url: true,
+            },
+          },
+        },
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+    return {
+      success: true,
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
   }
 }
