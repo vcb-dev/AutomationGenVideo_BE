@@ -44,7 +44,12 @@ export class FacebookOwnedPagesController {
   @Post('import')
   async import(@Body() body: { user_access_token?: string }) {
     try {
-      const { created, updated } = await this.service.importManagedPages(body?.user_access_token);
+      const { created, updated, newPageIds } = await this.service.importManagedPages(body?.user_access_token);
+      for (const pageId of newPageIds || []) {
+        this.service.backfillPage(pageId, 300).catch((err) => {
+          this.logger.error(`[IMPORT-BACKFILL] ${pageId} thất bại: ${err.message}`);
+        });
+      }
       return {
         status: 'ok',
         created,

@@ -80,30 +80,57 @@ describe('canSign', () => {
     adminProxyAllowed: false,
   };
 
-  it('leader ký được cấp của leader', () => {
-    expect(canSign(leaderStep, ['LEADER'])).toBe(true);
+  it('leader Team Media ký được cấp của leader', () => {
+    expect(canSign(leaderStep, ['LEADER'], 'MEDIA')).toBe(true);
   });
 
-  it('manager cũng ký được cấp của leader', () => {
-    expect(canSign(leaderStep, ['MANAGER'])).toBe(true);
+  it('manager Team Media cũng ký được cấp của leader', () => {
+    expect(canSign(leaderStep, ['MANAGER'], 'MEDIA')).toBe(true);
   });
 
   it('member không ký được gì', () => {
-    expect(canSign(leaderStep, ['MEMBER'])).toBe(false);
-    expect(canSign(adminStep, ['MEMBER'])).toBe(false);
+    expect(canSign(leaderStep, ['MEMBER'], 'MEDIA')).toBe(false);
+    expect(canSign(adminStep, ['MEMBER'], 'MEDIA')).toBe(false);
   });
 
   it('leader KHÔNG ký thay được cấp của admin', () => {
     // Nếu ký thay được thì cửa canh phiếu mượn cá nhân chỉ còn là hình thức.
-    expect(canSign(adminStep, ['LEADER', 'MANAGER'])).toBe(false);
+    expect(canSign(adminStep, ['LEADER', 'MANAGER'], 'MEDIA')).toBe(false);
   });
 
   it('admin ký thay được cấp của leader', () => {
     // Dành cho trường hợp bộ phận chỉ có một leader và chính họ đứng tên phiếu.
-    expect(canSign(leaderStep, ['ADMIN'])).toBe(true);
+    expect(canSign(leaderStep, ['ADMIN'], null)).toBe(true);
   });
 
   it('người nhiều vai trò thì lấy vai trò cao nhất', () => {
-    expect(canSign(adminStep, ['MEMBER', 'ADMIN'])).toBe(true);
+    expect(canSign(adminStep, ['MEMBER', 'ADMIN'], null)).toBe(true);
+  });
+
+  it('leader bộ phận khác KHÔNG ký được, dù cấp đang tới lượt là cấp của leader', () => {
+    // Kho là tài sản của bộ phận Media. Leader bộ phận khác ký thì cửa duyệt không còn gắn với
+    // người chịu trách nhiệm về máy.
+    expect(canSign(leaderStep, ['LEADER'], 'Team K1')).toBe(false);
+    expect(canSign(leaderStep, ['MANAGER'], 'Team ADS')).toBe(false);
+  });
+
+  it('thiếu thông tin team thì KHÔNG cho ký, không đoán rộng ra', () => {
+    // Bản trước coi `undefined` là Media, nên bất kỳ lời gọi nào quên truyền team đều lặng lẽ
+    // mở cửa cho leader mọi bộ phận. Mặc định phải là đóng.
+    expect(canSign(leaderStep, ['LEADER'], undefined)).toBe(false);
+    expect(canSign(leaderStep, ['LEADER'], null)).toBe(false);
+    expect(canSign(leaderStep, ['LEADER'], '')).toBe(false);
+  });
+
+  it('team ghi nhiều tên hoặc khác hoa thường vẫn nhận đúng', () => {
+    expect(canSign(leaderStep, ['LEADER'], 'Scale Data, media')).toBe(true);
+    expect(canSign(leaderStep, ['leader'], 'MEDIA')).toBe(true);
+  });
+
+  it('tên team chỉ chứa chữ media thì KHÔNG ký thay cấp leader được', () => {
+    // Luật cũ so khớp bằng "có chứa", nên đặt tên team là đủ để leo lên quyền ký duyệt phiếu
+    // mượn của cả kho. Tên team do người dùng đặt được nên đó là cửa mở sẵn.
+    expect(canSign(leaderStep, ['LEADER'], 'Media Chung')).toBe(false);
+    expect(canSign(leaderStep, ['LEADER'], 'Social Media')).toBe(false);
   });
 });

@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
+import { intakeStatusFor } from './intake-rules';
 
 /**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.
@@ -25,7 +27,10 @@ const MANUAL_EXITS_FROM_WORKFLOW = ['LOST'];
 
 @Injectable()
 export class MemsCatalogService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly photoUrls: MemsPhotoUrlSigner,
+  ) {}
 
   async createCategory(dto: CreateCategoryDto) {
     return this.prisma.memsCategory.create({
@@ -69,8 +74,20 @@ export class MemsCatalogService {
     // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';
+    const status = intakeStatusFor(condition);
 
     return this.prisma.$transaction(async (tx) => {
+      // Đếm và ghi phải nằm trong cùng giao dịch có khoá, nếu không hai người cùng nhập kho sẽ
+      // cùng đọc ra N rồi cùng sinh mã N+1 — mà `asset_code` là cột duy nhất, người thứ hai ăn 500.
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `mems:asset-code:${prefix}`,
+      );
+      const existing = await tx.memsAsset.count({
+        where: { model: { category: { code: prefix } } },
+      });
+      const assetCode = `${prefix}-${String(existing + 1).padStart(3, '0')}`;
+
       const asset = await tx.memsAsset.create({
         data: {
           asset_code: assetCode,
@@ -80,7 +97,7 @@ export class MemsCatalogService {
           location_id: dto.locationId ?? null,
           purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
           purchase_price: dto.purchasePrice ?? null,
-          status: 'PENDING_INSPECTION', // BR-05
+          status: status as any,
           condition: condition as any,
         },
       });
@@ -417,7 +434,12 @@ export class MemsCatalogService {
       include: {
         model: { include: { category: true, accessories: true } },
         location: true,
-        photos: { orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }] },
+        // Chỉ ảnh hồ sơ: ảnh biên bản bàn giao/nhận trả cũng nằm ở bảng này, không lọc thì một
+        // chiếc mượn nhiều lần sẽ có hàng chục tấm chứng cứ tràn vào thư viện ảnh của máy.
+        photos: {
+          where: { purpose: 'CATALOG' },
+          orderBy: [{ is_primary: 'desc' }, { sort_order: 'asc' }],
+        },
       },
     });
     if (!asset) throw new NotFoundException(`Không có máy ${assetCode}`);
@@ -449,7 +471,8 @@ export class MemsCatalogService {
     });
 
     return {
-      asset,
+      // Ký URL ảnh: route phục vụ ảnh là công khai nên nó chỉ nhận đường dẫn có token còn hạn.
+      asset: { ...asset, photos: this.photoUrls.signAll(asset.photos) },
       events,
       next_reservation: nextReservation,
       siblings_available: siblingsAvailable,
@@ -458,7 +481,7 @@ export class MemsCatalogService {
 
   /** QĐ-07: mặc định ẩn bản ghi đã ngừng sử dụng, không xoá cứng bao giờ. */
   async listAssets(filter: { categoryId?: string; status?: string }) {
-    return this.prisma.memsAsset.findMany({
+    const assets = await this.prisma.memsAsset.findMany({
       where: {
         is_disabled: false,
         ...(filter.status ? { status: filter.status as any } : {}),
@@ -473,5 +496,11 @@ export class MemsCatalogService {
       },
       orderBy: { asset_code: 'asc' },
     });
+
+    // Ký URL ảnh đại diện, nếu không thì mọi ô ảnh trong bảng kho đều là 404.
+    return assets.map((asset) => ({
+      ...asset,
+      photos: this.photoUrls.signAll(asset.photos),
+    }));
   }
 }

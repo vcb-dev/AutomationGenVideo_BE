@@ -7,6 +7,19 @@ import { extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } f
 
 const STALE_LOCK_MINUTES = 30;
 
+function extractErrorMessage(err: any): string {
+  if (err?.response?.data?.error) {
+    const error = err.response.data.error;
+    if (typeof error === 'string') return error;
+    if (typeof error === 'object' && error.message) return error.message;
+  }
+  if (err?.response?.data?.message) {
+    const msg = err.response.data.message;
+    if (typeof msg === 'string') return msg;
+  }
+  return err?.message || 'Lỗi không xác định';
+}
+
 export interface PublishedLinkStatsResult {
   status: 'success' | 'failed' | 'unsupported';
   views?: number;
@@ -204,7 +217,7 @@ export class FacebookOwnedPagesService {
       this.logger.log(`[BACKFILL] ${page.name}: +${created} mới, ~${updated} cập nhật (quét ${total_scanned} bài)`);
       return { created, updated, total_scanned };
     } catch (err: any) {
-      await this.unlockPage(page.id, err.message);
+      await this.unlockPage(page.id, extractErrorMessage(err));
       throw err;
     }
   }
@@ -231,7 +244,7 @@ export class FacebookOwnedPagesService {
         done++;
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ Backfill ${page.name}: ${err.message}`);
+        this.logger.error(`❌ Backfill ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 
@@ -275,7 +288,7 @@ export class FacebookOwnedPagesService {
       this.logger.log(`[SYNC] ${page.name}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated };
     } catch (err: any) {
-      await this.unlockPage(page.id, err.message);
+      await this.unlockPage(page.id, extractErrorMessage(err));
       throw err;
     }
   }
@@ -303,7 +316,7 @@ export class FacebookOwnedPagesService {
         done++;
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ Delta ${page.name}: ${err.message}`);
+        this.logger.error(`❌ Delta ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 
@@ -367,7 +380,7 @@ export class FacebookOwnedPagesService {
         this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ [METRICS] ${page.name}: ${err.message}`);
+        this.logger.error(`❌ [METRICS] ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 

@@ -1,11 +1,11 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   FacebookExternalAiClientService,
   ParsedFanpageProfile,
   ParsedFacebookReel,
 } from './facebook-external-ai-client.service';
-import { cleanFacebookUrl, extractHandleFromUrl } from './facebook-url.util';
+import { cleanFacebookUrl, extractHandleFromUrl, fetchFacebookPageMeta } from './facebook-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
@@ -188,11 +188,7 @@ export class FacebookExternalScraperService {
       select: { post_id: true },
     });
     const existingIds = existingRows.map((r) => r.post_id);
-
-    let startDate = '';
-    if (fanpage.is_initial_scraped && fanpage.last_scraped_at) {
-      startDate = fanpage.last_scraped_at.toISOString().slice(0, 10);
-    }
+    const startDate = '';
     const effectiveNum = normalizeTargetCount(numOfPosts);
 
     let profileApiOk: boolean;
@@ -219,10 +215,10 @@ export class FacebookExternalScraperService {
       } else {
         await this.prisma.scraperFanpage.update({
           where: { id: fanpageId },
-          data: { scraping_status: 'failed', scrape_error: 'Không lấy được profile detail từ RapidAPI' },
+          data: { scraping_status: 'failed', scrape_error: 'Không lấy được thông tin chi tiết fanpage' },
         });
       }
-      throw new HttpException({ error: 'Không lấy được thông tin Fanpage từ RapidAPI. Vui lòng kiểm tra lại URL hoặc cấu hình RAPIDAPI_FACEBOOK_KEY.' }, HttpStatus.BAD_REQUEST);
+      throw new HttpException({ error: 'Không lấy được thông tin Fanpage. Vui lòng kiểm tra lại URL hoặc kiểm tra fanpage có bị hạn chế/riêng tư hay không.' }, HttpStatus.BAD_REQUEST);
     }
 
     const isFallback = !profileApiOk;
@@ -287,7 +283,7 @@ export class FacebookExternalScraperService {
     };
   }
 
-  async triggerScrapeReels(fanpageId: bigint): Promise<any> {
+  async triggerScrapeReels(fanpageId: bigint, numOfPosts?: number): Promise<any> {
     const fp = await this.prisma.scraperFanpage.findUnique({ where: { id: fanpageId } });
     if (!fp) throw new HttpException({ error: `Fanpage ${fanpageId} not found` }, HttpStatus.NOT_FOUND);
 
@@ -295,14 +291,15 @@ export class FacebookExternalScraperService {
       return { status: 'ok', message: `${fp.name} đang được cào.`, is_scraping: true };
     }
 
+    const targetCount = normalizeTargetCount(numOfPosts);
+
     if (!fp.is_initial_scraped) {
       await this.prisma.scraperFanpage.update({
         where: { id: fanpageId },
         data: { scraping_status: 'processing', scrape_error: null },
       });
 
-      // Batch đầu SYNCHRONOUS (~20 reels, rất nhanh) — trả data ngay cho user
-      const result = await this.ingestReelsSyncFirst(fp, 20);
+      const result = await this.ingestReelsSyncFirst(fp, targetCount);
       if (result.reels_returned === 0) {
         const reason = result.fallback_used
           ? FALLBACK_SCRAPE_ERROR
@@ -310,19 +307,14 @@ export class FacebookExternalScraperService {
         throw new HttpException({ error: reason }, HttpStatus.NOT_FOUND);
       }
 
-      // Dispatch cào tiếp tới tổng 300 reels (fire-and-forget)
-      this.scrapeReels(fanpageId, 300).catch((err) => {
-        this.logger.error(`[FB-EXTERNAL] trigger-scrape ${fanpageId} continuation thất bại: ${err.message}`);
-      });
-
       return {
         status: 'ok',
-        message: `Đã cào ${result.created} reels đầu cho ${fp.name}. Đang tiếp tục cào thêm...`,
+        message: `Đã cào ${result.created} reels cho ${fp.name}.`,
       };
     }
 
-    // Đã cào lần đầu rồi → chỉ cào delta (10), fully async như cũ
-    const num = 10;
+    // Đã cào lần đầu rồi → cào tiếp targetCount reels (hoặc 10 nếu cào delta mặc định)
+    const num = numOfPosts ? targetCount : 10;
     this.scrapeReels(fanpageId, num).catch((err) => {
       this.logger.error(`[FB-EXTERNAL] trigger-scrape ${fanpageId} thất bại: ${err.message}`);
     });
@@ -330,7 +322,7 @@ export class FacebookExternalScraperService {
     return { status: 'ok', message: `Đã gửi yêu cầu cào ${num} reels cho ${fp.name}.` };
   }
 
-  async scrapeByUrl(url: string): Promise<any> {
+  async scrapeByUrl(url: string, numOfPosts?: number): Promise<any> {
     const cleanUrl = cleanFacebookUrl(url);
     const handle = extractHandleFromUrl(cleanUrl);
 
@@ -361,15 +353,15 @@ export class FacebookExternalScraperService {
         };
       }
     } else {
-      // Temp profile_id dựa trên handle để tránh unique conflict (profile_id thật sẽ
-      // ghi đè khi task cào xong). Fallback ngẫu nhiên cho URL dạng profile.php (không có handle).
-      const tempId = handle ? `tmp_${handle}` : `tmp_${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+      // Lấy nhanh avatar và tên thật qua OpenGraph hoàn toàn miễn phí
+      const meta = await fetchFacebookPageMeta(cleanUrl);
       fp = await this.prisma.scraperFanpage.create({
         data: {
-          profile_id: tempId,
-          name: handle || 'Facebook Page',
+          profile_id: meta.profileId,
+          name: meta.name,
           handle: handle || '',
           page_url: cleanUrl,
+          avatar_url: meta.avatarUrl || null,
           is_visible_on_ui: true,
         },
       });
@@ -380,10 +372,10 @@ export class FacebookExternalScraperService {
       data: { scraping_status: 'processing', scrape_error: null },
     });
 
-    // fp.is_initial_scraped luôn là false ở đây (nhánh true đã return sớm ở trên,
-    // fanpage mới tạo mặc định false) — luôn là lần cào đầu.
-    // Batch đầu SYNCHRONOUS (~20 reels, rất nhanh) — trả data ngay cho user
-    const result = await this.ingestReelsSyncFirst(fp, 20);
+    const targetCount = normalizeTargetCount(numOfPosts);
+
+    // Cào đúng targetCount reels (ví dụ: 50) trong 1 lần duy nhất, không chia nhỏ 20
+    const result = await this.ingestReelsSyncFirst(fp, targetCount);
     if (result.reels_returned === 0) {
       await this.prisma.scraperFanpage.update({
         where: { id: fp.id },
@@ -393,19 +385,14 @@ export class FacebookExternalScraperService {
         status: 'ok',
         message: result.fallback_used
           ? `Đã thêm kênh ${fp.name || handle} nhưng ${FALLBACK_SCRAPE_ERROR.toLowerCase()}. Thử cào lại sau.`
-          : `Đã thêm kênh ${fp.name || handle} thành công. (Chưa tìm thấy reels hoặc cần cấu hình RAPIDAPI_FACEBOOK_KEY để cào video).`,
+          : `Đã thêm kênh ${fp.name || handle} thành công. (Chưa tìm thấy reels hoặc cần cấu hình API để cào video).`,
         fanpage_id: Number(fp.id),
       };
     }
 
-    // Dispatch cào tiếp tới tổng 300 reels (fire-and-forget)
-    this.scrapeReels(fp.id, 300).catch((err) => {
-      this.logger.error(`[FB-EXTERNAL] scrape-by-url ${url} continuation thất bại: ${err.message}`);
-    });
-
     return {
       status: 'ok',
-      message: `Đã cào ${result.created} reels đầu cho ${fp.name || handle}. Đang tiếp tục cào thêm...`,
+      message: `Đã cào thành công ${result.created} reels cho ${fp.name || handle}.`,
       fanpage_id: Number(fp.id),
     };
   }
@@ -464,11 +451,12 @@ export class FacebookExternalScraperService {
       });
       const existingIds = existingRows.map((r) => r.post_id);
 
-      const startDate = fanpage.last_scraped_at
+      const startDate = fanpage.is_initial_scraped && fanpage.last_scraped_at
         ? fanpage.last_scraped_at.toISOString().slice(0, 10)
-        : new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+        : '';
+      const numPosts = fanpage.is_initial_scraped ? 20 : 50;
 
-      const { profile_api_ok, profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, 10, existingIds, startDate);
+      const { profile_api_ok, profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, numPosts, existingIds, startDate);
 
       const result = await this.ingestFetchedData(fanpageId, profile, reels, !profile_api_ok);
       return { created: result.created, updated: result.updated };
@@ -489,7 +477,6 @@ export class FacebookExternalScraperService {
     const pages = await this.prisma.scraperFanpage.findMany({
       where: {
         is_periodic_crawl: true,
-        is_initial_scraped: true,
         is_visible_on_ui: true,
         scraping_status: { not: 'processing' },
       },
@@ -519,5 +506,99 @@ export class FacebookExternalScraperService {
 
     this.logger.log(`═══ [FB-EXTERNAL-PERIODIC] Xong: ${done}/${pages.length} OK, ${failed} lỗi ═══`);
     return { total: pages.length, done, failed };
+  }
+
+  /**
+   * Thêm hàng loạt Fanpage vào hệ thống (CHƯA CÀO VIDEO NGAY).
+   * Lưu vào DB ở trạng thái 'idle' để hiển thị trên UI; khi nào user muốn cào thì mới bấm cào.
+   */
+  async bulkAddFanpages(urls: string[]): Promise<{
+    total_received: number;
+    added_count: number;
+    skipped_count: number;
+    added_pages: { id: number; name: string; handle: string; page_url: string }[];
+    skipped_urls: { url: string; reason: string }[];
+  }> {
+    const validInputs = urls.map(u => (u || '').trim()).filter(Boolean);
+    if (!Array.isArray(urls) || validInputs.length === 0) {
+      throw new BadRequestException('Danh sách URLs không được để trống');
+    }
+
+    const added_pages: { id: number; name: string; handle: string; page_url: string }[] = [];
+    const skipped_urls: { url: string; reason: string }[] = [];
+    const seenInBatch = new Set<string>();
+
+    for (const rawUrl of urls) {
+      const trimmed = (rawUrl || '').trim();
+      if (!trimmed) {
+        skipped_urls.push({ url: '', reason: 'Đường link trống' });
+        continue;
+      }
+
+      if (!trimmed.includes('facebook.com') && !trimmed.includes('fb.watch') && !trimmed.includes('fb.com')) {
+        skipped_urls.push({ url: trimmed, reason: 'URL không thuộc Facebook' });
+        continue;
+      }
+
+      try {
+        const cleanUrl = cleanFacebookUrl(trimmed);
+        const handle = extractHandleFromUrl(cleanUrl);
+
+        if (!handle && !cleanUrl.includes('profile.php')) {
+          skipped_urls.push({ url: trimmed, reason: 'URL không đúng định dạng Facebook Page' });
+          continue;
+        }
+
+        const dedupeKey = handle || cleanUrl;
+        if (seenInBatch.has(dedupeKey)) {
+          skipped_urls.push({ url: trimmed, reason: 'Trùng lặp trong danh sách gửi lên' });
+          continue;
+        }
+        seenInBatch.add(dedupeKey);
+
+        // Kiểm tra đã tồn tại trong DB chưa
+        let existing = handle ? await this.prisma.scraperFanpage.findFirst({ where: { handle } }) : null;
+        if (!existing) {
+          existing = await this.prisma.scraperFanpage.findFirst({ where: { page_url: cleanUrl } });
+        }
+
+        if (existing) {
+          skipped_urls.push({ url: trimmed, reason: `Đã có trong hệ thống (${existing.name || handle})` });
+          continue;
+        }
+
+        // Lấy nhanh avatar và tên thật qua OpenGraph hoàn toàn miễn phí
+        const meta = await fetchFacebookPageMeta(cleanUrl);
+        const created = await this.prisma.scraperFanpage.create({
+          data: {
+            profile_id: meta.profileId,
+            name: meta.name,
+            handle: handle || '',
+            page_url: cleanUrl,
+            avatar_url: meta.avatarUrl || null,
+            is_visible_on_ui: true,
+            is_initial_scraped: false,
+            scraping_status: 'idle',
+          },
+        });
+
+        added_pages.push({
+          id: Number(created.id),
+          name: created.name,
+          handle: created.handle,
+          page_url: created.page_url,
+        });
+      } catch (err: any) {
+        skipped_urls.push({ url: trimmed, reason: err.message || 'Lỗi xử lý URL' });
+      }
+    }
+
+    return {
+      total_received: urls.length,
+      added_count: added_pages.length,
+      skipped_count: skipped_urls.length,
+      added_pages,
+      skipped_urls,
+    };
   }
 }

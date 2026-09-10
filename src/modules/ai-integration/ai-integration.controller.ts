@@ -687,7 +687,20 @@ export class AiIntegrationController {
     if (!targetUserId) {
       throw new HttpException('user_id is required', HttpStatus.BAD_REQUEST);
     }
-    return this.voiceQuotaService.grantExtraQuota(targetUserId, extraCount, req.user?.id);
+    const result = await this.voiceQuotaService.grantExtraQuota(targetUserId, extraCount, req.user?.id);
+    if (req.user?.id) {
+      await this.aiService.logVoiceAction({
+        user_id: req.user.id,
+        action_type: 'GRANT_QUOTA',
+        status: 'SUCCESS',
+        details: {
+          target_user_id: targetUserId,
+          extra_count: extraCount,
+          admin_id: req.user.id,
+        },
+      });
+    }
+    return result;
   }
 
   @Get('voice/list')
@@ -717,6 +730,7 @@ export class AiIntegrationController {
     @Body('voice_name') voiceName: string,
     @Req() req: any,
     @Body('gender') gender?: string,
+    @Body('prompt_text') promptText?: string,
   ) {
     if (!file) {
       throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
@@ -724,7 +738,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoice(file, voiceName, gender, req.user?.id);
+    return this.aiService.cloneVoice(file, voiceName, gender, req.user?.id, promptText);
   }
 
   @Post('voice/clone/start')
@@ -747,6 +761,7 @@ export class AiIntegrationController {
     @Body('voice_name') voiceName: string,
     @Req() req: any,
     @Body('gender') gender?: string,
+    @Body('prompt_text') promptText?: string,
   ) {
     if (!file) {
       throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
@@ -754,7 +769,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoiceStart(file, voiceName, gender, req.user?.id);
+    return this.aiService.cloneVoiceStart(file, voiceName, gender, req.user?.id, promptText);
   }
 
   @Get('voice/clone/status/:jobId')
@@ -767,11 +782,27 @@ export class AiIntegrationController {
   @Delete('voice/:voiceId')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Xoá một giọng đã clone (xoá cả trên MiniMax lẫn DB)' })
-  async deleteClonedVoice(@Param('voiceId') voiceId: string) {
+  async deleteClonedVoice(@Param('voiceId') voiceId: string, @Req() req: any) {
     if (!voiceId) {
       throw new HttpException('voiceId is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.deleteClonedVoice(voiceId);
+    return this.aiService.deleteClonedVoice(voiceId, req.user?.id);
+  }
+
+  @Get('voice/history')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Lấy danh sách lịch sử thao tác voice của người dùng (Chỉ dành cho ADMIN)' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'action_type', required: false, type: String })
+  @ApiQuery({ name: 'user_id', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'date_from', required: false, type: String })
+  @ApiQuery({ name: 'date_to', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  async getVoiceActionHistory(@Query() query: any) {
+    return this.aiService.getVoiceActionHistory(query);
   }
 
   @Get('voice/usage/stats')
@@ -839,6 +870,7 @@ export class AiIntegrationController {
     @Body('pitch') pitch?: number,
     @Body('volume') volume?: number,
     @Body('language') language?: string,
+    @Body('emotion') emotion?: string,
   ) {
     if (!text) {
       throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
@@ -846,7 +878,7 @@ export class AiIntegrationController {
     if (!voiceId) {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id, emotion);
   }
 
   @Post('voice/translate-text')
@@ -856,6 +888,7 @@ export class AiIntegrationController {
   async translateVoiceText(
     @Body('text') text: string,
     @Body('language') language: string,
+    @Req() req: any,
   ) {
     if (!text) {
       throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
@@ -863,7 +896,21 @@ export class AiIntegrationController {
     if (!language) {
       throw new HttpException('language is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+    const result = await this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+    if (req.user?.id) {
+      await this.aiService.logVoiceAction({
+        user_id: req.user.id,
+        action_type: 'TRANSLATE',
+        status: 'SUCCESS',
+        input_text: text.slice(0, 500),
+        characters: text.length,
+        details: {
+          language,
+          output_length: result?.content?.length || 0,
+        },
+      });
+    }
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════

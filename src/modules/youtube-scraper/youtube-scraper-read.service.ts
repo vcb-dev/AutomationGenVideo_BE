@@ -118,6 +118,7 @@ export class YoutubeScraperReadService {
 
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string; is_owned?: string;
+    tracked?: string; bookmarked?: string; periodic?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -128,6 +129,8 @@ export class YoutubeScraperReadService {
     const conditions: Prisma.Sql[] = [];
     if (isOwnedParam === 'true') conditions.push(Prisma.sql`is_owned = true`);
     else if (isOwnedParam === 'false') conditions.push(Prisma.sql`is_owned = false`);
+    if (params.tracked === 'true' || params.periodic === 'true') conditions.push(Prisma.sql`is_tracked = true`);
+    if (params.bookmarked === 'true') conditions.push(Prisma.sql`is_bookmarked = true`);
     if (search) conditions.push(unaccentLike(Prisma.sql`title`, search));
     const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 

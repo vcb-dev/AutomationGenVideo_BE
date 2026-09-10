@@ -12,7 +12,7 @@ import {
   Request,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTeamsService } from "./teams.service";
@@ -29,7 +29,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoTeamsController {
   constructor(
@@ -396,6 +396,7 @@ export class TaskAutoTeamsController {
     @Query("month") month?: string,
     @Query("team_id") teamId?: string,
     @Query("assignee_id") assigneeId?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
@@ -405,6 +406,7 @@ export class TaskAutoTeamsController {
       month,
       teamId,
       assigneeId,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
     );
   }
 
@@ -441,7 +443,13 @@ export class TaskAutoTeamsController {
     @Query("team") team?: string,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
-    return this.tasks.getTeamReport(team, dateFrom, dateTo);
+    return this.tasks.getTeamReport(
+      team,
+      dateFrom,
+      dateTo,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
+    );
   }
 }

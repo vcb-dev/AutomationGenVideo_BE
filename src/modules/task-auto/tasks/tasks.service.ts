@@ -1444,13 +1444,14 @@ export class TaskAutoTasksService {
      * 2 nhánh đó đã tự khoanh phạm vi theo JWT (team mình lead / chính mình) rồi. */
     teamId?: string,
     assigneeId?: string,
+    pinTrafficMonth = false,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard(range, teamId, assigneeId);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month, pinTrafficMonth);
     return this.getPersonalDashboard(userId, range);
   }
 
@@ -1637,6 +1638,7 @@ export class TaskAutoTasksService {
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
     month?: string,
+    pinTrafficMonth = false,
   ) {
     const now = new Date();
     const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -1661,6 +1663,18 @@ export class TaskAutoTasksService {
     // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một kỳ đã qua.
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const isSingleDay =
+      !!range && range.lt.getTime() - range.gte.getTime() === 86_400_000;
+    const dayStart = isSingleDay ? range!.gte : todayStart;
+    const dayEnd = isSingleDay ? range!.lt : todayEnd;
+    const dayKpiDateStr = vietnamDateString(isSingleDay ? range!.gte : now);
+    const trafficRange =
+      pinTrafficMonth && range
+        ? {
+            gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
+            lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
+          }
+        : periodRange;
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
     // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
@@ -1686,6 +1700,7 @@ export class TaskAutoTasksService {
         kpi: null,
         video_by_line: [],
         product_by_category: [],
+        content_by_classification: [],
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1712,7 +1727,7 @@ export class TaskAutoTasksService {
       memberRevenueMonth,
       videoByLine,
       manualDailyKpis,
-      contentFreshnessByUser,
+      contentByClassification,
       productByCategory,
       contentCreatorStats,
       approvedEditors,
@@ -1761,8 +1776,8 @@ export class TaskAutoTasksService {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
           OR: [
-            { deadline: { gte: todayStart, lt: todayEnd } },
-            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
+            { deadline: { gte: dayStart, lt: dayEnd } },
+            { deadline: null, created_at: { gte: dayStart, lt: dayEnd } },
           ],
         },
         _count: { id: true },
@@ -1772,7 +1787,7 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: todayStart, lt: todayEnd },
+          reviewed_at: { gte: dayStart, lt: dayEnd },
         },
         _count: { id: true },
       }),
@@ -1784,7 +1799,7 @@ export class TaskAutoTasksService {
         ? this.prisma.trafficReport.findMany({
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: periodRange,
+              date: trafficRange,
             },
             select: { email: true, date: true, total_traffic: true },
           })
@@ -1795,7 +1810,7 @@ export class TaskAutoTasksService {
             by: ["email"],
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: periodRange,
+              date: trafficRange,
             },
             _sum: { total_revenue: true },
           })
@@ -1812,22 +1827,18 @@ export class TaskAutoTasksService {
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(vietnamDateString(now)),
+          date: dailyKpiDate(dayKpiDateStr),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
       }),
-      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng kỳ đang xem (mới),
-      // còn lại tính là cũ — khoá theo `periodRange` (bộ lọc ngày nếu có, không thì cả tháng đang xem).
-      this.getContentFreshnessByAssignee(
-        {
-          team_id: { in: teamIds },
-          assignee_id: { in: memberIds },
-          status: { notIn: ["CANCELLED"] },
-          created_at: periodRange,
-        },
-        periodRange,
-      ),
+      // Gộp task tạo trong kỳ theo phân loại (ContentClassification) của content gắn vào task.
+      this.getContentByClassification({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        created_at: periodRange,
+      }),
       // "TEAM - SẢN PHẨM": số video đã duyệt trong kỳ của cả team, gộp theo dòng sản phẩm
       // (GMV/Traffic/Profit). Breakdown theo sản phẩm riêng biệt đã tách sang
       // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
@@ -1842,8 +1853,9 @@ export class TaskAutoTasksService {
         teamIds,
         memberIds,
         periodRange,
-        todayStart,
-        todayEnd,
+        todayStart: dayStart,
+        todayEnd: dayEnd,
+        dailyDateStr: dayKpiDateStr,
         months: [currentMonth],
       }),
       // Ai đã được duyệt làm editor (EditorApproval, toàn cục theo user — không theo team) — dùng
@@ -1937,10 +1949,6 @@ export class TaskAutoTasksService {
         traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
         /** Tổng doanh thu tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
         revenue_month: revenueMonthByEmail[email.toLowerCase().trim()] ?? 0,
-        /** Số task trong kỳ dùng content thêm vào kho ĐÚNG NGÀY task được tạo. */
-        content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
-        /** Số task trong kỳ dùng content đã có từ TRƯỚC ngày task được tạo (tiêu thụ tồn kho). */
-        content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
         is_content_creator: isContentCreator,
         content_collected_month: ccCollected,
         content_original_month: ccOriginal,
@@ -1984,6 +1992,7 @@ export class TaskAutoTasksService {
       video_by_line: videoByLine,
       /** Số video (task đã duyệt) trong tháng của cả team, gộp theo dòng sản phẩm (GMV/Traffic/Profit). */
       product_by_category: productByCategory,
+      content_by_classification: contentByClassification,
     };
   }
 
@@ -2003,6 +2012,7 @@ export class TaskAutoTasksService {
     periodRange: { gte: Date; lt: Date };
     todayStart: Date;
     todayEnd: Date;
+    dailyDateStr?: string;
     months: string[];
   }) {
     const result = {
@@ -2013,7 +2023,8 @@ export class TaskAutoTasksService {
       dayCompletedByUser: {} as Record<string, number>,
       approvedMonthByUser: {} as Record<string, number>,
     };
-    const { teamIds, memberIds, periodRange, todayStart, todayEnd, months } = params;
+    const { teamIds, memberIds, periodRange, todayStart, todayEnd, dailyDateStr, months } =
+      params;
     if (memberIds.length === 0) return result;
 
     const [kpis, contentByOrigin, dailyKpis, contentToday, approvedPushes] = await Promise.all([
@@ -2029,7 +2040,7 @@ export class TaskAutoTasksService {
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(vietnamDateString(new Date())),
+          date: dailyKpiDate(dailyDateStr ?? vietnamDateString(new Date())),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
@@ -2146,23 +2157,19 @@ export class TaskAutoTasksService {
   }
 
   /**
-   * "Content mới" vs "Content cũ" trong 1 kỳ lọc (`period`): với mỗi task trong `where` (đã bị khoá
-   * created_at nằm trong `period` ở call site — "gắn vào task trong khoảng thời gian lọc"), tra ngày
-   * thêm vào kho của content đã dùng (content_id → Content.created_at, editor_content_id →
-   * EditorContent.added_at, team_content_id → TeamContent.added_at — mỗi task chỉ có đúng 1 trong 3
-   * field này được set). Content đó được thêm vào kho ĐÚNG TRONG `period` → "content mới" (task dùng
-   * content vừa bổ sung trong kỳ); còn lại — thêm từ trước kỳ, hoặc task không gắn content nào — đều
-   * tính là "content cũ" (số task còn lại không gắn với content mới). Gộp theo assignee_id — task
-   * không có assignee bị bỏ qua (không tính vào mẫu số).
+   * "Content theo phân loại": với mỗi task khớp `where` (call site khoá theo team + created_at trong
+   * kỳ + chưa huỷ), lấy ContentClassification HIỆN TẠI của content gắn vào task (content_id →
+   * Content, editor_content_id → EditorContent, team_content_id → TeamContent — mỗi task chỉ có đúng
+   * 1 trong 3 field được set) rồi đếm số task theo tên phân loại. Task có content chưa gắn phân loại
+   * — hoặc không gắn content nào / content đã bị xoá — dồn vào nhóm "Chưa phân loại". Join động lúc
+   * query nên số liệu phản ánh phân loại tại thời điểm xem, không "chụp" lúc tạo task.
    */
-  private async getContentFreshnessByAssignee(
+  private async getContentByClassification(
     where: Prisma.TaskWhereInput,
-    period: { gte: Date; lt: Date },
-  ): Promise<Record<string, { new: number; old: number }>> {
+  ): Promise<{ classification: string; count: number }[]> {
     const rows = await this.prisma.task.findMany({
       where,
       select: {
-        assignee_id: true,
         content_id: true,
         editor_content_id: true,
         team_content_id: true,
@@ -2183,44 +2190,52 @@ export class TaskAutoTasksService {
       contentIds.length > 0
         ? this.prisma.content.findMany({
             where: { id: { in: contentIds } },
-            select: { id: true, created_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
       editorContentIds.length > 0
         ? this.prisma.editorContent.findMany({
             where: { id: { in: editorContentIds } },
-            select: { id: true, added_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
       teamContentIds.length > 0
         ? this.prisma.teamContent.findMany({
             where: { id: { in: teamContentIds } },
-            select: { id: true, added_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
     ]);
 
-    const contentDateById = new Map(contents.map((c) => [c.id, c.created_at]));
-    const editorContentDateById = new Map(editorContents.map((c) => [c.id, c.added_at]));
-    const teamContentDateById = new Map(teamContents.map((c) => [c.id, c.added_at]));
+    const nameByContentId = new Map(
+      contents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
+    const nameByEditorContentId = new Map(
+      editorContents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
+    const nameByTeamContentId = new Map(
+      teamContents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
 
-    const result: Record<string, { new: number; old: number }> = {};
+    const UNCLASSIFIED = "Chưa phân loại";
+    const countByName: Record<string, number> = {};
     for (const r of rows) {
-      if (!r.assignee_id) continue;
-      const contentAddedAt =
-        (r.content_id && contentDateById.get(r.content_id)) ||
-        (r.editor_content_id && editorContentDateById.get(r.editor_content_id)) ||
-        (r.team_content_id && teamContentDateById.get(r.team_content_id)) ||
+      const name =
+        (r.content_id ? nameByContentId.get(r.content_id) : null) ??
+        (r.editor_content_id ? nameByEditorContentId.get(r.editor_content_id) : null) ??
+        (r.team_content_id ? nameByTeamContentId.get(r.team_content_id) : null) ??
         null;
-      const bucket = (result[r.assignee_id] ??= { new: 0, old: 0 });
-      const isNew = !!contentAddedAt && contentAddedAt >= period.gte && contentAddedAt < period.lt;
-      if (isNew) {
-        bucket.new++;
-      } else {
-        bucket.old++;
-      }
+      const key = name ?? UNCLASSIFIED;
+      countByName[key] = (countByName[key] ?? 0) + 1;
     }
-    return result;
+
+    return Object.entries(countByName)
+      .map(([classification, count]) => ({ classification, count }))
+      .sort((a, b) => {
+        if (a.classification === UNCLASSIFIED) return 1;
+        if (b.classification === UNCLASSIFIED) return -1;
+        return b.count - a.count || a.classification.localeCompare(b.classification, "vi");
+      });
   }
 
   /**
@@ -2440,16 +2455,33 @@ export class TaskAutoTasksService {
    * "KPI ngày" vẫn luôn tính theo NGÀY THỰC TẾ (hôm nay), không phụ thuộc khoảng ngày đã chọn.
    * `team` khớp theo Team.name (unique) — cùng quy ước với bộ lọc team hiện có ở AdminOverviewFiltersContext (FE).
    */
-  async getTeamReport(team?: string, dateFrom?: string, dateTo?: string) {
+  async getTeamReport(
+    team?: string,
+    dateFrom?: string,
+    dateTo?: string,
+    pinTrafficMonth = false,
+  ) {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
-    const range = this.parseDateRange(dateFrom, dateTo) ?? {
+    const explicitRange = this.parseDateRange(dateFrom, dateTo);
+    const range = explicitRange ?? {
       gte: new Date(now.getFullYear(), now.getMonth(), 1),
       lt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
     };
     const monthsTouched = this.monthsBetween(range.gte, new Date(range.lt.getTime() - 1));
+    const isSingleDay =
+      !!explicitRange && explicitRange.lt.getTime() - explicitRange.gte.getTime() === 86_400_000;
+    const dayStart = isSingleDay ? explicitRange!.gte : todayStart;
+    const dayEnd = isSingleDay ? explicitRange!.lt : todayEnd;
+    const dayKpiDateStr = vietnamDateString(isSingleDay ? explicitRange!.gte : now);
+    const trafficRange = pinTrafficMonth
+      ? {
+          gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
+          lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
+        }
+      : range;
 
     const isAllTeams = !team || team === "all";
 
@@ -2471,6 +2503,7 @@ export class TaskAutoTasksService {
         rows: [],
         video_by_line: [],
         product_by_category: [],
+        content_by_classification: [],
       };
     }
 
@@ -2511,7 +2544,7 @@ export class TaskAutoTasksService {
       memberRevenueInRange,
       videoByLine,
       manualDailyKpis,
-      contentFreshnessByUser,
+      contentByClassification,
       productByCategory,
       contentCreatorStats,
       approvedEditors,
@@ -2529,7 +2562,7 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          assigned_at: { gte: todayStart, lt: todayEnd },
+          assigned_at: { gte: dayStart, lt: dayEnd },
         },
         _count: { id: true },
       }),
@@ -2538,7 +2571,7 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: todayStart, lt: todayEnd },
+          reviewed_at: { gte: dayStart, lt: dayEnd },
         },
         _count: { id: true },
       }),
@@ -2546,14 +2579,14 @@ export class TaskAutoTasksService {
       // đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn cả kỳ.
       memberEmails.length > 0
         ? this.prisma.trafficReport.findMany({
-            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: trafficRange },
             select: { email: true, date: true, total_traffic: true },
           })
         : Promise.resolve([]),
       memberEmails.length > 0
         ? this.prisma.revenueReport.groupBy({
             by: ["email"],
-            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: trafficRange },
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
@@ -2566,22 +2599,18 @@ export class TaskAutoTasksService {
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(vietnamDateString(now)),
+          date: dailyKpiDate(dayKpiDateStr),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
       }),
-      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng kỳ đang lọc (mới),
-      // còn lại tính là cũ.
-      this.getContentFreshnessByAssignee(
-        {
-          team_id: { in: teamIds },
-          assignee_id: { in: memberIds },
-          status: { notIn: ["CANCELLED"] },
-          created_at: range,
-        },
-        range,
-      ),
+      // Gộp task tạo trong kỳ theo phân loại (ContentClassification) của content gắn vào task.
+      this.getContentByClassification({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        created_at: range,
+      }),
       // "SẢN PHẨM": số video đã duyệt trong kỳ, gộp theo dòng sản phẩm (GMV/Traffic/Profit).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
@@ -2594,8 +2623,9 @@ export class TaskAutoTasksService {
         teamIds,
         memberIds,
         periodRange: range,
-        todayStart,
-        todayEnd,
+        todayStart: dayStart,
+        todayEnd: dayEnd,
+        dailyDateStr: dayKpiDateStr,
         months: monthsTouched,
       }),
       // Ai đã được duyệt làm editor (EditorApproval, toàn cục theo user — không theo team) — dùng
@@ -2670,8 +2700,6 @@ export class TaskAutoTasksService {
           : manualDayTargetByUser[m.user_id] ?? assignedTodayByUser[m.user_id] ?? 0,
         traffic_month: trafficByEmail[m.email] ?? 0,
         revenue_month: revenueByEmail[m.email] ?? 0,
-        content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
-        content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
         content_collected_month: ccCollected,
         content_original_month: ccOriginal,
         content_approved_month: contentCreatorStats.approvedMonthByUser[m.user_id] ?? 0,
@@ -2685,6 +2713,7 @@ export class TaskAutoTasksService {
         rows: perMember,
         video_by_line: videoByLine,
         product_by_category: productByCategory,
+        content_by_classification: contentByClassification,
       };
     }
 
@@ -2701,8 +2730,6 @@ export class TaskAutoTasksService {
         kpi_day_target: number;
         traffic_month: number;
         revenue_month: number;
-        content_new: number;
-        content_old: number;
       }
     >();
     for (const t of teams) {
@@ -2716,8 +2743,6 @@ export class TaskAutoTasksService {
         kpi_day_target: 0,
         traffic_month: 0,
         revenue_month: 0,
-        content_new: 0,
-        content_old: 0,
       });
     }
     for (const pm of perMember) {
@@ -2733,8 +2758,6 @@ export class TaskAutoTasksService {
       }
       agg.traffic_month += pm.traffic_month;
       agg.revenue_month += pm.revenue_month;
-      agg.content_new += pm.content_new;
-      agg.content_old += pm.content_old;
     }
 
     return {
@@ -2743,6 +2766,7 @@ export class TaskAutoTasksService {
       rows: Array.from(teamAgg.values()),
       video_by_line: videoByLine,
       product_by_category: productByCategory,
+      content_by_classification: contentByClassification,
     };
   }
 

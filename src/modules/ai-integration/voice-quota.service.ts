@@ -38,6 +38,27 @@ export class VoiceQuotaService implements OnModuleInit {
           );
           CREATE INDEX IF NOT EXISTS user_daily_voice_quotas_user_id_idx ON user_daily_voice_quotas(user_id);
           CREATE INDEX IF NOT EXISTS user_daily_voice_quotas_date_idx ON user_daily_voice_quotas(date);
+
+          CREATE TABLE IF NOT EXISTS voice_action_histories (
+            id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            action_type VARCHAR(30) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'SUCCESS',
+            voice_id VARCHAR(255),
+            voice_name VARCHAR(255),
+            input_text TEXT,
+            output_url TEXT,
+            characters INT NOT NULL DEFAULT 0,
+            duration_ms INT NOT NULL DEFAULT 0,
+            details JSONB,
+            error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          );
+          CREATE INDEX IF NOT EXISTS voice_action_histories_user_id_idx ON voice_action_histories(user_id);
+          CREATE INDEX IF NOT EXISTS voice_action_histories_action_type_idx ON voice_action_histories(action_type);
+          CREATE INDEX IF NOT EXISTS voice_action_histories_status_idx ON voice_action_histories(status);
+          CREATE INDEX IF NOT EXISTS voice_action_histories_created_at_idx ON voice_action_histories(created_at);
+          CREATE INDEX IF NOT EXISTS voice_action_histories_user_id_created_at_idx ON voice_action_histories(user_id, created_at);
         `);
       }
     } catch (e: any) {
@@ -215,4 +236,29 @@ export class VoiceQuotaService implements OnModuleInit {
       remaining,
     };
   }
+
+  /**
+   * Hoàn lại 1 lượt sử dụng cho user khi tác vụ tạo voice thất bại.
+   * Giảm used_count đi 1 nếu used_count > 0.
+   */
+  async refundQuota(userId: string): Promise<void> {
+    if (!userId) return;
+    try {
+      const date = this.getTodayVnString();
+      await this.prisma.userDailyVoiceQuota.updateMany({
+        where: {
+          user_id: userId,
+          date,
+          used_count: { gt: 0 },
+        },
+        data: {
+          used_count: { decrement: 1 },
+        },
+      });
+      this.logger.log(`[VoiceQuotaService] Đã hoàn lại 1 lượt voice cho user ${userId} ngày ${date} do tác vụ thất bại.`);
+    } catch (err: any) {
+      this.logger.warn(`[VoiceQuotaService] Hoàn lượt thất bại cho user ${userId}: ${err?.message}`);
+    }
+  }
 }
+

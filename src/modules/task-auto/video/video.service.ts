@@ -31,8 +31,8 @@ interface UploadMeta {
   filename: string
   mimetype: string
   totalSize: number
-  totalChunks: number
-  chunkSize: number
+  uploadUrl: string
+  driveFileId?: string
 }
 
 @Injectable()
@@ -88,16 +88,29 @@ export class TaskAutoVideoService {
     taskId: string,
     userId: string,
     data: { filename: string; mimetype: string; totalSize: number },
+    origin?: string,
   ) {
-    const task = await this.prisma.task.findUnique({ where: { id: taskId } })
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
+    })
     if (!task) throw new NotFoundException('Task not found')
     if (task.assignee_id !== userId) throw new ForbiddenException('Chỉ người được giao mới có thể upload video')
     if (data.totalSize > 2 * 1024 * 1024 * 1024) throw new BadRequestException('File vượt quá giới hạn 2GB')
+    if (!this.googleDrive.isAvailable()) throw new BadRequestException('Google Drive storage chưa được cấu hình')
 
     const ext = path.extname(data.filename).toLowerCase() || '.mp4'
     const filename = `task_${taskId}_${Date.now()}${ext}`
-    const totalChunks = Math.ceil(data.totalSize / CHUNK_SIZE)
+    const mimetype = /^video\//.test(data.mimetype || '') ? data.mimetype : 'video/mp4'
     const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}_${userId}`
+
+    const driveOrigin = origin || process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://www.vcbi.vn'
+    const userObj = task.assignee_id
+      ? { id: task.assignee_id, full_name: task.assignee?.full_name, email: task.assignee?.email }
+      : null
+    const { uploadUrl } = await this.googleDrive.createResumableUpload(
+      filename, mimetype, data.totalSize, userObj, driveOrigin,
+    )
 
     const dir = this.sessionDir(uploadId)
     fs.mkdirSync(dir, { recursive: true })
@@ -106,87 +119,69 @@ export class TaskAutoVideoService {
       taskId, userId,
       originalname: data.filename,
       filename,
-      mimetype: data.mimetype,
+      mimetype,
       totalSize: data.totalSize,
-      totalChunks,
-      chunkSize: CHUNK_SIZE,
+      uploadUrl,
     }
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta))
 
-    this.logger.log(`[VideoUpload] Init ${uploadId} — task ${taskId} | ${(data.totalSize / 1024 / 1024).toFixed(1)}MB | ${totalChunks} chunks`)
-    return { uploadId, chunkSize: CHUNK_SIZE, totalChunks }
+    this.logger.log(`[VideoUpload] Init ${uploadId} — task ${taskId} | ${(data.totalSize / 1024 / 1024).toFixed(1)}MB → Google Drive resumable`)
+    return { uploadId, uploadUrl, chunkSize: CHUNK_SIZE }
   }
 
-  // ── 2. Receive one chunk ─────────────────────────────────────────────────────
+  // ── 2. Query resumable status trên Drive (để FE resume khi 1 chunk lỗi) ──────
 
-  async receiveChunk(uploadId: string, userId: string, buffer: Buffer, chunkIndex: number) {
+  async chunkUploadStatus(uploadId: string, userId: string) {
     const meta = this.readMeta(uploadId)
     if (meta.userId !== userId) throw new ForbiddenException('Upload session không thuộc về bạn')
-    if (chunkIndex < 0 || chunkIndex >= meta.totalChunks) {
-      throw new BadRequestException(`Chunk index ${chunkIndex} không hợp lệ (total ${meta.totalChunks})`)
+
+    const status = await this.googleDrive.getResumableStatus(meta.uploadUrl, meta.totalSize)
+    if (status.completed && status.fileId && !meta.driveFileId) {
+      meta.driveFileId = status.fileId
+      fs.writeFileSync(path.join(this.sessionDir(uploadId), 'meta.json'), JSON.stringify(meta))
     }
-
-    const chunkPath = path.join(this.sessionDir(uploadId), `chunk_${chunkIndex}`)
-    fs.writeFileSync(chunkPath, buffer)
-
-    this.logger.log(`[VideoUpload] ${uploadId}: chunk ${chunkIndex + 1}/${meta.totalChunks}`)
-    return { received: chunkIndex }
+    return {
+      uploadedBytes: status.uploadedBytes,
+      totalSize: meta.totalSize,
+      completed: status.completed,
+      driveFileId: status.fileId || meta.driveFileId,
+    }
   }
 
-  // ── 3. Finish: assemble chunks, register pending video ───────────────────────
+  // ── 3. Finish: xác nhận Drive đã nhận đủ, đăng ký video tạm ─────────────────
 
-  async finishChunkUpload(uploadId: string, userId: string, taskId: string) {
+  async finishChunkUpload(uploadId: string, userId: string, taskId: string, driveFileId?: string) {
     const meta = this.readMeta(uploadId)
     if (meta.userId !== userId) throw new ForbiddenException('Upload session không thuộc về bạn')
     if (meta.taskId !== taskId) throw new BadRequestException('Upload session không thuộc về task này')
 
-    const sessionDir = this.sessionDir(uploadId)
-    for (let i = 0; i < meta.totalChunks; i++) {
-      if (!fs.existsSync(path.join(sessionDir, `chunk_${i}`))) {
-        throw new BadRequestException(`Thiếu chunk ${i}/${meta.totalChunks - 1}`)
+    let fileId = driveFileId || meta.driveFileId
+    if (!fileId) {
+      const status = await this.googleDrive.getResumableStatus(meta.uploadUrl, meta.totalSize)
+      if (!status.completed) {
+        throw new BadRequestException(`Upload chưa hoàn tất trên Google Drive (${status.uploadedBytes}/${meta.totalSize} bytes)`)
       }
+      fileId = status.fileId
     }
+    if (!fileId) throw new BadRequestException('Không lấy được Google Drive file ID sau khi upload')
+
+    const file = await this.googleDrive.getFile(fileId, true)
+    const size = Number(file.size) || meta.totalSize
+    if (size > 0 && meta.totalSize > 0 && size < meta.totalSize) {
+      await this.googleDrive.delete(fileId).catch(() => {})
+      throw new BadRequestException('Video trên Google Drive chưa upload đủ dung lượng — thử nộp lại')
+    }
+
+    const mimetype = file.mimetype || meta.mimetype || 'video/mp4'
+    const webViewUrl = file.webViewUrl || undefined
 
     // Xóa Drive file + pending record cũ (nếu có) trước khi upload mới
     await this._cleanupPendingVideo(taskId)
 
-    // Ghép chunks thành file tạm
-    const videoDir = path.join(PENDING_DIR, 'videos')
-    fs.mkdirSync(videoDir, { recursive: true })
-    const ext = path.extname(meta.filename).toLowerCase() || '.mp4'
-    const tmpPath = path.join(videoDir, `${taskId}_tmp${ext}`)
-
-    const fh = await fs.promises.open(tmpPath, 'w')
-    try {
-      for (let i = 0; i < meta.totalChunks; i++) {
-        const chunkData = await fs.promises.readFile(path.join(sessionDir, `chunk_${i}`))
-        await fh.write(chunkData)
-      }
-    } finally {
-      await fh.close()
-    }
-    fs.rmSync(sessionDir, { recursive: true, force: true })
-
-    const { size } = fs.statSync(tmpPath)
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
-      select: { assignee_id: true, assignee: { select: { full_name: true, email: true } } },
+      select: { assignee_id: true },
     })
-    const userObj = task?.assignee_id
-      ? { id: task.assignee_id, full_name: task.assignee?.full_name, email: task.assignee?.email }
-      : null
-
-    // Upload thẳng lên Drive — Google Drive tự xử lý codec, không cần transcode
-    this.logger.log(`[VideoUpload] Uploading task ${taskId} → Drive (${(size / 1024 / 1024).toFixed(1)}MB)...`)
-    let driveResult: { fileId: string; url: string; webViewUrl?: string }
-    try {
-      driveResult = await this.googleDrive.uploadFromPath(tmpPath, meta.filename, meta.mimetype || 'video/mp4', userObj)
-      this.logger.log(`[VideoUpload] ✅ Drive upload xong — task ${taskId} | fileId=${driveResult.fileId}`)
-    } finally {
-      fs.rmSync(tmpPath, { force: true }) // luôn xóa file tạm
-    }
-
-    const webViewUrl = driveResult.webViewUrl
 
     // Lưu metadata (để có thể xóa Drive file khi task bị REJECT) và cập nhật result_url — 2 ghi
     // độc lập trên 2 bảng khác nhau, chạy song song thay vì tuần tự.
@@ -194,8 +189,8 @@ export class TaskAutoVideoService {
       (this.prisma as any).taskPendingVideo
         .upsert({
           where:  { task_id: taskId },
-          create: { task_id: taskId, uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
-          update: { uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, url: driveResult.url, storage: 'google_drive', drive_file_id: driveResult.fileId, web_view_url: webViewUrl },
+          create: { task_id: taskId, uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype, size, url: file.url, storage: 'google_drive', drive_file_id: fileId, web_view_url: webViewUrl },
+          update: { uploader_id: userId, filename: meta.filename, originalname: meta.originalname, mimetype, size, url: file.url, storage: 'google_drive', drive_file_id: fileId, web_view_url: webViewUrl },
         })
         .catch((err: any) => {
           if (isTableMissing(err)) this.logger.warn('[VideoUpload] Bảng task_pending_videos chưa tồn tại')
@@ -210,17 +205,19 @@ export class TaskAutoVideoService {
       await this.library.save(task.assignee_id, {
         filename: meta.filename,
         originalname: meta.originalname,
-        mimetype: meta.mimetype || 'video/mp4',
+        mimetype,
         size,
-        url: driveResult.url,
+        url: file.url,
         storage: 'google_drive',
-        drive_file_id: driveResult.fileId,
+        drive_file_id: fileId,
         drive_web_view_url: webViewUrl,
       }).catch(err => this.logger.warn(`[VideoUpload] library.save failed: ${err.message}`))
     }
 
-    this.logger.log(`[VideoUpload] ✅ ${uploadId} done — task ${taskId}`)
-    return { url: webViewUrl, filename: meta.filename, originalname: meta.originalname, mimetype: meta.mimetype || 'video/mp4', size, storage: 'google_drive' }
+    fs.rmSync(this.sessionDir(uploadId), { recursive: true, force: true })
+
+    this.logger.log(`[VideoUpload] ✅ ${uploadId} done — task ${taskId} | fileId=${fileId}`)
+    return { url: webViewUrl, filename: meta.filename, originalname: meta.originalname, mimetype, size, storage: 'google_drive' }
   }
 
   // ── 4. Stream local pending video (for review) ───────────────────────────────

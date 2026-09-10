@@ -12,6 +12,7 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
 import { OmsIntegrationModule } from "./modules/oms-integration/oms-integration.module";
+import { SapoIntegrationModule } from './modules/sapo-integration/sapo-integration.module';
 import { MemsCatalogModule } from './modules/mems-catalog/mems-catalog.module';
 import { MemsBorrowModule } from './modules/mems-borrow/mems-borrow.module';
 import { OwnedVideoWeeklyReportModule } from './modules/owned-video-weekly-report/owned-video-weekly-report.module';
@@ -53,6 +54,7 @@ import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 import { VideoLibraryModule } from './modules/video-library/video-library.module';
 import { IdPhotoModule } from './modules/id-photo/id-photo.module';
+import { ApiKeysModule } from './modules/api-keys/api-keys.module';
 
 @Module({
   imports: [
@@ -81,6 +83,7 @@ import { IdPhotoModule } from './modules/id-photo/id-photo.module';
     AuthModule,
     UsersModule,
     AiIntegrationModule,
+    SapoIntegrationModule,
     OmsIntegrationModule,
     MemsCatalogModule,
     MemsBorrowModule,
@@ -123,6 +126,7 @@ import { IdPhotoModule } from './modules/id-photo/id-photo.module';
     ScraperProxyModule,
     VideoLibraryModule,
     IdPhotoModule,
+    ApiKeysModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

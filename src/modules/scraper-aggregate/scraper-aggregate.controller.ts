@@ -25,11 +25,13 @@ export class ScraperAggregateController {
   async getTrafficInsights(
     @Query('channelId') channelId: string,
     @Query('date') date?: string,
+    @Query('scope') scope?: 'day' | 'mtd',
+    @Query('platform') platform?: string,
   ) {
     if (!channelId) {
       return { success: false, views: 0, message: 'channelId is required' };
     }
-    return this.trafficInsightsService.getTrafficInsights(channelId, date);
+    return this.trafficInsightsService.getTrafficInsights(channelId, date, scope, platform);
   }
 
   @Get('all-videos')

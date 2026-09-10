@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
+import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
 
 /**
  * Sửa thông tin một máy đã nằm trong kho.
@@ -57,7 +58,7 @@ describe('MemsCatalogService.updateAsset — đưa máy vào và ra khỏi bảo
     // Chỉ đổi cột trạng thái thì phép đếm khả dụng vẫn thấy máy rảnh trong mọi khoảng tương
     // lai, và nó được gán cho phiếu tiếp theo trong khi đang nằm ở chỗ thợ.
     const { prisma, tx } = buildDeps();
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       status: 'UNDER_MAINTENANCE',
       note: 'Gửi hãng thay cảm biến',
     } as any);
@@ -79,7 +80,7 @@ describe('MemsCatalogService.updateAsset — đưa máy vào và ra khỏi bảo
     const { prisma, tx } = buildDeps({
       asset: { ...ASSET, status: 'UNDER_MAINTENANCE' },
     });
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', { status: 'AVAILABLE' } as any);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', { status: 'AVAILABLE' } as any);
 
     expect(tx.memsMaintenance.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -93,7 +94,7 @@ describe('MemsCatalogService.updateAsset — đưa máy vào và ra khỏi bảo
     // Ô select luôn gửi lại trạng thái hiện tại kèm mọi lần sửa serial hay vị trí. Coi đó là
     // một lần "chuyển sang bảo trì" thì mỗi lần sửa lại đẻ thêm một lệnh trùng.
     const { prisma, tx } = buildDeps({ asset: { ...ASSET, status: 'UNDER_MAINTENANCE' } });
-    await new MemsCatalogService(prisma).updateAsset('CAM-001', {
+    await new MemsCatalogService(prisma, photoUrlSignerStub).updateAsset('CAM-001', {
       status: 'UNDER_MAINTENANCE',
       locationId: 'loc-9',
     } as any);

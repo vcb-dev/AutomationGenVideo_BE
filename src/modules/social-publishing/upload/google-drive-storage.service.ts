@@ -311,30 +311,95 @@ export class GoogleDriveStorageService {
   /** Tải ảnh thumbnail từ CDN URL bên thứ 3 rồi upload lên Drive. Trả '' nếu thất bại (không throw) — dùng cho cron nền.
    * platform (vd 'Kuaishou', 'TikTok') → upload vào Root/Scraper Cào Dữ Liệu/{platform}/{YYYY-MM-DD}/
    * thay vì folder ngày dùng chung mặc định. */
-  async uploadThumbnailFromUrl(sourceUrl: string, filename: string, platform?: string): Promise<string> {
-    if (!sourceUrl) return '';
+  async uploadThumbnailFromUrl(
+    sourceUrl: string,
+    filename: string,
+    platform?: string,
+    videoUrl?: string,
+  ): Promise<string> {
+    if (!sourceUrl || sourceUrl === 'FAILED') return '';
     if (sourceUrl.includes('drive.google.com') || sourceUrl.includes('googleusercontent.com')) return sourceUrl;
     if (!this.isAvailable()) return '';
 
     const isChinaCdn = CHINA_CDN_DOMAINS.some(domain => sourceUrl.includes(domain));
-    let buffer: Buffer;
+    const isTikTok = platform === 'TikTok' || sourceUrl.includes('tiktokcdn') || sourceUrl.includes('tiktok.com');
+    const isFacebook = platform === 'Facebook' || sourceUrl.includes('fbcdn.net') || sourceUrl.includes('facebook.com');
+    const headers = isChinaCdn
+      ? CHINA_CDN_HEADERS
+      : isTikTok
+        ? {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            'Referer': 'https://www.tiktok.com/',
+          }
+        : isFacebook
+          ? {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+              'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+              'Referer': 'https://www.facebook.com/',
+            }
+          : {};
+
+    let buffer: Buffer | null = null;
     try {
       const res = await axios.get(sourceUrl, {
-        headers: isChinaCdn ? CHINA_CDN_HEADERS : {},
+        headers,
         timeout: isChinaCdn ? 8_000 : 15_000,
         responseType: 'arraybuffer',
       });
-      buffer = Buffer.from(res.data);
       const contentType = (res.headers['content-type'] || '') as string;
-      if (!contentType.startsWith('image/')) {
+      if (contentType.startsWith('image/')) {
+        buffer = Buffer.from(res.data);
+      } else {
         this.logger.warn(`[ThumbnailMigration] Expected image, got '${contentType}' from ${sourceUrl.slice(0, 80)}`);
-        return '';
       }
     } catch (err: any) {
-      this.logger.warn(`[ThumbnailMigration] Download failed (${sourceUrl.slice(0, 70)}...): ${err.message}`);
-      return '';
+      // Nếu là TikTok và link CDN hết hạn (HTTP 403), tự động refresh qua TikTok oEmbed
+      if (isTikTok && videoUrl) {
+        try {
+          const oembed = await axios.get(`https://www.tiktok.com/oembed?url=${encodeURIComponent(videoUrl)}`, { timeout: 6_000 });
+          const freshUrl = oembed.data?.thumbnail_url;
+          if (freshUrl && freshUrl !== sourceUrl) {
+            const res2 = await axios.get(freshUrl, { headers, timeout: 15_000, responseType: 'arraybuffer' });
+            const contentType2 = (res2.headers['content-type'] || '') as string;
+            if (contentType2.startsWith('image/')) {
+              buffer = Buffer.from(res2.data);
+            }
+          }
+        } catch (oembedErr: any) {
+          this.logger.warn(`[ThumbnailMigration] TikTok oEmbed fallback failed for ${videoUrl}: ${oembedErr.message}`);
+        }
+      } else if (isFacebook && videoUrl) {
+        // Nếu là Facebook và link CDN hết hạn (HTTP 403), tự động lấy lại og:image từ link reel
+        try {
+          const htmlRes = await axios.get(videoUrl, {
+            headers: {
+              'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+            timeout: 8_000,
+          });
+          const html = typeof htmlRes.data === 'string' ? htmlRes.data : '';
+          const ogMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i)
+            || html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:image["']/i);
+          const freshUrl = ogMatch ? ogMatch[1].replace(/&amp;/g, '&') : null;
+          if (freshUrl && freshUrl !== sourceUrl) {
+            const res2 = await axios.get(freshUrl, { headers, timeout: 15_000, responseType: 'arraybuffer' });
+            const contentType2 = (res2.headers['content-type'] || '') as string;
+            if (contentType2.startsWith('image/')) {
+              buffer = Buffer.from(res2.data);
+            }
+          }
+        } catch (fbErr: any) {
+          this.logger.warn(`[ThumbnailMigration] Facebook OpenGraph fallback failed for ${videoUrl}: ${fbErr.message}`);
+        }
+      }
+      if (!buffer) {
+        this.logger.warn(`[ThumbnailMigration] Download failed (${sourceUrl.slice(0, 70)}...): ${err.message}`);
+        return '';
+      }
     }
-    if (!buffer.length) return '';
+    if (!buffer || !buffer.length) return '';
 
     const tmpPath = path.join(os.tmpdir(), `thumb_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
     try {

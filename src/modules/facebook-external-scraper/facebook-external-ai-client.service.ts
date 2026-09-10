@@ -67,7 +67,7 @@ export class FacebookExternalAiClientService {
         exclude_post_ids: excludePostIds,
         start_date: startDate,
       },
-      { headers: this.authHeaders(), timeout: 180_000 },
+      { headers: this.authHeaders(), timeout: 240_000 },
     );
     return data;
   }

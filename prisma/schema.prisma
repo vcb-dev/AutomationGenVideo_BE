@@ -115,9 +115,12 @@ model User {
   owned_channels                   Channel[]                      @relation("ChannelOwnerUser")
   ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
   daily_voice_quotas               UserDailyVoiceQuota[]          @relation("UserDailyVoiceQuotaOf")
+  voice_action_histories           VoiceActionHistory[]           @relation("VoiceActionHistoryOf")
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
+  api_keys_created                  ApiKey[]                      @relation("ApiKeyCreatedBy")
+  api_key_principal                ApiKey?                       @relation("ApiKeyServiceUser")
 
   @@index([email])
   @@index([roles])
@@ -135,6 +138,35 @@ model RolePermission {
   updated_at DateTime @updatedAt
 
   @@map("role_permissions")
+}
+
+/// API key cấp cho hệ thống ngoài gọi server-to-server vào BE (header `X-API-Key: agv_...`).
+/// Key thô chỉ trả về 1 lần lúc tạo; DB chỉ giữ `key_hash` = sha256(key thô).
+/// Mỗi key gắn với 1 `service_user` (row `users` không đăng nhập được) để các endpoint dùng
+/// `req.user.id` / `req.user.roles` chạy nguyên vẹn.
+model ApiKey {
+  id              String    @id @default(uuid()) @db.Uuid
+  /// Nhãn dễ đọc để biết key cấp cho hệ thống nào (vd "OMS", "Lark Bot")
+  name            String
+  /// 12 ký tự đầu của key thô ("agv_xxxxxxxx") — hiện trong danh sách để đối chiếu
+  prefix          String
+  key_hash        String    @unique
+  is_active       Boolean   @default(true)
+  /// null = không hết hạn
+  expires_at      DateTime?
+  last_used_at    DateTime?
+  last_used_ip    String?
+  revoked_at      DateTime?
+  service_user_id String    @unique @db.Uuid
+  created_by      String?   @db.Uuid
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  service_user User  @relation("ApiKeyServiceUser", fields: [service_user_id], references: [id], onDelete: Cascade)
+  creator      User? @relation("ApiKeyCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+
+  @@index([is_active])
+  @@map("api_keys")
 }
 
 model TrackedChannel {
@@ -241,6 +273,35 @@ model UserDailyVoiceQuota {
   @@index([user_id])
   @@index([date])
   @@map("user_daily_voice_quotas")
+}
+
+/// Lịch sử chi tiết mọi thao tác liên quan đến Voice của người dùng (TTS, Clone, Xóa, Dịch, Cấp Quota).
+/// Dành riêng cho Admin theo dõi và quản lý hoạt động tiện ích AI Voice.
+model VoiceActionHistory {
+  id            String   @id @default(uuid())
+  user_id       String   @db.Uuid
+  /// 'TTS' | 'CLONE' | 'DELETE' | 'TRANSLATE' | 'GRANT_QUOTA'
+  action_type   String   @db.VarChar(30)
+  /// 'SUCCESS' | 'FAILED' | 'PENDING'
+  status        String   @default("SUCCESS") @db.VarChar(20)
+  voice_id      String?  @db.VarChar(255)
+  voice_name    String?  @db.VarChar(255)
+  input_text    String?  @db.Text
+  output_url    String?  @db.Text
+  characters    Int      @default(0)
+  duration_ms   Int      @default(0)
+  details       Json?
+  error_message String?  @db.Text
+  created_at    DateTime @default(now())
+
+  user User @relation("VoiceActionHistoryOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([action_type])
+  @@index([status])
+  @@index([created_at])
+  @@index([user_id, created_at])
+  @@map("voice_action_histories")
 }
 
 model Video {
@@ -1457,7 +1518,12 @@ model SocialPost {
   scheduled_at  DateTime?
   executed_at   DateTime?
   retry_count   Int              @default(0)
+  /// Thời điểm bài được phép chạy lại sau khi đăng lỗi (exponential backoff).
   next_retry_at DateTime?
+  /// Hạn giữ chỗ của worker đang xử lý bài này. Worker gia hạn định kỳ trong lúc
+  /// chạy; tiến trình chết thì hạn tự hết và bài được nhận lại. TÁCH RIÊNG khỏi
+  /// next_retry_at: gộp chung khiến bài đang chờ retry bị đếm nhầm là đang xử lý.
+  claimed_until DateTime?
   result        Json?
   error_msg     String?
   thumb_url     String?
@@ -1474,6 +1540,7 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([claimed_until])
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
@@ -5026,6 +5093,13 @@ model MemsAssetPhoto {
   url         String
   /// google_drive hoặc local, ghi lại để sau này còn biết ảnh nào cần chuyển kho
   storage     String   @default("local")
+  /// CATALOG = ảnh hồ sơ của máy · HANDOVER, RETURN = ảnh chứng cứ của một lượt giao/nhận.
+  ///
+  /// Không có cột này thì mỗi lượt bàn giao lại đẩy thêm ảnh vào thư viện của máy: mượn 20 lần
+  /// là 60 tấm ảnh biên bản lẫn với ảnh catalogue, và ảnh đại diện ở bảng kho có thể rơi trúng
+  /// một tấm chụp vết xước. Để String thay vì enum DB: thêm loại mới sau này chỉ sửa code, không
+  /// phải đụng kiểu trong Postgres.
+  purpose     String   @default("CATALOG")
   caption     String?
   /// Ảnh đại diện hiện ở bảng kho. Mỗi máy chỉ nên có một, service tự bỏ cờ ở ảnh cũ.
   is_primary  Boolean  @default(false)
@@ -5036,5 +5110,6 @@ model MemsAssetPhoto {
   asset MemsAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
 
   @@index([asset_id, sort_order])
+  @@index([asset_id, purpose])
   @@map("mems_asset_photos")
 }

@@ -1,6 +1,106 @@
 import { TaskAutoTasksService } from '../tasks.service';
 
 /**
+ * getGlobalDashboard (qua getDashboard cho ADMIN/MANAGER) — bug gốc: breakdown theo trạng thái
+ * (`tasks.*`, donut "Phân bố task") lọc theo `created_at` trong kỳ, trong khi tab "Nhiệm vụ"
+ * (Kanban/findAll) lọc theo `deadline_from/to` (task chưa có deadline thì theo `created_at` thay
+ * thế) và loại trừ task đang xử lý đã quá hạn khỏi các cột thường. Hai dimension khác nhau khiến
+ * số liệu "Tổng quan" lệch với "Nhiệm vụ" cùng bộ lọc ngày. Đã sửa để dùng đúng 1 nguồn sự thật
+ * (xem `[[task-auto-global-dashboard-live-vs-period-metrics]]`). `today_deadline`/`overdue` luôn
+ * tính live theo thời điểm gọi API, KHÔNG phụ thuộc bộ lọc ngày — test này khoá lại cả 2 hành vi.
+ */
+describe('TaskAutoTasksService.getDashboard (ADMIN/MANAGER) — global dashboard theo bộ lọc ngày', () => {
+  function build(tasksByStatus: { status: string; _count: { id: number } }[] = []) {
+    const prisma: any = {
+      task: {
+        groupBy: jest.fn(async (args: any) =>
+          args.by[0] === 'status' ? tasksByStatus : [],
+        ),
+        count: jest.fn(async () => 0),
+      },
+      user: { count: jest.fn(async () => 0) },
+      editorApproval: { count: jest.fn(async () => 0) },
+      contentLine: { findMany: jest.fn(async () => []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('không có bộ lọc ngày → breakdown trạng thái loại trừ task đang xử lý đã quá hạn, không lọc theo created_at', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('admin-1', ['ADMIN'], undefined, undefined);
+
+    const statusCall = prisma.task.groupBy.mock.calls.find((c: any[]) => c[0].by[0] === 'status');
+    expect(statusCall[0].where).toEqual({
+      OR: [
+        { status: { in: ['APPROVED', 'CANCELLED'] } },
+        { deadline: null },
+        { deadline: { gte: expect.any(Date) } },
+      ],
+    });
+  });
+
+  it('có date_from/date_to → breakdown trạng thái lọc theo deadline trong kỳ (null→created_at fallback) VÀ trừ quá hạn, khớp Kanban', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('admin-1', ['ADMIN'], '2026-01-05', '2026-01-10');
+
+    const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
+    const statusCall = prisma.task.groupBy.mock.calls.find((c: any[]) => c[0].by[0] === 'status');
+    expect(statusCall[0].where).toEqual({
+      AND: [
+        { OR: [{ deadline: expectedRange }, { deadline: null, created_at: expectedRange }] },
+        {
+          OR: [
+            { status: { in: ['APPROVED', 'CANCELLED'] } },
+            { deadline: null },
+            { deadline: { gte: expect.any(Date) } },
+          ],
+        },
+      ],
+    });
+
+    // video_by_line dùng cùng dateWindow (deadline/created_at fallback), không còn lọc theo reviewed_at.
+    const lineCall = prisma.task.groupBy.mock.calls.find(
+      (c: any[]) => c[0].by[0] === 'content_line_id',
+    );
+    expect(lineCall[0].where).toEqual(
+      expect.objectContaining({
+        OR: [{ deadline: expectedRange }, { deadline: null, created_at: expectedRange }],
+      }),
+    );
+  });
+
+  it('monthly_completed khớp 1-1 với tasks.approved (không đếm riêng theo reviewed_at nữa)', async () => {
+    const { service } = build([
+      { status: 'APPROVED', _count: { id: 7 } },
+      { status: 'ASSIGNED', _count: { id: 3 } },
+    ]);
+
+    const result: any = await service.getDashboard('admin-1', ['ADMIN'], undefined, undefined);
+
+    expect(result.tasks.approved).toBe(7);
+    expect(result.monthly_completed).toBe(7);
+  });
+
+  it('today_deadline/overdue luôn tính live theo thời điểm hiện tại, không phụ thuộc date_from/date_to', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('admin-1', ['ADMIN'], '2020-01-01', '2020-01-02');
+
+    // 2 lệnh task.count đầu tiên (theo đúng thứ tự khởi tạo trong Promise.all): today_deadline rồi overdue.
+    const [todayDeadlineArgs, overdueArgs] = prisma.task.count.mock.calls;
+    expect(todayDeadlineArgs[0].where.OR[0].deadline.gte.getFullYear()).not.toBe(2020);
+    expect(overdueArgs[0].where.deadline.lt.getFullYear()).not.toBe(2020);
+    expect(overdueArgs[0].where).toEqual({
+      deadline: { lt: expect.any(Date) },
+      status: { notIn: ['APPROVED', 'CANCELLED'] },
+    });
+  });
+});
+
+/**
  * getLeaderDashboard (qua getDashboard) — bug gốc: dùng `team.findFirst({leader_id})` để tìm team
  * của leader, nhưng trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người lead cả "Scale Data",
  * "Team K1", "MEDIA" — 15 thành viên thô, 12 người thật sau khi bỏ trùng vì có người ở ≥2 team).
@@ -20,9 +120,9 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       task: {
         groupBy: jest.fn(async () => []),
         count: jest.fn(async () => 0),
-        // getContentFreshnessByAssignee (content_new/content_old) đọc task.findMany — không nằm
-        // trong phạm vi describe này (xem describe "content_new / content_old" bên dưới), nhưng
-        // thiếu mock này thì suite hỏng ngay ở lời gọi biên dịch được, không phải lúc assert.
+        // getContentByClassification (donut "content theo phân loại") đọc task.findMany — không nằm
+        // trong phạm vi describe này (xem describe "content_by_classification" bên dưới), nhưng
+        // thiếu mock này thì suite hỏng ngay ở lời gọi, không phải lúc assert.
         findMany: jest.fn(async () => []),
       },
       editorKpi: { findMany: jest.fn(async () => []) },
@@ -93,6 +193,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       kpi: null,
       video_by_line: [],
       product_by_category: [],
+      content_by_classification: [],
     });
   });
 
@@ -174,7 +275,7 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
         where: expect.objectContaining({ reviewed_at: expectedRange }),
       }),
     );
-    // Content mới/cũ (getContentFreshnessByAssignee đọc task.findMany theo created_at)
+    // Content theo phân loại (getContentByClassification đọc task.findMany theo created_at)
     expect(prisma.task.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ created_at: expectedRange }) }),
     );
@@ -217,6 +318,44 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
     );
     expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ month: '2025-11' }) }),
+    );
+  });
+
+  // Tab "Thống kê theo ngày" của /dashboard/leader: chọn đúng 1 ngày + pin_traffic_month → task đã
+  // duyệt "trong ngày" (kpi_day_completed) co về đúng ngày đó, còn traffic/doanh thu vẫn quét cả
+  // THÁNG chứa ngày đó (18/3 tránh mọi mốc DST US/EU nên hiệu 2 mốc đúng 24h ở mọi timezone).
+  it('pin_traffic_month + chọn đúng 1 ngày → traffic/doanh thu theo tháng, KPI ngày theo đúng ngày đó', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18', undefined, undefined, undefined, true);
+
+    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
+    const month = { gte: new Date(2025, 2, 1), lt: new Date(2025, 3, 1) };
+
+    // Traffic + doanh thu: cả tháng 3 chứ không phải riêng ngày 18.
+    expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ date: month }) }),
+    );
+    expect(prisma.revenueReport.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ date: month }) }),
+    );
+    // Task đã duyệt "trong ngày" (kpi_day_completed): quy về đúng ngày 18/3.
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['assignee_id'],
+        where: expect.objectContaining({ status: 'APPROVED', reviewed_at: day }),
+      }),
+    );
+  });
+
+  it('không bật pin_traffic_month → traffic/doanh thu vẫn bám theo khoảng ngày như cũ', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18');
+
+    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
+    expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ date: day }) }),
     );
   });
 });
@@ -341,7 +480,7 @@ describe('TaskAutoTasksService — product_by_category (qua getDashboard)', () =
       task: {
         groupBy: jest.fn(async () => []),
         count: jest.fn(async () => 0),
-        // Phân biệt lời gọi của getContentFreshnessByAssignee (select assignee_id/content_id/...)
+        // Phân biệt lời gọi của getContentByClassification (select content_id/editor_content_id/...)
         // với getApprovedProductLineBreakdown (select product_line_id/product_id/...) bằng field
         // đặc trưng trong `select` — 2 hàm đều gọi task.findMany trong cùng Promise.all.
         findMany: jest.fn(async (args: any) => {
@@ -485,22 +624,15 @@ describe('TaskAutoTasksService — product_by_category (qua getDashboard)', () =
 });
 
 /**
- * getContentFreshnessByAssignee() (private, gọi qua getDashboard/getTeamReport) — "content mới" vs
- * "content cũ" trong 1 kỳ lọc (tháng báo cáo của leader dashboard): content đã dùng trong task
- * (Content.created_at / EditorContent.added_at / TeamContent.added_at — đúng 1 trong 3 field được
- * set trên mỗi task) được thêm vào kho ĐÚNG TRONG kỳ đang xem → "mới". Mọi task còn lại trong kỳ —
- * content thêm từ trước kỳ, hoặc task không gắn content nào — đều tính là "cũ". Xem comment gốc tại
- * tasks.service.ts.
+ * getContentByClassification() (private, gọi qua getDashboard/getTeamReport) — donut "Content theo
+ * phân loại": với mỗi task tạo trong kỳ (call site đã khoá team + created_at + chưa huỷ + assignee
+ * thuộc team), lấy ContentClassification HIỆN TẠI của content gắn vào task (content_id → Content,
+ * editor_content_id → EditorContent, team_content_id → TeamContent — đúng 1 trong 3 field được set).
+ * Task có content chưa gắn phân loại, không gắn content, hoặc content đã bị xoá → dồn vào nhóm "Chưa
+ * phân loại". Kết quả ở top level `content_by_classification`, sắp count giảm dần, "Chưa phân loại"
+ * luôn xuống cuối. Thay cho biểu đồ "content mới/cũ" (getContentFreshnessByAssignee) đã gỡ.
  */
-describe('TaskAutoTasksService — content_new / content_old (qua getDashboard)', () => {
-  // getDashboard không truyền `month` → BE mặc định về tháng thực tế hiện tại — nên mốc "trong kỳ"/
-  // "trước kỳ" phải tính tương đối theo tháng thực tế lúc chạy test, không hard-code ngày cụ thể.
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const IN_PERIOD_CONTENT = new Date(monthStart.getTime() + 2 * 86_400_000); // vài ngày sau đầu tháng
-  const BEFORE_PERIOD_CONTENT = new Date(monthStart.getTime() - 86_400_000); // ngày cuối tháng trước
-  const TASK_CREATED_AT = new Date(monthStart.getTime() + 3 * 86_400_000); // không còn ảnh hưởng tới mới/cũ
-
+describe('TaskAutoTasksService — content_by_classification (qua getDashboard)', () => {
   function build(opts: {
     taskRows?: any[];
     contents?: any[];
@@ -548,136 +680,93 @@ describe('TaskAutoTasksService — content_new / content_old (qua getDashboard)'
     return { service, prisma };
   }
 
-  async function memberOf(result: any, userId: string) {
-    return result.members.find((m: any) => m.user_id === userId);
-  }
+  const run = async (service: TaskAutoTasksService) => {
+    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
+    return result.content_by_classification as { classification: string; count: number }[];
+  };
 
   afterEach(() => jest.clearAllMocks());
 
-  it('content thêm vào kho trong đúng kỳ đang xem (qua content_id) → tính là "mới"', async () => {
+  it('gộp task theo phân loại của content gắn qua content_id', async () => {
     const { service } = build({
       taskRows: [
-        {
-          assignee_id: 'creator-1',
-          created_at: TASK_CREATED_AT,
-          content_id: 'c-1',
-          editor_content_id: null,
-          team_content_id: null,
-        },
-      ],
-      contents: [{ id: 'c-1', created_at: IN_PERIOD_CONTENT }],
-    });
-
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
-
-    expect(member.content_new).toBe(1);
-    expect(member.content_old).toBe(0);
-  });
-
-  it('content được thêm từ TRƯỚC kỳ đang xem (qua team_content_id) → tính là "cũ"', async () => {
-    const { service } = build({
-      taskRows: [
-        {
-          assignee_id: 'creator-1',
-          created_at: TASK_CREATED_AT,
-          content_id: null,
-          editor_content_id: null,
-          team_content_id: 'tc-1',
-        },
-      ],
-      teamContents: [{ id: 'tc-1', added_at: BEFORE_PERIOD_CONTENT }],
-    });
-
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
-
-    expect(member.content_new).toBe(0);
-    expect(member.content_old).toBe(1);
-  });
-
-  it('lấy ngày qua editor_content_id khi đó là field duy nhất được set', async () => {
-    const { service } = build({
-      taskRows: [
-        {
-          assignee_id: 'creator-1',
-          created_at: TASK_CREATED_AT,
-          content_id: null,
-          editor_content_id: 'ec-1',
-          team_content_id: null,
-        },
-      ],
-      editorContents: [{ id: 'ec-1', added_at: IN_PERIOD_CONTENT }],
-    });
-
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
-
-    expect(member.content_new).toBe(1);
-  });
-
-  it('task không có assignee → bị bỏ qua, không tính vào ai cả', async () => {
-    const { service } = build({
-      taskRows: [
-        {
-          assignee_id: null,
-          created_at: TASK_CREATED_AT,
-          content_id: 'c-1',
-          editor_content_id: null,
-          team_content_id: null,
-        },
-      ],
-      contents: [{ id: 'c-1', created_at: IN_PERIOD_CONTENT }],
-    });
-
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
-
-    expect(member.content_new).toBe(0);
-    expect(member.content_old).toBe(0);
-  });
-
-  it('task không gắn content nào (hoặc content bị xoá/thiếu liên kết) → tính là "cũ", không bị loại khỏi mẫu số', async () => {
-    const { service } = build({
-      taskRows: [
-        {
-          assignee_id: 'creator-1',
-          created_at: TASK_CREATED_AT,
-          content_id: 'c-deleted',
-          editor_content_id: null,
-          team_content_id: null,
-        },
-      ],
-      contents: [], // c-deleted không tồn tại trong bảng content nữa
-    });
-
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
-
-    expect(member.content_new).toBe(0);
-    expect(member.content_old).toBe(1);
-  });
-
-  it('gộp đúng nhiều task cho cùng 1 assignee, cả mới lẫn cũ (kể cả task không gắn content)', async () => {
-    const { service } = build({
-      taskRows: [
-        { assignee_id: 'creator-1', created_at: TASK_CREATED_AT, content_id: 'c-1', editor_content_id: null, team_content_id: null },
-        { assignee_id: 'creator-1', created_at: TASK_CREATED_AT, content_id: 'c-2', editor_content_id: null, team_content_id: null },
-        { assignee_id: 'creator-1', created_at: TASK_CREATED_AT, content_id: 'c-3', editor_content_id: null, team_content_id: null },
-        { assignee_id: 'creator-1', created_at: TASK_CREATED_AT, content_id: null, editor_content_id: null, team_content_id: null },
+        { content_id: 'c-1', editor_content_id: null, team_content_id: null },
+        { content_id: 'c-2', editor_content_id: null, team_content_id: null },
       ],
       contents: [
-        { id: 'c-1', created_at: IN_PERIOD_CONTENT },
-        { id: 'c-2', created_at: IN_PERIOD_CONTENT },
-        { id: 'c-3', created_at: BEFORE_PERIOD_CONTENT },
+        { id: 'c-1', classification: { name: 'Win' } },
+        { id: 'c-2', classification: { name: 'Win' } },
       ],
     });
 
-    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, undefined);
-    const member = await memberOf(result, 'creator-1');
+    expect(await run(service)).toEqual([{ classification: 'Win', count: 2 }]);
+  });
 
-    expect(member.content_new).toBe(2);
-    expect(member.content_old).toBe(2);
+  it('phân loại lấy qua editor_content_id / team_content_id khi đó là field được set', async () => {
+    const { service } = build({
+      taskRows: [
+        { content_id: null, editor_content_id: 'ec-1', team_content_id: null },
+        { content_id: null, editor_content_id: null, team_content_id: 'tc-1' },
+      ],
+      editorContents: [{ id: 'ec-1', classification: { name: 'Test' } }],
+      teamContents: [{ id: 'tc-1', classification: { name: 'Win' } }],
+    });
+
+    expect(await run(service)).toEqual([
+      { classification: 'Test', count: 1 },
+      { classification: 'Win', count: 1 },
+    ]);
+  });
+
+  it('content chưa gắn phân loại → nhóm "Chưa phân loại"', async () => {
+    const { service } = build({
+      taskRows: [{ content_id: 'c-1', editor_content_id: null, team_content_id: null }],
+      contents: [{ id: 'c-1', classification: null }],
+    });
+
+    expect(await run(service)).toEqual([{ classification: 'Chưa phân loại', count: 1 }]);
+  });
+
+  it('task không gắn content, hoặc content đã bị xoá → nhóm "Chưa phân loại", vẫn tính vào mẫu số', async () => {
+    const { service } = build({
+      taskRows: [
+        { content_id: null, editor_content_id: null, team_content_id: null },
+        { content_id: 'c-deleted', editor_content_id: null, team_content_id: null },
+      ],
+      contents: [], // c-deleted không còn trong bảng content
+    });
+
+    expect(await run(service)).toEqual([{ classification: 'Chưa phân loại', count: 2 }]);
+  });
+
+  it('sắp theo count giảm dần, "Chưa phân loại" luôn xuống cuối dù đông hơn', async () => {
+    const { service } = build({
+      taskRows: [
+        { content_id: 'c-1', editor_content_id: null, team_content_id: null },
+        { content_id: 'c-2', editor_content_id: null, team_content_id: null },
+        { content_id: 'c-3', editor_content_id: null, team_content_id: null },
+        { content_id: null, editor_content_id: null, team_content_id: null },
+        { content_id: null, editor_content_id: null, team_content_id: null },
+        { content_id: null, editor_content_id: null, team_content_id: null },
+        { content_id: null, editor_content_id: null, team_content_id: null },
+      ],
+      contents: [
+        { id: 'c-1', classification: { name: 'Win' } },
+        { id: 'c-2', classification: { name: 'Win' } },
+        { id: 'c-3', classification: { name: 'Test' } },
+      ],
+    });
+
+    expect(await run(service)).toEqual([
+      { classification: 'Win', count: 2 },
+      { classification: 'Test', count: 1 },
+      { classification: 'Chưa phân loại', count: 4 },
+    ]);
+  });
+
+  it('không có task nào trong kỳ → mảng rỗng', async () => {
+    const { service } = build({ taskRows: [] });
+    expect(await run(service)).toEqual([]);
   });
 });
 
