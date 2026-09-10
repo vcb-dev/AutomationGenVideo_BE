@@ -3,9 +3,13 @@
 
 export function cleanFacebookUrl(rawUrl: string): string {
   if (!rawUrl) return '';
+  let urlStr = rawUrl.trim();
+  if (!urlStr.startsWith('http://') && !urlStr.startsWith('https://')) {
+    urlStr = `https://${urlStr}`;
+  }
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(urlStr);
   } catch {
     return '';
   }
@@ -20,9 +24,14 @@ export function cleanFacebookUrl(rawUrl: string): string {
 }
 
 export function extractHandleFromUrl(url: string): string {
+  if (!url) return '';
+  let urlStr = url.trim();
+  if (!urlStr.startsWith('http://') && !urlStr.startsWith('https://')) {
+    urlStr = `https://${urlStr}`;
+  }
   let parsed: URL;
   try {
-    parsed = new URL(url);
+    parsed = new URL(urlStr);
   } catch {
     return '';
   }
@@ -121,4 +130,76 @@ export async function resolveFacebookShareLink(rawUrl: string): Promise<string> 
   } catch {
     return rawUrl;
   }
+}
+
+export interface FacebookPageMeta {
+  name: string;
+  avatarUrl: string;
+  profileId: string;
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&#([0-9]+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function extractMetaTag(html: string, property: string): string {
+  const match = html.match(new RegExp(`<meta[^>]*property=["']${property}["'][^>]*content=["']([^"']+)["']`, 'i'))
+    || html.match(new RegExp(`<meta[^>]*content=["']([^"']+)["'][^>]*property=["']${property}["']`, 'i'));
+  return match ? match[1] : '';
+}
+
+export async function fetchFacebookPageMeta(pageUrl: string): Promise<FacebookPageMeta> {
+  const cleanUrl = cleanFacebookUrl(pageUrl);
+  const handle = extractHandleFromUrl(cleanUrl);
+  const fallback: FacebookPageMeta = {
+    name: handle || 'Facebook Page',
+    avatarUrl: '',
+    profileId: handle ? `tmp_${handle}` : `tmp_${Date.now()}${Math.floor(Math.random() * 1e6)}`,
+  };
+
+  if (!cleanUrl) return fallback;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(cleanUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+        'Accept-Language': 'vi,en;q=0.9',
+      },
+    });
+    clearTimeout(timeout);
+
+    if (res.status === 200) {
+      const html = await res.text();
+      const rawImage = extractMetaTag(html, 'og:image');
+      const rawTitle = extractMetaTag(html, 'og:title');
+
+      let name = rawTitle ? decodeHtmlEntities(rawTitle).replace(/\s*\|.*$/, '').trim() : '';
+      if (!name) name = handle || 'Facebook Page';
+
+      const avatarUrl = rawImage ? rawImage.replace(/&amp;/g, '&') : '';
+      let profileId = fallback.profileId;
+
+      if (avatarUrl) {
+        const mediaMatch = avatarUrl.match(/media_id=([0-9]+)/);
+        if (mediaMatch) {
+          profileId = mediaMatch[1];
+        }
+      }
+
+      return { name, avatarUrl, profileId };
+    }
+  } catch {
+    // Fallback on timeout or network error
+  }
+
+  return fallback;
 }

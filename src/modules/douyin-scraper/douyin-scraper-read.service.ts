@@ -212,6 +212,7 @@ export class DouyinScraperReadService {
 
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string; is_owned?: string;
+    tracked?: string; bookmarked?: string; periodic?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(50, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -228,6 +229,8 @@ export class DouyinScraperReadService {
     }
     if (isOwnedParam === 'true') where.is_owned = true;
     else if (isOwnedParam === 'false') where.is_owned = false;
+    if (params.tracked === 'true' || params.periodic === 'true') where.is_tracked = true;
+    if (params.bookmarked === 'true') where.is_bookmarked = true;
 
     const secondaryOrderBy = sortBy === 'recent' ? { created_at: 'desc' as const } : { followers_count: 'desc' as const };
 

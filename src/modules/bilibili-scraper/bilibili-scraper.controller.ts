@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -21,10 +21,22 @@ function assertCanManageChannels(req: any): void {
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/bilibili')
 export class BilibiliScraperController {
+  private readonly logger = new Logger(BilibiliScraperController.name);
+
   constructor(
     private readonly service: BilibiliScraperService,
     private readonly readService: BilibiliScraperReadService,
   ) {}
+
+  @Post(['profiles/sync-all', 'periodic-refresh'])
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    this.service.periodicRefresh().catch((err: any) => {
+      this.logger.error(`[BILIBILI-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
+    });
+    return { status: 'ok', message: 'Đã bắt đầu cào video mới cho các kênh Bilibili chú ý trong nền!' };
+  }
 
   @Get('videos')
   async videos(@Query() query: Record<string, string>) {

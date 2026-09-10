@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -25,6 +25,8 @@ function assertCanManageChannels(req: any): void {
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/fanpages')
 export class FacebookExternalScraperController {
+  private readonly logger = new Logger(FacebookExternalScraperController.name);
+
   constructor(
     private readonly service: FacebookExternalScraperService,
     private readonly readService: FacebookExternalScraperReadService,
@@ -68,15 +70,15 @@ export class FacebookExternalScraperController {
   @Post('scrape-reels')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async scrapeReels(@Body() body: { fanpage_id?: number }) {
+  async scrapeReels(@Body() body: { fanpage_id?: number; num_of_posts?: number }) {
     if (!body?.fanpage_id) throw new HttpException({ error: 'fanpage_id is required' }, HttpStatus.BAD_REQUEST);
-    return this.service.triggerScrapeReels(BigInt(body.fanpage_id));
+    return this.service.triggerScrapeReels(BigInt(body.fanpage_id), body?.num_of_posts);
   }
 
   @Post('scrape-by-url')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async scrapeByUrl(@Body() body: { url?: string }) {
+  async scrapeByUrl(@Body() body: { url?: string; num_of_posts?: number }) {
     const input = (body?.url || '').trim();
     if (!input) throw new HttpException({ error: 'url is required' }, HttpStatus.BAD_REQUEST);
 
@@ -86,6 +88,27 @@ export class FacebookExternalScraperController {
     if (!url.includes('facebook.com')) {
       throw new HttpException({ error: 'URL không hợp lệ. Ví dụ: https://www.facebook.com/pagename' }, HttpStatus.BAD_REQUEST);
     }
-    return this.service.scrapeByUrl(url);
+    return this.service.scrapeByUrl(url, body?.num_of_posts);
+  }
+
+  @Post('bulk-add')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async bulkAdd(@Body() body: { urls?: string[] }) {
+    const urls = body?.urls;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      throw new HttpException({ error: 'urls phải là một danh sách các đường link' }, HttpStatus.BAD_REQUEST);
+    }
+    return this.service.bulkAddFanpages(urls);
+  }
+
+  @Post(['sync-all', 'periodic-refresh'])
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    this.service.periodicRefresh().catch((err: any) => {
+      this.logger.error(`[FB-EXTERNAL-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
+    });
+    return { status: 'ok', message: 'Đã bắt đầu tiến trình đồng bộ lại các kênh Facebook.' };
   }
 }
