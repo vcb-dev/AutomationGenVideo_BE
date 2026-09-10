@@ -115,14 +115,6 @@ export class ChannelsService {
 
   /** Lấy tất cả kênh thuộc về user hiện tại (bằng owner_id, email, hoặc tên owner). */
   async findMine(user: { id: string; email?: string; full_name?: string; roles?: UserRole[]; team?: string | null }) {
-    // Nếu là ADMIN/MANAGER, trả về toàn bộ kênh để quản lý và báo cáo
-    if (user.roles && this.isAdminOrManager(user.roles)) {
-      return this.prisma.channel.findMany({
-        include: CHANNEL_INCLUDE,
-        orderBy: { created_at: "desc" },
-      });
-    }
-
     const orConditions: any[] = [{ owner_id: user.id }];
 
     if (user.email) {
