@@ -1,6 +1,4 @@
 import { Module } from '@nestjs/common'
-import { MulterModule } from '@nestjs/platform-express'
-import { memoryStorage } from 'multer'
 import { PrismaModule } from '../../../common/prisma/prisma.module'
 import { VideoModule } from '../video/video.module'
 import { FacebookOwnedPagesModule } from '../../facebook-owned-pages/facebook-owned-pages.module'
@@ -17,7 +15,6 @@ import { TaskVideoMatchCronService } from './task-video-match.cron'
     PrismaModule,
     VideoModule,
     FacebookOwnedPagesModule,
-    MulterModule.register({ storage: memoryStorage() }),
   ],
   controllers: [TaskAutoTasksController],
   providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService, TaskPublishedLinkStatsService, TaskVideoMatchService, TaskVideoMatchCronService],
