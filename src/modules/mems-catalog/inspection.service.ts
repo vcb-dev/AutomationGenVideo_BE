@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { InspectAssetDto } from './dto';
+import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 
 /**
  * Chỉ máy đang nằm ở bàn kiểm tra mới có gì để kết luận. Máy đang mượn hay đã sẵn sàng thì
@@ -10,15 +11,23 @@ const INSPECTABLE_STATUSES = ['PENDING_INSPECTION', 'POST_RETURN_CHECK'];
 
 @Injectable()
 export class InspectionService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly photoUrls: MemsPhotoUrlSigner,
+  ) {}
 
   /** Những máy đang chờ người kiểm tra kết luận — màn kiểm tra dựng danh sách từ đây. */
-  listPending() {
-    return this.prisma.memsAsset.findMany({
+  async listPending() {
+    const assets = await this.prisma.memsAsset.findMany({
       where: { is_disabled: false, status: { in: INSPECTABLE_STATUSES as any } },
       include: {
         model: { include: { category: true } },
         location: true,
+        // Ảnh đại diện để người kiểm đối chiếu đúng chiếc máy đang cầm trên tay. Chỉ ảnh HỒ SƠ:
+        // ảnh biên bản nằm cùng bảng, lấy nhầm là hiện tấm chụp vết xước của lượt mượn nào đó.
+        // Ảnh đại diện để người kiểm đối chiếu đúng chiếc máy đang cầm trên tay. Chỉ ảnh HỒ SƠ:
+        // ảnh biên bản nằm cùng bảng, lấy nhầm là hiện tấm chụp vết xước của lượt mượn nào đó.
+        photos: { where: { purpose: 'CATALOG', is_primary: true }, take: 1 },
         returnLines: {
           take: 1,
           orderBy: { returnRecord: { returned_at: 'desc' } },
@@ -27,6 +36,12 @@ export class InspectionService {
       },
       orderBy: { asset_code: 'asc' },
     });
+
+    // Ký URL: route phục vụ ảnh là công khai nên nó chỉ nhận đường dẫn có token còn hạn.
+    return assets.map((asset) => ({
+      ...asset,
+      photos: this.photoUrls.signAll(asset.photos),
+    }));
   }
 
   /**

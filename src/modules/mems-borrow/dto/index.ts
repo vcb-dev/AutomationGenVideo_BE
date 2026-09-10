@@ -33,16 +33,7 @@ export class BorrowLineDto {
 }
 
 export class CreateBorrowRequestDto {
-  @ApiPropertyOptional({
-    description:
-      'Bỏ trống thì server tự suy từ người đăng nhập. Client không nên tự khai mình thuộc ' +
-      'bộ phận nào — khai sai là quy trách nhiệm sai người.',
-  })
-  @IsOptional()
-  @IsUUID()
-  departmentId?: string;
-
-  @ApiProperty({ description: 'Dự án hoặc mục đích sử dụng — BR-19 bắt buộc' })
+    @ApiProperty({ description: 'Dự án hoặc mục đích sử dụng — BR-19 bắt buộc' })
   @IsString()
   @IsNotEmpty() // BR-19: chuỗi rỗng cũng là để trống, không được lọt
   project: string;
