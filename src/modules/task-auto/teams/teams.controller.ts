@@ -396,6 +396,7 @@ export class TaskAutoTeamsController {
     @Query("month") month?: string,
     @Query("team_id") teamId?: string,
     @Query("assignee_id") assigneeId?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
@@ -405,6 +406,7 @@ export class TaskAutoTeamsController {
       month,
       teamId,
       assigneeId,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
     );
   }
 
@@ -441,7 +443,13 @@ export class TaskAutoTeamsController {
     @Query("team") team?: string,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
-    return this.tasks.getTeamReport(team, dateFrom, dateTo);
+    return this.tasks.getTeamReport(
+      team,
+      dateFrom,
+      dateTo,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
+    );
   }
 }
