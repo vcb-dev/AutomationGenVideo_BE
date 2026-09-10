@@ -251,13 +251,10 @@ export class TrafficInsightsService {
                   }
                 }
 
-                // CHUẨN HOÁ THEO ĐỊNH NGHĨA "LƯỢT XEM" TRÊN META BUSINESS SUITE:
-                // "Lượt xem: Số lượt phát hoặc hiển thị nội dung của bạn. Nội dung bao gồm thước phim, bài viết, tin và quảng cáo."
-                // Metric page_posts_impressions_organic đo lường số lượt hiển thị/phát nội dung khớp chính xác với tab "Lượt xem" của Meta Business Suite.
-                // Metric page_video_views là lượt xem video >= 3s.
-                const totalViews = postImpressionsOrganic > 0
-                  ? postImpressionsOrganic
-                  : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic);
+                // Theo chuẩn yêu cầu: Lấy 1 (page_video_views) + 2 (page_video_views_organic)
+                const totalViews = (videoViewsTotal > 0 || videoViewsOrganic > 0)
+                  ? (videoViewsTotal + videoViewsOrganic)
+                  : postImpressionsOrganic;
 
                 // Đã gọi thành công Meta Graph API — trả về số liệu chính thức (kể cả views = 0)
                 return {
@@ -517,10 +514,10 @@ export class TrafficInsightsService {
               }
             }
 
-            // CHUẨN HOÁ THEO ĐỊNH NGHĨA "LƯỢT XEM" TRÊN META BUSINESS SUITE
-            const totalViews = postImpressionsOrganic > 0
-              ? postImpressionsOrganic
-              : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic);
+            // Theo chuẩn yêu cầu: Lấy 1 (page_video_views) + 2 (page_video_views_organic)
+            const totalViews = (videoViewsTotal > 0 || videoViewsOrganic > 0)
+              ? (videoViewsTotal + videoViewsOrganic)
+              : postImpressionsOrganic;
 
             return {
               success: true,
