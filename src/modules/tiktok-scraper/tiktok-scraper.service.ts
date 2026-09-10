@@ -544,7 +544,7 @@ export class TiktokScraperService {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperTikTokProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: { is_tracked: true, scraping_status: { not: 'processing' } },
       orderBy: { last_scraped_at: 'asc' },
     });
 

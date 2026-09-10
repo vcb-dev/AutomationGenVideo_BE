@@ -331,7 +331,7 @@ export class InstagramScraperService {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperInstagramProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: { is_tracked: true, scraping_status: { not: 'processing' } },
       orderBy: { last_scraped_at: 'asc' },
     });
 
@@ -346,7 +346,8 @@ export class InstagramScraperService {
 
     for (const profile of profiles) {
       try {
-        await this.scrapeProfileReels(profile.id, 10);
+        const count = profile.is_initial_scraped ? 10 : 30;
+        await this.scrapeProfileReels(profile.id, count);
         done++;
       } catch (err: any) {
         failed++;

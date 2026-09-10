@@ -40,22 +40,34 @@ export class OwnedPaastCronService {
 
   /**
    * Video mới trong ngày — chạy 07:30, ngay sau khi cron cào xong lúc 07:00.
-   *
-   * Khối lượng thật: ~130 video mới/ngày, trong đó ~1/3 có phụ đề → khoảng 12 phút.
+   * Mặc định TẮT tự động chấm điểm PAAST để người dùng bấm tay trên web.
    */
   @Cron('0 30 7 * * *', VN_TZ)
+  async cronScoreNewVideos(): Promise<void> {
+    if (process.env.ENABLE_PAAST_AUTO_CRON !== 'true') {
+      this.logger.log('[MOI] Tự động chấm PAAST đã tắt (chỉ chấm khi người dùng ấn vào nút trên web).');
+      return;
+    }
+    await this.scoreNewVideos();
+  }
+
   async scoreNewVideos(): Promise<void> {
     await this.chay('MOI', TRAN_MOI_LAN.moi, "v.published_at >= now() - interval '3 days'");
   }
 
   /**
    * Phủ ngược kho cũ — chạy 01:00 lúc máy rảnh nhất.
-   *
-   * Toàn kho 20.515 video, mỗi đêm vài trăm cái nên phải nhiều đêm mới xong. Cứ chạy đi
-   * chạy lại là tự tiến vì video đã xử lý đều có bản ghi (kể cả bản ghi đánh dấu "không có
-   * phụ đề"), truy vấn dưới tự loại chúng ra.
+   * Mặc định TẮT tự động chấm điểm PAAST để người dùng bấm tay trên web.
    */
   @Cron('0 0 1 * * *', VN_TZ)
+  async cronPhuNguoc(): Promise<void> {
+    if (process.env.ENABLE_PAAST_AUTO_CRON !== 'true') {
+      this.logger.log('[PHU_NGUOC] Tự động chấm PAAST đã tắt (chỉ chấm khi người dùng ấn vào nút trên web).');
+      return;
+    }
+    await this.phuNguoc();
+  }
+
   async phuNguoc(): Promise<void> {
     await this.chay('PHU_NGUOC', TRAN_MOI_LAN.phuNguoc, '1 = 1');
   }

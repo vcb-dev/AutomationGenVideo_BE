@@ -14,6 +14,8 @@ interface ThumbnailTarget {
   inPlace?: boolean;
   /** Tên hiển thị nền tảng — quyết định folder con trong Root/Scraper Cào Dữ Liệu/{platform}/{ngày}/. */
   platform: string;
+  /** Cột URL video để fallback oEmbed khi CDN image hết hạn. */
+  urlColumn?: string;
 }
 
 const BATCH_SIZE = 10;
@@ -22,14 +24,14 @@ const BATCH_SIZE = 10;
 // Drive định kỳ — AI không còn gọi ngược lại BE để nhờ upload nữa.
 const TARGETS: ThumbnailTarget[] = [
   { table: 'scraper_fanpages', sourceColumn: 'avatar_url', destColumn: 'avatar_drive_url', filenamePrefix: 'fb-scraped-avatar', platform: 'Facebook' },
-  { table: 'scraper_facebook_reels', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'fb-reel', platform: 'Facebook' },
+  { table: 'scraper_facebook_reels', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'fb-reel', platform: 'Facebook', urlColumn: 'url' },
   { table: 'video_management_managedfacebookpage', sourceColumn: 'avatar_url', destColumn: 'avatar_drive_url', filenamePrefix: 'fb-managed-avatar', platform: 'Facebook' },
   { table: 'video_management_ownedvideocontent', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'fb-owned', platform: 'Facebook' },
   { table: 'scraper_douyin_profiles', sourceColumn: 'avatar_url', destColumn: 'avatar_drive_url', filenamePrefix: 'douyin-avatar', platform: 'Douyin' },
   { table: 'scraper_douyin_videos', sourceColumn: 'preview_image', destColumn: 'preview_image', filenamePrefix: 'douyin', inPlace: true, platform: 'Douyin' },
   { table: 'scraper_tiktok_profiles', sourceColumn: 'avatar_url', destColumn: 'avatar_drive_url', filenamePrefix: 'tiktok-avatar', platform: 'TikTok' },
-  { table: 'scraper_tiktok_videos', sourceColumn: 'preview_image', destColumn: 'preview_image', filenamePrefix: 'tiktok', inPlace: true, platform: 'TikTok' },
-  { table: 'scraper_tiktok_profile_videos', sourceColumn: 'cover_image', destColumn: 'cover_image', filenamePrefix: 'tiktok', inPlace: true, platform: 'TikTok' },
+  { table: 'scraper_tiktok_videos', sourceColumn: 'preview_image', destColumn: 'preview_image', filenamePrefix: 'tiktok', inPlace: true, platform: 'TikTok', urlColumn: 'url' },
+  { table: 'scraper_tiktok_profile_videos', sourceColumn: 'cover_image', destColumn: 'cover_image', filenamePrefix: 'tiktok', inPlace: true, platform: 'TikTok', urlColumn: 'url' },
   { table: 'scraper_instagram_profiles', sourceExpr: `COALESCE(NULLIF("avatar_url", ''), NULLIF("hd_avatar_url", ''))`, destColumn: 'avatar_drive_url', filenamePrefix: 'ig-avatar', platform: 'Instagram' },
   { table: 'scraper_instagram_reels', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'ig-reel', platform: 'Instagram' },
   { table: 'scraper_xiaohongshu_videos', sourceColumn: 'thumbnail_url', destColumn: 'thumbnail_drive_url', filenamePrefix: 'xhs', platform: 'Xiaohongshu' },
@@ -69,16 +71,16 @@ export class ThumbnailMigrationService {
   }
 
   private async migrateTarget(target: ThumbnailTarget): Promise<void> {
-    const { table, destColumn, filenamePrefix, inPlace, platform } = target;
+    const { table, destColumn, filenamePrefix, inPlace, platform, urlColumn } = target;
     const src = sourceExprOf(target);
     const whereClause = inPlace
-      ? `${src} IS NOT NULL AND ${src} <> '' AND ${src} NOT LIKE '%drive.google.com%' AND ${src} NOT LIKE '%googleusercontent.com%'`
-      : `${src} IS NOT NULL AND ${src} <> '' AND ("${destColumn}" IS NULL OR "${destColumn}" = '')`;
+      ? `${src} IS NOT NULL AND ${src} <> '' AND ${src} <> 'FAILED' AND ${src} NOT LIKE '%drive.google.com%' AND ${src} NOT LIKE '%googleusercontent.com%'`
+      : `${src} IS NOT NULL AND ${src} <> '' AND ${src} <> 'FAILED' AND ("${destColumn}" IS NULL OR "${destColumn}" = '')`;
 
-    let rows: Array<{ id: bigint; src: string }>;
+    let rows: Array<{ id: bigint; src: string; videoUrl?: string }>;
     try {
-      rows = await this.prisma.$queryRawUnsafe<Array<{ id: bigint; src: string }>>(
-        `SELECT id, ${src} AS src FROM "${table}" WHERE ${whereClause} ORDER BY id DESC LIMIT ${BATCH_SIZE}`,
+      rows = await this.prisma.$queryRawUnsafe<Array<{ id: bigint; src: string; videoUrl?: string }>>(
+        `SELECT id, ${src} AS src ${urlColumn ? `, "${urlColumn}" AS "videoUrl"` : ''} FROM "${table}" WHERE ${whereClause} ORDER BY id DESC LIMIT ${BATCH_SIZE}`,
       );
     } catch (err: any) {
       this.logger.error(`[ThumbnailMigration] Query failed for ${table}: ${err.message}`);
@@ -87,8 +89,15 @@ export class ThumbnailMigrationService {
 
     for (const row of rows) {
       const filename = `${filenamePrefix}-${row.id}.jpg`;
-      const driveUrl = await this.googleDrive.uploadThumbnailFromUrl(row.src, filename, platform);
-      if (!driveUrl) continue;
+      const driveUrl = await this.googleDrive.uploadThumbnailFromUrl(row.src, filename, platform, row.videoUrl);
+      if (!driveUrl) {
+        // Nếu không tải được (kể cả fallback oEmbed), đánh dấu để cron không bị kẹt ở đúng 10 dòng này mãi
+        await this.prisma.$executeRawUnsafe(
+          `UPDATE "${table}" SET "${destColumn}" = 'FAILED' WHERE id = $1`,
+          row.id,
+        ).catch(() => {});
+        continue;
+      }
 
       try {
         await this.prisma.$executeRawUnsafe(

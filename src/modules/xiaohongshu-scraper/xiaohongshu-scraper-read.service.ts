@@ -182,11 +182,11 @@ export class XiaohongshuScraperReadService {
   }
 
   async listProfiles(params: {
-    page?: string; page_size?: string; q?: string; bookmarked?: string; tracked?: string; is_owned?: string;
+    page?: string; page_size?: string; q?: string; search?: string; bookmarked?: string; tracked?: string; periodic?: string; is_owned?: string;
   }) {
-    const q = (params.q || '').trim();
+    const q = (params.q || params.search || '').trim();
     const bookmarked = params.bookmarked || '';
-    const tracked = params.tracked || '';
+    const tracked = params.tracked || params.periodic || '';
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(50, Math.max(1, parseIntOrDefault(params.page_size, 20)!));
     const isOwnedParam = (params.is_owned || '').trim();
