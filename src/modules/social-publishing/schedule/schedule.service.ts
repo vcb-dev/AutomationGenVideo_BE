@@ -9,6 +9,7 @@ import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service
 import { isPermanentPublishError } from '../publish/publish-error.util';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 const MAX_RETRIES = 3;
 const MAX_HEAVY_JOBS = 5;
@@ -54,6 +55,24 @@ function retryDelayMs(attempt: number): number {
   return Math.min(5 * Math.pow(3, attempt - 1) * 60 * 1000, 2 * 60 * 60 * 1000);
 }
 
+/** Suy ra URL bài đã đăng từ result trả về bởi platform publisher — khớp logic FE (lib/api/social.ts getPostUrl) */
+function getPostUrl(result: any, platform?: string): string | null {
+  if (!result || typeof result !== 'object') return null;
+  if (typeof result.url === 'string' && result.url) return result.url;
+  if (typeof result.videoId === 'string') return `https://youtube.com/watch?v=${result.videoId}`;
+  if (typeof result.postId === 'string' && result.postId) {
+    if (!platform || platform === 'FACEBOOK') return `https://www.facebook.com/${result.postId}`;
+  }
+  return null;
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  FACEBOOK: 'Facebook',
+  INSTAGRAM: 'Instagram',
+  THREADS: 'Threads',
+  YOUTUBE: 'YouTube',
+};
+
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
@@ -86,10 +105,25 @@ export class ScheduleService {
     });
     if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
 
+    // Instagram cần IG User ID — chặn sớm lúc lên lịch thay vì để worker fail (bài kẹt
+    // PENDING → FAILED mà editor không hiểu vì sao).
+    if (account.platform === 'INSTAGRAM') {
+      const extra = (account.extra_data ?? {}) as Record<string, unknown>;
+      const igUserId = extra.igUserId || extra.igBusinessId || account.platform_id;
+      if (!igUserId) {
+        throw new BadRequestException(
+          'Tài khoản Instagram này thiếu IG User ID — hãy vào "Kênh social" kết nối lại Instagram (Business/Login trực tiếp) rồi thử lại.',
+        );
+      }
+    }
+
     if (dto.taskId) {
       const task = await this.prisma.task.findUnique({ where: { id: dto.taskId }, select: { status: true } });
       if (!task) throw new NotFoundException('Task không tồn tại');
-      if (task.status !== 'APPROVED') throw new BadRequestException('Chỉ có thể lên lịch đăng bài cho task đã được duyệt');
+      // Cho phép lên lịch ngay khi task đã nộp video (SUBMITTED), không bắt buộc chờ duyệt.
+      if (!['SUBMITTED', 'APPROVED'].includes(task.status)) {
+        throw new BadRequestException('Chỉ có thể lên lịch đăng bài cho task đã nộp video (chờ duyệt hoặc đã duyệt)');
+      }
     }
 
     let thumbUrl = dto.thumbUrl || null;
@@ -408,6 +442,39 @@ export class ScheduleService {
     return () => clearInterval(timer);
   }
 
+  /**
+   * Tự thêm link bài vừa đăng vào published_links của task — editor khỏi copy tay. Idempotent
+   * theo URL (an toàn khi worker retry / nhiều post cùng task), không đụng link nhập tay. Ghi
+   * được cho cả SUBMITTED lẫn APPROVED vì đây là sự kiện hệ thống, không phải claim cần duyệt.
+   */
+  private async syncPublishedLinkToTask(post: any, result: any): Promise<void> {
+    if (!post.task_id) return;
+    const url = getPostUrl(result, post.platform);
+    if (!url) return;
+
+    try {
+      const task = await this.prisma.task.findUnique({
+        where: { id: post.task_id },
+        select: { published_links: true },
+      });
+      if (!task) return;
+
+      const links = Array.isArray(task.published_links) ? (task.published_links as any[]) : [];
+      if (links.some((l) => l?.url === url)) return;
+
+      const platformLabel = PLATFORM_LABEL[post.platform] ?? post.platform;
+      const next = [...links, { id: randomUUID(), platform: platformLabel, url }];
+
+      await this.prisma.task.update({
+        where: { id: post.task_id },
+        data: { published_links: next as any },
+      });
+      this.logger.log(`[Worker] 🔗 Đã tự động thêm link bài đăng vào task ${post.task_id}: ${url}`);
+    } catch (err: any) {
+      this.logger.warn(`[Worker] Không thể tự động thêm link bài đăng cho task ${post.task_id}: ${err.message}`);
+    }
+  }
+
   private async executePost(post: any) {
     // Idempotency: nếu đã có result → đã publish thành công nhưng DB update bị fail trước đó
     if (post.result && typeof post.result === 'object' && Object.keys(post.result as any).length > 0) {
@@ -416,6 +483,7 @@ export class ScheduleService {
         where: { id: post.id },
         data: { status: SocialPostStatus.COMPLETED, executed_at: new Date(), updated_at: new Date(), claimed_until: null },
       });
+      this.syncPublishedLinkToTask(post, post.result);
       return;
     }
 
@@ -450,6 +518,7 @@ export class ScheduleService {
       }
       this.publishService.archiveMediaAsync(post.id, (post.media_urls as string[]) ?? [])
         .catch((err: any) => this.logger.warn(`[Worker] archiveMediaAsync failed for ${post.id}: ${err.message}`));
+      this.syncPublishedLinkToTask(post, result);
       this.logger.log(`[Worker] ✅ Post ${post.id} (${post.platform}) completed`);
     } catch (err: any) {
       const stackLines = (err.stack || '').split('\n').slice(0, 6).join('\n  ');
