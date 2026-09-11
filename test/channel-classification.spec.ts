@@ -1,4 +1,4 @@
-import { FacebookExternalScraperService } from '../facebook-external-scraper.service';
+import { FacebookExternalScraperService } from '../src/modules/facebook-external-scraper/facebook-external-scraper.service';
 
 describe('FacebookExternalScraperService - Channel Classification & Tags', () => {
   it('updateClassification cập nhật thành công channel_type và product_lines', async () => {
