@@ -140,6 +140,33 @@ describe('IdPhotoBatchService', () => {
       expect(res.counts).toEqual({ pending: 0, processing: 1, success: 1, failed: 1 });
       expect(res.people).toHaveLength(3);
     });
+
+    /**
+     * Regression: FE vòng poll (BulkTab#startPolling) THAY THẾ TOÀN BỘ `batchStatus` bằng response
+     * này mỗi ~3.5s (onUpdate: setBatchStatus(r)) — nếu select() ở đây thiếu crop_offset_x/y/scale
+     * thì bản crop vừa PATCH qua modal "Sửa thông tin thẻ" (optimistic update cục bộ ở FE) sẽ bị
+     * tick poll TIẾP THEO ghi đè mất, lưới kết quả lại hiện ảnh CHƯA crop dù DB đã lưu đúng.
+     */
+    it('select() PHẢI kèm crop_offset_x/y/scale — thiếu là poll đè mất crop vừa lưu (bug đã gặp)', async () => {
+      const { service, prisma } = buildService();
+      prisma.idPhotoBatchJob.findUnique = jest.fn(async () => ({
+        id: 'b1',
+        status: IdPhotoBatchStatus.PROCESSING,
+        total_count: 1,
+        created_at: new Date('2026-09-09'),
+        updated_at: new Date('2026-09-09'),
+      }));
+      const findMany = jest.fn(async (_args: any) => [
+        { id: 'h1', status: IdPhotoStatus.SUCCESS, crop_offset_x: 0.3, crop_offset_y: -0.1, crop_scale: 1.6 },
+      ]);
+      prisma.idPhotoHistory.findMany = findMany;
+
+      const res = await service.getBatchStatus('b1');
+
+      const selectArg = findMany.mock.calls[0][0].select;
+      expect(selectArg).toMatchObject({ crop_offset_x: true, crop_offset_y: true, crop_scale: true });
+      expect(res.people[0]).toMatchObject({ crop_offset_x: 0.3, crop_offset_y: -0.1, crop_scale: 1.6 });
+    });
   });
 
   describe('exportBatchPdf', () => {
