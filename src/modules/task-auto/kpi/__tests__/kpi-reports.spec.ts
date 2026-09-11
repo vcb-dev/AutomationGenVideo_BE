@@ -1,23 +1,13 @@
 import { BadRequestException } from '@nestjs/common';
 import { TaskAutoKpiService } from '../kpi.service';
 
-/**
- * Báo cáo KPI TỰ TÍNH từ dữ liệu thật (KHÔNG phải target đặt tay — cái đó ở kpi-targets.spec.ts):
- *  - getContentCreatorKpiReport()          — số content sưu tầm / bản dịch / video đã lên
- *  - getContentWinFailStats() + refresh    — win/fail/pending theo link bài đăng >10.000 view
- *  - getTopContentWinFailMembers() + refresh — bảng xếp hạng top N toàn hệ thống
- */
+// Báo cáo KPI tự tính từ dữ liệu thật (không phải target đặt tay — cái đó ở kpi-targets.spec.ts).
 
 function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 'success') {
   return [{ id: 'l1', platform: 'FACEBOOK', url: 'https://facebook.com/x', stats: { views, status } }];
 }
 
-/**
- * getContentCreatorKpiReport() — báo cáo TỰ TÍNH (không phải target đặt tay) từ dữ liệu thật:
- * số content sưu tầm (TeamContent.added_by), số bản dịch (ContentTranslation.translated_by),
- * và danh sách video đã lên (Task trỏ tới content do người này thêm, qua content_id hoặc
- * team_content_id). Khác ContentCreatorKpi (target tháng thủ công) — đây là báo cáo, không ghi DB.
- */
+// getContentCreatorKpiReport() — báo cáo tự tính (số sưu tầm/bản dịch/video), khác ContentCreatorKpi (target thủ công).
 describe('TaskAutoKpiService.getContentCreatorKpiReport', () => {
   function build(opts: {
     users?: any[];
@@ -178,13 +168,7 @@ describe('TaskAutoKpiService.getContentCreatorKpiReport', () => {
   });
 });
 
-/**
- * getContentWinFailStats() — MỘT cơ chế duy nhất cho mọi thành viên (không phân biệt content
- * creator/editor): "content được gắn task trong kỳ" → win/fail/pending; win khi có ít nhất 1 link
- * bài đăng bất kỳ (Facebook/YouTube/Instagram) đạt > 10.000 view.
- * Kết quả gộp thành 1 danh sách theo user_id (by_member), dedupe theo task_id nếu 1 người vừa là
- * content creator vừa là editor CỦA CÙNG 1 task. Không đụng EditorKpi.video_win/fail (nhập tay).
- */
+// getContentWinFailStats() — win khi có link bài đăng bất kỳ >10.000 view, gộp theo user_id, dedupe theo task_id.
 describe('TaskAutoKpiService.getContentWinFailStats', () => {
   function build(opts: {
     users?: any[];
@@ -343,11 +327,7 @@ describe('TaskAutoKpiService.getContentWinFailStats', () => {
   });
 });
 
-/**
- * refreshContentWinFailStats() — bấm xem chi tiết 1 thành viên ở FE gọi route này trước để cào
- * lại traffic Facebook mới nhất (task-published-link-stats.service.ts), ghi lại published_links,
- * RỒI mới tính lại win/fail — không đợi cron 8:15 sáng hôm sau.
- */
+// refreshContentWinFailStats() — cào lại traffic mới nhất, ghi published_links rồi mới tính lại win/fail (không đợi cron).
 describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
   function build(opts: { editorTasks?: any[]; fetchStatsForLink?: jest.Mock } = {}) {
     // Store có state (Map theo task id) — mô phỏng DB thật: refresh ghi lại published_links rồi
@@ -498,12 +478,7 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
   });
 });
 
-/**
- * getTopContentWinFailMembers() — top N người có nhiều content win nhất TOÀN HỆ THỐNG, dùng làm
- * mặc định cho ADMIN/MANAGER khi chưa chọn team/thành viên cụ thể ở trang Tổng quan. Tái dùng
- * đúng cơ chế merge của getContentWinFailStats (mergeWinFailByMember) — chỉ khác tập userIds
- * (toàn hệ thống thay vì 1 team/1 người) và có thêm bước xếp hạng/cắt top N.
- */
+// getTopContentWinFailMembers() — top N toàn hệ thống, mặc định cho ADMIN/MANAGER khi chưa chọn team/thành viên.
 describe('TaskAutoKpiService.getTopContentWinFailMembers', () => {
   function build(opts: {
     allUserIds?: string[];
@@ -605,11 +580,7 @@ describe('TaskAutoKpiService.getTopContentWinFailMembers', () => {
   });
 });
 
-/**
- * refreshTopContentWinFailMembers() — nút "Cập nhật" khi ADMIN/MANAGER đang xem bảng xếp hạng Top
- * N toàn hệ thống (không có team_id/user_id để gọi refreshContentWinFailStats). Chỉ cào lại
- * traffic cho các task thuộc top N ĐANG HIỂN THỊ, không phải toàn hệ thống.
- */
+// refreshTopContentWinFailMembers() — nút "Cập nhật" ở bảng xếp hạng top N, chỉ cào lại đúng top N đang hiển thị.
 describe('TaskAutoKpiService.refreshTopContentWinFailMembers', () => {
   function build(opts: { allUserIds?: string[]; editorTasks?: any[]; fetchStatsForLink?: jest.Mock } = {}) {
     const userIds = opts.allUserIds ?? ['u1', 'u2', 'u3'];

@@ -19,12 +19,7 @@ export interface PublishedLinkWinFailResult {
   views: number;
 }
 
-/**
- * Phân loại 1 task theo view các link đã cào thành công:
- * - "win"     : ít nhất 1 link > VIEW_WIN_THRESHOLD (không cộng dồn)
- * - "fail"    : có link cào được số liệu nhưng không link nào vượt ngưỡng
- * - "pending" : chưa link nào cào được — KHÔNG tính oan thành fail (cào chỉ ~65% thành công)
- */
+// Phân loại task theo view các link đã cào: win nếu >ngưỡng, fail nếu có số liệu mà không vượt, pending nếu chưa cào được link nào.
 export function classifyPublishedLinksWinFail(
   links: PublishedLinkLike[] | null | undefined,
 ): PublishedLinkWinFailResult {
@@ -49,10 +44,7 @@ export interface WinningLink {
   views: number;
 }
 
-/**
- * Link "thắng" của task = link cào thành công có view cao nhất và > VIEW_WIN_THRESHOLD (khớp
- * định nghĩa "win" ở trên). null khi task không "win". Dùng cho luồng tự đẩy content win.
- */
+// Link "thắng" của task = link cào thành công có view cao nhất và > ngưỡng win; null khi task không "win".
 export function pickWinningLink(
   links: PublishedLinkLike[] | null | undefined,
 ): WinningLink | null {

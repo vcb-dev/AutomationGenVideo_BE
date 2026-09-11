@@ -1,12 +1,6 @@
 import { InstagramOwnedAccountsService } from '../instagram-owned-accounts.service';
 
-/**
- * fetchStatsForUrl() — kéo view/like/comment cho 1 URL bài đăng Instagram bất kỳ dán vào Task
- * (PublishedLinksSection), tương tự FacebookOwnedPagesService.fetchStatsForUrl(). Chỉ hoạt động
- * với reel/video ĐÃ TỪNG ĐỒNG BỘ từ kênh nội bộ (is_owned=true, xem instagram-owned-sync.spec.ts)
- * vì cần access token của tài khoản đã kết nối OAuth để gọi Graph API — không đọc được kênh
- * Instagram ngoài hệ thống.
- */
+// fetchStatsForUrl() — chỉ hoạt động với reel/video đã đồng bộ từ kênh nội bộ (cần token OAuth để gọi Graph API).
 describe('InstagramOwnedAccountsService.fetchStatsForUrl', () => {
   const buildService = (overrides: { reel?: any; accounts?: any[] } = {}) => {
     const prisma = {
@@ -92,12 +86,7 @@ describe('InstagramOwnedAccountsService.fetchStatsForUrl', () => {
     expect(result).toEqual({ status: 'unsupported' });
   });
 
-  /**
-   * Ca thật ngày 27/08/2026: reconnect để cấp quyền instagram_manage_insights tạo ra 1 dòng
-   * SocialAccount MỚI (khác user_id) thay vì ghi đè dòng cũ — 1 kênh có 2 dòng cùng active,
-   * dòng cũ vẫn mang token thiếu quyền. Không sắp theo created_at DESC thì kết quả phụ thuộc
-   * thứ tự ngẫu nhiên Postgres trả về, có thể vẫn chọn nhầm token cũ dù đã reconnect xong.
-   */
+  // Reconnect tạo dòng SocialAccount mới thay vì ghi đè — không sắp created_at DESC thì có thể chọn nhầm token cũ.
   it('kênh có nhiều SocialAccount active song song → luôn dùng dòng MỚI TẠO nhất (created_at desc)', async () => {
     const { service, prisma, crypto } = buildService({ reel: ownedReel() });
     // orderBy created_at desc thật sự trả mới nhất trước — mock mô phỏng đúng thứ tự đó.

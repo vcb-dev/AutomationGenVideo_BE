@@ -9,23 +9,9 @@ import {
   CreateEditorContentDto,
 } from '../dto/catalog.dto';
 
-/**
- * Gói test cho TaskAutoCatalogService. Mỗi describe cấp cao là một chức năng độc lập; helper
- * `build()` cố tình bọc trong từng describe để state prisma-mock không rò rỉ giữa các nhóm.
- *
- * Các chức năng được phủ:
- *  - sentinel "__unassigned__" cho content_line_id (findAllContents/findAllEditorContents)
- *  - Content Translations (get/upsert/delete/aiTranslate)
- *  - listTeamPushRequests — editor_content select đủ field kịch bản
- *  - findOneContent/findOneEditorContent — select kèm _count.tasks
- *  - DTO tạo content — bắt buộc nhập tiêu đề
- */
+// Gói test cho TaskAutoCatalogService — mỗi describe là 1 chức năng độc lập, `build()` bọc riêng từng nhóm.
 
-/**
- * findAllContents/findAllEditorContents — sentinel "__unassigned__" cho content_line_id, dùng ở
- * board lọc theo tuyến (FE) để lọc content CHƯA gán tuyến nào. Query string không truyền được
- * content_line_id=null nên cần 1 giá trị đặc biệt riêng, khác hẳn nhánh lọc theo 1 tuyến cụ thể.
- */
+// sentinel "__unassigned__" cho content_line_id — query string không truyền được content_line_id=null.
 describe('TaskAutoCatalogService — sentinel __unassigned__ cho content_line_id', () => {
   function build() {
     const findManyCalls: any[] = [];
@@ -94,11 +80,7 @@ describe('TaskAutoCatalogService — sentinel __unassigned__ cho content_line_id
   });
 });
 
-/**
- * Content Translations — bản dịch content theo thị trường (1 bản/market, xem
- * ContentTranslation trong schema.prisma). aiTranslateContent() chỉ trả bản NHÁP,
- * không ghi DB — người dùng phải bấm lưu riêng qua upsertContentTranslation().
- */
+// Content Translations — aiTranslateContent() chỉ trả bản nháp, không ghi DB (phải upsertContentTranslation riêng).
 describe('TaskAutoCatalogService — Content Translations', () => {
   function notFoundError() {
     return new Prisma.PrismaClientKnownRequestError('Record not found', {
@@ -251,11 +233,7 @@ describe('TaskAutoCatalogService — Content Translations', () => {
   });
 });
 
-/**
- * listTeamPushRequests() (leader duyệt push request) — trước đây `pushRequestInclude.editor_content`
- * select hẹp chỉ lấy title, khiến ContentViewModal ở FE (TeamPushRequestsTab.tsx) không hiện được
- * kịch bản. Giờ select đủ body/script/voice_url/file_content_url để leader xem trước khi duyệt.
- */
+// listTeamPushRequests() — select đủ body/script/voice_url/file_content_url để leader xem kịch bản trước khi duyệt.
 describe('TaskAutoCatalogService.listTeamPushRequests — editor_content select đủ field kịch bản', () => {
   function build(opts: { team?: any } = {}) {
     const findManyCalls: any[] = [];

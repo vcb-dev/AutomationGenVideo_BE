@@ -106,17 +106,7 @@ export class InstagramOwnedAccountsService {
     private readonly crypto: CryptoService,
   ) {}
 
-  /**
-   * Đồng bộ toàn bộ tài khoản Instagram đã kết nối OAuth trong SocialAccount.
-   *
-   * Một kênh có thể được nhiều người cùng kết nối (unique theo (user_id, platform,
-   * platform_id)), nên phải gộp theo Instagram User ID trước, không thì cùng 1 kênh bị gọi API
-   * và ghi đè nhiều lần trong một lượt.
-   *
-   * `orderBy: created_at DESC` — khi 1 kênh có nhiều dòng active song song (reconnect bằng
-   * user_id khác), dòng MỚI TẠO nhất thắng. Đo 27/08/2026: reconnect để cấp quyền
-   * `instagram_manage_insights` tạo dòng mới; ưu tiên dòng cũ (ASC) thì vẫn dùng token thiếu quyền.
-   */
+  // Gộp theo Instagram User ID; orderBy created_at DESC để lấy token mới nhất khi 1 kênh có nhiều dòng active.
   async syncAllConnectedAccounts(): Promise<InstagramSyncResult> {
     const socialAccounts = await this.prisma.socialAccount.findMany({
       where: { platform: SocialPlatform.INSTAGRAM, is_active: true },
@@ -361,12 +351,7 @@ export class InstagramOwnedAccountsService {
     }
   }
 
-  /**
-   * Lượt xem của một media qua /insights. CHỈ xin đúng metric `views`: Graph API validate
-   * NGUYÊN CỤM `metric` trước khi chạy, nên xin gộp "views,plays" (code cũ) làm cả request
-   * chết ở bước validate (400 "must be one of ..."), không phải trả 0 cho `plays`. Đo trên
-   * token thật 27/08/2026: `plays`/`video_views` Meta đã khai tử, chỉ `views` hợp lệ.
-   */
+  // Chỉ xin đúng metric `views` — gộp thêm "plays" (đã khai tử) làm Graph API từ chối nguyên cụm.
   async fetchMediaViews(base: string, mediaId: string, accessToken: string): Promise<number> {
     try {
       const res = await axios.get(`${base}/${mediaId}/insights`, {
@@ -402,11 +387,7 @@ export class InstagramOwnedAccountsService {
     }
   }
 
-  /**
-   * SocialAccount đã kết nối OAuth cho 1 Instagram User ID — cùng cách gộp (ưu tiên
-   * extra_data.igUserId, dự phòng platform_id) và cùng lý do `orderBy DESC` như
-   * syncAllConnectedAccounts(): lấy dòng mới nhất để dùng token vừa được cấp quyền insights.
-   */
+  // Cùng cách gộp + orderBy DESC như syncAllConnectedAccounts() để lấy token mới nhất.
   private async findConnectedAccount(igUserId: string) {
     const accounts = await this.prisma.socialAccount.findMany({
       where: { platform: SocialPlatform.INSTAGRAM, is_active: true },

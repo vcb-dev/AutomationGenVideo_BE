@@ -663,13 +663,7 @@ export class TaskAutoKpiService {
     });
   }
 
-  // ── Content Win/Fail Stats (tự tính: 1 link bài đăng FB/YouTube/IG > VIEW_WIN_THRESHOLD view) ──
-  // Tách biệt hoàn toàn EditorKpi.video_win/fail và content-report/ContentVideo.status (đều nhập tay).
-  //
-  // MỘT cơ chế cho MỌI thành viên, không phân biệt content creator/editor: "content được gắn
-  // task trong kỳ" — creator: content họ thêm (added_by_id) dùng ở bất kỳ task nào; editor:
-  // content gắn vào task họ được giao (assignee_id). Gộp theo user_id, dedupe theo task_id nên
-  // 1 người vừa là creator vừa là editor của cùng 1 task chỉ tính 1 lần.
+  // Content Win/Fail Stats (tự tính, tách biệt EditorKpi.video_win/fail nhập tay) — gộp theo user_id, dedupe theo task_id.
   async getContentWinFailStats(params: {
     user_id?: string;
     team_id?: string;
@@ -808,14 +802,7 @@ export class TaskAutoKpiService {
     });
   }
 
-  // Cào lại traffic (SUPPORTED_LINK_STATS_PLATFORMS) cho content trong `byMember` rồi ghi lại
-  // published_links. Dùng chung cho cả 2 route "Cập nhật" (team/người cụ thể + Top N).
-  //
-  // Chỉ chạy khi người dùng CHỦ ĐỘNG bấm "Cập nhật" — không tự động khi xem chi tiết (từng gây
-  // dội request FB/YouTube khi admin duyệt qua nhiều người). Số mặc định lấy từ cron 8:15
-  // (refreshMonthlyPublishedLinkStats). 2 lớp chống dội dù bấm nhiều lần:
-  //  1. Bỏ qua link đã cào trong LINK_STATS_FRESH_MS gần nhất (isLinkStatsFresh).
-  //  2. Giới hạn số task cào đồng thời qua linkRefreshSemaphore.
+  // Cào lại traffic cho content trong `byMember`, chỉ khi user chủ động bấm "Cập nhật" (tránh dội request FB/YouTube).
   private async refreshPublishedLinksForMembers(
     byMember: Array<{ videos: Array<{ task_id: string; published_links: any }> }>,
   ) {

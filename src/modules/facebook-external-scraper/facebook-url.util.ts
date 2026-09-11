@@ -87,10 +87,7 @@ export function extractPostIdFromUrl(url: string): { postId: string | null; page
   return { postId: null, pageHandle: null };
 }
 
-// Bóc ID Reels công khai từ link facebook.com/reel/{id}. Reels là Video NODE THUẦN — Graph API
-// từ chối field kiểu Page Post (shares/insights) với 400 "(#100) nonexisting field", nên nơi
-// cào số liệu phải route sang fetchVideoNodeMetrics. ID này LẤY TỪ URL (khác nửa sau của
-// post_id nội bộ {page}_{obj}). Trả null cho link không phải /reel/{id} để giữ đường Page Post.
+// ID Reels từ URL (khác post_id nội bộ) — Reels là Video node, Graph API từ chối field Page Post nên phải route riêng.
 export function extractFacebookReelId(url: string): string | null {
   let parsed: URL;
   try {

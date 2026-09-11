@@ -19,15 +19,7 @@ type WinningTaskRow = {
   content_line: { name: string } | null;
 };
 
-/**
- * Luồng "content win → tự đẩy về kho tổng". Khi 1 task APPROVED có link bài đăng >
- * VIEW_WIN_THRESHOLD view (xem published-link-win-fail.util.ts): lấy/tạo 1 row Content ở kho
- * tổng (global → dùng thẳng; team/editor content → tạo bản mirror; không gắn content → tạo mới
- * từ video thắng, dedupe theo win_video_url), thêm vào ContentWarehouse tháng hiện tại, gắn
- * nhãn "Win" + lưu link view cao nhất (chỉ lần đầu), rồi set Task.content_win_pushed_at.
- *
- * Gọi từ cron 8:15 và nút "Cập nhật" Content Win/Fail. Idempotent, không bao giờ throw ra ngoài.
- */
+// Luồng "content win → tự đẩy về kho tổng": task APPROVED thắng thì gắn nhãn "Win" + thêm vào ContentWarehouse. Idempotent.
 @Injectable()
 export class TaskAutoContentWinPushService {
   private readonly logger = new Logger(TaskAutoContentWinPushService.name);
@@ -148,12 +140,7 @@ export class TaskAutoContentWinPushService {
     });
   }
 
-  /**
-   * id 1 row Content ở kho tổng cho content của task: content_id → dùng thẳng; team_content_id
-   * → Content(source_team_content_id), tạo nếu chưa có; editor_content_id → tương tự, copy
-   * title/body/script (KHÔNG copy code — unique toàn hệ thống); không gắn content → tạo mới cho
-   * video thắng (dedupe win_video_url). null nếu không có cả assignee lẫn reviewer làm added_by.
-   */
+  // Lấy/tạo 1 row Content ở kho tổng cho content của task; không gắn content thì tạo mới cho video thắng (dedupe win_video_url).
   private async resolveGlobalContentId(
     task: WinningTaskRow,
     win: WinningLink,

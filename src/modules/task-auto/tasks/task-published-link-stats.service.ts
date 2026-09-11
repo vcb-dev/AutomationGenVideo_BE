@@ -37,11 +37,7 @@ export function isLinkStatsFresh(
   return now.getTime() - fetchedAt < LINK_STATS_FRESH_MS;
 }
 
-// Dispatcher theo platform cho tính năng tự kéo tương tác (views/likes/comments/shares) của
-// link bài đăng trong Task. Hỗ trợ Facebook (page nội bộ đã "connect"), Instagram (kênh nội bộ
-// đã kết nối OAuth, tra qua shortcode) và YouTube (video công khai bất kỳ, YOUTUBE_API_KEY).
-// Platform khác trả 'unsupported' (không chặn nộp link). Thêm platform mới: bổ sung vào
-// SUPPORTED_LINK_STATS_PLATFORMS + 1 case ở đây, không đụng updatePublishedLinks/cron.
+// Dispatcher theo platform cho tính năng tự kéo tương tác của link bài đăng — thêm platform mới chỉ cần sửa ở đây.
 @Injectable()
 export class TaskPublishedLinkStatsService {
   constructor(

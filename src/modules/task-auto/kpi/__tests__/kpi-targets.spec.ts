@@ -8,16 +8,7 @@ import {
 import { TaskAutoKpiService } from '../kpi.service';
 import { dailyKpiDate } from '../../../../utils/date.utils';
 
-/**
- * KPI "đặt tay" (target do LEADER/ADMIN nhập) của TaskAutoKpiService — gộp 4 biến thể cùng một
- * mô hình quyền/validate:
- *  - Editor KPI (target THÁNG)          — quyền đọc/ghi + field product_profit
- *  - Editor Daily KPI (target NGÀY)     — set theo lô cả team cho 1 ngày
- *  - Content Creator KPI (target THÁNG) — mirror Editor KPI
- *  - Content Creator Daily KPI (NGÀY)   — mirror upsertEditorDailyKpis
- *
- * Báo cáo TỰ TÍNH (không phải target đặt tay) nằm ở kpi-reports.spec.ts.
- */
+// KPI "đặt tay" (target do LEADER/ADMIN nhập) — 4 biến thể cùng mô hình quyền/validate; báo cáo tự tính ở kpi-reports.spec.ts.
 
 describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
   function build(opts: {
@@ -225,12 +216,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     });
   });
 
-  /**
-   * `product_profit` (migration 20260820_add_editor_kpi_product_profit) — hoàn thiện bộ 3 chỉ số
-   * sản phẩm của EditorKpi: product_planned = SP GMV, product_win_collect = SP Traffic,
-   * product_profit = SP Profit. Field không tham gia validate allocations (khác product_planned),
-   * chỉ cần đảm bảo được ghi đúng xuống DB kèm fallback 0 khi FE không gửi (như 2 field product cũ).
-   */
+  // product_profit — chỉ số SP Profit, không tham gia validate allocations, fallback 0 khi FE không gửi.
   describe('upsertEditorKpi — product_profit', () => {
     function buildProductProfit() {
       const prisma: any = {
@@ -292,12 +278,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
   });
 });
 
-/**
- * upsertEditorDailyKpis() — set KPI ngày theo lô (cả team cho 1 ngày).
- * Xem [[editor-daily-kpi-design]]: unique theo (user_id, team_id, date), LEADER chỉ
- * được set cho team mình lead, target=0 vẫn là giá trị hợp lệ (nghĩa là "chưa set"
- * ở tầng đọc, không bị chặn ở tầng ghi).
- */
+// upsertEditorDailyKpis() — set KPI ngày theo lô; unique (user_id, team_id, date), target=0 vẫn hợp lệ ở tầng ghi.
 describe('TaskAutoKpiService.upsertEditorDailyKpis', () => {
   function build(opts: {
     team?: any;
@@ -399,10 +380,7 @@ describe('TaskAutoKpiService.upsertEditorDailyKpis', () => {
   });
 });
 
-/**
- * Content Creator KPI (target THÁNG, đặt tay) — mirror EditorKpi. Unique theo
- * (user_id, team_id, month); LEADER chỉ set được cho thành viên TRONG team mình lead.
- */
+// Content Creator KPI (target tháng) — mirror EditorKpi; LEADER chỉ set được cho thành viên trong team mình lead.
 describe('TaskAutoKpiService — Content Creator KPI (tháng)', () => {
   function notFoundError() {
     return new Prisma.PrismaClientKnownRequestError('Record not found', {
@@ -565,11 +543,7 @@ describe('TaskAutoKpiService — Content Creator KPI (tháng)', () => {
   });
 });
 
-/**
- * Content Creator Daily KPI — set KPI ngày theo lô (cả team cho 1 ngày), mirror
- * upsertEditorDailyKpis(). Unique theo (user_id, team_id, date); LEADER chỉ set được
- * cho team mình lead; mọi user trong entries phải thuộc đúng team đó.
- */
+// Content Creator Daily KPI — mirror upsertEditorDailyKpis(); mọi user trong entries phải thuộc đúng team LEADER lead.
 describe('TaskAutoKpiService — Content Creator Daily KPI', () => {
   function notFoundError() {
     return new Prisma.PrismaClientKnownRequestError('Record not found', {

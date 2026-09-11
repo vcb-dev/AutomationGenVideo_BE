@@ -103,13 +103,7 @@ describe('Đồng bộ kênh Instagram nội bộ từ tài khoản đã kết n
     });
   });
 
-  /**
-   * fetchMediaViews() — đo trực tiếp trên token thật ngày 27/08/2026: gộp "views,plays" trong
-   * 1 lệnh gọi (code cũ) làm Graph API từ chối NGUYÊN CỤM metric ngay ở bước validate ("metric[1]
-   * must be one of the following values: ... views ...", KHÔNG có `plays`) — tức KHÔNG PHẢI trả 0
-   * cho `plays` rồi vẫn cho `views` chạy, mà toàn bộ request chết, rớt vào catch → luôn trả 0.
-   * Đây là lý do 2.689/2.690 reels Instagram nội bộ có play_count = 0 dù likes/comments vẫn có.
-   */
+  // fetchMediaViews() — xin gộp "views,plays" làm Graph API từ chối nguyên cụm metric, request chết → luôn trả 0.
   describe('fetchMediaViews', () => {
     const service = new InstagramOwnedAccountsService({} as never, {} as never);
 
@@ -221,14 +215,7 @@ describe('Đồng bộ kênh Instagram nội bộ từ tài khoản đã kết n
       expect(service.fetchUserProfile).toHaveBeenCalledTimes(1);
     });
 
-    /**
-     * Ca thật ngày 27/08/2026: reconnect Facebook để cấp quyền `instagram_manage_insights` lại
-     * tạo ra 1 dòng SocialAccount MỚI (dưới user_id của người bấm reconnect, khác user_id đã
-     * kết nối lần đầu) thay vì ghi đè token vào dòng cũ — vì saveAccount() tìm "existing" theo
-     * cặp (user_id, platform, platform_id), không tìm theo platform_id một mình. Kết quả: 1 kênh
-     * có 2 dòng CÙNG active, dòng cũ vẫn mang token thiếu quyền. Code cũ orderBy created_at ASC +
-     * "first wins" chọn nhầm dòng cũ, khiến quyền vừa xin được coi như vô nghĩa.
-     */
+    // Reconnect tạo dòng SocialAccount mới thay vì ghi đè — phải orderBy created_at DESC để lấy đúng token vừa cấp quyền.
     it('1 kênh có nhiều dòng active song song (reconnect dưới user_id khác) → luôn dùng dòng MỚI TẠO nhất', async () => {
       const prisma = {
         socialAccount: {

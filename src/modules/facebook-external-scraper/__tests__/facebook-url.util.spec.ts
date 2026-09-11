@@ -1,13 +1,6 @@
 import { extractFacebookReelId, extractPostIdFromUrl } from '../facebook-url.util';
 
-/**
- * extractFacebookReelId() — bóc ID Reels công khai từ link facebook.com/reel/{id}.
- *
- * Reels là Video NODE THUẦN: Graph API từ chối field kiểu Page Post (shares/insights)
- * trên node này. Nơi cào số liệu (facebook-owned-pages.service.ts fetchStatsForUrl) phải
- * dựa vào hàm này để route link reel — kể cả reel ĐÃ sync — sang endpoint video-node,
- * nếu không toàn bộ link reel Facebook trả "Không lấy được số liệu cho bài viết này".
- */
+// extractFacebookReelId() — bóc ID Reels để route sang endpoint video-node thay vì Page Post.
 describe('extractFacebookReelId', () => {
   it('link /reel/{id} chuẩn (có / không có "/" cuối)', () => {
     expect(extractFacebookReelId('https://www.facebook.com/reel/1836282150691344/')).toBe('1836282150691344');

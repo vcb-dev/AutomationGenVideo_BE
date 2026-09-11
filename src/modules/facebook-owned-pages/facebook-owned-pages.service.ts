@@ -446,10 +446,7 @@ export class FacebookOwnedPagesService {
     // riêng (fetchVideoNodeMetrics) thay vì fetchMetricsRefresh.
     let isVideoNode = false;
 
-    // Link Reels (/reel/{id}) là Video NODE THUẦN KỂ CẢ khi đã sync vào owned content: Graph
-    // API từ chối field Page Post (shares/insights) với 400 "(#100) nonexisting field", bên AI
-    // nuốt lỗi rồi trả metrics rỗng cho CẢ batch. Phải gọi endpoint video-node với ID SỐ trên
-    // URL. Nhánh `if (!page)` bên dưới đã lo reel CHƯA sync; khối này bù cho reel ĐÃ sync.
+    // Reel đã sync vẫn là Video node thuần — bù cho nhánh `if (!page)` vốn chỉ lo reel chưa sync.
     const reelId = extractFacebookReelId(resolvedUrl);
     if (reelId && page) {
       postId = reelId;

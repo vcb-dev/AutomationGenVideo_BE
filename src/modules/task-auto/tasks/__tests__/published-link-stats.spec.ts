@@ -8,12 +8,7 @@ import {
   VIEW_WIN_THRESHOLD,
 } from '../published-link-win-fail.util';
 
-/**
- * Một chức năng lớn duy nhất — thống kê traffic link đã đăng để tính win/fail:
- * youtube-url.util (parse video ID) → youtube-video-stats.service (gọi YouTube Data API) →
- * task-published-link-stats.service (dispatcher theo platform + cache "còn mới") →
- * published-link-win-fail.util (phân loại win/fail: 1 link bài đăng bất kỳ >10.000 view = win).
- */
+// Thống kê traffic link đã đăng để tính win/fail: parse ID → gọi API theo platform → phân loại win/fail (>10.000 view).
 
 function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 'success') {
   return { platform: 'FACEBOOK', stats: { views, status } };
@@ -66,10 +61,7 @@ describe('extractYoutubeVideoId', () => {
   });
 });
 
-/**
- * YoutubeVideoStatsService.fetchStatsForUrl() — kéo view/like/comment cho 1 video YouTube CÔNG
- * KHAI bất kỳ qua YouTube Data API v3 (YOUTUBE_API_KEY), không cần "connect" trước như Facebook.
- */
+// fetchStatsForUrl() — kéo view/like/comment cho video YouTube công khai bất kỳ qua YouTube Data API v3, không cần connect trước.
 describe('YoutubeVideoStatsService.fetchStatsForUrl', () => {
   const ORIGINAL_ENV = process.env.YOUTUBE_API_KEY;
   let fetchMock: jest.Mock;
@@ -169,10 +161,7 @@ describe('YoutubeVideoStatsService.fetchStatsForUrl', () => {
   });
 });
 
-/**
- * Dispatcher theo platform — chỉ route đúng service, không tự tính toán gì. Facebook/Instagram/
- * YouTube đã hỗ trợ; platform khác luôn "unsupported" (chưa chặn nộp link, chỉ chưa có số liệu).
- */
+// Dispatcher theo platform — chỉ route đúng service; platform chưa hỗ trợ luôn trả "unsupported".
 describe('TaskPublishedLinkStatsService.fetchStatsForLink', () => {
   function build() {
     const facebookOwnedPages: any = { fetchStatsForUrl: jest.fn() };
@@ -252,11 +241,7 @@ describe('TaskPublishedLinkStatsService.fetchStatsForLink', () => {
   });
 });
 
-/**
- * isLinkStatsFresh() — dùng bởi refreshContentWinFailStats() (kpi.service.ts) để bỏ qua link vừa
- * cào gần đây thay vì cào lại MỌI link mỗi lần admin bấm xem chi tiết 1 thành viên trong bảng xếp
- * hạng, tránh dội API Facebook/YouTube liên tục khi duyệt qua nhiều người.
- */
+// isLinkStatsFresh() — bỏ qua link vừa cào gần đây, tránh dội API Facebook/YouTube khi duyệt qua nhiều người.
 describe('isLinkStatsFresh', () => {
   it('chưa từng cào (không có stats/fetched_at) → không mới, cần cào', () => {
     expect(isLinkStatsFresh(null)).toBe(false);

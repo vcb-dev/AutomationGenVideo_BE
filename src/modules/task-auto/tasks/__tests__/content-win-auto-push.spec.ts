@@ -1,12 +1,6 @@
 import { TaskAutoContentWinPushService } from '../content-win-auto-push.service';
 
-/**
- * Luồng "content win → tự đẩy về kho tổng" (content-win-auto-push.service.ts).
- * Khi 1 task APPROVED có >=1 link bài đăng > 10.000 view: đảm bảo có Content ở kho tổng
- * (dùng thẳng / tạo từ TeamContent-EditorContent / tạo mới đại diện video thắng) → thêm vào
- * ContentWarehouse tháng hiện tại → gắn nhãn "Win" + lưu link video thắng → đánh dấu
- * Task.content_win_pushed_at.
- */
+// Luồng "content win → tự đẩy về kho tổng": task APPROVED có link >10.000 view thì thêm vào ContentWarehouse + gắn nhãn "Win".
 
 function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 'success', url = 'https://facebook.com/reel/1') {
   return [{ id: 'l1', platform: 'FACEBOOK', url, stats: { views, status } }];
