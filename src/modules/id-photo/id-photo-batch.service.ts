@@ -127,6 +127,14 @@ export class IdPhotoBatchService {
         status: true,
         error_message: true,
         pdf_url: true,
+        // "Điều chỉnh vị trí ảnh trong khung tròn" — BẮT BUỘC có ở đây (không chỉ ở GET
+        // /id-photo/:id): vòng poll GỌI LẠI getBatchStatus mỗi ~3.5s trong lúc batch còn chạy
+        // và THAY THẾ TOÀN BỘ `batchStatus` ở FE (BulkTab#startPolling — onUpdate: setBatchStatus(r)).
+        // Thiếu 3 field này thì bản vá crop vừa PATCH ở modal "Sửa thông tin thẻ" (optimistic
+        // update local) sẽ bị NHỮNG TICK POLL SAU đè mất, lưới kết quả lại hiện ảnh CHƯA crop.
+        crop_offset_x: true,
+        crop_offset_y: true,
+        crop_scale: true,
         created_at: true,
         updated_at: true,
       },
@@ -197,6 +205,9 @@ export class IdPhotoBatchService {
           employee_id: true,
           position: true,
           processed_image_data: true,
+          crop_offset_x: true,
+          crop_offset_y: true,
+          crop_scale: true,
         },
       }),
       90_000,
@@ -262,6 +273,10 @@ export class IdPhotoBatchService {
     // Đặt lại người này về PENDING (xoá ảnh + pdf cũ) + kéo job cha về PROCESSING (heartbeat
     // tươi để cron reconcile không nhầm là treo), rồi đẩy job cha vào hàng đợi. Worker chỉ nhặt
     // item PENDING nên chỉ đúng người này chạy lại, các người khác giữ nguyên.
+    //
+    // Reset CẢ "Điều chỉnh vị trí ảnh trong khung tròn" (crop_offset_x/y/scale) về NULL: ảnh
+    // ghép áo mới (retry lẫn remerge đều gọi lại Gemini) có bố cục khác ảnh cũ, giữ crop cũ dễ
+    // ra kết quả sai — cùng lý do với luồng đơn lẻ, xem IdPhotoService#remergeOutfit.
     await this.prisma.idPhotoHistory.update({
       where: { id: historyId },
       data: {
@@ -269,6 +284,9 @@ export class IdPhotoBatchService {
         error_message: null,
         processed_image_data: null,
         pdf_url: null,
+        crop_offset_x: null,
+        crop_offset_y: null,
+        crop_scale: null,
       },
     });
     await this.prisma.idPhotoBatchJob.update({

@@ -4389,6 +4389,17 @@ model IdPhotoHistory {
   /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
   pdf_url String?
 
+  /// "Điều chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) — cả 3 cột NULLABLE, mặc định
+  /// NULL = dùng vị trí gốc như trước khi có tính năng này (không breaking với ảnh cũ). Toạ độ
+  /// tính theo TỈ LỆ cạnh khung tròn (không phải pixel/point tuyệt đối) — xem công thức dùng
+  /// chung ở id-photo-crop.util.ts (BE) / crop-math.ts (FE): offsetX/Y = độ lệch tâm ảnh so với
+  /// tâm khung; scale = hệ số phóng to trên nền "phủ khít khung" (scale=1 ⇔ hành vi cũ).
+  /// Reset về NULL mỗi khi ảnh ghép áo bị GHÉP LẠI (remerge-outfit/batch remerge): ảnh mới có
+  /// bố cục khác, giữ crop cũ dễ lệch — xem IdPhotoService#remergeOutfit.
+  crop_offset_x Float?
+  crop_offset_y Float?
+  crop_scale    Float?
+
   /// Job cha nếu ảnh này được tạo trong 1 lượt "Tạo ảnh thẻ hàng loạt" (module id-photo/batch).
   /// NULL = ảnh tạo đơn lẻ theo luồng upload → merge-outfit → create như cũ (không đổi hành vi
   /// luồng đơn lẻ). Trỏ về IdPhotoBatchJob để worker nền + poll trạng thái tra ngược được.

@@ -25,6 +25,7 @@ import { UsersService } from '../users/users.service';
 import { CreateIdPhotoDto } from './dto/create-id-photo.dto';
 import { UpdateIdPhotoDto } from './dto/update-id-photo.dto';
 import { IdPhotoHistoryQueryDto } from './dto/id-photo-history-query.dto';
+import { computeCropLayout } from './id-photo-crop.util';
 
 /**
  * Ảnh gốc/ảnh đã ghép áo đi qua 3 bước upload → merge-outfit → create trước khi có 1 record
@@ -303,6 +304,10 @@ export class IdPhotoService {
     if (dto.employeeId !== undefined) data.employee_id = dto.employeeId.trim();
     // [ĐÃ NGỪNG DÙNG] `employee_title_prefix` không còn được nhận qua PATCH — không đụng tới cột.
     if (dto.position !== undefined) data.position = dto.position;
+    // "Điều chỉnh vị trí ảnh trong khung tròn" — cùng đường PATCH miễn phí (xem UpdateIdPhotoDto).
+    if (dto.cropOffsetX !== undefined) data.crop_offset_x = dto.cropOffsetX;
+    if (dto.cropOffsetY !== undefined) data.crop_offset_y = dto.cropOffsetY;
+    if (dto.cropScale !== undefined) data.crop_scale = dto.cropScale;
 
     if (Object.keys(data).length === 0) {
       throw new BadRequestException('Không có thông tin nào được gửi lên để cập nhật');
@@ -316,6 +321,9 @@ export class IdPhotoService {
       employee_id: (data.employee_id as string) ?? history.employee_id,
       position: (data.position as IdPhotoPosition) ?? history.position,
       processed_image_data: history.processed_image_data,
+      crop_offset_x: (data.crop_offset_x as number | undefined) ?? history.crop_offset_x,
+      crop_offset_y: (data.crop_offset_y as number | undefined) ?? history.crop_offset_y,
+      crop_scale: (data.crop_scale as number | undefined) ?? history.crop_scale,
     });
 
     const updated = await this.prisma.idPhotoHistory.update({
@@ -331,6 +339,9 @@ export class IdPhotoService {
         position: true,
         status: true,
         pdf_url: true,
+        crop_offset_x: true,
+        crop_offset_y: true,
+        crop_scale: true,
         updated_at: true,
       },
     });
@@ -366,7 +377,9 @@ export class IdPhotoService {
     const processedImageData = this.toDataUri(processed.buffer, processed.mimeType);
 
     // Dựng thử PDF với ảnh MỚI trước khi ghi đè — ảnh cũ (dù xấu) vẫn còn dùng được nếu ảnh
-    // mới không dựng nổi thành PDF.
+    // mới không dựng nổi thành PDF. KHÔNG mang theo crop cũ: ảnh mới do AI sinh lại có bố cục
+    // khác (đầu/vai lệch vị trí so với ảnh cũ), giữ nguyên toạ độ crop cũ dễ ra kết quả sai —
+    // dựng thử với mặc định (chưa crop) giống hệt những gì sẽ được lưu bên dưới.
     await this.buildPdfBuffer({
       employee_name: history.employee_name,
       employee_team: history.employee_team,
@@ -377,7 +390,15 @@ export class IdPhotoService {
 
     const updated = await this.prisma.idPhotoHistory.update({
       where: { id },
-      data: { processed_image_data: processedImageData, status: IdPhotoStatus.SUCCESS, error_message: null },
+      data: {
+        processed_image_data: processedImageData,
+        status: IdPhotoStatus.SUCCESS,
+        error_message: null,
+        // Reset "Điều chỉnh vị trí ảnh trong khung tròn" về mặc định — xem ghi chú trên.
+        crop_offset_x: null,
+        crop_offset_y: null,
+        crop_scale: null,
+      },
       select: { id: true, pdf_url: true, updated_at: true },
     });
 
@@ -617,6 +638,9 @@ export class IdPhotoService {
         pdf_url: true,
         batch_job_id: true,
         processed_image_data: true,
+        crop_offset_x: true,
+        crop_offset_y: true,
+        crop_scale: true,
         created_at: true,
         updated_at: true,
         createdByUser: { select: { id: true, full_name: true, email: true } },
@@ -859,13 +883,23 @@ export class IdPhotoService {
     }
 
     // ── Ảnh chân dung cắt tròn, đặt đúng khung tròn rỗng của ảnh nền ──────
+    // Toạ độ vẽ đi qua computeCropLayout (id-photo-crop.util.ts) thay vì option `cover` có sẵn
+    // của pdfkit — CÙNG một công thức với preview FE (ExportStep.tsx#IdCardPreview), để "Điều
+    // chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) cho ra PDF khớp tuyệt đối với preview.
+    // Không crop (offset=0, scale=1, tức crop_offset_x/y/crop_scale đều NULL) tái lập ĐÚNG hệt
+    // hành vi `cover + align/valign center` cũ — ảnh cũ chưa từng dùng tính năng này không đổi.
+    const img = doc.openImage(imageBuffer); // đọc width/height thật của ẢNH (không phải buffer)
+    const S = L.circleR * 2;
+    const layout = computeCropLayout(img.width, img.height, {
+      offsetX: history.crop_offset_x ?? undefined,
+      offsetY: history.crop_offset_y ?? undefined,
+      scale: history.crop_scale ?? undefined,
+    });
     doc.save();
     doc.circle(L.circleCx, L.circleCy, L.circleR).clip();
-    // cover: lấp đầy hình tròn, không méo ảnh
-    doc.image(imageBuffer, L.circleCx - L.circleR, L.circleCy - L.circleR, {
-      cover: [L.circleR * 2, L.circleR * 2],
-      align: 'center',
-      valign: 'center',
+    doc.image(img, L.circleCx - L.circleR + layout.x * S, L.circleCy - L.circleR + layout.y * S, {
+      width: layout.width * S,
+      height: layout.height * S,
     });
     doc.restore();
 
@@ -904,4 +938,8 @@ interface IdPhotoCardData {
   // [ĐÃ NGỪNG DÙNG] employee_title_prefix — không còn in lên thẻ. Không thêm lại.
   position: IdPhotoPosition;
   processed_image_data: string | null;
+  /** "Điều chỉnh vị trí ảnh trong khung tròn" — NULL/undefined = vị trí gốc (xem id-photo-crop.util.ts). */
+  crop_offset_x?: number | null;
+  crop_offset_y?: number | null;
+  crop_scale?: number | null;
 }
