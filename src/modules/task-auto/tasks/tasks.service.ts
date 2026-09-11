@@ -11,6 +11,7 @@ import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import { TaskPublishedLinkStatsService } from "./task-published-link-stats.service";
+import { TaskAutoContentWinPushService } from "./content-win-auto-push.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -69,6 +70,7 @@ export class TaskAutoTasksService {
     private push: PushService,
     private linkStats: TaskPublishedLinkStatsService,
     private oms: OmsIntegrationService,
+    private contentWinPush: TaskAutoContentWinPushService,
   ) {}
 
   /**
@@ -1353,6 +1355,9 @@ export class TaskAutoTasksService {
   // — 2 cron độc lập, không chia sẻ resource nên chỉ là tránh dồn tải, không bắt buộc.
   // Platform chưa hỗ trợ (chưa qua TaskPublishedLinkStatsService) trả 'unsupported'
   // và bị bỏ qua êm — thêm platform mới sau này không cần sửa gì ở đây.
+  //
+  // Cũng là "khung giờ cố định mỗi ngày" mà thống kê Content Win/Fail (kpi.service.ts) dựa vào
+  // để có số view mới — phần đó chỉ cào thêm khi người dùng bấm "Cập nhật".
   @Cron("0 15 8 * * *", {
     name: "task-published-link-stats-refresh",
     timeZone: "Asia/Ho_Chi_Minh",
@@ -1412,6 +1417,14 @@ export class TaskAutoTasksService {
       this.logger.log(
         `[LINK-STATS-CRON] Xong: ${withLinks.length} task, ${linkCount} link (${successCount} OK, ${failCount} lỗi/unsupported)`,
       );
+
+      // Sau khi làm mới view: xét content-win — task APPROVED có link > ngưỡng thì TỰ đẩy content
+      // lên kho tổng. Idempotent (Task.content_win_pushed_at) nên chạy lại mỗi sáng không đẩy trùng.
+      await this.contentWinPush
+        .pushWinningTasks(withLinks.map((t) => t.id))
+        .catch((err: any) =>
+          this.logger.warn(`[LINK-STATS-CRON] content-win push lỗi: ${err?.message ?? err}`),
+        );
     } catch (err: any) {
       this.logger.warn(`[LINK-STATS-CRON] failed: ${err.message}`);
     }
@@ -1432,6 +1445,22 @@ export class TaskAutoTasksService {
     return { gte, lt };
   }
 
+  /**
+   * Cửa sổ ngày CHUẨN cho mọi dashboard (Global/Leader/Team report/Personal): một task "thuộc kỳ"
+   * nếu `deadline` rơi vào khoảng; task chưa đặt `deadline` thì tính theo `created_at` thay thế —
+   * ĐÚNG quy tắc bộ lọc `deadline_from`/`deadline_to` mà Kanban (findAll) dùng, để số trên "Tổng
+   * quan" khớp số thấy khi mở tab "Nhiệm vụ" cùng bộ lọc ngày. Mọi số liệu "việc làm được trong kỳ"
+   * (KPI hoàn thành ngày/tháng, video theo tuyến, sản phẩm theo dòng, content theo phân loại) đều
+   * lọc qua đây thay vì `reviewed_at` (ngày duyệt) hay `created_at` để không lệch chiều truy vấn.
+   * `range` null → trả `{}` (không giới hạn ngày).
+   */
+  private deadlineWindow(
+    range: { gte: Date; lt: Date } | null,
+  ): Prisma.TaskWhereInput {
+    if (!range) return {};
+    return { OR: [{ deadline: range }, { deadline: null, created_at: range }] };
+  }
+
   async getDashboard(
     userId: string,
     roles: string[],
@@ -1444,6 +1473,7 @@ export class TaskAutoTasksService {
      * 2 nhánh đó đã tự khoanh phạm vi theo JWT (team mình lead / chính mình) rồi. */
     teamId?: string,
     assigneeId?: string,
+    /** Tab "Thống kê theo ngày" của leader dashboard — giữ traffic/doanh thu theo tháng chứa `range`. */
     pinTrafficMonth = false,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
@@ -1461,10 +1491,10 @@ export class TaskAutoTasksService {
    *  - ADMIN/MANAGER: toàn hệ thống, có thể khoan sâu qua team_id/assignee_id.
    *  - LEADER: tự động khoanh về (các) team đang lead — không nhận team_id/assignee_id (JWT quyết định).
    *  - MEMBER: tự động khoanh về chính mình.
-   * Lọc theo `reviewed_at` (ngày duyệt) trong `range` — đúng bản chất "video đã hoàn thành trong kỳ",
-   * khác với dashboard chính vốn lọc theo deadline để khớp Kanban. Không truyền range → mặc định
-   * KHÔNG giới hạn ngày (khác getDashboard, vốn mặc định về tháng hiện tại cho KPI) vì endpoint này
-   * không gắn với khái niệm "tháng KPI" nào cả.
+   * Lọc theo `deadlineWindow` (deadline rơi vào `range`, chưa đặt deadline thì theo created_at) —
+   * CÙNG trục lọc với dashboard chính (getDashboard) để số liệu khớp nhau, thay vì `reviewed_at`
+   * (ngày duyệt) như trước. Không truyền range → mặc định KHÔNG giới hạn ngày (khác getDashboard,
+   * vốn mặc định về tháng hiện tại cho KPI) vì endpoint này không gắn với khái niệm "tháng KPI" nào.
    */
   async getProductVideoStatsForRole(
     userId: string,
@@ -1480,7 +1510,7 @@ export class TaskAutoTasksService {
 
     const baseWhere: Prisma.TaskWhereInput = {
       status: "APPROVED",
-      ...(range ? { reviewed_at: range } : {}),
+      ...this.deadlineWindow(range),
     };
 
     let where: Prisma.TaskWhereInput;
@@ -1560,9 +1590,7 @@ export class TaskAutoTasksService {
         { deadline: { gte: now } },
       ],
     };
-    const dateWindow: Prisma.TaskWhereInput = range
-      ? { OR: [{ deadline: range }, { deadline: null, created_at: range }] }
-      : {};
+    const dateWindow = this.deadlineWindow(range);
     const tasksByStatusWhere: Prisma.TaskWhereInput = range
       ? this.mergeTaskWhere(dateWindow, notOverdueOrDone, scopeWhere)
       : this.mergeTaskWhere(notOverdueOrDone, scopeWhere);
@@ -1638,6 +1666,8 @@ export class TaskAutoTasksService {
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
     month?: string,
+    /** Tab "Thống kê theo ngày": traffic/doanh thu vẫn hiển thị theo THÁNG chứa `range`, không co
+     * về đúng khoảng ngày như các số liệu khác. Bỏ qua khi không có `range` (chế độ xem theo tháng). */
     pinTrafficMonth = false,
   ) {
     const now = new Date();
@@ -1659,8 +1689,9 @@ export class TaskAutoTasksService {
     // mới/cũ, sản phẩm...) — ưu tiên bộ lọc ngày (`range`) do trang Task Auto truyền xuống; không có
     // thì mặc định cả tháng đang xem, nhất quán với getGlobalDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
-    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc ngày/tháng, vì đây là
-    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một kỳ đã qua.
+    // "KPI ngày" mặc định tính theo NGÀY THỰC TẾ (hôm nay). Ngoại lệ: tab "Thống kê theo ngày" chọn
+    // đúng 1 ngày (range gói gọn 24h) → mọi chỉ số "ngày" (KPI ngày, task giao/duyệt trong ngày) quy
+    // về chính ngày đó để xem lại lịch sử; chọn nhiều ngày thì FE tự ẩn cụm KPI ngày.
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
     const isSingleDay =
@@ -1668,6 +1699,8 @@ export class TaskAutoTasksService {
     const dayStart = isSingleDay ? range!.gte : todayStart;
     const dayEnd = isSingleDay ? range!.lt : todayEnd;
     const dayKpiDateStr = vietnamDateString(isSingleDay ? range!.gte : now);
+    // Traffic/doanh thu là "điểm cuối kỳ" của báo cáo tay — tab "Theo ngày" giữ theo THÁNG chứa ngày
+    // đang xem (pinTrafficMonth), không co về đúng 1 ngày như video/content.
     const trafficRange =
       pinTrafficMonth && range
         ? {
@@ -1732,11 +1765,13 @@ export class TaskAutoTasksService {
       contentCreatorStats,
       approvedEditors,
     ] = await Promise.all([
+      // Phân bố task theo trạng thái: cùng cửa sổ deadline (null → created_at) với mọi số liệu kỳ
+      // khác — không lọc khi không có bộ lọc ngày (giữ hành vi "toàn thời gian" như cũ).
       this.prisma.task.groupBy({
         by: ["status"],
         where: {
           team_id: { in: teamIds },
-          ...(range ? { created_at: range } : {}),
+          ...this.deadlineWindow(range),
         },
         _count: { id: true },
       }),
@@ -1745,18 +1780,29 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          ...(range ? { created_at: range } : {}),
+          ...this.deadlineWindow(range),
         },
         _count: { id: true },
       }),
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: currentMonth },
+        // allocations (type CONTENT_LINE) — để gộp "mục tiêu theo tuyến nội dung" của cả team cho
+        // biểu đồ "Video theo tuyến nội dung" hiển thị dạng đã-duyệt / mục-tiêu (vd 10/30).
+        include: {
+          allocations: {
+            where: { type: "CONTENT_LINE" },
+            select: { quantity: true, content_line: { select: { name: true } } },
+          },
+        },
       }),
+      // "Đã hoàn thành trong kỳ" của cả team = task APPROVED có deadline rơi vào kỳ (chưa đặt deadline
+      // thì theo created_at) — KHÔNG đếm theo reviewed_at nữa để khớp mục tiêu (vốn đếm theo deadline)
+      // và khớp tab "Nhiệm vụ".
       this.prisma.task.count({
         where: {
           team_id: { in: teamIds },
           status: "APPROVED",
-          reviewed_at: periodRange,
+          ...this.deadlineWindow(periodRange),
         },
       }),
       this.prisma.task.groupBy({
@@ -1764,30 +1810,30 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: periodRange,
+          ...this.deadlineWindow(periodRange),
         },
         _count: { id: true },
       }),
-      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào hôm nay; task chưa có deadline thì
-      // tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal Dashboard.
+      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào NGÀY ĐANG XEM (mặc định hôm nay); task
+      // chưa có deadline thì tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal.
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          OR: [
-            { deadline: { gte: dayStart, lt: dayEnd } },
-            { deadline: null, created_at: { gte: dayStart, lt: dayEnd } },
-          ],
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
+      // "KPI ngày — đã hoàn thành": cùng cửa sổ deadline với mục tiêu ngày ở trên, chỉ thêm APPROVED
+      // (trước đây đếm theo reviewed_at nên lệch: task deadline hôm nay mà duyệt hôm sau không được
+      // tính, task deadline hôm qua duyệt hôm nay lại tính nhầm).
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: dayStart, lt: dayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
@@ -1815,14 +1861,14 @@ export class TaskAutoTasksService {
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
-      // "TEAM - Số video theo tuyến": số task đã duyệt trong kỳ của cả team, gộp theo tuyến
-      // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
-      // không thuộc tuyến nào.
+      // "TEAM - Số video theo tuyến": task APPROVED có deadline rơi vào kỳ (null → created_at) của cả
+      // team, gộp theo tuyến nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id,
+      // không gộp task không thuộc tuyến nào. Đếm theo deadline (không phải reviewed_at) để khớp KPI.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
-        reviewed_at: periodRange,
+        ...this.deadlineWindow(periodRange),
       }),
-      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      // KPI ngày set tay (EditorDailyKpi) cho NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
         where: {
           user_id: { in: memberIds },
@@ -1832,20 +1878,22 @@ export class TaskAutoTasksService {
         },
         select: { user_id: true, target: true },
       }),
-      // Gộp task tạo trong kỳ theo phân loại (ContentClassification) của content gắn vào task.
+      // "Content theo phân loại": gộp task có deadline rơi vào kỳ (null → created_at) theo
+      // ContentClassification của content gắn vào task (join động — phản ánh phân loại hiện tại của
+      // content). Đếm theo deadline như mọi số liệu kỳ khác. Thay biểu đồ "content mới/cũ" cũ.
       this.getContentByClassification({
         team_id: { in: teamIds },
         assignee_id: { in: memberIds },
         status: { notIn: ["CANCELLED"] },
-        created_at: periodRange,
+        ...this.deadlineWindow(periodRange),
       }),
-      // "TEAM - SẢN PHẨM": số video đã duyệt trong kỳ của cả team, gộp theo dòng sản phẩm
-      // (GMV/Traffic/Profit). Breakdown theo sản phẩm riêng biệt đã tách sang
+      // "TEAM - SẢN PHẨM": task APPROVED có deadline rơi vào kỳ (null → created_at) của cả team, gộp
+      // theo dòng sản phẩm (GMV/Traffic/Profit). Breakdown theo sản phẩm riêng biệt đã tách sang
       // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
         status: "APPROVED",
-        reviewed_at: periodRange,
+        ...this.deadlineWindow(periodRange),
       }),
       // Số liệu content creator (target tháng, sưu tầm/tự nghĩ trong kỳ, KPI ngày) — song song hoàn
       // toàn với editorKpis/manualDailyKpis phía trên, chỉ áp dụng cho member có is_content_creator=true.
@@ -1968,6 +2016,22 @@ export class TaskAutoTasksService {
       0,
     );
 
+    // Mục tiêu KPI theo tuyến nội dung của cả team = tổng EditorKpiAllocation.quantity (type
+    // CONTENT_LINE) tháng đang xem của mọi thành viên, gộp theo tên tuyến (A1-A5) — ghép vào từng cột
+    // biểu đồ để hiển thị đã-duyệt / mục-tiêu.
+    const lineTargetByName: Record<string, number> = {};
+    for (const k of editorKpis) {
+      for (const a of k.allocations ?? []) {
+        const name = a.content_line?.name;
+        if (!name) continue;
+        lineTargetByName[name] = (lineTargetByName[name] ?? 0) + a.quantity;
+      }
+    }
+    const videoByLineWithTarget = videoByLine.map((v) => ({
+      ...v,
+      target: lineTargetByName[v.line] ?? 0,
+    }));
+
     return {
       scope: "team" as const,
       team: {
@@ -1988,10 +2052,12 @@ export class TaskAutoTasksService {
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
       },
-      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo tuyến nội dung A1-A5. */
-      video_by_line: videoByLine,
-      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo dòng sản phẩm (GMV/Traffic/Profit). */
+      /** Số video (task APPROVED, deadline trong kỳ) của cả team theo tuyến A1-A5, kèm `target` = tổng
+       * mục tiêu KPI theo tuyến của mọi thành viên (0 = chưa phân bổ). */
+      video_by_line: videoByLineWithTarget,
+      /** Số video (task APPROVED, deadline trong kỳ) của cả team, gộp theo dòng sản phẩm (GMV/Traffic/Profit). */
       product_by_category: productByCategory,
+      /** Số task có deadline trong kỳ của cả team, gộp theo phân loại content (ContentClassification). */
       content_by_classification: contentByClassification,
     };
   }
@@ -2012,6 +2078,8 @@ export class TaskAutoTasksService {
     periodRange: { gte: Date; lt: Date };
     todayStart: Date;
     todayEnd: Date;
+    /** Ngày (YYYY-MM-DD giờ VN) để tra ContentCreatorDailyKpi — mặc định hôm nay; tab "Theo ngày"
+     * truyền đúng ngày đang xem. */
     dailyDateStr?: string;
     months: string[];
   }) {
@@ -2157,8 +2225,8 @@ export class TaskAutoTasksService {
   }
 
   /**
-   * "Content theo phân loại": với mỗi task khớp `where` (call site khoá theo team + created_at trong
-   * kỳ + chưa huỷ), lấy ContentClassification HIỆN TẠI của content gắn vào task (content_id →
+   * "Content theo phân loại": với mỗi task khớp `where` (call site khoá theo team + deadline trong
+   * kỳ, null → created_at + chưa huỷ), lấy ContentClassification HIỆN TẠI của content gắn vào task (content_id →
    * Content, editor_content_id → EditorContent, team_content_id → TeamContent — mỗi task chỉ có đúng
    * 1 trong 3 field được set) rồi đếm số task theo tên phân loại. Task có content chưa gắn phân loại
    * — hoặc không gắn content nào / content đã bị xoá — dồn vào nhóm "Chưa phân loại". Join động lúc
@@ -2459,6 +2527,7 @@ export class TaskAutoTasksService {
     team?: string,
     dateFrom?: string,
     dateTo?: string,
+    /** Tab "Thống kê theo ngày": traffic/doanh thu vẫn hiển thị theo THÁNG chứa khoảng ngày. */
     pinTrafficMonth = false,
   ) {
     const now = new Date();
@@ -2471,6 +2540,8 @@ export class TaskAutoTasksService {
       lt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
     };
     const monthsTouched = this.monthsBetween(range.gte, new Date(range.lt.getTime() - 1));
+    // Tab "Theo ngày" chọn đúng 1 ngày (24h) → cụm "KPI ngày"/task giao-duyệt trong ngày quy về
+    // chính ngày đó; nhiều ngày thì FE tự ẩn. Traffic/doanh thu giữ theo THÁNG khi pinTrafficMonth.
     const isSingleDay =
       !!explicitRange && explicitRange.lt.getTime() - explicitRange.gte.getTime() === 86_400_000;
     const dayStart = isSingleDay ? explicitRange!.gte : todayStart;
@@ -2552,31 +2623,37 @@ export class TaskAutoTasksService {
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: { in: monthsTouched } },
       }),
+      // "Đã hoàn thành trong kỳ" theo từng member = task APPROVED có deadline rơi vào kỳ (null →
+      // created_at), KHÔNG đếm theo reviewed_at để khớp mục tiêu (đếm theo deadline) + tab "Nhiệm vụ".
       this.prisma.task.groupBy({
         by: ["assignee_id"],
-        where: { assignee_id: { in: memberIds }, status: "APPROVED", reviewed_at: range },
+        where: { assignee_id: { in: memberIds }, status: "APPROVED", ...this.deadlineWindow(range) },
         _count: { id: true },
       }),
+      // "KPI ngày — mục tiêu" (fallback khi chưa set EditorDailyKpi) = số task có deadline rơi vào
+      // NGÀY ĐANG XEM (null → created_at) — thống nhất với getLeaderDashboard/Global/Personal (trước
+      // đây getTeamReport đếm theo assigned_at nên lệch).
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          assigned_at: { gte: dayStart, lt: dayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
+      // "KPI ngày — đã hoàn thành": cùng cửa sổ deadline với mục tiêu ngày, chỉ thêm APPROVED.
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: dayStart, lt: dayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
-      // Lấy nguyên các dòng trong `range` (không SUM ở query) — traffic là điểm cuối kỳ, phải quy về
-      // đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn cả kỳ.
+      // Lấy nguyên các dòng trong `trafficRange` (không SUM ở query) — traffic là điểm cuối kỳ, phải
+      // quy về đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn.
       memberEmails.length > 0
         ? this.prisma.trafficReport.findMany({
             where: { email: { in: memberEmails, mode: "insensitive" as any }, date: trafficRange },
@@ -2590,11 +2667,12 @@ export class TaskAutoTasksService {
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
+      // Số video (task APPROVED, deadline trong kỳ) gộp theo tuyến nội dung — đếm theo deadline như KPI.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
-        reviewed_at: range,
+        ...this.deadlineWindow(range),
       }),
-      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      // KPI ngày set tay (EditorDailyKpi) cho NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
         where: {
           user_id: { in: memberIds },
@@ -2604,18 +2682,21 @@ export class TaskAutoTasksService {
         },
         select: { user_id: true, target: true },
       }),
-      // Gộp task tạo trong kỳ theo phân loại (ContentClassification) của content gắn vào task.
+      // "Content theo phân loại": gộp task có deadline rơi vào kỳ (null → created_at) theo
+      // ContentClassification của content gắn vào task (join động — phản ánh phân loại hiện tại).
+      // Đếm theo deadline như mọi số liệu kỳ khác. Thay biểu đồ "content mới/cũ" cũ.
       this.getContentByClassification({
         team_id: { in: teamIds },
         assignee_id: { in: memberIds },
         status: { notIn: ["CANCELLED"] },
-        created_at: range,
+        ...this.deadlineWindow(range),
       }),
-      // "SẢN PHẨM": số video đã duyệt trong kỳ, gộp theo dòng sản phẩm (GMV/Traffic/Profit).
+      // "SẢN PHẨM": task APPROVED có deadline rơi vào kỳ (null → created_at), gộp theo dòng sản phẩm
+      // (GMV/Traffic/Profit).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
         status: "APPROVED",
-        reviewed_at: range,
+        ...this.deadlineWindow(range),
       }),
       // Số liệu content creator (target tháng, sưu tầm/tự nghĩ trong kỳ, KPI ngày) — song song hoàn
       // toàn với editorKpis/manualDailyKpis phía trên, chỉ áp dụng cho member có is_content_creator=true.
@@ -2784,9 +2865,9 @@ export class TaskAutoTasksService {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    // Bộ lọc ngày của trang (nếu có) — dùng cho video_by_line, KHÔNG dùng cho KPI tháng
-    // (myKpiRows/monthlyApproved) vì KPI target vốn chỉ có khái niệm theo THÁNG trọn vẹn, không chia
-    // nhỏ theo khoảng ngày tự do.
+    // Bộ lọc ngày của trang (nếu có) — dùng cho video_by_line. KPI tháng (myKpiRows/monthlyApproved)
+    // vẫn neo theo THÁNG THỰC TẾ vì KPI target chỉ có khái niệm theo tháng trọn vẹn; chỉ đổi trục đếm
+    // "đã hoàn thành" từ reviewed_at (ngày duyệt) sang deadline trong tháng, cho khớp getLeaderDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
 
     const [
@@ -2797,6 +2878,7 @@ export class TaskAutoTasksService {
       myKpiRows,
       myDailyKpiAgg,
       videoByLine,
+      contentByClassification,
     ] = await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
@@ -2824,7 +2906,7 @@ export class TaskAutoTasksService {
           where: {
             assignee_id: userId,
             status: "APPROVED",
-            reviewed_at: { gte: monthStart, lt: monthEnd },
+            ...this.deadlineWindow({ gte: monthStart, lt: monthEnd }),
           },
         }),
         this.prisma.editorKpi.findMany({
@@ -2847,12 +2929,21 @@ export class TaskAutoTasksService {
           },
           _sum: { target: true },
         }),
-        // "Số video theo tuyến" của riêng editor này — theo bộ lọc ngày của trang (mặc định cả
-        // tháng hiện tại nếu trang không truyền). "Video/sản phẩm theo dòng sản phẩm" đã tách sang
+        // "Số video theo tuyến" của riêng editor này — task APPROVED có deadline rơi vào bộ lọc ngày
+        // của trang (null → created_at; mặc định cả tháng hiện tại nếu trang không truyền), đếm theo
+        // deadline như dashboard leader/admin. "Video/sản phẩm theo dòng sản phẩm" đã tách sang
         // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
         this.getVideoByContentLine({
           assignee_id: userId,
-          reviewed_at: periodRange,
+          ...this.deadlineWindow(periodRange),
+        }),
+        // "Content theo phân loại" của riêng editor — task có deadline rơi vào bộ lọc ngày (null →
+        // created_at), gộp theo ContentClassification hiện tại của content gắn vào task. Song song với
+        // biểu đồ cùng tên ở getLeaderDashboard/getTeamReport, chỉ khác `where` (khoá theo assignee).
+        this.getContentByClassification({
+          assignee_id: userId,
+          status: { notIn: ["CANCELLED"] },
+          ...this.deadlineWindow(periodRange),
         }),
       ]);
 
@@ -2904,6 +2995,18 @@ export class TaskAutoTasksService {
           }
         : null;
 
+    // Mục tiêu KPI theo tuyến nội dung của chính editor (EditorKpiAllocation.quantity type
+    // CONTENT_LINE, đã gộp theo tuyến trong mergeAllocations) — ghép vào từng cột biểu đồ "Video theo
+    // tuyến nội dung" để hiển thị đã-duyệt / mục-tiêu (vd 10/30).
+    const lineTargetByName: Record<string, number> = {};
+    for (const a of myKpi?.content_allocations ?? []) {
+      lineTargetByName[a.name] = (lineTargetByName[a.name] ?? 0) + a.weight;
+    }
+    const videoByLineWithTarget = videoByLine.map((v) => ({
+      ...v,
+      target: lineTargetByName[v.line] ?? 0,
+    }));
+
     return {
       scope: "personal" as const,
       tasks: {
@@ -2914,8 +3017,11 @@ export class TaskAutoTasksService {
       overdue,
       /** KPI ngày set tay cho hôm nay (0 = chưa set) — hiển thị "Mục tiêu hôm nay" cá nhân. */
       daily_kpi_target: myDailyKpiAgg._sum.target ?? 0,
-      /** Số video (task đã duyệt) của chính mình trong kỳ, gộp theo tuyến nội dung A1-A5. */
-      video_by_line: videoByLine,
+      /** Số video (task APPROVED, deadline trong kỳ) của chính mình theo tuyến A1-A5, kèm `target` =
+       * mục tiêu KPI theo tuyến của mình (0 = chưa phân bổ). */
+      video_by_line: videoByLineWithTarget,
+      /** Số task có deadline trong kỳ của chính mình, gộp theo phân loại content (ContentClassification). */
+      content_by_classification: contentByClassification,
       kpi: myKpi
         ? {
             month: myKpi.month,
