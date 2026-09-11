@@ -3,6 +3,7 @@ import axios from 'axios';
 import { SocialPlatform } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService } from '../social-publishing/crypto/crypto.service';
+import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 
 /**
  * Đồng bộ kênh Instagram NỘI BỘ từ các tài khoản đã kết nối OAuth ở trang đăng bài MXH.
@@ -67,6 +68,14 @@ export interface InstagramSyncResult {
   failed: number;
 }
 
+export interface PublishedLinkStatsResult {
+  status: 'success' | 'failed' | 'unsupported';
+  views?: number;
+  likes?: number;
+  comments?: number;
+  error?: string;
+}
+
 /** Bóc hashtag khỏi caption, bỏ dấu '#' và hạ chữ thường — khớp cách scraper đang lưu. */
 export function extractHashtags(caption: string): string[] {
   const found = caption.match(/#[\p{L}\p{N}_]+/gu) || [];
@@ -100,14 +109,18 @@ export class InstagramOwnedAccountsService {
   /**
    * Đồng bộ toàn bộ tài khoản Instagram đã kết nối OAuth trong SocialAccount.
    *
-   * Một kênh có thể được nhiều người cùng kết nối (bảng unique theo (user_id, platform,
-   * platform_id)), nên phải gộp theo Instagram User ID trước, nếu không cùng một kênh sẽ bị
-   * gọi API và ghi đè nhiều lần trong một lượt chạy.
+   * Một kênh có thể được nhiều người cùng kết nối (unique theo (user_id, platform,
+   * platform_id)), nên phải gộp theo Instagram User ID trước, không thì cùng 1 kênh bị gọi API
+   * và ghi đè nhiều lần trong một lượt.
+   *
+   * `orderBy: created_at DESC` — khi 1 kênh có nhiều dòng active song song (reconnect bằng
+   * user_id khác), dòng MỚI TẠO nhất thắng. Đo 27/08/2026: reconnect để cấp quyền
+   * `instagram_manage_insights` tạo dòng mới; ưu tiên dòng cũ (ASC) thì vẫn dùng token thiếu quyền.
    */
   async syncAllConnectedAccounts(): Promise<InstagramSyncResult> {
     const socialAccounts = await this.prisma.socialAccount.findMany({
       where: { platform: SocialPlatform.INSTAGRAM, is_active: true },
-      orderBy: { created_at: 'asc' },
+      orderBy: { created_at: 'desc' },
     });
 
     const byInstagramUser = new Map<string, (typeof socialAccounts)[number]>();
@@ -349,25 +362,105 @@ export class InstagramOwnedAccountsService {
   }
 
   /**
-   * Lượt xem của một media. Meta đổi tên chỉ số này nhiều lần (`plays` → `views`), nên thử
-   * lần lượt và chấp nhận 0 nếu không có — thà thiếu lượt xem còn hơn hỏng cả lượt đồng bộ.
+   * Lượt xem của một media qua /insights. CHỈ xin đúng metric `views`: Graph API validate
+   * NGUYÊN CỤM `metric` trước khi chạy, nên xin gộp "views,plays" (code cũ) làm cả request
+   * chết ở bước validate (400 "must be one of ..."), không phải trả 0 cho `plays`. Đo trên
+   * token thật 27/08/2026: `plays`/`video_views` Meta đã khai tử, chỉ `views` hợp lệ.
    */
   async fetchMediaViews(base: string, mediaId: string, accessToken: string): Promise<number> {
     try {
       const res = await axios.get(`${base}/${mediaId}/insights`, {
-        params: { access_token: accessToken, metric: 'views,plays' },
+        params: { access_token: accessToken, metric: 'views' },
         timeout: HTTP_TIMEOUT_MS,
       });
       const rows: { name?: string; values?: { value?: number }[] }[] = res.data?.data ?? [];
-      for (const name of ['views', 'plays']) {
-        const row = rows.find((r) => r.name === name);
-        const value = row?.values?.[0]?.value;
-        if (typeof value === 'number') return value;
-      }
-      return 0;
+      const value = rows.find((r) => r.name === 'views')?.values?.[0]?.value;
+      return typeof value === 'number' ? value : 0;
     } catch {
       // Insight không lấy được là chuyện thường: media quá cũ, hoặc tài khoản không đủ quyền.
       return 0;
+    }
+  }
+
+  /** like_count/comments_count của 1 media — field công khai trên chính node, không cần insights. */
+  async fetchMediaMetrics(
+    base: string,
+    mediaId: string,
+    accessToken: string,
+  ): Promise<{ like_count: number; comments_count: number } | null> {
+    try {
+      const res = await axios.get(`${base}/${mediaId}`, {
+        params: { access_token: accessToken, fields: 'like_count,comments_count' },
+        timeout: HTTP_TIMEOUT_MS,
+      });
+      return { like_count: res.data?.like_count ?? 0, comments_count: res.data?.comments_count ?? 0 };
+    } catch (err: any) {
+      this.logger.error(
+        `[IGSync] fetchMediaMetrics hỏng cho ${mediaId}: ${err.response?.data?.error?.message || err.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * SocialAccount đã kết nối OAuth cho 1 Instagram User ID — cùng cách gộp (ưu tiên
+   * extra_data.igUserId, dự phòng platform_id) và cùng lý do `orderBy DESC` như
+   * syncAllConnectedAccounts(): lấy dòng mới nhất để dùng token vừa được cấp quyền insights.
+   */
+  private async findConnectedAccount(igUserId: string) {
+    const accounts = await this.prisma.socialAccount.findMany({
+      where: { platform: SocialPlatform.INSTAGRAM, is_active: true },
+      orderBy: { created_at: 'desc' },
+    });
+    return (
+      accounts.find(
+        (a) => resolveInstagramUserId(a.extra_data as Record<string, unknown> | null, a.platform_id) === igUserId,
+      ) ?? null
+    );
+  }
+
+  // ─── Kéo số liệu tương tác cho 1 URL bất kỳ (dùng bởi task published-links) ─
+  // Chỉ chạy nếu URL trỏ tới reel/video ĐÃ TỪNG ĐỒNG BỘ từ kênh nội bộ (is_owned=true) — kênh
+  // ngoài hệ thống không có access token. Tra qua shortcode (cột unique, không đổi).
+  async fetchStatsForUrl(rawUrl: string): Promise<PublishedLinkStatsResult> {
+    const resolvedUrl = await resolveShortLink(rawUrl.trim());
+    const shortcode = extractShortcode(resolvedUrl);
+    if (!shortcode) return { status: 'unsupported' };
+
+    const reel = await this.prisma.scraperInstagramReel.findUnique({
+      where: { shortcode },
+      include: { profile: true },
+    });
+    if (!reel || !reel.profile.is_owned || !reel.profile.instagram_id) {
+      return { status: 'unsupported' };
+    }
+
+    const account = await this.findConnectedAccount(reel.profile.instagram_id);
+    if (!account) return { status: 'unsupported' };
+
+    let token: string;
+    try {
+      token = this.crypto.decrypt(account.access_token_enc);
+    } catch (e: any) {
+      return { status: 'failed', error: `Token kênh Instagram đã hỏng: ${e.message}`.slice(0, 300) };
+    }
+
+    const base = resolveApiBase((account.extra_data as Record<string, unknown> | null)?.type as string | undefined);
+
+    try {
+      const [metrics, views] = await Promise.all([
+        this.fetchMediaMetrics(base, reel.post_id, token),
+        this.fetchMediaViews(base, reel.post_id, token),
+      ]);
+      if (!metrics) return { status: 'failed', error: 'Không lấy được số liệu cho bài viết này' };
+      return {
+        status: 'success',
+        views,
+        likes: metrics.like_count,
+        comments: metrics.comments_count,
+      };
+    } catch (err: any) {
+      return { status: 'failed', error: (err.message || 'Lỗi không xác định').slice(0, 300) };
     }
   }
 }

@@ -2809,6 +2809,7 @@ model EditorContent {
   content_line   ContentLine?             @relation(fields: [content_line_id], references: [id])
   classification ContentClassification?   @relation(fields: [classification_id], references: [id], onDelete: SetNull)
   source_content Content?                 @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
+  global_content Content?                 @relation("ContentEditorRef")
   team_contents  TeamContent[]            @relation("TeamContentEditorRef")
   tasks          Task[]
   warehouses     EditorContentWarehouse[]
@@ -2945,7 +2946,7 @@ model EditorApproval {
   approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
 
   // Trước đây không có index nào — count(status=APPROVED)/count(status=PENDING) bị quét full
-  // table trên mỗi lần load global dashboard.
+  // table trên mỗi lần load global dashboard (tasks.service.ts getGlobalDashboard).
   @@index([status, created_at(sort: Desc)])
   @@index([user_id])
   @@map("editor_approvals")
@@ -3235,43 +3236,54 @@ model Product {
 }
 
 model Content {
-  id                     String             @id @default(uuid())
-  brand_type             BrandType          @default(DO_DA)
+  id                       String             @id @default(uuid())
+  brand_type               BrandType          @default(DO_DA)
   /// Free-text, cùng quy ước TEAM_MARKETS với Team.market/TeamContent.market/EditorContent.market
   /// (GLOBAL/VIETNAM/INDONESIA/JAPAN/THAILAND) — trước đây là enum ContentMarket chỉ có GLOBAL|VIETNAM,
   /// gây lỗi không lưu được khi chọn thị trường khác Việt Nam.
-  market                 String             @default("VIETNAM")
+  market                   String             @default("VIETNAM")
   /// Mã content (business code), unique toàn hệ thống
-  code                   String?            @unique
-  title                  String?
-  body                   String?
-  script                 String?
-  file_content_url       String?
-  voice_url              String?
-  voice_id               BigInt?
-  content_line_id        String?
-  classification_id      String?
-  status                 ContentUsageStatus @default(AVAILABLE)
-  view_count             BigInt             @default(0)
-  approved_content_id    String?
-  added_by_id            String
-  lark_record_id         String?            @unique
+  code                     String?            @unique
+  title                    String?
+  body                     String?
+  script                   String?
+  file_content_url         String?
+  voice_url                String?
+  voice_id                 BigInt?
+  content_line_id          String?
+  classification_id        String?
+  status                   ContentUsageStatus @default(AVAILABLE)
+  view_count               BigInt             @default(0)
+  approved_content_id      String?
+  added_by_id              String
+  lark_record_id           String?            @unique
   /// FK trỏ về TeamContent khi được push từ kho team (thay thế copy data)
-  source_team_content_id String?            @unique
+  source_team_content_id   String?            @unique
+  /// FK về EditorContent khi Content được tạo tự động từ kho cá nhân lúc content-win. Mirror
+  /// source_team_content_id, chống tạo trùng khi 1 editor content thắng ở nhiều task.
+  source_editor_content_id String?            @unique
   /// Copy từ TeamContent.origin khi push lên kho tổng — chỉ lưu vết, không dùng để tính KPI.
-  origin                 ContentOrigin?
-  created_at             DateTime           @default(now())
-  updated_at             DateTime           @updatedAt
+  origin                   ContentOrigin?
+  /// Link view cao nhất (> ngưỡng win) của task đẩy content này lên kho tổng — set 1 lần bởi
+  /// content-win-auto-push.service.ts, không cập nhật về sau.
+  win_video_url            String?
+  win_video_views          BigInt?
+  win_video_platform       String?
+  /// Thời điểm content này được TỰ ĐỘNG đẩy lên kho tổng do đạt content-win. NULL = chưa từng.
+  won_at                   DateTime?
+  created_at               DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
 
-  content_line        ContentLine?           @relation(fields: [content_line_id], references: [id])
-  classification      ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
-  added_by            User                   @relation("ContentAddedBy", fields: [added_by_id], references: [id])
-  source_team_content TeamContent?           @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
-  team_versions       TeamContent[]          @relation("TeamContentGlobalRef")
-  editor_versions     EditorContent[]        @relation("EditorContentGlobalRef")
-  tasks               Task[]
-  warehouses          ContentWarehouse[]
-  translations        ContentTranslation[]
+  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
+  classification        ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
+  added_by              User                   @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  source_team_content   TeamContent?           @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
+  source_editor_content EditorContent?         @relation("ContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  team_versions         TeamContent[]          @relation("TeamContentGlobalRef")
+  editor_versions       EditorContent[]        @relation("EditorContentGlobalRef")
+  tasks                 Task[]
+  warehouses            ContentWarehouse[]
+  translations          ContentTranslation[]
 
   @@index([added_by_id])
   @@index([classification_id])
@@ -3388,6 +3400,9 @@ model Task {
   result_url                String?    @db.Text
   /// Array<{ id: string; platform: string; url: string }> — link bài đăng editor tự đăng tay
   published_links           Json?
+  /// Thời điểm content của task này được tự đẩy lên kho tổng do content-win. NULL = chưa đẩy;
+  /// chặn cron đẩy lại. Xem content-win-auto-push.service.ts.
+  content_win_pushed_at     DateTime?
   submitted_at              DateTime?
   reviewed_by_id            String?
   reviewed_at               DateTime?
