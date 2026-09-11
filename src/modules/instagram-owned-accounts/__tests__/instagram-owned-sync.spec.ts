@@ -1,3 +1,4 @@
+import axios from 'axios';
 import {
   extractHashtags,
   extractShortcode,
@@ -7,6 +8,9 @@ import {
   InstagramOwnedAccountsService,
   type FetchedInstagramMedia,
 } from '../instagram-owned-accounts.service';
+
+jest.mock('axios');
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 /**
  * Kênh Instagram nội bộ phải suy ra từ tài khoản đã kết nối ở trang đăng bài MXH.
@@ -99,6 +103,58 @@ describe('Đồng bộ kênh Instagram nội bộ từ tài khoản đã kết n
     });
   });
 
+  /**
+   * fetchMediaViews() — đo trực tiếp trên token thật ngày 27/08/2026: gộp "views,plays" trong
+   * 1 lệnh gọi (code cũ) làm Graph API từ chối NGUYÊN CỤM metric ngay ở bước validate ("metric[1]
+   * must be one of the following values: ... views ...", KHÔNG có `plays`) — tức KHÔNG PHẢI trả 0
+   * cho `plays` rồi vẫn cho `views` chạy, mà toàn bộ request chết, rớt vào catch → luôn trả 0.
+   * Đây là lý do 2.689/2.690 reels Instagram nội bộ có play_count = 0 dù likes/comments vẫn có.
+   */
+  describe('fetchMediaViews', () => {
+    const service = new InstagramOwnedAccountsService({} as never, {} as never);
+
+    beforeEach(() => jest.resetAllMocks());
+
+    it('chỉ xin đúng 1 metric "views" — không gộp "plays" (tên cũ Graph API đã khai tử)', async () => {
+      mockedAxios.get.mockResolvedValue({ data: { data: [{ name: 'views', values: [{ value: 800 }] }] } });
+
+      await service.fetchMediaViews('https://graph.facebook.com/v21.0', 'media-1', 'token');
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://graph.facebook.com/v21.0/media-1/insights',
+        expect.objectContaining({ params: expect.objectContaining({ metric: 'views' }) }),
+      );
+    });
+
+    it('Graph API trả đúng metric views → lấy đúng giá trị', async () => {
+      mockedAxios.get.mockResolvedValue({ data: { data: [{ name: 'views', values: [{ value: 1234 }] }] } });
+
+      const result = await service.fetchMediaViews('https://graph.facebook.com/v21.0', 'media-1', 'token');
+
+      expect(result).toBe(1234);
+    });
+
+    it('metric bị Graph API từ chối (vd còn gộp "plays") → request throw → trả 0, không throw ra ngoài', async () => {
+      mockedAxios.get.mockRejectedValue({
+        response: { data: { error: { message: 'metric[1] must be one of the following values: ... views ...' } } },
+      });
+
+      const result = await service.fetchMediaViews('https://graph.facebook.com/v21.0', 'media-1', 'token');
+
+      expect(result).toBe(0);
+    });
+
+    it('token thiếu quyền instagram_manage_insights (code 10) → trả 0, không throw', async () => {
+      mockedAxios.get.mockRejectedValue({
+        response: { data: { error: { message: '(#10) Application does not have permission for this action', code: 10 } } },
+      });
+
+      const result = await service.fetchMediaViews('https://graph.facebook.com/v21.0', 'media-1', 'token');
+
+      expect(result).toBe(0);
+    });
+  });
+
   describe('syncAllConnectedAccounts', () => {
     const buildService = (accounts: any[]) => {
       const prisma = {
@@ -163,6 +219,44 @@ describe('Đồng bộ kênh Instagram nội bộ từ tài khoản đã kết n
 
       expect(res.accounts).toBe(1);
       expect(service.fetchUserProfile).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * Ca thật ngày 27/08/2026: reconnect Facebook để cấp quyền `instagram_manage_insights` lại
+     * tạo ra 1 dòng SocialAccount MỚI (dưới user_id của người bấm reconnect, khác user_id đã
+     * kết nối lần đầu) thay vì ghi đè token vào dòng cũ — vì saveAccount() tìm "existing" theo
+     * cặp (user_id, platform, platform_id), không tìm theo platform_id một mình. Kết quả: 1 kênh
+     * có 2 dòng CÙNG active, dòng cũ vẫn mang token thiếu quyền. Code cũ orderBy created_at ASC +
+     * "first wins" chọn nhầm dòng cũ, khiến quyền vừa xin được coi như vô nghĩa.
+     */
+    it('1 kênh có nhiều dòng active song song (reconnect dưới user_id khác) → luôn dùng dòng MỚI TẠO nhất', async () => {
+      const prisma = {
+        socialAccount: {
+          // orderBy created_at DESC thật sự trả mới nhất trước — mock mô phỏng đúng thứ tự đó.
+          findMany: jest.fn().mockResolvedValue([
+            account({ id: 'sa-new', access_token_enc: 'token-new-enc' }),
+            account({ id: 'sa-old', access_token_enc: 'token-old-enc' }),
+          ]),
+        },
+        scraperInstagramProfile: {
+          findFirst: jest.fn().mockResolvedValue({ id: BigInt(1) }),
+          update: jest.fn().mockResolvedValue({}),
+          create: jest.fn().mockResolvedValue({ id: BigInt(1) }),
+          updateMany: jest.fn().mockResolvedValue({}),
+        },
+        scraperInstagramReel: { upsert: jest.fn().mockResolvedValue({}) },
+      };
+      // decrypt xuyên suốt (identity) để phân biệt được token nào thực sự được dùng.
+      const crypto = { decrypt: jest.fn((enc: string) => enc) };
+      const service = new InstagramOwnedAccountsService(prisma as never, crypto as never);
+      const profileSpy = jest.spyOn(service, 'fetchUserProfile').mockResolvedValue({ id: 'ig1', username: 'kenh_cong_ty' });
+      jest.spyOn(service, 'fetchUserMedia').mockResolvedValue([]);
+
+      const res = await service.syncAllConnectedAccounts();
+
+      expect(res.accounts).toBe(1);
+      expect(profileSpy).toHaveBeenCalledTimes(1);
+      expect(profileSpy).toHaveBeenCalledWith(expect.any(String), '17841477977614557', 'token-new-enc');
     });
 
     it('token hỏng thì đếm là lỗi và đi tiếp, không chết cả lượt chạy', async () => {

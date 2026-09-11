@@ -291,6 +291,12 @@ export class TaskAutoCatalogService {
           lark_record_id: true,
           source_team_content_id: true,
           origin: true,
+          // Link video thắng khi content tự đẩy lên kho tổng do content-win — hiện trên card
+          // board content (content/components/ContentsBoard.tsx).
+          win_video_url: true,
+          win_video_views: true,
+          win_video_platform: true,
+          won_at: true,
           created_at: true,
           updated_at: true,
           // "Số lần được làm" — số task tạo trực tiếp từ content này (đếm sống).

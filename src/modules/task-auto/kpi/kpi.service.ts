@@ -13,10 +13,30 @@ import {
 } from "./dto/kpi.dto";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import { dailyKpiDate } from "../../../utils/date.utils";
+import { Semaphore } from "../../../common/utils/semaphore";
+import {
+  classifyPublishedLinksWinFail,
+  summarizeWinFailCounts,
+  PublishedLinkWinFailStatus,
+} from "../tasks/published-link-win-fail.util";
+import { TaskAutoContentWinPushService } from "../tasks/content-win-auto-push.service";
+import {
+  TaskPublishedLinkStatsService,
+  isSupportedLinkStatsPlatform,
+  isLinkStatsFresh,
+} from "../tasks/task-published-link-stats.service";
 
 @Injectable()
 export class TaskAutoKpiService {
-  constructor(private prisma: PrismaService) {}
+  // Giới hạn số task cào traffic ĐỒNG THỜI trong refreshContentWinFailStats() — tránh dội request
+  // FB/YouTube (mức 4, đồng bộ với publish.service.ts/warehouse.service.ts).
+  private readonly linkRefreshSemaphore = new Semaphore(4);
+
+  constructor(
+    private prisma: PrismaService,
+    private linkStats: TaskPublishedLinkStatsService,
+    private contentWinPush: TaskAutoContentWinPushService,
+  ) {}
 
   // ─── Team KPI ─────────────────────────────────────────────────────────────
 
@@ -534,14 +554,20 @@ export class TaskAutoKpiService {
   async getContentCreatorKpiReport(params: {
     user_id?: string;
     team_id?: string;
+    /** Ghi đè việc resolve userIds từ user_id/team_id — khi caller đã biết chính xác tập user
+     * (vd getTopContentWinFailMembers() báo cáo toàn hệ thống). user_id/team_id vẫn như cũ khi
+     * bỏ trống user_ids. */
+    user_ids?: string[];
     from?: string;
     to?: string;
   }) {
-    const { user_id, team_id, from, to } = params;
-    if (!user_id && !team_id)
-      throw new BadRequestException("Cần truyền user_id hoặc team_id");
+    const { user_id, team_id, user_ids, from, to } = params;
+    if (!user_id && !team_id && !user_ids?.length)
+      throw new BadRequestException("Cần truyền user_id, team_id hoặc user_ids");
 
-    const userIds = user_id
+    const userIds = user_ids?.length
+      ? user_ids
+      : user_id
       ? [user_id]
       : (
           await this.prisma.teamMember.findMany({
@@ -635,6 +661,233 @@ export class TaskAutoKpiService {
         videos,
       };
     });
+  }
+
+  // ── Content Win/Fail Stats (tự tính: 1 link bài đăng FB/YouTube/IG > VIEW_WIN_THRESHOLD view) ──
+  // Tách biệt hoàn toàn EditorKpi.video_win/fail và content-report/ContentVideo.status (đều nhập tay).
+  //
+  // MỘT cơ chế cho MỌI thành viên, không phân biệt content creator/editor: "content được gắn
+  // task trong kỳ" — creator: content họ thêm (added_by_id) dùng ở bất kỳ task nào; editor:
+  // content gắn vào task họ được giao (assignee_id). Gộp theo user_id, dedupe theo task_id nên
+  // 1 người vừa là creator vừa là editor của cùng 1 task chỉ tính 1 lần.
+  async getContentWinFailStats(params: {
+    user_id?: string;
+    team_id?: string;
+    from?: string;
+    to?: string;
+  }) {
+    const { user_id, team_id, from, to } = params;
+    if (!user_id && !team_id)
+      throw new BadRequestException("Cần truyền user_id hoặc team_id");
+
+    const userIds = user_id
+      ? [user_id]
+      : (
+          await this.prisma.teamMember.findMany({
+            where: { team_id },
+            select: { user_id: true },
+          })
+        ).map((m) => m.user_id);
+
+    if (userIds.length === 0) return { by_member: [], totals: { win: 0, fail: 0, pending: 0 } };
+
+    // Nguồn 1 — content creator: tái dùng nguyên getContentCreatorKpiReport() đã có sẵn logic
+    // resolve đúng người ghi công + published_links, chỉ hậu xử lý thêm win/fail.
+    const creatorReport = await this.getContentCreatorKpiReport({ user_id, team_id, from, to });
+    const range = this.parseFromTo(from, to);
+    const by_member = await this.mergeWinFailByMember(userIds, creatorReport, range);
+
+    const totals = by_member.reduce(
+      (s, m) => ({ win: s.win + m.win, fail: s.fail + m.fail, pending: s.pending + m.pending }),
+      { win: 0, fail: 0, pending: 0 },
+    );
+
+    return { by_member, totals };
+  }
+
+  // Top N người nhiều content WIN nhất TOÀN HỆ THỐNG — mặc định cho ADMIN/MANAGER ở trang Tổng
+  // quan, khỏi bắt chọn team trước. `totals` phản ánh toàn hệ thống (trước khi cắt top N);
+  // `by_member` chỉ top N đã lọc bỏ người toàn 0.
+  async getTopContentWinFailMembers(params: { from?: string; to?: string; limit?: number }) {
+    const { from, to, limit = 5 } = params;
+
+    const allUserIds = (
+      await this.prisma.teamMember.findMany({
+        select: { user_id: true },
+        distinct: ["user_id"],
+      })
+    ).map((m) => m.user_id);
+
+    if (allUserIds.length === 0) return { by_member: [], totals: { win: 0, fail: 0, pending: 0 } };
+
+    const creatorReport = await this.getContentCreatorKpiReport({ user_ids: allUserIds, from, to });
+    const range = this.parseFromTo(from, to);
+    const allMembers = await this.mergeWinFailByMember(allUserIds, creatorReport, range);
+
+    const totals = allMembers.reduce(
+      (s, m) => ({ win: s.win + m.win, fail: s.fail + m.fail, pending: s.pending + m.pending }),
+      { win: 0, fail: 0, pending: 0 },
+    );
+
+    const by_member = allMembers
+      .filter((m) => m.win + m.fail + m.pending > 0)
+      .sort((a, b) => b.win - a.win || a.fail - b.fail || b.pending - a.pending)
+      .slice(0, limit);
+
+    return { by_member, totals };
+  }
+
+  // Gộp video theo user_id từ 2 nguồn (creator qua added_by_id + editor qua assignee_id), dedupe
+  // theo task_id. Dùng chung cho getContentWinFailStats (1 team/người) và
+  // getTopContentWinFailMembers (toàn hệ thống) — chỉ khác tập userIds/creatorReport.
+  private async mergeWinFailByMember(
+    userIds: string[],
+    creatorReport: Array<{ user_id: string; user: any; videos: any[] }>,
+    range: { gte?: Date; lt?: Date } | null,
+  ) {
+    const [users, editorTasks] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, full_name: true },
+      }),
+      this.prisma.task.findMany({
+        where: {
+          assignee_id: { in: userIds },
+          status: "APPROVED",
+          ...(range ? { reviewed_at: range } : {}),
+        },
+        select: {
+          id: true,
+          assignee_id: true,
+          published_links: true,
+          content: { select: { code: true, title: true } },
+          team_content: { select: { code: true, title: true } },
+          editor_content: { select: { code: true, title: true } },
+        },
+      }),
+    ]);
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const videosByUser = new Map<string, Map<string, any>>();
+    const addVideo = (uid: string, taskId: string, video: any) => {
+      const existing = videosByUser.get(uid) ?? new Map<string, any>();
+      if (!existing.has(taskId)) existing.set(taskId, video);
+      videosByUser.set(uid, existing);
+    };
+
+    for (const row of creatorReport) {
+      for (const v of row.videos as any[]) {
+        const wf = classifyPublishedLinksWinFail(v.published_links);
+        addVideo(row.user_id, v.task_id, {
+          task_id: v.task_id,
+          content_title: v.content_title,
+          content_code: v.content_code,
+          published_links: v.published_links,
+          win_status_auto: wf.status,
+          views_auto: wf.views,
+        });
+      }
+    }
+    for (const t of editorTasks) {
+      if (!t.assignee_id) continue;
+      const wf = classifyPublishedLinksWinFail(t.published_links as any);
+      addVideo(t.assignee_id, t.id, {
+        task_id: t.id,
+        content_title: t.content?.title ?? t.team_content?.title ?? t.editor_content?.title ?? null,
+        content_code: t.content?.code ?? t.team_content?.code ?? t.editor_content?.code ?? null,
+        published_links: t.published_links,
+        win_status_auto: wf.status,
+        views_auto: wf.views,
+      });
+    }
+
+    return userIds.map((uid) => {
+      const videos = Array.from(videosByUser.get(uid)?.values() ?? []);
+      const counts = summarizeWinFailCounts(videos.map((v: any) => v.win_status_auto as PublishedLinkWinFailStatus));
+      return { user_id: uid, user: userMap.get(uid) ?? null, ...counts, videos };
+    });
+  }
+
+  // Cào lại traffic (SUPPORTED_LINK_STATS_PLATFORMS) cho content trong `byMember` rồi ghi lại
+  // published_links. Dùng chung cho cả 2 route "Cập nhật" (team/người cụ thể + Top N).
+  //
+  // Chỉ chạy khi người dùng CHỦ ĐỘNG bấm "Cập nhật" — không tự động khi xem chi tiết (từng gây
+  // dội request FB/YouTube khi admin duyệt qua nhiều người). Số mặc định lấy từ cron 8:15
+  // (refreshMonthlyPublishedLinkStats). 2 lớp chống dội dù bấm nhiều lần:
+  //  1. Bỏ qua link đã cào trong LINK_STATS_FRESH_MS gần nhất (isLinkStatsFresh).
+  //  2. Giới hạn số task cào đồng thời qua linkRefreshSemaphore.
+  private async refreshPublishedLinksForMembers(
+    byMember: Array<{ videos: Array<{ task_id: string; published_links: any }> }>,
+  ) {
+    const linksByTask = new Map<string, any[]>();
+    for (const member of byMember) {
+      for (const v of member.videos) {
+        if (!linksByTask.has(v.task_id)) linksByTask.set(v.task_id, v.published_links ?? []);
+      }
+    }
+
+    const now = new Date();
+    await Promise.all(
+      Array.from(linksByTask.entries()).map(([taskId, links]) =>
+        this.linkRefreshSemaphore.run(async () => {
+          let changed = false;
+          const nextLinks = await Promise.all(
+            (links as any[]).map(async (l) => {
+              if (!isSupportedLinkStatsPlatform(l.platform)) return l;
+              if (isLinkStatsFresh(l.stats, now)) return l; // vừa cào gần đây — khỏi gọi lại.
+              changed = true;
+              try {
+                const stats = await this.linkStats.fetchStatsForLink(l.platform, l.url);
+                return { ...l, stats };
+              } catch {
+                return l; // 1 link lỗi không chặn các link/task còn lại — giữ nguyên số cũ cho link đó.
+              }
+            }),
+          );
+          if (!changed) return;
+          try {
+            await this.prisma.task.update({ where: { id: taskId }, data: { published_links: nextLinks } });
+          } catch {
+            // Task có thể đã bị xoá/đổi trạng thái giữa lúc đọc và lúc ghi — bỏ qua, không chặn task khác.
+          }
+        }),
+      ),
+    );
+  }
+
+  // Nút "Cập nhật" (scope 1 người/1 team) — gọi getContentWinFailStats() 2 lần (trước để biết
+  // link cần cào, sau để trả số mới); rẻ vì chi phí thật nằm ở gọi API ngoài, không phải JS.
+  async refreshContentWinFailStats(params: {
+    user_id?: string;
+    team_id?: string;
+    from?: string;
+    to?: string;
+  }) {
+    const before = await this.getContentWinFailStats(params);
+    await this.refreshPublishedLinksForMembers(before.by_member);
+    await this.autoPushWinningContent(before.by_member);
+    return this.getContentWinFailStats(params);
+  }
+
+  // Sau khi cào traffic, task nào vừa thành content-win thì TỰ đẩy content lên kho tổng. Bước
+  // đẩy lỗi không chặn luồng trả thống kê.
+  private async autoPushWinningContent(
+    byMember: Array<{ videos: Array<{ task_id: string }> }>,
+  ) {
+    const taskIds = byMember.flatMap((m) => m.videos.map((v) => v.task_id));
+    if (taskIds.length === 0) return;
+    await this.contentWinPush
+      .pushWinningTasks(taskIds)
+      .catch(() => undefined);
+  }
+
+  // Nút "Cập nhật" khi xem bảng xếp hạng Top N toàn hệ thống — chỉ cào lại traffic cho content
+  // thuộc top N ĐANG HIỂN THỊ (không phải toàn hệ thống) để giữ chi phí mỗi lần bấm chấp nhận được.
+  async refreshTopContentWinFailMembers(params: { from?: string; to?: string; limit?: number }) {
+    const before = await this.getTopContentWinFailMembers(params);
+    await this.refreshPublishedLinksForMembers(before.by_member);
+    await this.autoPushWinningContent(before.by_member);
+    return this.getTopContentWinFailMembers(params);
   }
 
   private kpiInclude = {
