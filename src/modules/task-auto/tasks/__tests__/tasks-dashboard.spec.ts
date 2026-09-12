@@ -22,7 +22,7 @@ describe('TaskAutoTasksService.getDashboard (ADMIN/MANAGER) — global dashboard
       editorApproval: { count: jest.fn(async () => 0) },
       contentLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -141,7 +141,7 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats, {} as any);
+    const service = new TaskAutoTasksService(prisma, videoService, push, linkStats, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -215,6 +215,11 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
  * content mới/cũ, sản phẩm theo dòng) vẫn khoá cứng theo tháng thực tế lúc gọi API — bộ lọc ngày trên
  * UI không có tác dụng gì với các khối này. Đã sửa: thêm `periodRange = range ?? {tháng đang xem}`,
  * áp dụng cho mọi query "thực tế trong kỳ". Test này khoá lại hành vi đúng để tránh regression.
+ *
+ * Cập nhật 2026-09-10: mọi số liệu "việc làm được trong kỳ" (KPI hoàn thành ngày/tháng, video theo
+ * tuyến, sản phẩm theo dòng, content theo phân loại) đổi từ lọc theo `reviewed_at` (ngày duyệt) sang
+ * `deadlineWindow` (deadline trong kỳ, chưa đặt deadline thì theo created_at) để khớp mục tiêu KPI
+ * (vốn đếm theo deadline) và khớp tab "Nhiệm vụ"/Kanban.
  */
 describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc ngày', () => {
   function build() {
@@ -244,47 +249,65 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
   afterEach(() => jest.clearAllMocks());
 
-  it('trang Task Auto truyền date_from/date_to (không có month) → mọi số liệu thực tế trong kỳ dùng đúng khoảng ngày đó', async () => {
+  // Cửa sổ ngày chuẩn (deadlineWindow): task "thuộc kỳ" nếu deadline rơi vào khoảng; chưa đặt
+  // deadline thì tính theo created_at thay thế.
+  const win = (r: { gte: Date; lt: Date }) => ({
+    OR: [{ deadline: r }, { deadline: null, created_at: r }],
+  });
+
+  it('trang Task Auto truyền date_from/date_to (không có month) → mọi số liệu thực tế trong kỳ lọc theo deadline trong khoảng đó (null→created_at), KHÔNG theo reviewed_at', async () => {
     const { service, prisma } = build();
 
     await service.getDashboard('leader-1', ['LEADER'], '2026-01-05', '2026-01-10');
 
     const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
 
-    // Task đã duyệt của cả team (KPI completed)
+    // Task đã duyệt của cả team (KPI completed) — APPROVED + deadline trong kỳ.
     expect(prisma.task.count).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ reviewed_at: expectedRange }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'APPROVED', ...win(expectedRange) }),
+      }),
     );
     // Task đã duyệt theo từng member (kpi_completed)
     expect(prisma.task.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ['assignee_id'],
-        where: expect.objectContaining({ status: 'APPROVED', reviewed_at: expectedRange }),
+        where: expect.objectContaining({ status: 'APPROVED', ...win(expectedRange) }),
       }),
     );
     // Video theo tuyến nội dung
     expect(prisma.task.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ['content_line_id'],
-        where: expect.objectContaining({ reviewed_at: expectedRange }),
+        where: expect.objectContaining(win(expectedRange)),
       }),
     );
-    // Content theo phân loại (getContentByClassification đọc task.findMany theo created_at)
-    expect(prisma.task.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ created_at: expectedRange }) }),
-    );
-    // Sản phẩm theo dòng (getApprovedProductLineBreakdown đọc task.findMany theo reviewed_at)
+    // Content theo phân loại (getContentByClassification đọc task.findMany, nay theo deadline)
     expect(prisma.task.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ status: 'APPROVED', reviewed_at: expectedRange }),
+        where: expect.objectContaining({ status: { notIn: ['CANCELLED'] }, ...win(expectedRange) }),
       }),
     );
+    // Sản phẩm theo dòng (getApprovedProductLineBreakdown đọc task.findMany, nay theo deadline)
+    expect(prisma.task.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'APPROVED', ...win(expectedRange) }),
+      }),
+    );
+    // reviewed_at không còn được dùng làm trục lọc kỳ ở bất kỳ query task nào.
+    for (const call of [
+      ...prisma.task.count.mock.calls,
+      ...prisma.task.groupBy.mock.calls,
+      ...prisma.task.findMany.mock.calls,
+    ]) {
+      expect(call[0]?.where ?? {}).not.toHaveProperty('reviewed_at');
+    }
     // Traffic báo cáo hằng ngày
     expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ date: expectedRange }) }),
@@ -306,7 +329,7 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
     );
   });
 
-  it('trang /dashboard/leader chỉ truyền `month` (không có date_from/date_to) → vẫn dùng nguyên cả tháng đó như cũ', async () => {
+  it('trang /dashboard/leader chỉ truyền `month` (không có date_from/date_to) → vẫn dùng nguyên cả tháng đó, lọc theo deadline trong tháng', async () => {
     const { service, prisma } = build();
 
     await service.getDashboard('leader-1', ['LEADER'], undefined, undefined, '2025-11');
@@ -314,7 +337,9 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
     const expectedMonthRange = { gte: new Date(2025, 10, 1), lt: new Date(2025, 11, 1) };
 
     expect(prisma.task.count).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ reviewed_at: expectedMonthRange }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'APPROVED', ...win(expectedMonthRange) }),
+      }),
     );
     expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ month: '2025-11' }) }),
@@ -339,11 +364,19 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
     expect(prisma.revenueReport.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ date: month }) }),
     );
-    // Task đã duyệt "trong ngày" (kpi_day_completed): quy về đúng ngày 18/3.
+    // Task đã hoàn thành "trong ngày" (kpi_day_completed): APPROVED + deadline rơi vào đúng ngày 18/3
+    // (null→created_at) — KHÔNG theo reviewed_at nữa.
     expect(prisma.task.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ['assignee_id'],
-        where: expect.objectContaining({ status: 'APPROVED', reviewed_at: day }),
+        where: expect.objectContaining({ status: 'APPROVED', ...win(day) }),
+      }),
+    );
+    // Mục tiêu KPI ngày (fallback): cùng cửa sổ deadline ngày đó, chỉ khác là chưa lọc APPROVED.
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['assignee_id'],
+        where: expect.objectContaining({ status: { notIn: ['CANCELLED'] }, ...win(day) }),
       }),
     );
   });
@@ -394,7 +427,7 @@ describe('TaskAutoTasksService.getDashboard — chỉ hiện member là editor/c
         ),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -505,7 +538,7 @@ describe('TaskAutoTasksService — product_by_category (qua getDashboard)', () =
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -676,7 +709,7 @@ describe('TaskAutoTasksService — content_by_classification (qua getDashboard)'
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -768,6 +801,53 @@ describe('TaskAutoTasksService — content_by_classification (qua getDashboard)'
     const { service } = build({ taskRows: [] });
     expect(await run(service)).toEqual([]);
   });
+
+  // getPersonalDashboard (MEMBER) cũng trả content_by_classification — cùng helper, `where` khoá theo
+  // assignee_id của chính mình + cửa sổ deadline, để trang Tổng quan cá nhân có biểu đồ phân bổ content.
+  it('personal (MEMBER) → content_by_classification khoá theo assignee_id chính mình', async () => {
+    const taskFindMany = jest.fn(async (args: any) =>
+      // getContentByClassification đọc task.findMany với select content_id/editor_content_id/team_content_id
+      args.select?.content_id !== undefined
+        ? [
+            { content_id: 'c-1', editor_content_id: null, team_content_id: null },
+            { content_id: 'c-2', editor_content_id: null, team_content_id: null },
+            { content_id: null, editor_content_id: null, team_content_id: null },
+          ]
+        : [],
+    );
+    const prisma: any = {
+      task: {
+        groupBy: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+        findMany: taskFindMany,
+      },
+      content: {
+        findMany: jest.fn(async () => [
+          { id: 'c-1', classification: { name: 'Win' } },
+          { id: 'c-2', classification: { name: 'Win' } },
+        ]),
+      },
+      editorContent: { findMany: jest.fn(async () => []) },
+      teamContent: { findMany: jest.fn(async () => []) },
+      editorKpi: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      contentLine: { findMany: jest.fn(async () => []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('me-1', ['MEMBER']);
+
+    expect(result.scope).toBe('personal');
+    expect(result.content_by_classification).toEqual([
+      { classification: 'Win', count: 2 },
+      { classification: 'Chưa phân loại', count: 1 },
+    ]);
+    // where của task.findMany (getContentByClassification) phải khoá theo chính assignee, không phải team.
+    const clsCall = taskFindMany.mock.calls.find((c: any) => c[0]?.select?.content_id !== undefined);
+    expect(clsCall?.[0].where).toEqual(
+      expect.objectContaining({ assignee_id: 'me-1', status: { notIn: ['CANCELLED'] } }),
+    );
+  });
 });
 
 /**
@@ -807,7 +887,7 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
       teamPushRequest: { groupBy: jest.fn(async () => []) },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -847,5 +927,107 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
     const member = result.members.find((m: any) => m.user_id === 'u1');
 
     expect(member.traffic_month).toBe(0);
+  });
+});
+
+/**
+ * video_by_line.target — biểu đồ "Video theo tuyến nội dung" ở trang Tổng quan (leader + editor) nay
+ * kèm mục tiêu KPI theo tuyến để FE hiển thị dạng đã-duyệt / mục-tiêu (vd 10/30). Nguồn target =
+ * EditorKpiAllocation.quantity (type CONTENT_LINE) của tháng đang xem: editor lấy của chính mình,
+ * leader lấy TỔNG của mọi thành viên team. Tuyến chưa phân bổ → target = 0.
+ */
+describe('TaskAutoTasksService — video_by_line kèm target theo tuyến nội dung', () => {
+  const contentLines = [
+    { id: 'cl-a1', name: 'A1' },
+    { id: 'cl-a2', name: 'A2' },
+    { id: 'cl-a3', name: 'A3' },
+  ];
+
+  function alloc(name: string, quantity: number) {
+    return { type: 'CONTENT_LINE', content_line_id: `cl-${name.toLowerCase()}`, content_line: { id: `cl-${name.toLowerCase()}`, name }, product_line_id: null, product_line: null, quantity };
+  }
+
+  it('leader — target mỗi tuyến = TỔNG quantity của mọi thành viên; tuyến chưa phân bổ = 0', async () => {
+    const teamsLed = [
+      {
+        id: 't-1',
+        name: 'Team A',
+        members: [
+          { user_id: 'u1', user: { id: 'u1', full_name: 'A', email: 'a@x.com', roles: [] } },
+          { user_id: 'u2', user: { id: 'u2', full_name: 'B', email: 'b@x.com', roles: [] } },
+        ],
+      },
+    ];
+    const prisma: any = {
+      team: { findMany: jest.fn(async () => teamsLed) },
+      task: {
+        // getVideoByContentLine: groupBy theo content_line_id → A1 có 3 video đã duyệt, A2/A3 chưa có.
+        groupBy: jest.fn(async (args: any) =>
+          args.by?.[0] === 'content_line_id' ? [{ content_line_id: 'cl-a1', _count: { id: 3 } }] : [],
+        ),
+        count: jest.fn(async () => 0),
+        findMany: jest.fn(async () => []),
+      },
+      editorKpi: {
+        findMany: jest.fn(async () => [
+          { user_id: 'u1', total_target: 30, allocations: [alloc('A1', 10), alloc('A2', 20)] },
+          { user_id: 'u2', total_target: 15, allocations: [alloc('A1', 5), alloc('A2', 10)] },
+        ]),
+      },
+      trafficReport: { findMany: jest.fn(async () => []) },
+      revenueReport: { groupBy: jest.fn(async () => []) },
+      contentLine: { findMany: jest.fn(async () => contentLines) },
+      editorDailyKpi: { findMany: jest.fn(async () => []) },
+      productLine: { findMany: jest.fn(async () => []) },
+      contentCreatorKpi: { findMany: jest.fn(async () => []) },
+      editorApproval: { findMany: jest.fn(async () => []) },
+      teamContent: { groupBy: jest.fn(async () => []) },
+      contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
+      teamPushRequest: { groupBy: jest.fn(async () => []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('leader-1', ['LEADER'], undefined, '2026-08');
+
+    expect(result.video_by_line).toEqual([
+      { line: 'A1', count: 3, target: 15 }, // 10 (u1) + 5 (u2)
+      { line: 'A2', count: 0, target: 30 }, // 20 (u1) + 10 (u2)
+      { line: 'A3', count: 0, target: 0 }, // chưa ai phân bổ
+    ]);
+  });
+
+  it('editor — target mỗi tuyến = quantity của CHÍNH mình', async () => {
+    const prisma: any = {
+      task: {
+        groupBy: jest.fn(async (args: any) =>
+          args.by?.[0] === 'content_line_id' ? [{ content_line_id: 'cl-a2', _count: { id: 7 } }] : [],
+        ),
+        count: jest.fn(async () => 0),
+        findMany: jest.fn(async () => []),
+      },
+      editorKpi: {
+        findMany: jest.fn(async () => [
+          {
+            user_id: 'u1',
+            month: '2026-08',
+            total_target: 25,
+            video_win: 0, video_fail: 0, kpi_extra: 0, content_new: 0,
+            content_collected: 0, content_win_cover: 0, product_planned: 0, product_win_collect: 0,
+            allocations: [alloc('A1', 5), alloc('A2', 20)],
+          },
+        ]),
+      },
+      editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      contentLine: { findMany: jest.fn(async () => contentLines) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('u1', ['EDITOR']);
+
+    expect(result.video_by_line).toEqual([
+      { line: 'A1', count: 0, target: 5 },
+      { line: 'A2', count: 7, target: 20 },
+      { line: 'A3', count: 0, target: 0 },
+    ]);
   });
 });

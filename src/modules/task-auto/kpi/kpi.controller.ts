@@ -138,6 +138,88 @@ export class TaskAutoKpiController {
     return this.kpi.getContentCreatorKpiReport({ user_id: userId, team_id: teamId, from, to });
   }
 
+  // ── Content Win/Fail Stats (tự tính, 1 link bài đăng bất kỳ >10.000 view) ──
+  // Tách biệt hoàn toàn EditorKpi.video_win/fail và content-report (đều nhập tay) — xem kpi.service.ts.
+
+  @Get("kpi/content-win-fail")
+  @ApiOperation({
+    summary:
+      "Thống kê content win/fail tự động (1 link bài đăng bất kỳ >10.000 view = win) theo content creator và editor",
+  })
+  getContentWinFailStats(
+    @Query("user_id") userId?: string,
+    @Query("team_id") teamId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+  ) {
+    return this.kpi.getContentWinFailStats({
+      user_id: userId,
+      team_id: teamId,
+      from,
+      to,
+    });
+  }
+
+  // POST vì có side-effect: gọi API FB/YouTube/IG + ghi lại published_links trước khi trả số
+  // liệu — dùng khi FE bấm "Cập nhật", không chờ cron 8:15.
+  @Post("kpi/content-win-fail/refresh")
+  @ApiOperation({
+    summary:
+      "Cào lại traffic mới nhất (mọi nền tảng) rồi tính lại content win/fail",
+  })
+  refreshContentWinFailStats(
+    @Query("user_id") userId?: string,
+    @Query("team_id") teamId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+  ) {
+    return this.kpi.refreshContentWinFailStats({
+      user_id: userId,
+      team_id: teamId,
+      from,
+      to,
+    });
+  }
+
+  // Mặc định cho ADMIN/MANAGER ở trang Tổng quan khi chưa chọn team/thành viên — top N người
+  // nhiều content win nhất TOÀN HỆ THỐNG, khỏi bắt chọn team trước.
+  @Get("kpi/content-win-fail/top")
+  @ApiOperation({
+    summary: "Top N người có nhiều content win nhất toàn hệ thống",
+  })
+  getTopContentWinFailMembers(
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("limit") limit?: string,
+  ) {
+    const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    return this.kpi.getTopContentWinFailMembers({
+      from,
+      to,
+      limit: parsedLimit && parsedLimit > 0 ? parsedLimit : undefined,
+    });
+  }
+
+  // Nút "Cập nhật" khi đang xem bảng xếp hạng Top N (không có team_id/user_id cho route trên) —
+  // chỉ cào lại traffic cho top N đang hiển thị (xem kpi.service.ts#refreshPublishedLinksForMembers).
+  @Post("kpi/content-win-fail/top/refresh")
+  @ApiOperation({
+    summary:
+      "Cào lại traffic cho top N người đang hiển thị rồi tính lại xếp hạng",
+  })
+  refreshTopContentWinFailMembers(
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("limit") limit?: string,
+  ) {
+    const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    return this.kpi.refreshTopContentWinFailMembers({
+      from,
+      to,
+      limit: parsedLimit && parsedLimit > 0 ? parsedLimit : undefined,
+    });
+  }
+
   // ── Content Creator Daily KPI ────────────────────────────────────────────
   // Khai báo trước "kpi/content-creators/:id" để path tĩnh "daily" không bị nuốt bởi :id.
 
