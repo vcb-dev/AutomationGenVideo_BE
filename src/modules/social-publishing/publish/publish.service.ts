@@ -79,6 +79,33 @@ function ensureExt(filename: string, ext: string): string {
   return path.extname(filename) ? filename : `${filename}${ext}`;
 }
 
+/**
+ * URL gốc công khai của server để build link media cho MXH tải về. Chỉ đọc `PUBLIC_BASE_URL`
+ * (code cũ) làm Instagram/Threads FAIL khi deploy chỉ set `API_BASE_URL` (link giữ 127.0.0.1).
+ * Chuỗi fallback đồng bộ với OAuth:
+ *   PUBLIC_BASE_URL → API_BASE_URL (bỏ /api) → origin của GOOGLE_CALLBACK_URL → localhost
+ */
+export function resolvePublicBaseUrl(): string {
+  const explicit = process.env.PUBLIC_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  const apiBase = process.env.API_BASE_URL?.trim();
+  if (apiBase) return apiBase.replace(/\/+$/, '').replace(/\/api$/, '');
+
+  const callback = process.env.GOOGLE_CALLBACK_URL?.trim() || process.env.FB_REDIRECT_URI?.trim();
+  if (callback) {
+    try { return new URL(callback).origin; } catch { /* bỏ qua URL rác */ }
+  }
+
+  return `http://127.0.0.1:${process.env.PORT || 3000}`;
+}
+
+/** URL media chưa công khai (localhost) hoặc còn là link Drive → Meta không tải được. */
+export function isUnreachableForMeta(url: string): boolean {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|::1/.test(url)
+    || /drive\.google\.com|docs\.google\.com|googleusercontent/.test(url);
+}
+
 @Injectable()
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
@@ -114,15 +141,16 @@ export class PublishService {
   private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
 
-    const publicBaseUrl = process.env.PUBLIC_BASE_URL;
+    const publicBaseUrl = resolvePublicBaseUrl();
+    const isLocalBase = /localhost|127\.0\.0\.1/.test(publicBaseUrl);
     const resultUrls: string[] = [];
 
     for (const url of mediaUrls) {
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         try {
           const localUrl = new URL(url);
-          if (!publicBaseUrl) {
-            this.logger.warn('[makeUrlsPublic] PUBLIC_BASE_URL chưa được cấu hình — localhost URLs sẽ không được convert');
+          if (isLocalBase) {
+            this.logger.warn('[makeUrlsPublic] Chưa cấu hình PUBLIC_BASE_URL / API_BASE_URL — không convert được localhost URL, MXH sẽ không tải được media');
             resultUrls.push(url);
             continue;
           }
@@ -139,6 +167,22 @@ export class PublishService {
     }
 
     return resultUrls;
+  }
+
+  /**
+   * Instagram & Threads chỉ đăng qua `video_url`/`image_url` (Meta tự tải) — URL không truy
+   * cập được từ Internet thì container về ERROR sau vài phút. Chặn sớm để lỗi rõ nguyên nhân.
+   */
+  private assertMediaReachableForMeta(platform: SocialPlatform, urls: string[]) {
+    if (platform !== SocialPlatform.INSTAGRAM && platform !== SocialPlatform.THREADS) return;
+    const bad = urls.find(isUnreachableForMeta);
+    if (!bad) return;
+    const label = platform === SocialPlatform.INSTAGRAM ? 'Instagram' : 'Threads';
+    throw new BadRequestException(
+      `${label} cần URL media công khai để tải video về, nhưng URL hiện tại không truy cập được từ Internet: ${bad}. ` +
+      `Nguyên nhân thường gặp: (1) server chưa đặt PUBLIC_BASE_URL/API_BASE_URL, hoặc (2) không tải được file từ Google Drive ` +
+      `(file chưa mở quyền / hết hạn token Drive). Facebook không gặp lỗi này vì nó tải trực tiếp bytes lên.`,
+    );
   }
 
   /** Khởi động download Drive trước (non-blocking) để sẵn sàng trong cache khi executePost chạy */
@@ -159,7 +203,7 @@ export class PublishService {
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
     if (!fs.existsSync(uploadBase)) fs.mkdirSync(uploadBase, { recursive: true });
 
-    const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+    const base = resolvePublicBaseUrl();
 
     // YouTube tự stream từ Drive URL (server BE download, không qua server của platform)
     // → dùng direct URL để tiết kiệm disk + giữ nguyên chất lượng gốc.
@@ -306,6 +350,7 @@ export class PublishService {
 
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
+    this.assertMediaReachableForMeta(account.platform, publicMediaUrls);
 
     let result: any;
     try {
@@ -371,6 +416,7 @@ export class PublishService {
     this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
 
     try {
+      this.assertMediaReachableForMeta(account.platform, publicMediaUrls);
       const result = await this.dispatchPublish(account.platform, token, {
         message: post.message,
         mediaUrls: publicMediaUrls,
@@ -550,7 +596,7 @@ export class PublishService {
       this.logger.log(`[Transcode] Hoàn thành ${transcodedName} trong ${((Date.now() - start) / 1000).toFixed(1)}s | size: ${(outputSize / 1024 / 1024).toFixed(1)}MB`);
 
       // Cloud Run: dùng PUBLIC_BASE_URL thay vì 127.0.0.1 (sẽ được convert bởi makeUrlsPublic)
-      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      const base = resolvePublicBaseUrl();
       return `${base}/api/social/media/${transcodedName}`;
     } catch (err: any) {
       this.logger.warn(`[Transcode] Thất bại: ${err.message} — dùng file gốc`);

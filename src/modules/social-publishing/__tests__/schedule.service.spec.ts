@@ -28,7 +28,7 @@ function createPrismaMock(posts: PostRow[] = []) {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     socialAccount: { findFirst: jest.fn(), findUnique: jest.fn() },
-    task: { findUnique: jest.fn() },
+    task: { findUnique: jest.fn(), update: jest.fn() },
   };
 }
 
@@ -447,6 +447,122 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
         status: SocialPostStatus.PENDING,
         source: SocialPostSource.SCHEDULED,
       });
+    });
+
+    it('tài khoản Instagram thiếu IG User ID → từ chối ngay lúc lên lịch', async () => {
+      const prisma = createPrismaMock();
+      prisma.socialAccount.findFirst.mockResolvedValue({
+        id: 'acc-ig', platform: 'INSTAGRAM', extra_data: {}, platform_id: null,
+      });
+      const { service } = createService(prisma);
+
+      await expect(
+        service.create('u1', {
+          accountId: 'acc-ig',
+          message: 'hi',
+          scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      ).rejects.toThrow(/IG User ID/);
+      expect(prisma.socialPost.create).not.toHaveBeenCalled();
+    });
+
+    it('tài khoản Instagram có igUserId trong extra_data thì lên lịch bình thường', async () => {
+      const prisma = createPrismaMock();
+      prisma.socialAccount.findFirst.mockResolvedValue({
+        id: 'acc-ig', platform: 'INSTAGRAM', extra_data: { igUserId: '123' }, platform_id: null,
+      });
+      prisma.socialPost.create.mockResolvedValue({ id: 'new' });
+      const { service } = createService(prisma);
+
+      await service.create('u1', {
+        accountId: 'acc-ig',
+        message: 'hi',
+        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+
+      expect(prisma.socialPost.create).toHaveBeenCalled();
+    });
+
+    it('gắn kèm task chưa nộp video (vd ASSIGNED) → từ chối', async () => {
+      const prisma = createPrismaMock();
+      prisma.socialAccount.findFirst.mockResolvedValue({ id: 'acc1', platform: 'FACEBOOK' });
+      prisma.task.findUnique.mockResolvedValue({ status: 'ASSIGNED' });
+      const { service } = createService(prisma);
+
+      await expect(
+        service.create('u1', {
+          accountId: 'acc1',
+          message: 'hi',
+          scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(/nộp video/);
+      expect(prisma.socialPost.create).not.toHaveBeenCalled();
+    });
+
+    it('gắn kèm task đã SUBMITTED (chưa duyệt) → vẫn cho lên lịch', async () => {
+      const prisma = createPrismaMock();
+      prisma.socialAccount.findFirst.mockResolvedValue({ id: 'acc1', platform: 'FACEBOOK' });
+      prisma.task.findUnique.mockResolvedValue({ status: 'SUBMITTED' });
+      prisma.socialPost.create.mockResolvedValue({ id: 'new' });
+      const { service } = createService(prisma);
+
+      await service.create('u1', {
+        accountId: 'acc1',
+        message: 'hi',
+        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        taskId: 'task-1',
+      });
+
+      expect(prisma.socialPost.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('syncPublishedLinkToTask (qua executePost)', () => {
+    const flush = () => new Promise((r) => setImmediate(r));
+
+    it('đăng thành công cho post gắn task → tự thêm link vào published_links', async () => {
+      const prisma = createPrismaMock();
+      prisma.task.findUnique.mockResolvedValue({ published_links: [] });
+      const { service, publishService } = createService(prisma);
+      publishService.executeScheduled.mockResolvedValue({ postId: 'fb_123' });
+
+      await (service as any).executePost(basePost({ task_id: 'task-1' }));
+      await flush();
+
+      expect(prisma.task.update).toHaveBeenCalledWith({
+        where: { id: 'task-1' },
+        data: {
+          published_links: [
+            expect.objectContaining({ platform: 'Facebook', url: 'https://www.facebook.com/fb_123' }),
+          ],
+        },
+      });
+    });
+
+    it('link đã có sẵn trong published_links (trùng URL) → không ghi lại', async () => {
+      const prisma = createPrismaMock();
+      prisma.task.findUnique.mockResolvedValue({
+        published_links: [{ id: 'x', platform: 'Facebook', url: 'https://www.facebook.com/fb_123' }],
+      });
+      const { service, publishService } = createService(prisma);
+      publishService.executeScheduled.mockResolvedValue({ postId: 'fb_123' });
+
+      await (service as any).executePost(basePost({ task_id: 'task-1' }));
+      await flush();
+
+      expect(prisma.task.update).not.toHaveBeenCalled();
+    });
+
+    it('post không gắn task_id → không đụng tới bảng task', async () => {
+      const prisma = createPrismaMock();
+      const { service } = createService(prisma);
+
+      await (service as any).executePost(basePost({ task_id: null }));
+      await flush();
+
+      expect(prisma.task.findUnique).not.toHaveBeenCalled();
+      expect(prisma.task.update).not.toHaveBeenCalled();
     });
   });
 });

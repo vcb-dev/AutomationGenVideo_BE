@@ -322,7 +322,11 @@ export class FacebookExternalScraperService {
     return { status: 'ok', message: `Đã gửi yêu cầu cào ${num} reels cho ${fp.name}.` };
   }
 
-  async scrapeByUrl(url: string, numOfPosts?: number): Promise<any> {
+  async scrapeByUrl(
+    url: string,
+    numOfPosts?: number,
+    classification?: { channel_type?: string; product_lines?: string[] },
+  ): Promise<any> {
     const cleanUrl = cleanFacebookUrl(url);
     const handle = extractHandleFromUrl(cleanUrl);
 
@@ -336,6 +340,9 @@ export class FacebookExternalScraperService {
     }
 
     if (fp) {
+      if (classification?.channel_type || classification?.product_lines) {
+        await this.updateClassification(fp.id, classification);
+      }
       if (fp.scraping_status === 'processing') {
         return {
           status: 'ok',
@@ -355,6 +362,13 @@ export class FacebookExternalScraperService {
     } else {
       // Lấy nhanh avatar và tên thật qua OpenGraph hoàn toàn miễn phí
       const meta = await fetchFacebookPageMeta(cleanUrl);
+      const channelType = classification?.channel_type && ['product', 'content'].includes(classification.channel_type)
+        ? classification.channel_type
+        : 'product';
+      const productLines = Array.isArray(classification?.product_lines)
+        ? classification.product_lines.map((t) => t.trim()).filter(Boolean)
+        : [];
+
       fp = await this.prisma.scraperFanpage.create({
         data: {
           profile_id: meta.profileId,
@@ -363,6 +377,8 @@ export class FacebookExternalScraperService {
           page_url: cleanUrl,
           avatar_url: meta.avatarUrl || null,
           is_visible_on_ui: true,
+          channel_type: channelType,
+          product_lines: productLines,
         },
       });
     }
@@ -422,8 +438,95 @@ export class FacebookExternalScraperService {
     return { id: Number(id), [field]: newValue };
   }
 
+  // ─── Phân loại kênh & Quản lý tag ──────────────────────────────────────────
+
+  async updateClassification(
+    id: bigint,
+    data: { channel_type?: string; product_lines?: string[] },
+  ): Promise<any> {
+    const fp = await this.prisma.scraperFanpage.findUnique({ where: { id } });
+    if (!fp) throw new HttpException({ error: 'Không tìm thấy fanpage' }, HttpStatus.NOT_FOUND);
+
+    const updateData: any = {};
+    if (data.channel_type && ['product', 'content'].includes(data.channel_type)) {
+      updateData.channel_type = data.channel_type;
+    }
+    if (Array.isArray(data.product_lines)) {
+      updateData.product_lines = data.product_lines.map((t) => t.trim()).filter(Boolean);
+    }
+
+    const updated = await this.prisma.scraperFanpage.update({
+      where: { id },
+      data: updateData,
+    });
+
+    return {
+      status: 'ok',
+      fanpage_id: Number(updated.id),
+      channel_type: updated.channel_type,
+      product_lines: updated.product_lines,
+    };
+  }
+
+  async listTags(): Promise<any[]> {
+    const tags = await this.prisma.scraperChannelTag.findMany({
+      orderBy: { created_at: 'asc' },
+    });
+    return tags.map((t) => ({
+      id: Number(t.id),
+      name: t.name,
+      slug: t.slug,
+      color: t.color,
+    }));
+  }
+
+  async createTag(name: string, color?: string): Promise<any> {
+    const trimmed = (name || '').trim();
+    if (!trimmed) throw new HttpException({ error: 'Tên tag không được để trống' }, HttpStatus.BAD_REQUEST);
+
+    const slug = trimmed
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'D')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    const existing = await this.prisma.scraperChannelTag.findFirst({
+      where: {
+        OR: [{ name: trimmed }, { slug }],
+      },
+    });
+    if (existing) {
+      return {
+        id: Number(existing.id),
+        name: existing.name,
+        slug: existing.slug,
+        color: existing.color,
+      };
+    }
+
+    const created = await this.prisma.scraperChannelTag.create({
+      data: {
+        name: trimmed,
+        slug: slug || `tag_${Date.now()}`,
+        color: color || 'indigo',
+      },
+    });
+
+    return {
+      id: Number(created.id),
+      name: created.name,
+      slug: created.slug,
+      color: created.color,
+    };
+  }
+
   // Tự mở khóa fanpage bị kẹt ở 'processing' quá lâu (worker crash giữa chừng).
   private async resetStaleLocks(): Promise<void> {
+    if (typeof this.prisma?.scraperFanpage?.updateMany !== 'function') return;
     const cutoff = new Date(Date.now() - STALE_LOCK_MINUTES * 60_000);
     const result = await this.prisma.scraperFanpage.updateMany({
       where: { scraping_status: 'processing', updated_at: { lt: cutoff } },
@@ -512,21 +615,33 @@ export class FacebookExternalScraperService {
    * Thêm hàng loạt Fanpage vào hệ thống (CHƯA CÀO VIDEO NGAY).
    * Lưu vào DB ở trạng thái 'idle' để hiển thị trên UI; khi nào user muốn cào thì mới bấm cào.
    */
-  async bulkAddFanpages(urls: string[]): Promise<{
+  async bulkAddFanpages(
+    urls: string[],
+    classification?: { channel_type?: string; product_lines?: string[] },
+  ): Promise<{
     total_received: number;
     added_count: number;
     skipped_count: number;
     added_pages: { id: number; name: string; handle: string; page_url: string }[];
     skipped_urls: { url: string; reason: string }[];
   }> {
-    const validInputs = urls.map(u => (u || '').trim()).filter(Boolean);
+    const validInputs = (urls || []).map((u) => (u || '').trim()).filter(Boolean);
     if (!Array.isArray(urls) || validInputs.length === 0) {
       throw new BadRequestException('Danh sách URLs không được để trống');
     }
 
+    await this.resetStaleLocks();
+
     const added_pages: { id: number; name: string; handle: string; page_url: string }[] = [];
     const skipped_urls: { url: string; reason: string }[] = [];
     const seenInBatch = new Set<string>();
+
+    const channelType = classification?.channel_type && ['product', 'content'].includes(classification.channel_type)
+      ? classification.channel_type
+      : 'product';
+    const productLines = Array.isArray(classification?.product_lines)
+      ? classification.product_lines.map((t) => t.trim()).filter(Boolean)
+      : [];
 
     for (const rawUrl of urls) {
       const trimmed = (rawUrl || '').trim();
@@ -579,6 +694,8 @@ export class FacebookExternalScraperService {
             is_visible_on_ui: true,
             is_initial_scraped: false,
             scraping_status: 'idle',
+            channel_type: channelType,
+            product_lines: productLines,
           },
         });
 
