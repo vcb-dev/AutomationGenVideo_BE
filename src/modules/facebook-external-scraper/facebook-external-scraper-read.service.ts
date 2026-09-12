@@ -53,21 +53,32 @@ export class FacebookExternalScraperReadService {
       scrape_error: p.scrape_error,
       reels_count: reelsCount,
       created_at: p.created_at,
+      channel_type: p.channel_type || 'product',
+      product_lines: p.product_lines || [],
     };
   }
 
   async discoveredFanpages(params: {
     page?: string; page_size?: string; search?: string; bookmarked?: string; periodic?: string;
+    channel_type?: string; product_line?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(50, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
     const search = (params.search || '').trim();
     const bookmarked = (params.bookmarked || '').trim();
     const periodic = (params.periodic || '').trim();
+    const channelType = (params.channel_type || '').trim().toLowerCase();
+    const productLine = (params.product_line || '').trim();
 
     const conditions: Prisma.Sql[] = [Prisma.sql`is_visible_on_ui = true`];
     if (bookmarked === 'true') conditions.push(Prisma.sql`is_bookmarked = true`);
     if (periodic === 'true') conditions.push(Prisma.sql`is_periodic_crawl = true`);
+    if (channelType && ['product', 'content'].includes(channelType)) {
+      conditions.push(Prisma.sql`channel_type = ${channelType}`);
+    }
+    if (productLine) {
+      conditions.push(Prisma.sql`${productLine} = ANY(product_lines)`);
+    }
     if (search) conditions.push(unaccentLike(Prisma.sql`name`, search));
     const whereClause = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 
@@ -83,11 +94,13 @@ export class FacebookExternalScraperReadService {
       avatar_drive_url: string | null; is_verified: boolean | null; followers_count: bigint; likes_count: bigint;
       is_visible_on_ui: boolean; is_periodic_crawl: boolean; is_bookmarked: boolean; is_initial_scraped: boolean;
       scraping_status: string; last_scraped_at: Date | null; scrape_error: string | null; created_at: Date;
+      channel_type: string; product_lines: string[];
       reels_count: bigint;
     }[]>`
       SELECT p.id, p.profile_id, p.name, p.handle, p.page_url, p.avatar_url, p.avatar_drive_url, p.is_verified,
              p.followers_count, p.likes_count, p.is_visible_on_ui, p.is_periodic_crawl, p.is_bookmarked,
              p.is_initial_scraped, p.scraping_status, p.last_scraped_at, p.scrape_error, p.created_at,
+             p.channel_type, p.product_lines,
              (SELECT COUNT(*) FROM scraper_facebook_reels r WHERE r.fanpage_id = p.id) AS reels_count
       FROM scraper_fanpages p
       ${whereClause}
