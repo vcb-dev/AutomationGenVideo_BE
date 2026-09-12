@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IdPhotoPosition } from '@prisma/client';
 
@@ -14,10 +14,6 @@ import { IdPhotoPosition } from '@prisma/client';
  * Mọi field đều optional để FE gửi được patch từng phần; service từ chối body rỗng hoàn toàn.
  * Riêng các field bắt buộc trên thẻ (name/team/id) nếu ĐƯỢC gửi thì không được rỗng —
  * @IsNotEmpty chỉ chạy khi field có mặt vì đứng sau @IsOptional.
- *
- * `cropOffsetX/Y/cropScale` ("Điều chỉnh vị trí ảnh trong khung tròn") CŨNG đi qua đây, cùng lý
- * do MIỄN PHÍ như trên: đổi toạ độ cắt không đụng tới ảnh gốc/AI, chỉ đổi cách VẼ ảnh đã có lên
- * PDF. Xem id-photo-crop.util.ts cho công thức toạ độ dùng chung với PDF thật.
  */
 export class UpdateIdPhotoDto {
   @ApiPropertyOptional({ example: 'Nguyễn Văn A' })
@@ -38,8 +34,16 @@ export class UpdateIdPhotoDto {
   @IsNotEmpty({ message: 'employeeId không được để trống' })
   employeeId?: string;
 
-  // [ĐÃ NGỪNG DÙNG từ 2026-09-09] `employeeTitlePrefix` (tiền tố chức danh) đã bị bỏ khỏi
-  // nghiệp vụ. PATCH không nhận nữa; cột DB `employee_title_prefix` vẫn giữ cho dữ liệu cũ.
+  @ApiPropertyOptional({
+    example: 'HĐ.',
+    description:
+      'Tiền tố chức danh in trước tên trên thẻ. Gửi chuỗi rỗng để XOÁ tiền tố đang có ' +
+      '(service quy về null) — khác với việc không gửi field, tức giữ nguyên giá trị cũ.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  employeeTitlePrefix?: string;
 
   @ApiPropertyOptional({
     enum: IdPhotoPosition,
@@ -48,31 +52,4 @@ export class UpdateIdPhotoDto {
   @IsOptional()
   @IsEnum(IdPhotoPosition)
   position?: IdPhotoPosition;
-
-  // ── "Điều chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) ──────────────────────────────
-  // Cùng đường PATCH miễn phí này (không đụng AI) — vẽ lại vị trí ảnh chỉ là thay đổi TOẠ ĐỘ
-  // cắt, không phải sinh lại ảnh. Biên [-5,5]/[0.1,10] chỉ là chặn RÁC/NaN thô ở tầng DTO; biên
-  // THẬT (không hở viền trắng, xem yêu cầu 5) do IdPhotoService#drawIdCardPage tự kẹp lại theo
-  // đúng kích thước ảnh thật mỗi lần render (xem id-photo-crop.util.ts#computeCropLayout) — nên
-  // dù FE gửi giá trị vượt biên thực tế (vd đổi cỡ ảnh), PDF/preview vẫn KHÔNG BAO GIỜ hở viền.
-  @ApiPropertyOptional({ description: 'Độ lệch tâm ảnh theo trục X, tính theo tỉ lệ cạnh khung tròn (0 = giữa khung).' })
-  @IsOptional()
-  @IsNumber()
-  @Min(-5)
-  @Max(5)
-  cropOffsetX?: number;
-
-  @ApiPropertyOptional({ description: 'Độ lệch tâm ảnh theo trục Y, tính theo tỉ lệ cạnh khung tròn (0 = giữa khung).' })
-  @IsOptional()
-  @IsNumber()
-  @Min(-5)
-  @Max(5)
-  cropOffsetY?: number;
-
-  @ApiPropertyOptional({ description: 'Hệ số phóng to trên nền "phủ khít khung" (1 = mặc định/ảnh cũ, tối đa 3).' })
-  @IsOptional()
-  @IsNumber()
-  @Min(0.1)
-  @Max(10)
-  cropScale?: number;
 }
