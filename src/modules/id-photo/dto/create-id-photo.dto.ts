@@ -1,5 +1,5 @@
-import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IdPhotoPosition } from '@prisma/client';
 
 export class CreateIdPhotoDto {
@@ -27,8 +27,14 @@ export class CreateIdPhotoDto {
   @IsNotEmpty()
   employeeId: string;
 
-  // [ĐÃ NGỪNG DÙNG từ 2026-09-09] `employeeTitlePrefix` (tiền tố chức danh) đã bị bỏ khỏi
-  // nghiệp vụ. API không nhận nữa; cột DB `employee_title_prefix` vẫn giữ cho dữ liệu cũ.
+  @ApiPropertyOptional({
+    example: 'HĐ.',
+    description: 'Tiền tố chức danh in trước tên trên thẻ (vd "HĐ." → "HĐ. BẢO VIỆT"). Bỏ trống thì chỉ in tên.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  employeeTitlePrefix?: string;
 
   @ApiProperty({
     enum: IdPhotoPosition,

@@ -2,8 +2,6 @@ import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { IdPhotoController } from './id-photo.controller';
 import { IdPhotoService } from './id-photo.service';
-import { IdPhotoBatchService } from './id-photo-batch.service';
-import { IdPhotoBatchWorker } from './id-photo-batch.worker';
 import { UsersModule } from '../users/users.module';
 
 @Module({
@@ -18,7 +16,7 @@ import { UsersModule } from '../users/users.module';
     UsersModule,
   ],
   controllers: [IdPhotoController],
-  providers: [IdPhotoService, IdPhotoBatchService, IdPhotoBatchWorker],
+  providers: [IdPhotoService],
   exports: [IdPhotoService],
 })
 export class IdPhotoModule {}
