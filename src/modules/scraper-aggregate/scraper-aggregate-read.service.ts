@@ -293,7 +293,7 @@ export class ScraperAggregateReadService {
 
     if (!platform || platform === 'threads') {
       const c: Prisma.Sql[] = [
-        Prisma.sql`p.is_owned = false`,
+        Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
       ];
       if (dateFrom) c.push(Prisma.sql`tp.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`tp.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -516,7 +516,7 @@ export class ScraperAggregateReadService {
                COALESCE(NULLIF(mp.avatar_drive_url, ''), mp.avatar_url, '') AS author_avatar,
                COALESCE(mp.page_id, '') AS author_username
         FROM video_management_ownedvideocontent v
-        LEFT JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
+        JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id AND mp.is_active = true
         ${where}
       `);
     }

@@ -128,10 +128,29 @@ export class FacebookOwnedPagesService {
     });
   }
 
+  private isTransientError(msg?: string): boolean {
+    if (!msg) return false;
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes('status code 502') ||
+      lower.includes('status code 503') ||
+      lower.includes('status code 504') ||
+      lower.includes('econnrefused') ||
+      lower.includes('etimedout') ||
+      lower.includes('timedout') ||
+      lower.includes('timeout') ||
+      lower.includes('econnreset') ||
+      lower.includes('enotfound') ||
+      lower.includes('network error')
+    );
+  }
+
   private async unlockPage(id: bigint, error?: string): Promise<void> {
+    const isTransient = error ? this.isTransientError(error) : false;
     const data: any = {
       is_scraping: false,
-      scrape_error: error ? error.slice(0, 500) : null,
+      // Không ghi nhận lỗi hạ tầng tạm thời (502, timeout...) thành scrape_error vĩnh viễn của kênh
+      scrape_error: isTransient ? null : error ? error.slice(0, 500) : null,
       updated_at: new Date(),
     };
     if (!error) data.last_scraped_at = new Date();
