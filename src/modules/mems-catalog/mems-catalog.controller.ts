@@ -267,6 +267,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('models/:id')
   @ApiOperation({ summary: 'Xóa model thiết bị (Chỉ Admin)' })
   deleteModel(@Param('id') id: string) {
@@ -274,6 +275,7 @@ export class MemsCatalogController {
   }
 
   @Roles(UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
   @Delete('categories/:id')
   @ApiOperation({ summary: 'Xóa danh mục thiết bị (Chỉ Admin)' })
   deleteCategory(@Param('id') id: string) {
