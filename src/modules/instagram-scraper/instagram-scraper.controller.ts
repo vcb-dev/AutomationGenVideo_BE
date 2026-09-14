@@ -1,10 +1,15 @@
-import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
-import { InstagramScraperService } from './instagram-scraper.service';
+import {
+  InstagramScraperService,
+  MANAGED_TOGGLE_FIELDS,
+  TOGGLE_FIELDS,
+  type InstagramToggleField,
+} from './instagram-scraper.service';
 import { InstagramScraperReadService } from './instagram-scraper-read.service';
 
 function assertCanManageChannels(req: any): void {
@@ -22,10 +27,22 @@ function assertCanManageChannels(req: any): void {
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/instagram')
 export class InstagramScraperController {
+  private readonly logger = new Logger(InstagramScraperController.name);
+
   constructor(
     private readonly service: InstagramScraperService,
     private readonly readService: InstagramScraperReadService,
   ) {}
+
+  @Post(['profiles/sync-all', 'periodic-refresh'])
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    this.service.periodicRefresh().catch((err: any) => {
+      this.logger.error(`[IG-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
+    });
+    return { status: 'ok', message: 'Đã bắt đầu cào video mới cho các kênh Instagram chú ý trong nền!' };
+  }
 
   @Get('profiles')
   async profilesList(@Query() query: Record<string, string>) {
@@ -83,18 +100,37 @@ export class InstagramScraperController {
     return this.service.scrapeProfile(username, body?.is_owned, targetCount);
   }
 
+  /**
+   * `is_owned` = đây là kênh của công ty, không phải kênh đối thủ đang theo dõi. Cờ này
+   * quyết định profile có được tính vào trang Tổng quan kênh nội bộ hay không
+   * (owned-stats.service.ts lọc `WHERE p.is_owned = true`), nên chỉ leader/admin được đổi —
+   * bật nhầm một kênh đối thủ là số liệu công ty sai theo.
+   */
   @Post('profiles/:profileId/toggle')
   async toggle(
     @Param('profileId') profileId: string,
-    @Body() body: { field?: 'is_bookmarked' | 'is_tracked' },
+    @Body() body: { field?: InstagramToggleField },
     @Request() req: any,
   ) {
     const field = body?.field;
-    if (field !== 'is_bookmarked' && field !== 'is_tracked') {
-      throw new HttpException({ error: 'field must be is_bookmarked or is_tracked' }, HttpStatus.BAD_REQUEST);
+    if (!field || !TOGGLE_FIELDS.includes(field)) {
+      throw new HttpException(
+        { error: `field must be one of: ${TOGGLE_FIELDS.join(', ')}` },
+        HttpStatus.BAD_REQUEST,
+      );
     }
-    if (field === 'is_tracked') assertCanManageChannels(req);
+    if (MANAGED_TOGGLE_FIELDS.includes(field)) assertCanManageChannels(req);
     const newValue = await this.service.toggleProfile(BigInt(profileId), field);
     return { status: 'ok', [field]: newValue };
   }
+
+  // Xoá cứng kênh: bản ghi kênh + toàn bộ video/lịch sử của nó biến mất vĩnh viễn.
+  // Chỉ ADMIN/LEADER, khớp phân quyền của mọi thao tác quản lý kênh khác.
+  @Delete('profiles/:profileId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async remove(@Param('profileId') profileId: string) {
+    return this.service.deleteProfile(BigInt(profileId));
+  }
+
 }

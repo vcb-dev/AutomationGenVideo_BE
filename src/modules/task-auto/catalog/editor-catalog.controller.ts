@@ -12,7 +12,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoCatalogService } from "./catalog.service";
@@ -30,7 +30,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoEditorCatalogController {
   constructor(private catalog: TaskAutoCatalogService) {}
@@ -336,24 +336,6 @@ export class TaskAutoEditorCatalogController {
     return this.catalog.listTeamPushRequests(
       teamId,
       status,
-      req.user.id,
-      req.user.roles ?? [],
-    );
-  }
-
-  @Get("teams/:teamId/push-stats")
-  @ApiOperation({
-    summary:
-      "Monthly count of content approved into team catalog per member (leader/admin/manager)",
-  })
-  getTeamMonthlyPushStats(
-    @Param("teamId") teamId: string,
-    @Query("month") month: string | undefined,
-    @Request() req: any,
-  ) {
-    return this.catalog.getTeamMonthlyPushStats(
-      teamId,
-      month,
       req.user.id,
       req.user.roles ?? [],
     );

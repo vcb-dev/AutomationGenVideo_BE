@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 import {
   InstagramAiClientService,
   ParsedInstagramFullProfile,
@@ -9,6 +10,19 @@ import {
 } from './instagram-ai-client.service';
 
 const STALE_LOCK_MINUTES = 30;
+
+/**
+ * Các cờ bật/tắt được trên một profile Instagram.
+ *
+ * `is_owned` = kênh của công ty, không phải kênh đối thủ đang theo dõi. Đây là tiêu chí duy
+ * nhất để trang Tổng quan kênh nội bộ tính một profile vào số liệu — xem
+ * owned-stats.service.ts (`WHERE p.is_owned = true`).
+ */
+export const TOGGLE_FIELDS = ['is_bookmarked', 'is_tracked', 'is_owned'] as const;
+export type InstagramToggleField = (typeof TOGGLE_FIELDS)[number];
+
+/** Cờ đụng tới số liệu chung của công ty — chỉ leader/admin. `is_bookmarked` là ghim cá nhân. */
+export const MANAGED_TOGGLE_FIELDS: readonly InstagramToggleField[] = ['is_tracked', 'is_owned'];
 
 // Toàn bộ logic ghi DB port từ AI (tikhub_instagram.py::upsert_profile_from_user_info/
 // upsert_profile_from_item/ingest_instagram_reels đã xóa + scraper_views.py::
@@ -269,12 +283,29 @@ export class InstagramScraperService {
 
   // ─── Toggle bookmark/tracked ─────────────────────────────────────────────
 
-  async toggleProfile(id: bigint, field: 'is_bookmarked' | 'is_tracked'): Promise<boolean> {
+  async toggleProfile(id: bigint, field: InstagramToggleField): Promise<boolean> {
     const profile = await this.prisma.scraperInstagramProfile.findUnique({ where: { id } });
     if (!profile) throw new HttpException({ error: 'Profile not found' }, HttpStatus.NOT_FOUND);
     const newValue = !profile[field];
     await this.prisma.scraperInstagramProfile.update({ where: { id }, data: { [field]: newValue } });
     return newValue;
+  }
+
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Video/metrics gắn khoá ngoại onDelete Cascade nên Postgres tự dọn bảng con.
+  // Phải ĐẾM TRƯỚC khi xoá: đếm sau thì cascade đã quét sạch và con số báo về luôn là 0,
+  // trong khi FE dùng đúng con số này để nói người dùng vừa mất bao nhiêu video.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperInstagramProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    const videosDeleted = await this.prisma.scraperInstagramReel.count({ where: { profile_id: id } });
+    await this.prisma.scraperInstagramProfile.delete({ where: { id } });
+
+    const name = profile.full_name || profile.username;
+    this.logger.warn(`[INSTAGRAM] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${videosDeleted} video.`);
+    return buildDeleteChannelResult(id, name, videosDeleted);
   }
 
   // Tự mở khóa profile bị kẹt ở 'processing' quá lâu (worker crash giữa chừng), tránh
@@ -300,7 +331,7 @@ export class InstagramScraperService {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperInstagramProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: { is_tracked: true, scraping_status: { not: 'processing' } },
       orderBy: { last_scraped_at: 'asc' },
     });
 
@@ -315,7 +346,8 @@ export class InstagramScraperService {
 
     for (const profile of profiles) {
       try {
-        await this.scrapeProfileReels(profile.id, 10);
+        const count = profile.is_initial_scraped ? 10 : 30;
+        await this.scrapeProfileReels(profile.id, count);
         done++;
       } catch (err: any) {
         failed++;

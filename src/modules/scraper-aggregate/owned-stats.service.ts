@@ -36,6 +36,20 @@ const DROP_THRESHOLD_PERCENT = -30;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * Bắt hashtag tuyến nội dung #A1…#A5 trong caption.
+ *
+ * Phần chặn biên phải là lookahead `(?!…)` chứ không phải một nhóm khớp thật: với cờ 'g',
+ * nhóm khớp thật sẽ NUỐT luôn ký tự phân tách, nên caption dán liền "#A1#A2" chỉ ra được A1
+ * — dấu '#' của thẻ sau đã bị lần khớp trước ăn mất. Lookahead thì không tiêu thụ ký tự nào.
+ *
+ * Vẫn phải chặn biên, nếu không "#A10" sẽ bị đọc thành tuyến A1.
+ */
+export const CONTENT_LINE_PATTERN = '#(A[1-5])(?![[:alnum:]])';
+
+/** Hashtag thường, tối thiểu 2 ký tự — [[:alnum:]] của Postgres nhận cả chữ có dấu. */
+export const HASHTAG_PATTERN = '#([[:alnum:]_]{2,64})';
+
+/**
  * Recognizes Vietnamese characters in caption for market classification (VN vs Global).
  */
 const VIETNAMESE_ACCENTS = Prisma.sql`(COALESCE(v.mo_ta, '') ~* '[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]')`;
@@ -117,6 +131,14 @@ interface RawHashtagRow {
   views: bigint;
 }
 
+/**
+ * Cảnh báo hiển thị thẳng trên trang Tổng quan kênh nội bộ.
+ *
+ * Tên khoá tiếng Anh, còn `content`/`label` là chữ NGƯỜI DÙNG đọc nên phải là tiếng Việt.
+ * Trước đây `content` giữ bản tiếng Anh còn bản dịch nằm ở `noi_dung`; FE lại đọc `content`
+ * trước nên trang tiếng Việt hiện ra "Sync error: …", "No new posts in 15 days". Nay cả hai
+ * khoá cùng mang một câu tiếng Việt, đọc khoá nào cũng đúng.
+ */
 export interface ChannelAlert {
   platform: string;
   channel: string;
@@ -243,7 +265,7 @@ export class OwnedStatsService {
             SELECT DISTINCT v.platform, v.post_id, v.views, ${VIETNAMESE_ACCENTS} AS vn,
                    upper(m[1]) AS ma
             FROM (${currentPeriod}) AS v,
-                 regexp_matches(v.mo_ta, '#(A[1-5])([^[:alnum:]]|$)', 'gi') AS m
+                 regexp_matches(v.mo_ta, ${CONTENT_LINE_PATTERN}, 'gi') AS m
           ) AS t
           GROUP BY 1, 2
         `,
@@ -252,7 +274,7 @@ export class OwnedStatsService {
           FROM (
             SELECT DISTINCT v.platform, v.post_id, v.views, lower(m[1]) AS the
             FROM (${currentPeriod}) AS v,
-                 regexp_matches(v.mo_ta, '#([[:alnum:]_]{2,64})', 'g') AS m
+                 regexp_matches(v.mo_ta, ${HASHTAG_PATTERN}, 'g') AS m
           ) AS t
           WHERE t.the !~ '^a[1-5]$'
           GROUP BY 1
@@ -290,7 +312,12 @@ export class OwnedStatsService {
       posts: toNum(h.posts),
       views: toNum(h.views),
     }));
-    const alerts = this.buildAlerts(channelList, byChannelRaw, dayCount);
+    // Cắt bớt cho gọn màn hình thì được, nhưng phải nói ra là đã cắt bao nhiêu — xem
+    // sync-error-alert-aggregation.spec.ts: sự cố 94/95 fanpage chết chạy được 9 ngày vì
+    // trang chỉ hiện 12 dòng và không đâu nói con số thật.
+    const allAlerts = this.buildAlerts(channelList, byChannelRaw, dayCount);
+    const alerts = allAlerts.slice(0, MAX_ALERTS_DISPLAY);
+    const alertTotal = allAlerts.length;
     const totalChannels = channelList.length;
 
     const period = {
@@ -312,6 +339,7 @@ export class OwnedStatsService {
       contentLines,
       hashtags,
       alerts,
+      alertTotal,
       totalChannels,
 
       // Backward compatibility
@@ -323,6 +351,7 @@ export class OwnedStatsService {
       tuyen_noi_dung: contentLines,
       hashtag: hashtags,
       canh_bao: alerts,
+      tong_canh_bao: alertTotal,
       tong_kenh: totalChannels,
     };
   }
@@ -331,10 +360,13 @@ export class OwnedStatsService {
     const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
+      // is_active = tắt quản lý một fanpage. Lọc ở ĐÂY lẫn ở sourceChannels: lọc một bên
+      // thôi thì tử số và mẫu số lệch nhau, và video của page đã tắt sẽ đẻ ra một dòng
+      // không tên trong bảng xếp hạng vì không tra ngược được sang danh sách kênh.
       branches.push(Prisma.sql`
         SELECT 'facebook'::text AS platform,
-               COALESCE(mp.page_id, '')::text AS kenh_id,
-               COALESCE(mp.name, '')::text AS kenh_ten,
+               mp.page_id::text AS kenh_id,
+               mp.name::text AS kenh_ten,
                v.post_id::text AS post_id,
                COALESCE(v.permalink_url, '')::text AS url,
                COALESCE(v.caption, '')::text AS mo_ta,
@@ -345,7 +377,8 @@ export class OwnedStatsService {
                v.share_count::bigint AS shares,
                v.published_at AS ngay
         FROM video_management_ownedvideocontent v
-        LEFT JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
+        JOIN video_management_managedfacebookpage mp
+          ON mp.id = v.managed_page_id AND mp.is_active = true
         WHERE v.published_at >= ${startDate} AND v.published_at <= ${endDate}
       `);
     }
@@ -411,10 +444,13 @@ export class OwnedStatsService {
     }
 
     if (!platform || platform === 'threads') {
+      // Bảng threads đặt tên hiển thị ở cột `name`, không phải `nickname` như tiktok/instagram
+      // — xem model ScraperThreadsProfile. Dùng nhầm thì Postgres báo 42703 và vì mặc định
+      // trang gộp cả 5 nền tảng nên hỏng nhánh này là hỏng nguyên trang.
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform,
                p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
+               COALESCE(NULLIF(p.name, ''), p.username)::text AS kenh_ten,
                tp.post_id::text AS post_id,
                tp.url::text AS url,
                tp.text::text AS mo_ta,
@@ -446,7 +482,7 @@ export class OwnedStatsService {
                mp.is_active AS hoat_dong,
                (SELECT MAX(v.published_at) FROM video_management_ownedvideocontent v
                  WHERE v.managed_page_id = mp.id) AS ngay_cuoi
-        FROM video_management_managedfacebookpage mp
+        FROM video_management_managedfacebookpage mp WHERE mp.is_active = true
       `);
     }
 
@@ -488,7 +524,7 @@ export class OwnedStatsService {
     if (!platform || platform === 'threads') {
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform, p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS ten,
+               COALESCE(NULLIF(p.name, ''), p.username)::text AS ten,
                COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '')::text AS avatar,
                p.followers_count::bigint AS followers,
                p.last_scraped_at AS dong_bo, NULLIF(p.scrape_error, '')::text AS loi,
@@ -537,6 +573,9 @@ export class OwnedStatsService {
           };
         });
 
+        const currentViews = toNum(current?.views);
+        const currentPosts = toNum(current?.posts);
+
         const followers = channelList
           .filter((k) => k.platform === p)
           .reduce((s, k) => s + toNum(k.followers), 0);
@@ -545,7 +584,16 @@ export class OwnedStatsService {
 
         return {
           platform: p,
-          views: toNum(current?.views),
+          /**
+           * Có bài trong kỳ mà tổng lượt xem bằng 0 thì đó không phải "không ai xem" — đó là
+           * "chưa lấy được số". Đo trên dữ liệu thật: 1.446/1.470 reels Instagram có
+           * play_count = 0 vì token thiếu quyền `instagram_manage_insights`, trong khi 947
+           * reels vẫn có lượt thích. Để số 0 trộn vào số liệu Facebook là đọc sai hẳn: biểu
+           * đồ phẳng đáy, trung bình lượt xem/bài tụt, kênh Instagram rơi xuống cuối bảng
+           * xếp hạng — mà không đâu nói rằng con số đó không tồn tại.
+           */
+          viewsAvailable: currentPosts === 0 || currentViews > 0,
+          views: currentViews,
           likes: toNum(current?.likes),
           comments: toNum(current?.comments),
           shares: toNum(current?.shares),
@@ -654,6 +702,28 @@ const MAX_ALERTS_DISPLAY = 12;
 /** Threshold for grouping identical error alerts. */
 const ERROR_GROUPING_THRESHOLD = 3;
 
+/** Một câu tiếng Việt duy nhất, đổ vào cả khoá tiếng Anh lẫn khoá cũ — xem ChannelAlert. */
+function makeAlert(
+  platform: string,
+  channel: string,
+  content: string,
+  level: 'w' | 'b',
+  label: string,
+): ChannelAlert {
+  return {
+    platform,
+    channel,
+    content,
+    level,
+    label,
+    // Backward compatibility
+    kenh: channel,
+    noi_dung: content,
+    muc: level,
+    nhan: label,
+  };
+}
+
 export function buildAlerts(
   channelList: ChannelListRow[],
   byChannel: ChannelRow[],
@@ -676,33 +746,21 @@ export function buildAlerts(
     const errorMsg = key.slice(key.indexOf('|') + 1);
     if (group.length < ERROR_GROUPING_THRESHOLD) {
       for (const k of group) {
-        alerts.push({
-          platform: k.platform,
-          channel: k.ten,
-          content: `Sync error: ${errorMsg}`,
-          level: 'b',
-          label: 'Error',
-          kenh: k.ten,
-          noi_dung: `Đồng bộ lỗi: ${errorMsg}`,
-          muc: 'b',
-          nhan: 'Lỗi',
-        });
+        alerts.push(makeAlert(k.platform, k.ten, `Đồng bộ lỗi: ${errorMsg}`, 'b', 'Lỗi'));
       }
       continue;
     }
 
     const platformTotal = activeChannels.filter((k) => k.platform === group[0].platform).length;
-    alerts.push({
-      platform: group[0].platform,
-      channel: `${group.length} channels`,
-      content: `Sync errors in ${group.length}/${platformTotal} channels: ${errorMsg}`,
-      level: 'b',
-      label: 'Error',
-      kenh: `${group.length} kênh`,
-      noi_dung: `Đồng bộ lỗi ở ${group.length}/${platformTotal} kênh: ${errorMsg}`,
-      muc: 'b',
-      nhan: 'Lỗi',
-    });
+    alerts.push(
+      makeAlert(
+        group[0].platform,
+        `${group.length} kênh`,
+        `Đồng bộ lỗi ở ${group.length}/${platformTotal} kênh: ${errorMsg}`,
+        'b',
+        'Lỗi',
+      ),
+    );
   }
 
   for (const k of byChannel.filter((x) => x.ky === 'nay')) {
@@ -716,50 +774,31 @@ export function buildAlerts(
     const meta = channelList.find((x) => x.platform === k.platform && x.kenh_id === k.kenh_id);
     if (meta && !meta.hoat_dong) continue;
     const name = meta?.ten || k.kenh_id;
-    alerts.push({
-      platform: k.platform,
-      channel: name,
-      content: `Views dropped by ${Math.abs(delta)}% compared to the prior ${dayCount} days`,
-      level: 'b',
-      label: 'Drop',
-      kenh: name,
-      noi_dung: `Lượt xem giảm ${Math.abs(delta)}% so với ${dayCount} ngày trước đó`,
-      muc: 'b',
-      nhan: 'Tụt',
-    });
+    alerts.push(
+      makeAlert(
+        k.platform,
+        name,
+        `Lượt xem giảm ${Math.abs(delta)}% so với ${dayCount} ngày trước đó`,
+        'b',
+        'Tụt',
+      ),
+    );
   }
 
   for (const k of activeChannels) {
     if (!k.ngay_cuoi) {
-      alerts.push({
-        platform: k.platform,
-        channel: k.ten,
-        content: 'No videos scraped yet',
-        level: 'w',
-        label: 'Empty',
-        kenh: k.ten,
-        noi_dung: 'Chưa cào được video nào',
-        muc: 'w',
-        nhan: 'Trống',
-      });
+      alerts.push(makeAlert(k.platform, k.ten, 'Chưa cào được video nào', 'w', 'Trống'));
       continue;
     }
     const silentDays = Math.floor((now - k.ngay_cuoi.getTime()) / 86_400_000);
     if (silentDays < SILENCE_THRESHOLD_DAYS) continue;
-    alerts.push({
-      platform: k.platform,
-      channel: k.ten,
-      content: `No new posts in ${silentDays} days`,
-      level: 'w',
-      label: 'Silent',
-      kenh: k.ten,
-      noi_dung: `Chưa đăng bài trong ${silentDays} ngày`,
-      muc: 'w',
-      nhan: 'Im lặng',
-    });
+    alerts.push(
+      makeAlert(k.platform, k.ten, `Chưa đăng bài trong ${silentDays} ngày`, 'w', 'Im lặng'),
+    );
   }
 
-  return alerts.slice(0, MAX_ALERTS_DISPLAY);
+  // Trả về TẤT CẢ. Người gọi tự cắt cho vừa màn hình và nói ra đã cắt bao nhiêu.
+  return alerts;
 }
 
 export function normalizePlatform(raw?: string): string {

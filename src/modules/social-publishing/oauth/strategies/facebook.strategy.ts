@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_OAUTH_DIALOG_UNVERSIONED } from '../../platform-api.const';
 import { SocialPlatform } from '@prisma/client';
 
 function buildRedirectUri(envVar: string, platform: string): string {
@@ -20,11 +21,22 @@ export class FacebookOAuthStrategy {
     const params = new URLSearchParams({
       client_id: process.env.FB_APP_ID!,
       redirect_uri: this.redirectUri,
-      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish',
+      // `instagram_manage_insights` là quyền DUY NHẤT đọc được lượt xem reels. Thiếu nó thì
+      // mọi lời gọi /{media-id}/insights trả về "(#10) Application does not have permission
+      // for this action" — đã đo trên token thật của 3 kênh: 15 quyền được cấp, không có
+      // quyền này. Hệ quả: trang Tổng quan kênh nội bộ hiện Instagram với like/bình luận
+      // nhưng lượt xem bằng 0 (1.446/1.470 reels trong kho có play_count = 0).
+      //
+      // instagram.strategy.ts (Flow 1) vốn đã xin quyền này; thiếu sót nằm ở đây — tài khoản
+      // Instagram tạo ra từ luồng kết nối Facebook nên thừa hưởng đúng scope của luồng này.
+      //
+      // LƯU Ý: token đã cấp KHÔNG tự có thêm quyền. Phải kết nối lại tài khoản thì token mới
+      // mang quyền mới.
+      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish,instagram_manage_insights',
       response_type: 'code',
       state,
     });
-    return `https://www.facebook.com/dialog/oauth?${params}`;
+    return `${FACEBOOK_OAUTH_DIALOG_UNVERSIONED}?${params}`;
   }
 
   async exchangeCode(code: string): Promise<{
@@ -32,14 +44,14 @@ export class FacebookOAuthStrategy {
     accessToken: string; tokenExpiresAt: Date;
   }> {
     // 1. Short-lived token
-    const shortRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const shortRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: { client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, redirect_uri: this.redirectUri, code },
       timeout: 15000,
     });
     const shortToken = shortRes.data.access_token;
 
     // 2. Long-lived token (60 ngày)
-    const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+    const longRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/oauth/access_token`, {
       params: { grant_type: 'fb_exchange_token', client_id: process.env.FB_APP_ID, client_secret: process.env.FB_APP_SECRET, fb_exchange_token: shortToken },
       timeout: 15000,
     });
@@ -47,7 +59,7 @@ export class FacebookOAuthStrategy {
     const expiresIn = longRes.data.expires_in || 5184000; // 60 days default
 
     // 3. Profile
-    const profileRes = await axios.get('https://graph.facebook.com/v21.0/me', {
+    const profileRes = await axios.get(`${FACEBOOK_GRAPH_BASE}/me`, {
       params: { access_token: accessToken, fields: 'id,name,picture.type(large)' },
       timeout: 15000,
     });

@@ -288,8 +288,8 @@ export class ScraperAggregateReadService {
                COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '') AS thumbnail_url,
                NULL::double precision AS duration_seconds, tp.views_count AS play_count,
                tp.likes_count, tp.replies_count AS comments_count, tp.date_posted,
-               COALESCE(p.profile_id, '') AS author_id,
-               COALESCE(NULLIF(p.nickname, ''), p.username) AS author_name,
+               COALESCE(p.threads_user_id, '') AS author_id,
+               COALESCE(NULLIF(p.name, ''), p.username) AS author_name,
                COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS author_avatar,
                p.username AS author_username
         FROM scraper_threads_posts tp
@@ -516,7 +516,7 @@ export class ScraperAggregateReadService {
                COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '') AS thumbnail_url,
                NULL::double precision AS duration_seconds, tp.views_count AS play_count,
                tp.likes_count, tp.replies_count AS comments_count, tp.date_posted,
-               COALESCE(NULLIF(p.nickname, ''), p.username) AS author_name,
+               COALESCE(NULLIF(p.name, ''), p.username) AS author_name,
                COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS author_avatar,
                p.username AS author_username
         FROM scraper_threads_posts tp
@@ -587,7 +587,7 @@ export class ScraperAggregateReadService {
              (SELECT COUNT(*)::int FROM scraper_youtube_shorts s WHERE s.profile_id = p.id)
       FROM scraper_youtube_profiles p WHERE p.is_owned
       UNION ALL
-      SELECT 'threads', p.username, COALESCE(NULLIF(p.nickname, ''), p.username),
+      SELECT 'threads', p.username, COALESCE(NULLIF(p.name, ''), p.username),
              (SELECT COUNT(*)::int FROM scraper_threads_posts tp WHERE tp.profile_id = p.id)
       FROM scraper_threads_profiles p WHERE p.is_owned
       ORDER BY so_video DESC, ten ASC

@@ -2,18 +2,25 @@ import { of, throwError } from 'rxjs';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { TransformStatus } from '@prisma/client';
 import { PaastService } from '../paast.service';
+import { PAAST_LOGIC_VERSION } from '../../interfaces/paast-analysis.interface';
 
 /**
- * PaastService — bản tách ra khỏi AiIntegrationService (xem comment gốc tại paast.service.ts).
- * CHƯA được đăng ký làm provider/dùng ở đâu, nhưng vẫn nằm trong src/*.ts nên vẫn cần test riêng
- * theo luật CI. Cùng bộ hành vi đã khoá ở AiIntegrationService — PAAST
- * (../../__tests__/paast.service.spec.ts): findLatestByContent không lọc theo user,
- * getPaastHistoryDetail chặn xem lịch sử người khác, upgradeAnalysis chỉ nâng cấp bản đã xong.
+ * PAAST Analyzer — tách khỏi AiIntegrationService thành PaastService riêng, được AiIntegrationModule
+ * đăng ký làm provider @Global; AiIntegrationController và OwnedScriptService inject thẳng service này.
+ *
+ * Các quyết định nghiệp vụ được khoá ở đây:
+ * - findLatestByContent KHÔNG lọc theo user (điểm chỉ phụ thuộc nội dung), và chỉ nhận bản đúng
+ *   PAAST_LOGIC_VERSION hiện hành — bản chấm bằng công thức đời trước không tái dùng.
+ * - resolvePaastContent: có `content` dán thẳng thì dùng luôn; chỉ có `fileUrl` thì nhờ AI service
+ *   trích text (content dài hay được đính kèm dưới dạng link Google Docs).
+ * - getPaastHistoryDetail chặn xem lịch sử người khác (404 thay vì 403 để không lộ record tồn tại).
+ * - upgradeAnalysis chỉ nâng cấp được bản đã phân tích xong, trích đúng tiêu chí `miss`.
  */
 describe('PaastService', () => {
   function build(prismaOverrides: Record<string, any> = {}) {
     const httpService: any = {
       post: jest.fn(() => of({ data: {} })),
+      get: jest.fn(() => of({ data: [] })),
     };
     const configService: any = {
       get: jest.fn((key: string, def?: string) =>
@@ -36,41 +43,120 @@ describe('PaastService', () => {
   }
 
   describe('findLatestByContent', () => {
-    it('không lọc theo user_id — chỉ theo nội dung + trạng thái SUCCESS', async () => {
+    it('không lọc theo user_id — chỉ theo nội dung + trạng thái SUCCESS, lấy tối đa 5 bản gần nhất', async () => {
       const { service, prisma } = build();
 
       await service.findLatestByContent('nội dung abc');
 
-      expect(prisma.paastAnalysisHistory.findFirst).toHaveBeenCalledWith({
-        where: { input_text: 'nội dung abc', status: TransformStatus.SUCCESS },
-        orderBy: { created_at: 'desc' },
+      const arg = prisma.paastAnalysisHistory.findMany.mock.calls[0][0];
+      expect(arg.where).not.toHaveProperty('user_id');
+      expect(arg.where).toEqual({ input_text: 'nội dung abc', status: TransformStatus.SUCCESS });
+      expect(arg.take).toBe(5);
+    });
+
+    it('bỏ qua bản ghi có logic_version khác/không có, trả bản khớp version hiện hành', async () => {
+      const stale = { id: 'old', analysis_result: { logic_version: 'v1' } };
+      const legacy = { id: 'legacy', analysis_result: {} };
+      const current = { id: 'current', analysis_result: { logic_version: PAAST_LOGIC_VERSION } };
+      const { service } = build({
+        paastAnalysisHistory: { findMany: jest.fn(async () => [stale, legacy, current]) },
       });
+
+      await expect(service.findLatestByContent('nội dung abc')).resolves.toEqual(current);
+    });
+
+    it('không bản nào khớp version hiện hành thì trả null (buộc chấm lại)', async () => {
+      const { service } = build({
+        paastAnalysisHistory: { findMany: jest.fn(async () => [{ id: 'old', analysis_result: { logic_version: 'v1' } }]) },
+      });
+
+      await expect(service.findLatestByContent('nội dung abc')).resolves.toBeNull();
+    });
+  });
+
+  describe('resolvePaastContent', () => {
+    it('có content dán thẳng thì trả nguyên (đã trim), KHÔNG gọi AI service', async () => {
+      const { service, httpService } = build();
+
+      const text = await service.resolvePaastContent({ content: '  nội dung dán thẳng đủ dài  ' } as any);
+
+      expect(text).toBe('nội dung dán thẳng đủ dài');
+      expect(httpService.post).not.toHaveBeenCalled();
+    });
+
+    it('chỉ có fileUrl thì gọi /api/ai/paast/extract-text/ và trả text trích được', async () => {
+      const { service, httpService } = build();
+      const extracted = 'x'.repeat(250);
+      httpService.post.mockReturnValueOnce(of({ data: { success: true, text: extracted, char_count: 250 } }));
+
+      const text = await service.resolvePaastContent({ fileUrl: 'https://docs.google.com/document/d/abc/edit' } as any);
+
+      expect(text).toBe(extracted);
+      const [url, body] = httpService.post.mock.calls[0];
+      expect(url).toBe('http://localhost:8001/api/ai/paast/extract-text/');
+      expect(body).toEqual({ file_url: 'https://docs.google.com/document/d/abc/edit' });
+    });
+
+    it('text trích được < 100 ký tự (file scan/ảnh) thì báo BadRequestException', async () => {
+      const { service, httpService } = build();
+      httpService.post.mockReturnValueOnce(of({ data: { text: 'quá ngắn' } }));
+
+      await expect(
+        service.resolvePaastContent({ fileUrl: 'https://drive.google.com/file/d/abc/view' } as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('AI service trả lỗi thì bọc lại message của nó trong BadRequestException', async () => {
+      const { service, httpService } = build();
+      httpService.post.mockReturnValueOnce(
+        throwError(() => ({ response: { data: { error: 'Không đọc được nội dung từ file' } } })),
+      );
+
+      await expect(
+        service.resolvePaastContent({ fileUrl: 'https://docs.google.com/document/d/abc/edit' } as any),
+      ).rejects.toThrow('Không đọc được nội dung từ file');
+    });
+
+    it('không có cả content lẫn fileUrl thì báo BadRequestException', async () => {
+      const { service } = build();
+
+      await expect(service.resolvePaastContent({} as any)).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('analyzeContent', () => {
-    it('gọi AI service thành công → lưu SUCCESS kèm điểm/verdict', async () => {
+    it('gọi AI service thành công → lưu SUCCESS kèm điểm/verdict/video_realism/score_band + logic_version', async () => {
       const { service, prisma, httpService } = build();
       httpService.post.mockReturnValueOnce(
-        of({ data: { layers: { action: {} }, total_score: 85, verdict: 'PASS', cta_warning: null } }),
-      );
-
-      await service.analyzeContent('user-1', { content: 'nội dung dài đủ 100 ký tự...' } as any);
-
-      expect(prisma.paastAnalysisHistory.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ status: TransformStatus.SUCCESS, total_score: 85 }),
+        of({
+          data: {
+            layers: { action: {} },
+            video_realism: { opening_beat: 'x' },
+            total_score: 85,
+            score_band: 'ready',
+            verdict: 'PASS',
+            cta_warning: null,
+          },
         }),
       );
+
+      await service.analyzeContent('user-1', { content: 'n'.repeat(120) } as any);
+
+      const data = prisma.paastAnalysisHistory.update.mock.calls[0][0].data;
+      expect(data.status).toBe(TransformStatus.SUCCESS);
+      expect(data.total_score).toBe(85);
+      expect(data.analysis_result).toMatchObject({
+        score_band: 'ready',
+        video_realism: { opening_beat: 'x' },
+        logic_version: PAAST_LOGIC_VERSION,
+      });
     });
 
     it('AI service lỗi → lưu FAILED kèm error_message, không throw', async () => {
       const { service, prisma, httpService } = build();
-      httpService.post.mockReturnValueOnce(
-        throwError(() => ({ message: 'AI service down', response: undefined })),
-      );
+      httpService.post.mockReturnValueOnce(throwError(() => ({ message: 'AI service down' })));
 
-      await service.analyzeContent('user-1', { content: 'nội dung' } as any);
+      await service.analyzeContent('user-1', { content: 'n'.repeat(120) } as any);
 
       expect(prisma.paastAnalysisHistory.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -80,13 +166,27 @@ describe('PaastService', () => {
     });
   });
 
+  describe('analyzeContentV2', () => {
+    it('lưu SUCCESS với total_score để null + khoá phien_ban trong JSON (dấu hiệu phân biệt bản 2)', async () => {
+      const { service, prisma, httpService } = build();
+      httpService.post.mockReturnValueOnce(
+        of({ data: { verdict: { passed: true }, layers: {}, ctaWarning: null, phien_ban: 2 } }),
+      );
+
+      await service.analyzeContentV2('user-1', 'n'.repeat(200));
+
+      const data = prisma.paastAnalysisHistory.update.mock.calls[0][0].data;
+      expect(data.status).toBe(TransformStatus.SUCCESS);
+      expect(data.total_score).toBeUndefined();
+      expect(data.analysis_result).toMatchObject({ phien_ban: 2 });
+    });
+  });
+
   describe('getPaastHistoryDetail', () => {
     it('báo NotFoundException nếu bản ghi không tồn tại', async () => {
       const { service } = build();
 
-      await expect(service.getPaastHistoryDetail('missing-id', 'user-1')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.getPaastHistoryDetail('missing-id', 'user-1')).rejects.toThrow(NotFoundException);
     });
 
     it('báo NotFoundException nếu bản ghi thuộc user khác (không lộ là có tồn tại)', async () => {
@@ -94,9 +194,7 @@ describe('PaastService', () => {
         paastAnalysisHistory: { findUnique: jest.fn(async () => ({ id: 'h1', user_id: 'owner-1' })) },
       });
 
-      await expect(service.getPaastHistoryDetail('h1', 'someone-else')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.getPaastHistoryDetail('h1', 'someone-else')).rejects.toThrow(NotFoundException);
     });
 
     it('trả về bản ghi nếu đúng chủ sở hữu', async () => {
@@ -113,9 +211,7 @@ describe('PaastService', () => {
     it('báo NotFoundException nếu bản phân tích gốc không tồn tại', async () => {
       const { service } = build();
 
-      await expect(service.upgradeAnalysis('user-1', 'missing-id')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(service.upgradeAnalysis('user-1', 'missing-id')).rejects.toThrow(NotFoundException);
     });
 
     it('báo BadRequestException nếu bản gốc chưa phân tích xong', async () => {
@@ -128,7 +224,7 @@ describe('PaastService', () => {
       await expect(service.upgradeAnalysis('user-1', 'h1')).rejects.toThrow(BadRequestException);
     });
 
-    it('chỉ trích tiêu chí đang miss từ 4 layer, gửi đúng missing_elements cho AI service', async () => {
+    it('chỉ trích tiêu chí đang miss từ 4 layer, gửi đúng missing_elements + link upgraded_from_id', async () => {
       const original = {
         id: 'h1',
         user_id: 'user-1',
@@ -178,6 +274,18 @@ describe('PaastService', () => {
       const findManyArg = prisma.paastAnalysisHistory.findMany.mock.calls[0][0];
       expect(findManyArg.take).toBe(100);
       expect(findManyArg.skip).toBe(0);
+
+      const countArg = prisma.paastAnalysisHistory.count.mock.calls[0][0];
+      expect(countArg.where).toEqual({ user_id: 'user-1' });
+    });
+
+    it('chỉ thêm điều kiện status khi query có truyền status', async () => {
+      const { service, prisma } = build();
+
+      await service.getPaastUserHistory('user-1', { status: 'SUCCESS' } as any);
+
+      const findManyArg = prisma.paastAnalysisHistory.findMany.mock.calls[0][0];
+      expect(findManyArg.where).toEqual({ user_id: 'user-1', status: 'SUCCESS' });
     });
   });
 });

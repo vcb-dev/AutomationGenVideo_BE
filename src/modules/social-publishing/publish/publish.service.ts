@@ -10,6 +10,16 @@ import { GoogleDriveStorageService } from '../upload/google-drive-storage.servic
 import { HistoryService } from '../history/history.service';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPlatform, SocialPostSource, SocialPostStatus } from '@prisma/client';
+import { isVideoUrl } from './media-url.util';
+import {
+  probeMedia,
+  resolveFFprobePath,
+  validateVideoForPublish,
+  collectWarnings,
+  isFacebookReelsCandidate,
+  INSTAGRAM_REELS_LIMITS,
+  PRECHECK_ERROR_MARKER,
+} from './media-probe.util';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -69,6 +79,33 @@ function ensureExt(filename: string, ext: string): string {
   return path.extname(filename) ? filename : `${filename}${ext}`;
 }
 
+/**
+ * URL gốc công khai của server để build link media cho MXH tải về. Chỉ đọc `PUBLIC_BASE_URL`
+ * (code cũ) làm Instagram/Threads FAIL khi deploy chỉ set `API_BASE_URL` (link giữ 127.0.0.1).
+ * Chuỗi fallback đồng bộ với OAuth:
+ *   PUBLIC_BASE_URL → API_BASE_URL (bỏ /api) → origin của GOOGLE_CALLBACK_URL → localhost
+ */
+export function resolvePublicBaseUrl(): string {
+  const explicit = process.env.PUBLIC_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  const apiBase = process.env.API_BASE_URL?.trim();
+  if (apiBase) return apiBase.replace(/\/+$/, '').replace(/\/api$/, '');
+
+  const callback = process.env.GOOGLE_CALLBACK_URL?.trim() || process.env.FB_REDIRECT_URI?.trim();
+  if (callback) {
+    try { return new URL(callback).origin; } catch { /* bỏ qua URL rác */ }
+  }
+
+  return `http://127.0.0.1:${process.env.PORT || 3000}`;
+}
+
+/** URL media chưa công khai (localhost) hoặc còn là link Drive → Meta không tải được. */
+export function isUnreachableForMeta(url: string): boolean {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|::1/.test(url)
+    || /drive\.google\.com|docs\.google\.com|googleusercontent/.test(url);
+}
+
 @Injectable()
 export class PublishService {
   private readonly logger = new Logger(PublishService.name);
@@ -104,15 +141,16 @@ export class PublishService {
   private async makeUrlsPublic(mediaUrls: string[], _platform?: SocialPlatform): Promise<string[]> {
     if (!mediaUrls || mediaUrls.length === 0) return [];
 
-    const publicBaseUrl = process.env.PUBLIC_BASE_URL;
+    const publicBaseUrl = resolvePublicBaseUrl();
+    const isLocalBase = /localhost|127\.0\.0\.1/.test(publicBaseUrl);
     const resultUrls: string[] = [];
 
     for (const url of mediaUrls) {
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         try {
           const localUrl = new URL(url);
-          if (!publicBaseUrl) {
-            this.logger.warn('[makeUrlsPublic] PUBLIC_BASE_URL chưa được cấu hình — localhost URLs sẽ không được convert');
+          if (isLocalBase) {
+            this.logger.warn('[makeUrlsPublic] Chưa cấu hình PUBLIC_BASE_URL / API_BASE_URL — không convert được localhost URL, MXH sẽ không tải được media');
             resultUrls.push(url);
             continue;
           }
@@ -129,6 +167,22 @@ export class PublishService {
     }
 
     return resultUrls;
+  }
+
+  /**
+   * Instagram & Threads chỉ đăng qua `video_url`/`image_url` (Meta tự tải) — URL không truy
+   * cập được từ Internet thì container về ERROR sau vài phút. Chặn sớm để lỗi rõ nguyên nhân.
+   */
+  private assertMediaReachableForMeta(platform: SocialPlatform, urls: string[]) {
+    if (platform !== SocialPlatform.INSTAGRAM && platform !== SocialPlatform.THREADS) return;
+    const bad = urls.find(isUnreachableForMeta);
+    if (!bad) return;
+    const label = platform === SocialPlatform.INSTAGRAM ? 'Instagram' : 'Threads';
+    throw new BadRequestException(
+      `${label} cần URL media công khai để tải video về, nhưng URL hiện tại không truy cập được từ Internet: ${bad}. ` +
+      `Nguyên nhân thường gặp: (1) server chưa đặt PUBLIC_BASE_URL/API_BASE_URL, hoặc (2) không tải được file từ Google Drive ` +
+      `(file chưa mở quyền / hết hạn token Drive). Facebook không gặp lỗi này vì nó tải trực tiếp bytes lên.`,
+    );
   }
 
   /** Khởi động download Drive trước (non-blocking) để sẵn sàng trong cache khi executePost chạy */
@@ -149,7 +203,7 @@ export class PublishService {
     const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
     if (!fs.existsSync(uploadBase)) fs.mkdirSync(uploadBase, { recursive: true });
 
-    const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+    const base = resolvePublicBaseUrl();
 
     // YouTube tự stream từ Drive URL (server BE download, không qua server của platform)
     // → dùng direct URL để tiết kiệm disk + giữ nguyên chất lượng gốc.
@@ -291,8 +345,12 @@ export class PublishService {
       inputMediaUrls = results;
     }
 
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
+
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[PublishNow] ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
+    this.assertMediaReachableForMeta(account.platform, publicMediaUrls);
 
     let result: any;
     try {
@@ -351,10 +409,14 @@ export class PublishService {
       inputMediaUrls = results;
     }
 
+    // Kiểm sau transcode — chính transcode mới là chỗ có thể làm mất luồng audio.
+    await this.precheckVideos(inputMediaUrls, account.platform);
+
     const publicMediaUrls = await this.makeUrlsPublic(inputMediaUrls, account.platform);
     this.logger.log(`[ExecuteScheduled] postId=${post.id} ${account.platform} sẽ dùng URLs: ${JSON.stringify(publicMediaUrls)}`);
 
     try {
+      this.assertMediaReachableForMeta(account.platform, publicMediaUrls);
       const result = await this.dispatchPublish(account.platform, token, {
         message: post.message,
         mediaUrls: publicMediaUrls,
@@ -459,9 +521,11 @@ export class PublishService {
       if (avg <= 0 || avg > 60) return false;
       if (Math.abs(avg - r) > 0.5) return false;
 
-      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được)
+      // Bitrate quá cao → nén lại cho nhẹ (nếu đọc được).
+      // Ngưỡng 20 chứ không phải 12 Mbps: transcode chỉ giữ tới 16 Mbps, nên video
+      // 12-20 Mbps mà đem nén lại là tự làm xấu đi. Để nguyên thì hơn.
       const bitRate = Number(v.bit_rate || 0);
-      if (bitRate > 12_000_000) return false;
+      if (bitRate > 20_000_000) return false;
 
       return true;
     } catch (e: any) {
@@ -506,10 +570,16 @@ export class PublishService {
         await execFileAsync(ffmpegPath, [
           '-y', '-i', inputPath,
           '-map', '0:v:0', '-map', '0:a:0?',
-          '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '4',
-          '-profile:v', 'baseline', '-level', '4.0',
-          '-crf', '23', '-maxrate', '8M', '-bufsize', '16M',
-          '-r', '30', '-fps_mode', 'cfr', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'faster', '-threads', '4',
+          // profile high thay baseline: baseline tắt CABAC và B-frame nên nén kém hẳn.
+          // Đo trên nguồn 1080x1920: cùng crf, high chỉ tốn 8.2MB so với 13.0MB của
+          // baseline — dôi ra 37% dung lượng để đổi lấy chất lượng.
+          '-profile:v', 'high', '-level', '4.2',
+          '-crf', '20', '-maxrate', '16M', '-bufsize', '32M',
+          // -vsync CHỨ KHÔNG PHẢI -fps_mode: gói @ffmpeg-installer đi kèm là bản 2018,
+          // chưa có -fps_mode (chỉ từ ffmpeg 5.0). Dùng nó thì lệnh hỏng, _doTranscode
+          // nuốt lỗi rồi trả file gốc — transcode âm thầm không bao giờ chạy.
+          '-r', '30', '-vsync', 'cfr', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
           '-map_metadata', '-1', '-movflags', '+faststart',
           outputPath,
@@ -526,11 +596,78 @@ export class PublishService {
       this.logger.log(`[Transcode] Hoàn thành ${transcodedName} trong ${((Date.now() - start) / 1000).toFixed(1)}s | size: ${(outputSize / 1024 / 1024).toFixed(1)}MB`);
 
       // Cloud Run: dùng PUBLIC_BASE_URL thay vì 127.0.0.1 (sẽ được convert bởi makeUrlsPublic)
-      const base = process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+      const base = resolvePublicBaseUrl();
       return `${base}/api/social/media/${transcodedName}`;
     } catch (err: any) {
       this.logger.warn(`[Transcode] Thất bại: ${err.message} — dùng file gốc`);
       return localUrl;
+    }
+  }
+
+  /** /api/social/media/<file> → đường dẫn trên đĩa, để probe khỏi đi vòng qua HTTP */
+  private resolveLocalMediaPath(mediaUrl: string): string | null {
+    if (!mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Cổng kiểm tra video trước khi gọi API nền tảng.
+   *
+   * Chặn sớm những thứ nền tảng chắc chắn từ chối, kèm thông báo nói rõ sai ở đâu —
+   * thay vì để Meta trả về `status=ERROR` không kèm lý do sau khi đã chờ cả phút.
+   *
+   * Không probe được thì chỉ ghi log, KHÔNG chặn.
+   */
+  private async precheckVideos(mediaUrls: string[], platform: SocialPlatform): Promise<void> {
+    // Instagram không có dạng video thường — mọi video đều là Reel.
+    // Facebook thì tuỳ thời lượng: quá 90s sẽ đăng dạng video thường.
+    const rule =
+      platform === SocialPlatform.INSTAGRAM ? { limits: INSTAGRAM_REELS_LIMITS } :
+      platform === SocialPlatform.FACEBOOK ? { limits: null } :
+      null;
+    if (!rule) return;
+
+    const audioCheckEnabled = process.env.SOCIAL_REQUIRE_AUDIO !== 'false';
+    const ffprobePath = resolveFFprobePath();
+    if (!ffprobePath) {
+      this.logger.warn('[Precheck] Không tìm thấy ffprobe — bỏ qua kiểm tra video trước khi đăng');
+      return;
+    }
+
+    const errors: string[] = [];
+    for (const url of mediaUrls) {
+      if (!isVideoUrl(url)) continue;
+
+      const label = path.basename(new URL(url, 'http://local').pathname) || url;
+      const probe = await probeMedia(this.resolveLocalMediaPath(url) ?? url, ffprobePath);
+      if (!probe) {
+        this.logger.warn(`[Precheck] Không probe được ${label} — bỏ qua kiểm tra`);
+        continue;
+      }
+
+      const isReel = platform === SocialPlatform.INSTAGRAM
+        ? true
+        : isFacebookReelsCandidate(probe.durationSec);
+
+      for (const w of collectWarnings(probe, label)) this.logger.warn(`[Precheck] ${w}`);
+      errors.push(...validateVideoForPublish(probe, {
+        ...rule,
+        requireAudio: audioCheckEnabled && isReel,
+        isReel,
+        label,
+      }));
+    }
+
+    if (errors.length) {
+      throw new BadRequestException(
+        `${PRECHECK_ERROR_MARKER} Video chưa đạt chuẩn ${platform}: ${errors.join(' ')}`,
+      );
     }
   }
 

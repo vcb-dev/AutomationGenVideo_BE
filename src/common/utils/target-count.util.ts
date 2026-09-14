@@ -5,7 +5,7 @@
  * Giá trị client gửi lên KHÔNG được tin tưởng trực tiếp: phải kẹp trong [1, MAX]
  * để tránh 1 request đặt số quá lớn làm treo job nền + đốt quota API bên thứ 3.
  */
-export const DEFAULT_TARGET_COUNT = 300;
+export const DEFAULT_TARGET_COUNT = 50;
 export const MAX_TARGET_COUNT = 1000;
 
 export function normalizeTargetCount(raw: unknown): number {

@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -23,10 +23,22 @@ function assertCanManageChannels(req: any): void {
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/xiaohongshu')
 export class XiaohongshuScraperController {
+  private readonly logger = new Logger(XiaohongshuScraperController.name);
+
   constructor(
     private readonly service: XiaohongshuScraperService,
     private readonly readService: XiaohongshuScraperReadService,
   ) {}
+
+  @Post(['profiles/sync-all', 'periodic-refresh'])
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    this.service.periodicRefresh().catch((err: any) => {
+      this.logger.error(`[XHS-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
+    });
+    return { status: 'ok', message: 'Đã bắt đầu cào video mới cho các kênh XiaoHongShu chú ý trong nền!' };
+  }
 
   @Get('videos')
   async videos(@Query() query: Record<string, string>) {
@@ -128,4 +140,14 @@ export class XiaohongshuScraperController {
     if (body?.is_tracked !== undefined) assertCanManageChannels(req);
     return this.service.patchProfile(BigInt(id), body || {});
   }
+
+  // Xoá cứng kênh: bản ghi kênh + toàn bộ video/lịch sử của nó biến mất vĩnh viễn.
+  // Chỉ ADMIN/LEADER, khớp phân quyền của mọi thao tác quản lý kênh khác.
+  @Delete('profiles/:profileId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async remove(@Param('profileId') profileId: string) {
+    return this.service.deleteProfile(BigInt(profileId));
+  }
+
 }

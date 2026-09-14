@@ -10,26 +10,24 @@ import {
   Query,
   UseGuards,
   Request,
-  UseInterceptors,
-  UploadedFile,
   Res,
   BadRequestException,
 } from "@nestjs/common";
-import { FileInterceptor } from "@nestjs/platform-express";
-import { memoryStorage } from "multer";
 import { Response } from "express";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTasksService } from "./tasks.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import { VideoScriptService } from "./video-script.service";
 import { ContentApprovalService } from "./content-approval.service";
+import { TaskVideoMatchService } from "./task-video-match.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
   QueryTaskDto,
+  QueryTaskHeaderCountsDto,
   SubmitTaskDto,
   ReviewTaskDto,
   UpdatePublishedLinksDto,
@@ -42,7 +40,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoTasksController {
   constructor(
@@ -50,6 +48,7 @@ export class TaskAutoTasksController {
     private video: TaskAutoVideoService,
     private videoScript: VideoScriptService,
     private contentApproval: ContentApprovalService,
+    private videoMatch: TaskVideoMatchService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -58,6 +57,25 @@ export class TaskAutoTasksController {
   @ApiOperation({ summary: "List tasks with filters" })
   getTasks(@Query() q: QueryTaskDto) {
     return this.tasks.findAll(q);
+  }
+
+  // Phải đứng trước "tasks/:id" — nếu không "header-counts" sẽ bị route động :id nuốt mất.
+  @Get("tasks/header-counts")
+  @ApiOperation({
+    summary:
+      "Đếm nhanh cho header ('N task') + 2 badge 'Video chờ duyệt'/'Content chờ duyệt' — gộp " +
+      "3 lượt đếm (vốn phải gọi getTasks/getContentApprovals riêng với limit:1) thành 1 request.",
+  })
+  async getTaskHeaderCounts(@Query() q: QueryTaskHeaderCountsDto) {
+    const [{ total, submittedTotal }, contentApprovalTotal] = await Promise.all([
+      this.tasks.getHeaderCounts(q),
+      this.contentApproval.countPending({
+        team_id: q.team_id,
+        search: q.search,
+        assignee_id: q.assignee_id,
+      }),
+    ]);
+    return { total, submittedTotal, contentApprovalTotal };
   }
 
   @Get("tasks/:id")
@@ -73,6 +91,21 @@ export class TaskAutoTasksController {
   })
   createTask(@Body() dto: CreateTaskDto, @Request() req: any) {
     return this.tasks.create(dto, req.user.id, req.user.roles ?? []);
+  }
+
+  // Phải đứng trước "tasks/:id" — path 1 segment, nếu không route động :id nuốt mất.
+  @Post("tasks/match-videos")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({
+    summary:
+      "Chạy tay job khớp video kênh nội bộ (FB/IG) với task + gắn link bài đăng (thường chạy cron 07:45). Dùng để test/backfill.",
+  })
+  matchVideos(@Body() body: { since_days?: number; max_videos?: number }) {
+    return this.videoMatch.runDailyMatch({
+      sinceDays: body?.since_days,
+      maxVideos: body?.max_videos,
+    });
   }
 
   @Put("tasks/:id")
@@ -143,6 +176,15 @@ export class TaskAutoTasksController {
     );
   }
 
+  @Get("tasks/:id/video-matches")
+  @ApiOperation({
+    summary:
+      "Lịch sử job khớp video kênh nội bộ tự động cho task này (audit: link nào tự gắn, điểm số, vì sao bỏ)",
+  })
+  getVideoMatches(@Param("id") id: string) {
+    return this.videoMatch.listMatchesForTask(id);
+  }
+
   @Delete("tasks/:id")
   @ApiOperation({
     summary:
@@ -171,42 +213,42 @@ export class TaskAutoTasksController {
   }
 
   @Post("tasks/:id/upload-video/init")
-  @ApiOperation({ summary: "Khởi tạo upload video tạm (local, chưa lên Drive)" })
+  @ApiOperation({ summary: "Khởi tạo phiên upload video tạm — trả về Google Drive resumable uploadUrl" })
   initVideoUpload(
     @Param("id") id: string,
     @Body() body: { filename: string; mimetype: string; totalSize: number },
     @Request() req: any,
   ) {
-    return this.video.initChunkUpload(id, req.user.id, body);
+    return this.video.initChunkUpload(id, req.user.id, body, req.headers?.origin);
   }
 
-  @Post("tasks/:id/upload-video/chunk")
-  @ApiOperation({ summary: "Gửi một chunk của video lên server" })
-  @UseInterceptors(FileInterceptor("chunk", {
-    storage: memoryStorage(),
-    limits: { fileSize: 12 * 1024 * 1024 },
-  }))
-  async receiveVideoChunk(
-    @Param("id") id: string,
-    @UploadedFile() chunk: Express.Multer.File,
-    @Body("uploadId") uploadId: string,
-    @Body("chunkIndex") chunkIndex: string,
-    @Request() req: any,
-  ) {
-    if (!chunk) throw new BadRequestException("Thiếu dữ liệu chunk");
-    if (!uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.receiveChunk(uploadId, req.user.id, chunk.buffer, parseInt(chunkIndex, 10));
-  }
-
-  @Post("tasks/:id/upload-video/finish")
-  @ApiOperation({ summary: "Hoàn tất upload: ghép chunks, đăng ký video tạm" })
-  finishVideoUpload(
-    @Param("id") id: string,
+  @Post("tasks/:id/upload-video/status")
+  @ApiOperation({ summary: "Truy vấn tiến độ resumable trên Google Drive (dùng để resume khi chunk lỗi)" })
+  videoUploadStatus(
     @Body() body: { uploadId: string },
     @Request() req: any,
   ) {
     if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.finishChunkUpload(body.uploadId, req.user.id, id);
+    return this.video.chunkUploadStatus(body.uploadId, req.user.id);
+  }
+
+  @Post("tasks/:id/upload-video/chunk")
+  @ApiOperation({ summary: "Đã bỏ — FE upload chunk trực tiếp lên Google Drive resumable uploadUrl" })
+  receiveVideoChunk() {
+    throw new BadRequestException(
+      "Endpoint này đã bỏ. FE upload chunk trực tiếp lên Google Drive resumable uploadUrl trả về từ /upload-video/init.",
+    );
+  }
+
+  @Post("tasks/:id/upload-video/finish")
+  @ApiOperation({ summary: "Hoàn tất upload: xác nhận Drive đã nhận đủ, đăng ký video tạm" })
+  finishVideoUpload(
+    @Param("id") id: string,
+    @Body() body: { uploadId: string; driveFileId?: string },
+    @Request() req: any,
+  ) {
+    if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
+    return this.video.finishChunkUpload(body.uploadId, req.user.id, id, body.driveFileId);
   }
 
   @Get("tasks/:id/pending-video")

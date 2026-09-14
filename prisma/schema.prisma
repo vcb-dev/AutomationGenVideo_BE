@@ -107,15 +107,21 @@ model User {
   editor_sources                   EditorSource[]                 @relation("EditorSourceOf")
   editor_sources_added             EditorSource[]                 @relation("EditorSourceAddedBy")
   tasks_assigned                   Task[]                         @relation("TaskAssignee")
+  tasks_assigned_by                Task[]                         @relation("TaskAssignedBy")
   tasks_reviewed                   Task[]                         @relation("TaskReviewer")
   task_assignments                 TaskAssignment[]               @relation("AssignmentUser")
   notifications                    Notification[]                 @relation("NotificationOf")
   push_subscriptions               PushSubscription[]             @relation("PushSubscriptionOf")
   owned_channels                   Channel[]                      @relation("ChannelOwnerUser")
   ai_voice_usages                  AiVoiceUsage[]                 @relation("AiVoiceUsageOf")
+  daily_voice_quotas               UserDailyVoiceQuota[]          @relation("UserDailyVoiceQuotaOf")
+  voice_action_histories           VoiceActionHistory[]           @relation("VoiceActionHistoryOf")
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
+  id_photo_batches_created         IdPhotoBatchJob[]              @relation("IdPhotoBatchCreatedBy")
+  api_keys_created                  ApiKey[]                      @relation("ApiKeyCreatedBy")
+  api_key_principal                ApiKey?                       @relation("ApiKeyServiceUser")
 
   @@index([email])
   @@index([roles])
@@ -133,6 +139,35 @@ model RolePermission {
   updated_at DateTime @updatedAt
 
   @@map("role_permissions")
+}
+
+/// API key cấp cho hệ thống ngoài gọi server-to-server vào BE (header `X-API-Key: agv_...`).
+/// Key thô chỉ trả về 1 lần lúc tạo; DB chỉ giữ `key_hash` = sha256(key thô).
+/// Mỗi key gắn với 1 `service_user` (row `users` không đăng nhập được) để các endpoint dùng
+/// `req.user.id` / `req.user.roles` chạy nguyên vẹn.
+model ApiKey {
+  id              String    @id @default(uuid()) @db.Uuid
+  /// Nhãn dễ đọc để biết key cấp cho hệ thống nào (vd "OMS", "Lark Bot")
+  name            String
+  /// 12 ký tự đầu của key thô ("agv_xxxxxxxx") — hiện trong danh sách để đối chiếu
+  prefix          String
+  key_hash        String    @unique
+  is_active       Boolean   @default(true)
+  /// null = không hết hạn
+  expires_at      DateTime?
+  last_used_at    DateTime?
+  last_used_ip    String?
+  revoked_at      DateTime?
+  service_user_id String    @unique @db.Uuid
+  created_by      String?   @db.Uuid
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  service_user User  @relation("ApiKeyServiceUser", fields: [service_user_id], references: [id], onDelete: Cascade)
+  creator      User? @relation("ApiKeyCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+
+  @@index([is_active])
+  @@map("api_keys")
 }
 
 model TrackedChannel {
@@ -213,6 +248,61 @@ model AiVoiceUsage {
   @@index([created_at])
   @@index([kind])
   @@map("ai_voice_usage")
+}
+
+/// Hạn mức tạo Voice trong ngày theo từng user (mặc định 8 lượt/ngày).
+/// Khi hết 8 lượt, chỉ Admin mới có quyền cấp thêm (tối đa không quá 8 lượt/lần).
+model UserDailyVoiceQuota {
+  id            String   @id @default(uuid())
+  user_id       String   @db.Uuid
+  /// Ngày định dạng YYYY-MM-DD theo giờ VN
+  date          String   @db.VarChar(10)
+  /// Số lượt mặc định trong ngày (mặc định = 8)
+  default_limit Int      @default(8)
+  /// Số lượt đã sử dụng trong ngày
+  used_count    Int      @default(0)
+  /// Số lượt admin đã cấp thêm trong ngày
+  granted_extra Int      @default(0)
+  /// Admin thực hiện cấp thêm lượt
+  granted_by_id String?  @db.Uuid
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  user User @relation("UserDailyVoiceQuotaOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, date])
+  @@index([user_id])
+  @@index([date])
+  @@map("user_daily_voice_quotas")
+}
+
+/// Lịch sử chi tiết mọi thao tác liên quan đến Voice của người dùng (TTS, Clone, Xóa, Dịch, Cấp Quota).
+/// Dành riêng cho Admin theo dõi và quản lý hoạt động tiện ích AI Voice.
+model VoiceActionHistory {
+  id            String   @id @default(uuid())
+  user_id       String   @db.Uuid
+  /// 'TTS' | 'CLONE' | 'DELETE' | 'TRANSLATE' | 'GRANT_QUOTA'
+  action_type   String   @db.VarChar(30)
+  /// 'SUCCESS' | 'FAILED' | 'PENDING'
+  status        String   @default("SUCCESS") @db.VarChar(20)
+  voice_id      String?  @db.VarChar(255)
+  voice_name    String?  @db.VarChar(255)
+  input_text    String?  @db.Text
+  output_url    String?  @db.Text
+  characters    Int      @default(0)
+  duration_ms   Int      @default(0)
+  details       Json?
+  error_message String?  @db.Text
+  created_at    DateTime @default(now())
+
+  user User @relation("VoiceActionHistoryOf", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([action_type])
+  @@index([status])
+  @@index([created_at])
+  @@index([user_id, created_at])
+  @@map("voice_action_histories")
 }
 
 model Video {
@@ -1429,7 +1519,12 @@ model SocialPost {
   scheduled_at  DateTime?
   executed_at   DateTime?
   retry_count   Int              @default(0)
+  /// Thời điểm bài được phép chạy lại sau khi đăng lỗi (exponential backoff).
   next_retry_at DateTime?
+  /// Hạn giữ chỗ của worker đang xử lý bài này. Worker gia hạn định kỳ trong lúc
+  /// chạy; tiến trình chết thì hạn tự hết và bài được nhận lại. TÁCH RIÊNG khỏi
+  /// next_retry_at: gộp chung khiến bài đang chờ retry bị đếm nhầm là đang xử lý.
+  claimed_until DateTime?
   result        Json?
   error_msg     String?
   thumb_url     String?
@@ -1446,6 +1541,7 @@ model SocialPost {
   @@index([source])
   @@index([scheduled_at])
   @@index([next_retry_at])
+  @@index([claimed_until])
   @@index([updated_at])
   @@index([status, scheduled_at])
   @@index([status, source, updated_at])
@@ -1544,6 +1640,8 @@ model ScraperFanpage {
   scraping_status     String                  @default("idle") @db.VarChar(20)
   last_scraped_at     DateTime?               @db.Timestamptz(6)
   scrape_error        String?                 @db.Text
+  channel_type        String                  @default("product") @db.VarChar(20)
+  product_lines       String[]                @default([])
   created_at          DateTime                @default(now()) @db.Timestamptz(6)
   updated_at          DateTime                @updatedAt @db.Timestamptz(6)
   keywords            ScraperFanpageKeyword[]
@@ -1552,11 +1650,23 @@ model ScraperFanpage {
 
   @@index([profile_id])
   @@index([handle])
+  @@index([channel_type])
   @@index([is_bookmarked])
   @@index([is_periodic_crawl, last_scraped_at])
   @@index([is_visible_on_ui, followers_count(sort: Desc)])
   @@index([created_at(sort: Desc)])
   @@map("scraper_fanpages")
+}
+
+model ScraperChannelTag {
+  id         BigInt   @id @default(autoincrement())
+  name       String   @unique @db.VarChar(100)
+  slug       String   @unique @db.VarChar(100)
+  color      String?  @db.VarChar(50)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("scraper_channel_tags")
 }
 
 /// M2M join table: Fanpage ↔ SearchKeyword
@@ -1941,6 +2051,11 @@ model ScraperThreadsProfile {
   is_verified      Boolean             @default(false)
   is_tracked       Boolean             @default(false)
   is_bookmarked    Boolean             @default(false)
+  /// CẢNH BÁO: mặc định true, ngược với instagram/tiktok/youtube (đều default false). Nghĩa là
+  /// mọi profile Threads cào về đều TỰ ĐỘNG được tính là kênh nội bộ của công ty và lọt vào
+  /// trang Tổng quan kênh nội bộ. Hiện chỉ có 1 profile nên chưa gây sai số; cào thêm kênh đối
+  /// thủ Threads là số liệu công ty lệch ngay. Đổi mặc định thì phải kèm migration và bật tay
+  /// lại cho các profile hiện có.
   is_owned         Boolean             @default(true)
   last_scraped_at  DateTime?           @db.Timestamptz(6)
   scraping_status  String              @default("idle") @db.VarChar(20)
@@ -2527,6 +2642,11 @@ model TeamProduct {
   source_editor_product_id String?
   /// FK trỏ về Product kho tổng khi được tạo từ global (copy template)
   source_product_id        String?
+  /// "product" gốc bên OMS khi sản phẩm này được leader kéo về từ kho tổng (OMS) — dùng để
+  /// "Làm mới từ OMS" sau này. NULL khi tạo thủ công hoặc copy từ Product/EditorProduct nội bộ.
+  oms_product_id           String?
+  /// variant (SKU thật) gốc bên OMS — unique theo team để tránh kéo trùng cùng 1 SKU vào 1 team.
+  oms_variant_id           String?
   added_by_id              String
   added_at                 DateTime  @default(now())
   updated_at               DateTime  @updatedAt
@@ -2545,6 +2665,7 @@ model TeamProduct {
 
   @@unique([team_id, source_editor_product_id])
   @@unique([team_id, sku])
+  @@unique([team_id, oms_variant_id])
   @@index([team_id, is_active])
   @@map("team_products")
 }
@@ -2650,6 +2771,11 @@ model EditorProduct {
   is_active         Boolean   @default(true)
   /// NULL = tạo mới; có giá trị = được copy từ sản phẩm trong kho tổng
   source_product_id String?
+  /// "product" gốc bên OMS khi sản phẩm này được hệ thống tự tạo (materialize) lúc giao task
+  /// chọn sản phẩm trực tiếp từ kho tổng (OMS) — dùng để "Làm mới từ OMS" sau này.
+  oms_product_id    String?
+  /// variant (SKU thật) gốc bên OMS — unique theo user để tránh materialize trùng cùng 1 SKU.
+  oms_variant_id    String?
   added_by_id       String
   added_at          DateTime  @default(now())
   updated_at        DateTime  @updatedAt
@@ -2667,6 +2793,7 @@ model EditorProduct {
   push_requests  TeamPushRequest[]
 
   @@unique([user_id, sku])
+  @@unique([user_id, oms_variant_id])
   @@index([user_id, is_active])
   @@map("editor_products")
 }
@@ -2697,6 +2824,7 @@ model EditorContent {
   content_line   ContentLine?             @relation(fields: [content_line_id], references: [id])
   classification ContentClassification?   @relation(fields: [classification_id], references: [id], onDelete: SetNull)
   source_content Content?                 @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
+  global_content Content?                 @relation("ContentEditorRef")
   team_contents  TeamContent[]            @relation("TeamContentEditorRef")
   tasks          Task[]
   warehouses     EditorContentWarehouse[]
@@ -2833,7 +2961,7 @@ model EditorApproval {
   approved_by User? @relation("EditorApprovalBy", fields: [approved_by_id], references: [id])
 
   // Trước đây không có index nào — count(status=APPROVED)/count(status=PENDING) bị quét full
-  // table trên mỗi lần load global dashboard.
+  // table trên mỗi lần load global dashboard (tasks.service.ts getGlobalDashboard).
   @@index([status, created_at(sort: Desc)])
   @@index([user_id])
   @@map("editor_approvals")
@@ -2889,9 +3017,10 @@ model EditorKpi {
   content_new         Int     @default(0) // Số content mới được làm
   content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
   content_win_cover   Int     @default(0) // Số content win cover lại bởi team
-  // ── Product ──
+  // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
   product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
   product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
+  product_profit      Int     @default(0) // Số SP Profit
 
   set_by_id  String   @db.Uuid
   created_at DateTime @default(now())
@@ -3122,43 +3251,54 @@ model Product {
 }
 
 model Content {
-  id                     String             @id @default(uuid())
-  brand_type             BrandType          @default(DO_DA)
+  id                       String             @id @default(uuid())
+  brand_type               BrandType          @default(DO_DA)
   /// Free-text, cùng quy ước TEAM_MARKETS với Team.market/TeamContent.market/EditorContent.market
   /// (GLOBAL/VIETNAM/INDONESIA/JAPAN/THAILAND) — trước đây là enum ContentMarket chỉ có GLOBAL|VIETNAM,
   /// gây lỗi không lưu được khi chọn thị trường khác Việt Nam.
-  market                 String             @default("VIETNAM")
+  market                   String             @default("VIETNAM")
   /// Mã content (business code), unique toàn hệ thống
-  code                   String?            @unique
-  title                  String?
-  body                   String?
-  script                 String?
-  file_content_url       String?
-  voice_url              String?
-  voice_id               BigInt?
-  content_line_id        String?
-  classification_id      String?
-  status                 ContentUsageStatus @default(AVAILABLE)
-  view_count             BigInt             @default(0)
-  approved_content_id    String?
-  added_by_id            String
-  lark_record_id         String?            @unique
+  code                     String?            @unique
+  title                    String?
+  body                     String?
+  script                   String?
+  file_content_url         String?
+  voice_url                String?
+  voice_id                 BigInt?
+  content_line_id          String?
+  classification_id        String?
+  status                   ContentUsageStatus @default(AVAILABLE)
+  view_count               BigInt             @default(0)
+  approved_content_id      String?
+  added_by_id              String
+  lark_record_id           String?            @unique
   /// FK trỏ về TeamContent khi được push từ kho team (thay thế copy data)
-  source_team_content_id String?            @unique
+  source_team_content_id   String?            @unique
+  /// FK về EditorContent khi Content được tạo tự động từ kho cá nhân lúc content-win. Mirror
+  /// source_team_content_id, chống tạo trùng khi 1 editor content thắng ở nhiều task.
+  source_editor_content_id String?            @unique
   /// Copy từ TeamContent.origin khi push lên kho tổng — chỉ lưu vết, không dùng để tính KPI.
-  origin                 ContentOrigin?
-  created_at             DateTime           @default(now())
-  updated_at             DateTime           @updatedAt
+  origin                   ContentOrigin?
+  /// Link view cao nhất (> ngưỡng win) của task đẩy content này lên kho tổng — set 1 lần bởi
+  /// content-win-auto-push.service.ts, không cập nhật về sau.
+  win_video_url            String?
+  win_video_views          BigInt?
+  win_video_platform       String?
+  /// Thời điểm content này được TỰ ĐỘNG đẩy lên kho tổng do đạt content-win. NULL = chưa từng.
+  won_at                   DateTime?
+  created_at               DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
 
-  content_line        ContentLine?           @relation(fields: [content_line_id], references: [id])
-  classification      ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
-  added_by            User                   @relation("ContentAddedBy", fields: [added_by_id], references: [id])
-  source_team_content TeamContent?           @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
-  team_versions       TeamContent[]          @relation("TeamContentGlobalRef")
-  editor_versions     EditorContent[]        @relation("EditorContentGlobalRef")
-  tasks               Task[]
-  warehouses          ContentWarehouse[]
-  translations        ContentTranslation[]
+  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
+  classification        ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
+  added_by              User                   @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  source_team_content   TeamContent?           @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
+  source_editor_content EditorContent?         @relation("ContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  team_versions         TeamContent[]          @relation("TeamContentGlobalRef")
+  editor_versions       EditorContent[]        @relation("EditorContentGlobalRef")
+  tasks                 Task[]
+  warehouses            ContentWarehouse[]
+  translations          ContentTranslation[]
 
   @@index([added_by_id])
   @@index([classification_id])
@@ -3235,6 +3375,11 @@ model Task {
   product_id                String?
   editor_product_id         String?
   team_product_id           String?
+  /// Sản phẩm chọn trực tiếp từ kho tổng (OMS) lúc tạo task nhưng CHƯA có assignee (task PENDING)
+  /// — tạm giữ ở đây, đến lúc gán assignee mới materialize thành EditorProduct rồi set
+  /// editor_product_id + xoá 2 field này. Xem TasksService.create()/update().
+  oms_product_id            String?
+  oms_variant_id            String?
   editor_content_id         String?
   team_content_id           String?
   content_line_id           String?
@@ -3259,12 +3404,20 @@ model Task {
   /// true = task đẩy SP theo kế hoạch (sản phẩm lấy từ kho team)
   is_product_push           Boolean    @default(false)
   assignee_id               String?
+  /// Ai đã set assignee_id: privileged user (leader/admin/manager) khi giao tay task cho người
+  /// khác — KHÔNG set khi chính assignee tự nhận task (self-claim) hoặc khi task chưa có assignee.
+  /// NULL với task cũ tạo trước khi có cột này. Dùng để chặn member tự xoá task được giao tay,
+  /// xem tasks.service.ts remove().
+  assigned_by_id            String?    @db.Uuid
   assigned_at               DateTime?
   deadline                  DateTime?
   run_id                    String?
   result_url                String?    @db.Text
   /// Array<{ id: string; platform: string; url: string }> — link bài đăng editor tự đăng tay
   published_links           Json?
+  /// Thời điểm content của task này được tự đẩy lên kho tổng do content-win. NULL = chưa đẩy;
+  /// chặn cron đẩy lại. Xem content-win-auto-push.service.ts.
+  content_win_pushed_at     DateTime?
   submitted_at              DateTime?
   reviewed_by_id            String?
   reviewed_at               DateTime?
@@ -3295,6 +3448,7 @@ model Task {
   team_source_workshop   TeamSource?           @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
   team_source_huyk       TeamSource?           @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
   assignee               User?                 @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  assigned_by            User?                 @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
   reviewed_by            User?                 @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
   run                    AssignmentRun?        @relation(fields: [run_id], references: [id])
   assignments            TaskAssignment[]
@@ -3303,6 +3457,7 @@ model Task {
   video_script           TaskVideoScript?
   content_approvals      TaskContentApproval[]
   scheduled_posts        SocialPost[]
+  video_matches          TaskVideoMatch[]
 
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
   // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
@@ -3388,6 +3543,29 @@ model TaskPendingVideo {
   task Task @relation(fields: [task_id], references: [id], onDelete: Cascade)
 
   @@map("task_pending_videos")
+}
+
+/// Bản ghi kết quả job khớp tự động video kênh nội bộ (Facebook/Instagram kéo về hằng ngày)
+/// với task. MATCHED = đã gắn link vào Task.published_links; UNMATCHED/SKIPPED_AMBIGUOUS = đã
+/// xét nhưng không đủ tin cậy để gắn (giữ lại điểm số để audit + không xét lại mỗi sáng).
+/// Unique (platform, post_id): mỗi video chỉ xử lý một lần.
+model TaskVideoMatch {
+  id         String   @id @default(uuid())
+  task_id    String?
+  platform   String
+  post_id    String
+  url        String
+  score      Int      @default(0)
+  matched_by Json?
+  status     String   @default("MATCHED")
+  created_at DateTime @default(now())
+
+  task Task? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@unique([platform, post_id])
+  @@index([task_id])
+  @@index([status, created_at])
+  @@map("task_video_matches")
 }
 
 model TaskAssignment {
@@ -4205,8 +4383,11 @@ model IdPhotoHistory {
   employee_name String
   employee_team String
   employee_id   String
-  /// Tiền tố chức danh in trước tên trên thẻ, vd "HĐ." → "HĐ. BẢO VIỆT" (xem thẻ mẫu thật).
-  /// Nullable vì phần lớn thẻ không cần — để trống thì in mỗi tên, không đổi hành vi cũ.
+  /// [ĐÃ NGỪNG DÙNG từ 2026-09-09] Trước đây là tiền tố chức danh in trước tên trên thẻ
+  /// (vd "HĐ." → "HĐ. BẢO VIỆT"). Nghiệp vụ đã bỏ hẳn field này ở CẢ luồng đơn lẻ lẫn hàng
+  /// loạt: API không còn nhận/trả, FE không còn form nhập, PDF chỉ in tên thường.
+  /// CỐ Ý GIỮ LẠI CỘT (không migration) để không mất dữ liệu tiền tố đã lưu của bản ghi cũ.
+  /// ĐỪNG thêm lại vào DTO/select/hiển thị — xem git log commit bỏ field nếu cần khôi phục.
   employee_title_prefix String?
 
   /// Chỉ lưu Ý NGHĨA cấp bậc, KHÔNG lưu tên màu khung — tầng hiển thị (FE) và bước export-pdf
@@ -4224,15 +4405,67 @@ model IdPhotoHistory {
   /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
   pdf_url String?
 
+  /// "Điều chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) — cả 3 cột NULLABLE, mặc định
+  /// NULL = dùng vị trí gốc như trước khi có tính năng này (không breaking với ảnh cũ). Toạ độ
+  /// tính theo TỈ LỆ cạnh khung tròn (không phải pixel/point tuyệt đối) — xem công thức dùng
+  /// chung ở id-photo-crop.util.ts (BE) / crop-math.ts (FE): offsetX/Y = độ lệch tâm ảnh so với
+  /// tâm khung; scale = hệ số phóng to trên nền "phủ khít khung" (scale=1 ⇔ hành vi cũ).
+  /// Reset về NULL mỗi khi ảnh ghép áo bị GHÉP LẠI (remerge-outfit/batch remerge): ảnh mới có
+  /// bố cục khác, giữ crop cũ dễ lệch — xem IdPhotoService#remergeOutfit.
+  crop_offset_x Float?
+  crop_offset_y Float?
+  crop_scale    Float?
+
+  /// Job cha nếu ảnh này được tạo trong 1 lượt "Tạo ảnh thẻ hàng loạt" (module id-photo/batch).
+  /// NULL = ảnh tạo đơn lẻ theo luồng upload → merge-outfit → create như cũ (không đổi hành vi
+  /// luồng đơn lẻ). Trỏ về IdPhotoBatchJob để worker nền + poll trạng thái tra ngược được.
+  batch_job_id String? @db.Uuid
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  createdByUser User @relation("IdPhotoCreatedBy", fields: [created_by], references: [id])
+  createdByUser User             @relation("IdPhotoCreatedBy", fields: [created_by], references: [id])
+  batchJob      IdPhotoBatchJob? @relation("IdPhotoBatchItems", fields: [batch_job_id], references: [id], onDelete: SetNull)
 
   @@index([created_by])
   @@index([status])
   @@index([created_at])
+  @@index([batch_job_id]) // poll trạng thái batch: lấy toàn bộ item con của 1 job cha
+  @@index([batch_job_id, status]) // worker quét item con PENDING của 1 job cha theo thứ tự
   @@map("id_photo_histories")
+}
+
+/// Job CHA của 1 lượt "Tạo ảnh thẻ hàng loạt" — gom N dòng IdPhotoHistory con (mỗi dòng 1 người).
+///
+/// Worker nền (id-photo-batch.worker.ts) xử lý TUẦN TỰ từng item con, mỗi lần xử lý xong 1 người
+/// thì bump `updated_at` làm HEARTBEAT — cron reconcile (reconcileStuckIdPhotoBatchJobs) dựa vào
+/// mốc này để phát hiện job chết cứng do BE restart/crash giữa chừng (giống cơ chế
+/// reconcileStuckContentTransformJobs của content-transform).
+model IdPhotoBatchJob {
+  // @db.Uuid để cột `id` là UUID thật — phải KHỚP KIỂU với IdPhotoHistory.batch_job_id (cũng
+  // UUID) thì Postgres mới tạo được FK (kiểu lệch → lỗi 42804). Nhất quán với User.id.
+  id          String             @id @default(uuid()) @db.Uuid
+  created_by  String             @db.Uuid // Người bấm tạo batch (LEADER/ADMIN) — FK users.id
+  total_count Int // Số người trong batch — chốt lúc tạo, tối đa 20 (chặn cứng ở BE)
+  status      IdPhotoBatchStatus @default(PENDING)
+
+  created_at DateTime @default(now())
+  /// Vừa là updated_at thường vừa là HEARTBEAT của worker — xem ghi chú model.
+  updated_at DateTime @updatedAt
+
+  createdByUser User             @relation("IdPhotoBatchCreatedBy", fields: [created_by], references: [id])
+  items         IdPhotoHistory[] @relation("IdPhotoBatchItems")
+
+  @@index([created_by])
+  @@index([status, updated_at]) // cron reconcile quét job PENDING/PROCESSING quá hạn heartbeat
+  @@map("id_photo_batch_jobs")
+}
+
+enum IdPhotoBatchStatus {
+  PENDING // Vừa tạo, worker chưa nhận
+  PROCESSING // Worker đang xử lý tuần tự các item con
+  COMPLETED // Đã xử lý hết mọi item con (kể cả khi có người FAILED)
+  FAILED // Job chết cứng do restart/crash — cron reconcile đánh dấu
 }
 
 /// Cấp bậc nhân viên — quyết định màu khung khi xuất PDF (ánh xạ ở id-photo.service.ts,
@@ -4507,6 +4740,11 @@ enum MemsAssetCondition {
   IN_MAINTENANCE // Bảo trì
 }
 
+enum MemsBorrowPurpose {
+  WORK // Phục vụ công việc của công ty
+  PERSONAL // Việc riêng của người mượn — cần hai cấp duyệt: leader rồi admin
+}
+
 enum MemsRequestStatus {
   DRAFT // Nháp
   PENDING_APPROVAL // Chờ duyệt
@@ -4685,6 +4923,7 @@ model MemsBorrowRequest {
   department_id String            @db.Uuid
   project       String // BR-19: bắt buộc
   place         String
+  purpose       MemsBorrowPurpose @default(WORK) // PERSONAL thì cần hai cấp duyệt
   from_time     DateTime
   to_time       DateTime
   status        MemsRequestStatus @default(DRAFT)
@@ -4955,6 +5194,13 @@ model MemsAssetPhoto {
   url         String
   /// google_drive hoặc local, ghi lại để sau này còn biết ảnh nào cần chuyển kho
   storage     String   @default("local")
+  /// CATALOG = ảnh hồ sơ của máy · HANDOVER, RETURN = ảnh chứng cứ của một lượt giao/nhận.
+  ///
+  /// Không có cột này thì mỗi lượt bàn giao lại đẩy thêm ảnh vào thư viện của máy: mượn 20 lần
+  /// là 60 tấm ảnh biên bản lẫn với ảnh catalogue, và ảnh đại diện ở bảng kho có thể rơi trúng
+  /// một tấm chụp vết xước. Để String thay vì enum DB: thêm loại mới sau này chỉ sửa code, không
+  /// phải đụng kiểu trong Postgres.
+  purpose     String   @default("CATALOG")
   caption     String?
   /// Ảnh đại diện hiện ở bảng kho. Mỗi máy chỉ nên có một, service tự bỏ cờ ở ảnh cũ.
   is_primary  Boolean  @default(false)
@@ -4965,5 +5211,6 @@ model MemsAssetPhoto {
   asset MemsAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
 
   @@index([asset_id, sort_order])
+  @@index([asset_id, purpose])
   @@map("mems_asset_photos")
 }

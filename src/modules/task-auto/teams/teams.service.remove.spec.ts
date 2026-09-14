@@ -35,7 +35,7 @@ describe('TaskAutoTeamsService.remove', () => {
       },
       $transaction: jest.fn(async (cb: any) => cb(tx)),
     };
-    const service = new TaskAutoTeamsService(prisma);
+    const service = new TaskAutoTeamsService(prisma, {} as any);
     return { service, prisma, tx, deletedIds };
   }
 

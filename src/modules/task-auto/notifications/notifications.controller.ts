@@ -14,7 +14,7 @@ import {
 import { Observable } from "rxjs";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { NotificationStreamService } from "../../../common/push/notification-stream.service";
 import { NotificationsService } from "./notifications.service";
 import {
@@ -25,7 +25,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto/notifications")
 export class NotificationsController {
   constructor(

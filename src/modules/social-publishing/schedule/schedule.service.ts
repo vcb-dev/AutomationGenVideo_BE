@@ -6,11 +6,20 @@ import { HistoryService } from '../history/history.service';
 import { NotificationStreamService } from '../../../common/push/notification-stream.service';
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
+import { isPermanentPublishError } from '../publish/publish-error.util';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 const MAX_RETRIES = 3;
 const MAX_HEAVY_JOBS = 5;
+
+// Hạn giữ chỗ ngắn + heartbeat gia hạn, thay cho lease cứng 40 phút trước đây.
+// Lease cứng có 2 nhược điểm: job chạy lâu hơn lease bị NHẬN LẠI khi vẫn đang upload
+// (đăng trùng bài), còn tiến trình chết thì job kẹt nguyên 40 phút mới hồi.
+// Lease ngắn tự gia hạn giải quyết cả hai: còn sống thì giữ mãi, chết thì hồi sau 5 phút.
+export const CLAIM_LEASE_MS = 5 * 60 * 1000;
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 // Số bài tối đa được đăng ĐỒNG THỜI trên cùng 1 account (page/kênh). Mặc định 1 =
 // serialize hoàn toàn → tránh FB/IG gắn cờ spam / rate-limit #613 khi nhiều bài lên
 // cùng 1 page gần như cùng lúc. Tăng qua env nếu chấp nhận đánh đổi throughput.
@@ -26,10 +35,43 @@ function extractDriveFileId(url: string): string | null {
   return m?.[1] || null;
 }
 
+/**
+ * File tạm do luồng đăng bài tự sinh ra, xoá được sau khi đăng xong:
+ *   gd_*  — tải từ Google Drive về để đưa cho mạng xã hội
+ *   tc_*  — bản transcode cho Instagram/Threads
+ *   tmp_* — file trung gian lúc upload lên Drive
+ *
+ * Mọi tên khác đều KHÔNG được đụng tới. Khi Google Drive chưa cấu hình,
+ * UploadService lưu file gốc của người dùng vào chính thư mục này với tên thật
+ * (xem upload.service.ts::saveBuffer) và media_urls trỏ vào đó — quét sạch theo
+ * tuổi sẽ xoá mất media của bài đã lên lịch đăng sau hơn 2 giờ.
+ */
+function isDisposableUploadFile(filename: string): boolean {
+  return /^(gd|tc|tmp)_/.test(filename);
+}
+
 /** Exponential backoff: attempt 1→5min, 2→15min, 3→45min */
 function retryDelayMs(attempt: number): number {
   return Math.min(5 * Math.pow(3, attempt - 1) * 60 * 1000, 2 * 60 * 60 * 1000);
 }
+
+/** Suy ra URL bài đã đăng từ result trả về bởi platform publisher — khớp logic FE (lib/api/social.ts getPostUrl) */
+function getPostUrl(result: any, platform?: string): string | null {
+  if (!result || typeof result !== 'object') return null;
+  if (typeof result.url === 'string' && result.url) return result.url;
+  if (typeof result.videoId === 'string') return `https://youtube.com/watch?v=${result.videoId}`;
+  if (typeof result.postId === 'string' && result.postId) {
+    if (!platform || platform === 'FACEBOOK') return `https://www.facebook.com/${result.postId}`;
+  }
+  return null;
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  FACEBOOK: 'Facebook',
+  INSTAGRAM: 'Instagram',
+  THREADS: 'Threads',
+  YOUTUBE: 'YouTube',
+};
 
 @Injectable()
 export class ScheduleService {
@@ -63,10 +105,25 @@ export class ScheduleService {
     });
     if (!account) throw new NotFoundException('Account không tồn tại hoặc đã bị ngắt kết nối');
 
+    // Instagram cần IG User ID — chặn sớm lúc lên lịch thay vì để worker fail (bài kẹt
+    // PENDING → FAILED mà editor không hiểu vì sao).
+    if (account.platform === 'INSTAGRAM') {
+      const extra = (account.extra_data ?? {}) as Record<string, unknown>;
+      const igUserId = extra.igUserId || extra.igBusinessId || account.platform_id;
+      if (!igUserId) {
+        throw new BadRequestException(
+          'Tài khoản Instagram này thiếu IG User ID — hãy vào "Kênh social" kết nối lại Instagram (Business/Login trực tiếp) rồi thử lại.',
+        );
+      }
+    }
+
     if (dto.taskId) {
       const task = await this.prisma.task.findUnique({ where: { id: dto.taskId }, select: { status: true } });
       if (!task) throw new NotFoundException('Task không tồn tại');
-      if (task.status !== 'APPROVED') throw new BadRequestException('Chỉ có thể lên lịch đăng bài cho task đã được duyệt');
+      // Cho phép lên lịch ngay khi task đã nộp video (SUBMITTED), không bắt buộc chờ duyệt.
+      if (!['SUBMITTED', 'APPROVED'].includes(task.status)) {
+        throw new BadRequestException('Chỉ có thể lên lịch đăng bài cho task đã nộp video (chờ duyệt hoặc đã duyệt)');
+      }
     }
 
     let thumbUrl = dto.thumbUrl || null;
@@ -125,8 +182,9 @@ export class ScheduleService {
     const post = await this.prisma.socialPost.findFirst({
       where: {
         id, user_id: userId, status: SocialPostStatus.PENDING,
-        // Không cho sửa post đang được worker xử lý (next_retry_at > now = đang claimed)
-        OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
+        // Chỉ chặn khi worker ĐANG thực sự xử lý. Bài nằm chờ backoff sau khi đăng lỗi
+        // vẫn phải sửa được — đó chính là lúc người dùng cần sửa nội dung nhất.
+        OR: [{ claimed_until: null }, { claimed_until: { lte: now } }],
       },
     });
     if (!post) throw new NotFoundException('Task không tồn tại, không ở trạng thái PENDING, hoặc đang được xử lý');
@@ -151,7 +209,8 @@ export class ScheduleService {
     const post = await this.prisma.socialPost.findFirst({
       where: {
         id, user_id: userId, status: SocialPostStatus.PENDING,
-        OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
+        // Như update(): bài đang chờ retry vẫn huỷ được, chỉ bài đang chạy mới bị chặn.
+        OR: [{ claimed_until: null }, { claimed_until: { lte: now } }],
       },
     });
     if (!post) throw new NotFoundException('Task không tồn tại hoặc đang được xử lý');
@@ -164,17 +223,22 @@ export class ScheduleService {
   async retry(id: string, userId: string) {
     const post = await this.prisma.socialPost.findFirst({ where: { id, user_id: userId, status: SocialPostStatus.FAILED } });
     if (!post) throw new NotFoundException('Task không tồn tại hoặc chưa failed');
-    return this.prisma.socialPost.update({
+    const updated = await this.prisma.socialPost.update({
       where: { id },
       data: {
         status: SocialPostStatus.PENDING,
         retry_count: 0,
         error_msg: null,
         next_retry_at: null,
-        scheduled_at: new Date(Date.now() + retryDelayMs(1)),
+        claimed_until: null,
+        // Chạy lại NGAY. Trước đây hoãn 5 phút trong khi giao diện báo "đã đưa vào hàng
+        // chờ thử lại" — người dùng tưởng hệ thống treo và bấm lại nhiều lần.
+        scheduled_at: new Date(),
         updated_at: new Date(),
       },
     });
+    this.triggerNow(); // không chờ hết chu kỳ cron 5 giây
+    return updated;
   }
 
   // ─── WORKER: chạy mỗi 5 giây ────────────────────────────────────────────────
@@ -249,15 +313,15 @@ export class ScheduleService {
     if (maxLocalSlots <= 0) return [];
 
     const now        = new Date();
-    // Video lớn cần download từ Drive + upload lên MXH → có thể mất 20-30 phút
-    const claimUntil = new Date(Date.now() + 40 * 60 * 1000); // claim 40 phút
+    const claimUntil = new Date(Date.now() + CLAIM_LEASE_MS);
 
-    // 1. Đếm số job đang xử lý (đã claim gần đây ≤ 40 phút) theo platform
+    // 1. Đếm số job đang xử lý theo platform. Mốc duy nhất là claimed_until còn hiệu lực —
+    // KHÔNG dùng next_retry_at nữa: bài chờ retry không chiếm slot của bài khác.
     const inFlightRows = await this.prisma.socialPost.groupBy({
       by: ['platform'],
       where: {
         status: SocialPostStatus.PENDING,
-        next_retry_at: { gt: now, lte: claimUntil },
+        claimed_until: { gt: now },
       },
       _count: { platform: true },
     });
@@ -278,7 +342,7 @@ export class ScheduleService {
       by: ['account_id'],
       where: {
         status:        SocialPostStatus.PENDING,
-        next_retry_at: { gt: now, lte: claimUntil },
+        claimed_until: { gt: now },
       },
       _count: { account_id: true },
     });
@@ -287,13 +351,24 @@ export class ScheduleService {
       if (r.account_id) inFlightByAccount[r.account_id] = r._count.account_id;
     }
 
+    // Account đã kín slot thì loại thẳng khỏi truy vấn. Nếu để chúng lọt vào, một hàng chờ
+    // dài của cùng 1 kênh sẽ chiếm hết 50 bản ghi lấy về và bài của kênh đang rảnh xếp sau
+    // không bao giờ được xét (head-of-line blocking).
+    const saturatedAccountIds = Object.entries(inFlightByAccount)
+      .filter(([, count]) => count >= ACCOUNT_CONCURRENCY)
+      .map(([accountId]) => accountId);
+
     // 2. Lấy các job đến hạn (SCHEDULED + IMMEDIATE), sắp theo thời gian tạo
     const duePosts = await this.prisma.socialPost.findMany({
       where: {
         status: SocialPostStatus.PENDING,
         source: { in: [SocialPostSource.SCHEDULED, SocialPostSource.IMMEDIATE] },
         scheduled_at: { lte: now },
-        OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }],
+        AND: [
+          { OR: [{ next_retry_at: null }, { next_retry_at: { lte: now } }] },  // hết backoff
+          { OR: [{ claimed_until: null }, { claimed_until: { lte: now } }] },  // không ai đang giữ
+        ],
+        ...(saturatedAccountIds.length ? { account_id: { notIn: saturatedAccountIds } } : {}),
       },
       orderBy: { scheduled_at: 'asc' },
       take: 50,
@@ -319,14 +394,15 @@ export class ScheduleService {
       const acctInFlight = (inFlightByAccount[post.account_id] ?? 0) + (claimedPerAccount[post.account_id] ?? 0);
       if (acctInFlight >= ACCOUNT_CONCURRENCY) continue;
 
-      // Atomic claim: chỉ thành công nếu next_retry_at chưa thay đổi
+      // Atomic claim: chỉ thành công nếu chưa worker nào đang giữ bài này. Postgres
+      // khoá hàng nên 2 tiến trình cùng chạy chỉ 1 bên nhận được count === 1.
       const claimed = await this.prisma.socialPost.updateMany({
         where: {
           id: post.id,
           status: SocialPostStatus.PENDING,
-          next_retry_at: post.next_retry_at ?? null,
+          OR: [{ claimed_until: null }, { claimed_until: { lte: now } }],
         },
-        data: { next_retry_at: claimUntil },
+        data: { claimed_until: claimUntil },
       });
 
       if (claimed.count === 1) {
@@ -346,17 +422,72 @@ export class ScheduleService {
     return claimedPosts;
   }
 
+  /**
+   * Gia hạn chỗ giữ mỗi phút trong suốt thời gian bài đang được xử lý.
+   *
+   * Không có heartbeat thì bài chạy lâu hơn lease sẽ bị worker khác nhận lại trong khi
+   * lượt đầu vẫn đang upload — và chốt idempotency (`post.result`) chưa cứu được vì
+   * `result` chỉ ghi SAU khi đăng xong. Kết quả là bài lên mạng xã hội 2 lần.
+   */
+  private startClaimHeartbeat(postId: string): () => void {
+    const timer = setInterval(() => {
+      this.prisma.socialPost
+        .updateMany({
+          where: { id: postId, status: SocialPostStatus.PENDING },
+          data: { claimed_until: new Date(Date.now() + CLAIM_LEASE_MS) },
+        })
+        .catch((err: any) => this.logger.warn(`[Worker] Gia hạn chỗ giữ cho ${postId} thất bại: ${err?.message}`));
+    }, HEARTBEAT_INTERVAL_MS);
+    timer.unref?.(); // không giữ process sống chỉ vì heartbeat
+    return () => clearInterval(timer);
+  }
+
+  /**
+   * Tự thêm link bài vừa đăng vào published_links của task — editor khỏi copy tay. Idempotent
+   * theo URL (an toàn khi worker retry / nhiều post cùng task), không đụng link nhập tay. Ghi
+   * được cho cả SUBMITTED lẫn APPROVED vì đây là sự kiện hệ thống, không phải claim cần duyệt.
+   */
+  private async syncPublishedLinkToTask(post: any, result: any): Promise<void> {
+    if (!post.task_id) return;
+    const url = getPostUrl(result, post.platform);
+    if (!url) return;
+
+    try {
+      const task = await this.prisma.task.findUnique({
+        where: { id: post.task_id },
+        select: { published_links: true },
+      });
+      if (!task) return;
+
+      const links = Array.isArray(task.published_links) ? (task.published_links as any[]) : [];
+      if (links.some((l) => l?.url === url)) return;
+
+      const platformLabel = PLATFORM_LABEL[post.platform] ?? post.platform;
+      const next = [...links, { id: randomUUID(), platform: platformLabel, url }];
+
+      await this.prisma.task.update({
+        where: { id: post.task_id },
+        data: { published_links: next as any },
+      });
+      this.logger.log(`[Worker] 🔗 Đã tự động thêm link bài đăng vào task ${post.task_id}: ${url}`);
+    } catch (err: any) {
+      this.logger.warn(`[Worker] Không thể tự động thêm link bài đăng cho task ${post.task_id}: ${err.message}`);
+    }
+  }
+
   private async executePost(post: any) {
     // Idempotency: nếu đã có result → đã publish thành công nhưng DB update bị fail trước đó
     if (post.result && typeof post.result === 'object' && Object.keys(post.result as any).length > 0) {
       this.logger.warn(`[Worker] ⚠️ Post ${post.id} already has result — marking COMPLETED without re-publish`);
       await this.prisma.socialPost.updateMany({
         where: { id: post.id },
-        data: { status: SocialPostStatus.COMPLETED, executed_at: new Date(), updated_at: new Date(), next_retry_at: null },
+        data: { status: SocialPostStatus.COMPLETED, executed_at: new Date(), updated_at: new Date(), claimed_until: null },
       });
+      this.syncPublishedLinkToTask(post, post.result);
       return;
     }
 
+    const stopHeartbeat = this.startClaimHeartbeat(post.id);
     try {
       this.logger.log(`[Worker] ▶ Đang publish post ${post.id} | platform=${post.platform} | media=${post.media_urls?.length ?? 0} file`);
       const result = await this.publishService.executeScheduled(post);
@@ -376,6 +507,7 @@ export class ScheduleService {
           executed_at: new Date(),
           updated_at: new Date(),
           next_retry_at: null,
+          claimed_until: null,
           error_msg: null,
           retry_count: 0,
         },
@@ -386,14 +518,22 @@ export class ScheduleService {
       }
       this.publishService.archiveMediaAsync(post.id, (post.media_urls as string[]) ?? [])
         .catch((err: any) => this.logger.warn(`[Worker] archiveMediaAsync failed for ${post.id}: ${err.message}`));
+      this.syncPublishedLinkToTask(post, result);
       this.logger.log(`[Worker] ✅ Post ${post.id} (${post.platform}) completed`);
     } catch (err: any) {
       const stackLines = (err.stack || '').split('\n').slice(0, 6).join('\n  ');
       this.logger.error(`[Worker] ✗ Post ${post.id} (${post.platform}) THẤT BẠI:\n  Lỗi: ${err.message}\n  Stack:\n  ${stackLines}`);
       const retryCount = (post.retry_count ?? 0) + 1;
       const errorWithStack = `${err.message} | stack: ${(err.stack || '').split('\n').slice(1, 4).join(' | ')}`;
+      // Lỗi vĩnh viễn (sai định dạng media, token bị thu hồi, thiếu quyền) không tự khỏi:
+      // thử thêm 2 lượt chỉ tốn ~20 phút và khoá luôn kênh đó vì mỗi kênh chỉ chạy 1 bài
+      // một lúc. Chuyển FAILED ngay để người dùng biết mà sửa.
+      const isPermanent = isPermanentPublishError(err.message);
+      if (isPermanent) {
+        this.logger.warn(`[Worker] ⛔ Post ${post.id} lỗi vĩnh viễn — bỏ qua thử lại: ${err.message}`);
+      }
       try {
-        if (retryCount >= MAX_RETRIES) {
+        if (isPermanent || retryCount >= MAX_RETRIES) {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
             data: {
@@ -402,18 +542,26 @@ export class ScheduleService {
               error_msg: errorWithStack,
               updated_at: new Date(),
               next_retry_at: null,
+              claimed_until: null,
             },
           });
           this.history.getFailedPostAudience(post.user_id)
             .then((audience) => this.notifyStream.emitMany(audience))
             .catch(() => {});
-          this.logger.warn(`[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`);
+          this.logger.warn(
+            isPermanent
+              ? `[Worker] ❌ Post ${post.id} failed (lỗi vĩnh viễn, không thử lại): ${err.message}`
+              : `[Worker] ❌ Post ${post.id} failed after ${MAX_RETRIES} retries: ${err.message}`,
+          );
         } else {
           await this.prisma.socialPost.updateMany({
             where: { id: post.id },
             data: {
               retry_count: retryCount,
               next_retry_at: new Date(Date.now() + retryDelayMs(retryCount)),
+              // Nhả chỗ giữ: bài đang chờ backoff KHÔNG được tính là đang xử lý,
+              // nếu không nó khoá slot của cả platform lẫn account trong lúc chỉ nằm chờ.
+              claimed_until: null,
               error_msg: err.message,
               updated_at: new Date(),
             },
@@ -423,6 +571,8 @@ export class ScheduleService {
       } catch (dbErr: any) {
         this.logger.error(`[Worker] ❌ Post ${post.id} — publish error: ${err.message} | DB update error: ${dbErr.message}`);
       }
+    } finally {
+      stopHeartbeat();
     }
   }
 
@@ -481,6 +631,7 @@ export class ScheduleService {
     const now = Date.now();
     let deleted = 0;
     let failed = 0;
+    let skipped = 0;
 
     let entries: string[];
     try {
@@ -491,6 +642,10 @@ export class ScheduleService {
     }
 
     for (const name of entries) {
+      if (!isDisposableUploadFile(name)) {
+        skipped++;
+        continue;
+      }
       const filePath = path.join(uploadBase, name);
       try {
         const stat = fs.statSync(filePath);
@@ -505,7 +660,10 @@ export class ScheduleService {
     }
 
     if (deleted > 0 || failed > 0) {
-      this.logger.log(`[CleanupOrphanFiles] Đã xóa ${deleted} file rác trên đĩa (${failed} lỗi) — thư mục: ${uploadBase}`);
+      this.logger.log(
+        `[CleanupOrphanFiles] Đã xóa ${deleted} file rác trên đĩa (${failed} lỗi, ` +
+        `${skipped} file không phải file tạm nên bỏ qua) — thư mục: ${uploadBase}`,
+      );
     }
   }
 }

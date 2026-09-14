@@ -9,6 +9,9 @@ import { GoogleDriveStorageService } from '../social-publishing/upload/google-dr
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 import { UsersModule } from '../users/users.module';
 
+import { VoiceQuotaService } from './voice-quota.service';
+import { PaastService } from './paast/paast.service';
+
 @Global()
 @Module({
   imports: [
@@ -28,8 +31,8 @@ import { UsersModule } from '../users/users.module';
     }),
   ],
   controllers: [AiIntegrationController],
-  providers: [AiIntegrationService, GoogleDriveStorageService],
-  exports: [AiIntegrationService],
+  providers: [AiIntegrationService, GoogleDriveStorageService, VoiceQuotaService, PaastService],
+  exports: [AiIntegrationService, VoiceQuotaService, PaastService],
 })
 export class AiIntegrationModule {}
 

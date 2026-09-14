@@ -7,9 +7,9 @@ const VN_TZ = { timeZone: 'Asia/Ho_Chi_Minh' };
 /**
  * Đồng bộ Instagram nội bộ hằng ngày.
  *
- * Chạy 07:15 — nằm giữa delta sync Facebook (07:00) và cron chấm PAAST (07:30). Đặt sau
- * Facebook vì Instagram dùng CHÍNH page token của Facebook: page nào vừa được import lúc 06:00
- * thì tài khoản Instagram của nó cũng có token mới nhất để dùng.
+ * Chạy 07:15 — đúng khung mà ThreadsOwnedAccountsCronService đã tính trước ("nằm sau
+ * Instagram owned (07:15)"). Xếp trước Threads (07:30) và tách khỏi instagram-scraper
+ * (07:30, cào kênh đối thủ qua TikHub) để hai luồng không giành nhau cùng một profile.
  */
 @Injectable()
 export class InstagramOwnedAccountsCronService {
@@ -17,12 +17,12 @@ export class InstagramOwnedAccountsCronService {
 
   constructor(private readonly service: InstagramOwnedAccountsService) {}
 
-  @Cron('0 15 7 * * *', VN_TZ)
+  @Cron('0 15 7,12 * * *', VN_TZ)
   async cronSyncOwnedInstagram(): Promise<void> {
     try {
-      await this.service.syncAllOwnedAccounts();
+      await this.service.syncAllConnectedAccounts();
     } catch (err: any) {
-      this.logger.error(`❌ [IG-SYNC] Lỗi: ${err.message}`);
+      this.logger.error(`❌ [IGCron] Lỗi: ${err.message}`);
     }
   }
 }

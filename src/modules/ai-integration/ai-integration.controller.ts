@@ -16,11 +16,17 @@ import { ContentTransformHistoryQueryDto } from './dto/content-transform-history
 import { ContentTransformTeamSummaryQueryDto } from './dto/content-transform-team-summary-query.dto';
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
+import { VoiceQuotaService } from './voice-quota.service';
+import { PaastService } from './paast/paast.service';
 
 @ApiTags('AI Integration')
 @Controller('ai')
 export class AiIntegrationController {
-  constructor(private readonly aiService: AiIntegrationService) { }
+  constructor(
+    private readonly aiService: AiIntegrationService,
+    private readonly voiceQuotaService: VoiceQuotaService,
+    private readonly paastService: PaastService,
+  ) { }
 
   @Post('chat')
   @HttpCode(HttpStatus.OK)
@@ -658,11 +664,50 @@ export class AiIntegrationController {
     return this.aiService.mixVideoUpload(req);
   }
 
+  @Get('voice/quota')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Lấy thông tin hạn mức tạo voice hôm nay của user (mặc định 8 lượt/ngày)' })
+  async getVoiceQuota(@Req() req: any) {
+    const userId = req.user?.id;
+    return this.voiceQuotaService.getQuota(userId);
+  }
+
+  @Post('voice/quota/grant')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Admin cấp thêm lượt tạo voice cho user (tối đa 8 lượt/lần)' })
+  async grantVoiceQuota(
+    @Body('user_id') targetUserId: string,
+    @Body('extra_count') extraCount: number,
+    @Req() req: any,
+  ) {
+    const userRoles = req.user?.roles || [];
+    if (!userRoles.includes('ADMIN')) {
+      throw new HttpException('Chỉ ADMIN mới có quyền cấp thêm lượt tạo voice', HttpStatus.FORBIDDEN);
+    }
+    if (!targetUserId) {
+      throw new HttpException('user_id is required', HttpStatus.BAD_REQUEST);
+    }
+    const result = await this.voiceQuotaService.grantExtraQuota(targetUserId, extraCount, req.user?.id);
+    if (req.user?.id) {
+      await this.aiService.logVoiceAction({
+        user_id: req.user.id,
+        action_type: 'GRANT_QUOTA',
+        status: 'SUCCESS',
+        details: {
+          target_user_id: targetUserId,
+          extra_count: extraCount,
+          admin_id: req.user.id,
+        },
+      });
+    }
+    return result;
+  }
+
   @Get('voice/list')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'List available voices' })
-  async listVoices() {
-    return this.aiService.listVoices();
+  async listVoices(@Req() req: any) {
+    return this.aiService.listVoices(req.user?.id);
   }
 
   @Post('voice/clone')
@@ -683,7 +728,9 @@ export class AiIntegrationController {
   async cloneVoice(
     @UploadedFile() file: Express.Multer.File,
     @Body('voice_name') voiceName: string,
+    @Req() req: any,
     @Body('gender') gender?: string,
+    @Body('prompt_text') promptText?: string,
   ) {
     if (!file) {
       throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
@@ -691,7 +738,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoice(file, voiceName, gender);
+    return this.aiService.cloneVoice(file, voiceName, gender, req.user?.id, promptText);
   }
 
   @Post('voice/clone/start')
@@ -712,7 +759,9 @@ export class AiIntegrationController {
   async cloneVoiceStart(
     @UploadedFile() file: Express.Multer.File,
     @Body('voice_name') voiceName: string,
+    @Req() req: any,
     @Body('gender') gender?: string,
+    @Body('prompt_text') promptText?: string,
   ) {
     if (!file) {
       throw new HttpException('file is required', HttpStatus.BAD_REQUEST);
@@ -720,7 +769,7 @@ export class AiIntegrationController {
     if (!voiceName) {
       throw new HttpException('voice_name is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.cloneVoiceStart(file, voiceName, gender);
+    return this.aiService.cloneVoiceStart(file, voiceName, gender, req.user?.id, promptText);
   }
 
   @Get('voice/clone/status/:jobId')
@@ -733,11 +782,27 @@ export class AiIntegrationController {
   @Delete('voice/:voiceId')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Xoá một giọng đã clone (xoá cả trên MiniMax lẫn DB)' })
-  async deleteClonedVoice(@Param('voiceId') voiceId: string) {
+  async deleteClonedVoice(@Param('voiceId') voiceId: string, @Req() req: any) {
     if (!voiceId) {
       throw new HttpException('voiceId is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.deleteClonedVoice(voiceId);
+    return this.aiService.deleteClonedVoice(voiceId, req.user?.id);
+  }
+
+  @Get('voice/history')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Lấy danh sách lịch sử thao tác voice của người dùng (Chỉ dành cho ADMIN)' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'action_type', required: false, type: String })
+  @ApiQuery({ name: 'user_id', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'date_from', required: false, type: String })
+  @ApiQuery({ name: 'date_to', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  async getVoiceActionHistory(@Query() query: any) {
+    return this.aiService.getVoiceActionHistory(query);
   }
 
   @Get('voice/usage/stats')
@@ -805,6 +870,7 @@ export class AiIntegrationController {
     @Body('pitch') pitch?: number,
     @Body('volume') volume?: number,
     @Body('language') language?: string,
+    @Body('emotion') emotion?: string,
   ) {
     if (!text) {
       throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
@@ -812,7 +878,7 @@ export class AiIntegrationController {
     if (!voiceId) {
       throw new HttpException('voice_id is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id);
+    return this.aiService.generateTTS(text, voiceId, speed, pitch, volume, language, req.user?.id, emotion);
   }
 
   @Post('voice/translate-text')
@@ -822,6 +888,7 @@ export class AiIntegrationController {
   async translateVoiceText(
     @Body('text') text: string,
     @Body('language') language: string,
+    @Req() req: any,
   ) {
     if (!text) {
       throw new HttpException('text is required', HttpStatus.BAD_REQUEST);
@@ -829,7 +896,21 @@ export class AiIntegrationController {
     if (!language) {
       throw new HttpException('language is required', HttpStatus.BAD_REQUEST);
     }
-    return this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+    const result = await this.aiService.translateVideoScript({ content: text, hashtags: [], language });
+    if (req.user?.id) {
+      await this.aiService.logVoiceAction({
+        user_id: req.user.id,
+        action_type: 'TRANSLATE',
+        status: 'SUCCESS',
+        input_text: text.slice(0, 500),
+        characters: text.length,
+        details: {
+          language,
+          output_length: result?.content?.length || 0,
+        },
+      });
+    }
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -887,7 +968,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí, thang điểm 100)' })
   async analyzePaastContent(@Req() req: any, @Body() dto: AnalyzeContentDto) {
-    return this.aiService.analyzeContent(req.user.id, dto);
+    return this.paastService.analyzeContent(req.user.id, dto);
   }
 
   @Post('paast/find-by-content')
@@ -895,7 +976,9 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Tìm bản phân tích PAAST gần nhất khớp đúng nội dung này (mọi user) — tránh chấm điểm lại content không đổi, kể cả khi người khác đã chấm' })
   async findPaastByContent(@Body() dto: AnalyzeContentDto) {
-    return this.aiService.findLatestByContent(dto.content);
+    // Content có thể nằm trong file (fileUrl) — trích text trước rồi mới tra bản đã chấm.
+    const content = await this.paastService.resolvePaastContent(dto);
+    return this.paastService.findLatestByContent(content);
   }
 
   @Post('paast/upgrade/:analysisId')
@@ -903,7 +986,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Nâng cấp content dựa trên các tiêu chí đang thiếu của 1 bản phân tích đã lưu' })
   async upgradePaastAnalysis(@Req() req: any, @Param('analysisId') analysisId: string) {
-    return this.aiService.upgradeAnalysis(req.user.id, analysisId);
+    return this.paastService.upgradeAnalysis(req.user.id, analysisId);
   }
 
   @Get('paast/history')
@@ -911,7 +994,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Lấy lịch sử phân tích PAAST của chính user đang login' })
   async getPaastUserHistory(@Req() req: any, @Query() query: HistoryQueryDto) {
-    return this.aiService.getPaastUserHistory(req.user.id, query);
+    return this.paastService.getPaastUserHistory(req.user.id, query);
   }
 
   @Get('paast/history/:id')
@@ -919,7 +1002,7 @@ export class AiIntegrationController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Lấy chi tiết một bản ghi lịch sử phân tích PAAST' })
   async getPaastHistoryDetail(@Req() req: any, @Param('id') id: string) {
-    return this.aiService.getPaastHistoryDetail(id, req.user.id);
+    return this.paastService.getPaastHistoryDetail(id, req.user.id);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -978,7 +1061,7 @@ export class AiIntegrationController {
     }),
   )
   @ApiOperation({ summary: 'Chuyển đổi file video/audio thành văn bản' })
-  async transcribeContentTransformUpload(@UploadedFile() file: Express.Multer.File) {
+  async transcribeContentTransformUpload(@Req() req: any, @UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new HttpException('Không tìm thấy file upload', HttpStatus.BAD_REQUEST);
     }
@@ -997,9 +1080,10 @@ export class AiIntegrationController {
       throw new HttpException('Mimetype của file không hợp lệ.', HttpStatus.BAD_REQUEST);
     }
 
-    // AI transcribe-upload yêu cầu IsAuthenticated (NestJWTAuthentication) — BE tự ký
-    // internal system token thay vì forward JWT gốc của user (xem transcribeContentUpload()).
-    return this.aiService.transcribeContentUpload(file);
+    // AI transcribe-upload yêu cầu IsAuthenticated (NestJWTAuthentication). Truyền kèm user đã
+    // xác thực: FE đăng nhập bằng cookie HttpOnly nên `req.headers.authorization` thường KHÔNG
+    // tồn tại, khi đó service tự ký token nội bộ theo đúng user này (xem transcribeAiAuthHeaders).
+    return this.aiService.transcribeContentUpload(file, req.headers?.authorization, req.user);
   }
 
   // ─── Job nền content-transform (transcribe/upgrade chạy lâu): start + poll + cancel.

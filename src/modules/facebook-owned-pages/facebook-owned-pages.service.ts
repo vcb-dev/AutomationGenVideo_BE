@@ -3,9 +3,27 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookAiClientService } from './facebook-ai-client.service';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { resolveViewCount } from './resolve-view-count';
-import { extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
+import { extractFacebookReelId, extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
 
 const STALE_LOCK_MINUTES = 30;
+
+function extractErrorMessage(err: any): string {
+  if (err?.response?.data?.error) {
+    const error = err.response.data.error;
+    if (typeof error === 'string') return error;
+    if (typeof error === 'object' && error.message) return error.message;
+  }
+  if (err?.response?.data?.message) {
+    const msg = err.response.data.message;
+    if (typeof msg === 'string') return msg;
+  }
+  return err?.message || 'Lỗi không xác định';
+}
+
+// Số dự phòng từ owned content chỉ chấp nhận khi bản ghi còn mới trong khoảng này — quá hạn
+// thì trả 'failed' để sự cố Graph API kéo dài còn lộ ra (bài học metrics đứng im 13 ngày
+// 27/07–09/08/2026), thay vì âm thầm phục vụ số cũ mãi.
+const OWNED_STATS_FALLBACK_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 export interface PublishedLinkStatsResult {
   status: 'success' | 'failed' | 'unsupported';
@@ -204,7 +222,7 @@ export class FacebookOwnedPagesService {
       this.logger.log(`[BACKFILL] ${page.name}: +${created} mới, ~${updated} cập nhật (quét ${total_scanned} bài)`);
       return { created, updated, total_scanned };
     } catch (err: any) {
-      await this.unlockPage(page.id, err.message);
+      await this.unlockPage(page.id, extractErrorMessage(err));
       throw err;
     }
   }
@@ -231,7 +249,7 @@ export class FacebookOwnedPagesService {
         done++;
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ Backfill ${page.name}: ${err.message}`);
+        this.logger.error(`❌ Backfill ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 
@@ -275,7 +293,7 @@ export class FacebookOwnedPagesService {
       this.logger.log(`[SYNC] ${page.name}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated };
     } catch (err: any) {
-      await this.unlockPage(page.id, err.message);
+      await this.unlockPage(page.id, extractErrorMessage(err));
       throw err;
     }
   }
@@ -303,7 +321,7 @@ export class FacebookOwnedPagesService {
         done++;
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ Delta ${page.name}: ${err.message}`);
+        this.logger.error(`❌ Delta ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 
@@ -367,7 +385,7 @@ export class FacebookOwnedPagesService {
         this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
       } catch (err: any) {
         failed++;
-        this.logger.error(`❌ [METRICS] ${page.name}: ${err.message}`);
+        this.logger.error(`❌ [METRICS] ${page.name}: ${extractErrorMessage(err)}`);
       }
     }
 
@@ -428,6 +446,16 @@ export class FacebookOwnedPagesService {
     // riêng (fetchVideoNodeMetrics) thay vì fetchMetricsRefresh.
     let isVideoNode = false;
 
+    // Link Reels (/reel/{id}) là Video NODE THUẦN KỂ CẢ khi đã sync vào owned content: Graph
+    // API từ chối field Page Post (shares/insights) với 400 "(#100) nonexisting field", bên AI
+    // nuốt lỗi rồi trả metrics rỗng cho CẢ batch. Phải gọi endpoint video-node với ID SỐ trên
+    // URL. Nhánh `if (!page)` bên dưới đã lo reel CHƯA sync; khối này bù cho reel ĐÃ sync.
+    const reelId = extractFacebookReelId(resolvedUrl);
+    if (reelId && page) {
+      postId = reelId;
+      isVideoNode = true;
+    }
+
     if (!page) {
       const parsed = extractPostIdFromUrl(resolvedUrl);
       postId = parsed.postId;
@@ -458,17 +486,57 @@ export class FacebookOwnedPagesService {
         ? await this.aiClient.fetchVideoNodeMetrics(page.page_access_token, [postId])
         : await this.aiClient.fetchMetricsRefresh(page.page_access_token, [postId]);
       const m = metrics[postId];
-      if (!m) return { status: 'failed', error: 'Không lấy được số liệu cho bài viết này' };
-      return {
-        status: 'success',
-        views: m.view_count ?? 0,
-        likes: m.like_count ?? 0,
-        comments: m.comment_count ?? 0,
-        shares: m.share_count ?? 0,
-      };
+      if (m) {
+        return {
+          status: 'success',
+          views: m.view_count ?? 0,
+          likes: m.like_count ?? 0,
+          comments: m.comment_count ?? 0,
+          shares: m.share_count ?? 0,
+        };
+      }
+      // Graph API trả rỗng (không throw) — thường do node Reels / thiếu quyền. Dùng số cron
+      // đồng bộ page đã ghi sẵn trong owned content nếu còn đủ mới.
+      return (
+        this.ownedContentStatsFallback(owned) ?? {
+          status: 'failed',
+          error: 'Không lấy được số liệu cho bài viết này',
+        }
+      );
     } catch (err: any) {
-      return { status: 'failed', error: (err.message || 'Lỗi không xác định').slice(0, 300) };
+      return (
+        this.ownedContentStatsFallback(owned) ?? {
+          status: 'failed',
+          error: (err.message || 'Lỗi không xác định').slice(0, 300),
+        }
+      );
     }
+  }
+
+  // Dự phòng khi Graph API trực tiếp thất bại/rỗng: dùng view/like/comment/share cron đồng bộ
+  // page đã ghi vào video_management_ownedvideocontent. Chỉ khi bản ghi còn mới
+  // (<= OWNED_STATS_FALLBACK_MAX_AGE_MS) — sự cố kéo dài vẫn phải lộ ra ('failed').
+  private ownedContentStatsFallback(
+    owned:
+      | {
+          view_count: bigint | number | null;
+          like_count: number | null;
+          comment_count: number | null;
+          share_count: number | null;
+          updated_at: Date | null;
+        }
+      | null,
+  ): PublishedLinkStatsResult | null {
+    if (!owned || owned.view_count == null) return null;
+    const updatedAtMs = owned.updated_at ? owned.updated_at.getTime() : 0;
+    if (Date.now() - updatedAtMs > OWNED_STATS_FALLBACK_MAX_AGE_MS) return null;
+    return {
+      status: 'success',
+      views: Number(owned.view_count) || 0,
+      likes: owned.like_count ?? 0,
+      comments: owned.comment_count ?? 0,
+      shares: owned.share_count ?? 0,
+    };
   }
 
   // Tra page sở hữu thật của 1 object Graph API (post/video/reel) khi URL không mang

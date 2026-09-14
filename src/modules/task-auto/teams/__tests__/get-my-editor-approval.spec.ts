@@ -12,7 +12,7 @@ describe('TaskAutoTeamsService.getMyEditorApproval', () => {
         findFirst: jest.fn(async () => (opts.approval === undefined ? null : opts.approval)),
       },
     };
-    const service = new TaskAutoTeamsService(prisma);
+    const service = new TaskAutoTeamsService(prisma, {} as any);
     return { service, prisma };
   }
 

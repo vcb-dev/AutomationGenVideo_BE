@@ -12,7 +12,7 @@ import {
   Request,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { ScaleDataSourceGuard } from "../../../common/guards/scale-data-source.guard";
@@ -33,7 +33,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoCatalogController {
   constructor(private catalog: TaskAutoCatalogService) {}

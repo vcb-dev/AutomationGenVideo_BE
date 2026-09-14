@@ -22,6 +22,10 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
+  @ApiPropertyOptional({ description: 'Chọn sản phẩm trực tiếp từ kho tổng (OMS) — hệ thống tự materialize vào kho cá nhân editor được giao' })
+  @IsString() @IsOptional() oms_product_id?: string
+  @ApiPropertyOptional({ description: 'ID variant (SKU thật) bên OMS — bắt buộc nếu có oms_product_id' })
+  @IsString() @IsOptional() oms_variant_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_outro_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() source_extra_id?: string
@@ -51,6 +55,8 @@ export class UpdateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() editor_product_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() team_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() oms_product_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() oms_variant_id?: string
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_outro_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_extra_id?: string | null
   @ApiPropertyOptional() @ValidateIf((_, v) => v !== null) @IsString() @IsOptional() source_workshop_id?: string | null
@@ -98,6 +104,24 @@ export class QueryTaskDto {
 
   @ApiPropertyOptional({ default: 20 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 20
+}
+
+// Đếm nhanh cho header ("N task") + 2 badge "Video chờ duyệt"/"Content chờ duyệt" trên
+// tasks/page.tsx — gộp 3 request limit:1 (mỗi request kéo theo cả findMany lẫn count ở BE) thành
+// 1 request count()-thuần duy nhất (xem tasks.service.ts getHeaderCounts). deadline_from/to áp
+// dụng cho tổng "N task" (khớp bộ lọc hiện tại); pending_from/to áp dụng riêng cho badge "Video
+// chờ duyệt" (mặc định trống, KHÔNG dùng chung deadline_from/to — xem comment ở FE tasks/page.tsx).
+export class QueryTaskHeaderCountsDto {
+  @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus
+  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() pending_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() pending_to?: string
+  @ApiPropertyOptional({ enum: ['auto', 'extra'] })
+  @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 }
 
 export class SubmitTaskDto {

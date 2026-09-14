@@ -12,8 +12,7 @@ import { TeamSummaryRange } from './dto/content-transform-team-summary-query.dto
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
-import { AnalyzeContentDto } from './dto/paast-analyze.dto';
-import { HistoryQueryDto } from './dto/paast-history-query.dto';
+import { extractMissingElements } from './paast/paast-missing-elements.util';
 import { INTERNAL_TOKEN_HEADER } from '../characters/guards/admin-or-internal.guard';
 import {
   PaastAnalysisPayload,
@@ -30,6 +29,7 @@ import { ContentTransformHistoryQueryDto } from './dto/content-transform-history
 import { UpgradeTransformDto } from './dto/content-transform-upgrade.dto';
 import { RescoreDto } from './dto/content-transform-rescore.dto';
 import { UsersService } from '../users/users.service';
+import { VoiceQuotaService } from './voice-quota.service';
 
 /** Chi tiết 1 video do AI service lấy về (TikHub) — xem fetchVideoDetail(). */
 export interface VideoDetailResult {
@@ -45,13 +45,6 @@ export interface VideoDetailResult {
   shares_count: number;
 }
 
-/** Một tiêu chí PAAST đang `miss` — dùng làm input cho upgradeAnalysis(). */
-interface MissingElement {
-  layer: string;
-  criterion: string;
-  suggestion: string;
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Types dùng riêng cho phần "chuyển đổi content" (gộp từ module content-transform)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -62,17 +55,6 @@ interface MissingElement {
  */
 type ContentTransformScoreResult = PaastAnalysisPayload;
 
-/**
- * Trạng thái chấm điểm của 1 bản ghi, dùng chung cho /transform, /rescore, /upgrade và các
- * endpoint lịch sử:
- *  - `null`    : bản ghi chưa từng có output_text (vd transform hỏng ngay từ bước viết) —
- *                không áp dụng khái niệm chấm điểm.
- *  - `pending` : ĐÃ có kịch bản kết quả nhưng CHƯA chấm điểm. Đây là trạng thái bình thường
- *                ngay sau /transform kể từ khi tách "viết kịch bản" và "chấm điểm" thành 2
- *                request riêng — KHÔNG phải lỗi, người dùng bấm "Chấm điểm content" để chấm.
- *  - `success` : đã chấm xong, có scoreResult theo khung PAAST.
- *  - `failed`  : lần chấm vừa rồi thất bại (sau khi đã tự retry), hoặc bản ghi dùng hệ điểm cũ.
- */
 type ContentTransformScoreStatus = 'success' | 'failed' | 'pending' | null;
 
 /**
@@ -117,10 +99,14 @@ export class AiIntegrationService {
   private readonly minimaxApiKey?: string;
   /**
    * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
-   * Set qua env MINIMAX_VND_PER_1K_CHARS (VD gói 250.000đ/500.000 ký tự → 500).
-   * Để 0 nếu chưa biết giá — FE sẽ ẩn phần hiển thị tiền.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (Mặc định: 2.600đ / 1.000 ký tự với model speech-2.8-hd - $100/1M ký tự).
    */
   private readonly minimaxVndPer1kChars: number;
+  /**
+   * Đơn giá clone 1 giọng nói MiniMax ra tiền VND.
+   * Set qua env MINIMAX_VND_PER_CLONE (Mặc định: 38.000đ ≈ $1.50 USD / giọng clone).
+   */
+  private readonly minimaxVndPerClone: number;
 
   // ── Phần "chuyển đổi content" (gộp từ module content-transform) ──
   // Rate limit đơn giản, in-memory, theo user — 5 lần/phút cho cả transform + upgrade gộp
@@ -151,16 +137,21 @@ export class AiIntegrationService {
 
   // ── Ngân sách cho /content-transform/transcribe (transcribeContentUpload) — endpoint
   // /api/content/transcribe-upload/ bên AI service (Django) dùng Gemini Files API để đọc file
-  // upload tới 200MB, và tự đo được upload+poll+generate có thể tốn 100-240s cho video 5-9 phút
-  // (xem TRANSCRIBE_TOTAL_BUDGET_DEFAULT trong transcribe_views.py — Django đã có sẵn cơ chế
-  // ngân sách theo `timeout_seconds` từ lâu, mặc định 420s khi thiếu field này).
+  // upload tới 200MB. Đo thật với video thật:
   //
-  // BE trước đây hard-code timeout: 60000 (60s) và KHÔNG gửi `timeout_seconds` — thấp hơn nhiều
-  // so với thời gian Gemini thực sự cần, gây đúng lỗi "timeout of 60000ms exceeded" thấy trong
-  // log. FE (content-transform/page.tsx) đã sẵn timeout 510s = 420s + 90s biên upload, chờ đúng
-  // hằng số 420s này ở phía BE — chỉ riêng BE là chưa từng được cập nhật theo. Đặt lại đúng 420s
-  // để khớp cả 2 đầu, tránh lệch ngầm giữa BE/AI service/FE.
+  //    76.5MB / 4ph57  ->  Gemini tốn 114.3s (upload 43.1 + poll  6.8 + generate  64.4)
+  //   143.5MB / 9ph17  ->  Gemini tốn 109.8s (upload 61.0 + poll 20.2 + generate  28.7)
+  //    76.5MB / 4ph57  ->  Gemini tốn 239.6s (upload 30.8 + poll  8.9 + generate 195.7)
+  //
+  // Mốc cũ 60s không gửi kèm `timeout_seconds` gây đúng lỗi "timeout of 60000ms exceeded" —
+  // thấp hơn nhiều so với generate_content thực đo (28.7s -> 195.7s TRÊN CÙNG MỘT FILE, nên
+  // ngân sách phải phủ mức XẤU NHẤT chứ không phải trung bình). FE (content-transform/page.tsx)
+  // đã chờ đúng theo hằng số 420s này ở phía BE (giờ qua job nền — xem startTranscribeJob).
+  // 420s = cùng mốc với /upgrade, đủ cho trường hợp xấu nhất ước tính ở trần 200MB.
   private readonly CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS = 420_000;
+
+  // PAAST /upgrade: 2 lượt LLM nối tiếp, 90s cũ luôn hỏng — cùng mốc CONTENT_TRANSFORM_UPGRADE_TIMEOUT_MS.
+  private readonly PAAST_UPGRADE_TIMEOUT_MS = 420_000;
 
   /**
    * Đơn giá USD/1 triệu token của model AI dùng cho content-transform (viết kịch bản + chấm
@@ -182,6 +173,7 @@ export class AiIntegrationService {
     private readonly prisma: PrismaService,
     private readonly driveStorage: GoogleDriveStorageService,
     private readonly usersService: UsersService,
+    private readonly voiceQuotaService?: VoiceQuotaService,
   ) {
     this.aiServiceUrl = resolveAiServiceUrl(this.configService);
     const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
@@ -190,7 +182,8 @@ export class AiIntegrationService {
       runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
     );
     this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
-    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '0')) || 0;
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '2600')) || 2600;
+    this.minimaxVndPerClone = Number(this.configService.get<string>('MINIMAX_VND_PER_CLONE', '38000')) || 38000;
     this.contentTransformAiInputUsdPer1M =
       Number(this.configService.get<string>('CONTENT_TRANSFORM_AI_INPUT_USD_PER_1M', '0')) || 0;
     this.contentTransformAiOutputUsdPer1M =
@@ -1832,7 +1825,7 @@ export class AiIntegrationService {
   /**
    * Get available voices, including custom cloned ones and system ones.
    */
-  async listVoices(): Promise<any> {
+  async listVoices(userId?: string): Promise<any> {
     const url = `${this.voiceAiServiceUrl}/api/voice/list/`;
     this.logger.log(`Calling AI Service: GET ${url}`);
     try {
@@ -1847,9 +1840,15 @@ export class AiIntegrationService {
           })
         )
       );
-      // Kèm đơn giá để FE hiển thị ước tính tiền ngay tại ô nhập kịch bản
+      // Kèm đơn giá và hạn mức tạo voice để FE hiển thị ngay khi tải trang
       if (data && typeof data === 'object') {
-        data.pricing = { vnd_per_1k_chars: this.minimaxVndPer1kChars };
+        data.pricing = {
+          vnd_per_1k_chars: this.minimaxVndPer1kChars,
+          vnd_per_clone: this.minimaxVndPerClone,
+        };
+        if (this.voiceQuotaService) {
+          data.quota = await this.voiceQuotaService.getQuota(userId);
+        }
       }
       return data;
     } catch (error: any) {
@@ -1861,7 +1860,10 @@ export class AiIntegrationService {
   /**
    * Clone a voice from uploaded sample audio
    */
-  async cloneVoice(file: any, voiceName: string, gender = 'female'): Promise<any> {
+  async cloneVoice(file: any, voiceName: string, gender = 'female', userId?: string, promptText?: string): Promise<any> {
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
     const FormData = require('form-data');
     const url = `${this.voiceAiServiceUrl}/api/voice/clone/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
@@ -1874,6 +1876,9 @@ export class AiIntegrationService {
       });
       formData.append('voice_name', voiceName);
       formData.append('gender', gender || 'female');
+      if (promptText?.trim()) {
+        formData.append('prompt_text', promptText.trim());
+      }
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
@@ -1895,6 +1900,9 @@ export class AiIntegrationService {
       );
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to clone voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -1906,7 +1914,10 @@ export class AiIntegrationService {
    * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
    * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
    */
-  async cloneVoiceStart(file: any, voiceName: string, gender = 'female'): Promise<any> {
+  async cloneVoiceStart(file: any, voiceName: string, gender = 'female', userId?: string, promptText?: string): Promise<any> {
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
     const FormData = require('form-data');
     const url = `${this.voiceAiServiceUrl}/api/voice/clone/start/`;
     this.logger.log(`Calling AI Service: POST ${url} for voiceName=${voiceName}`);
@@ -1919,6 +1930,9 @@ export class AiIntegrationService {
       });
       formData.append('voice_name', voiceName);
       formData.append('gender', gender || 'female');
+      if (promptText?.trim()) {
+        formData.append('prompt_text', promptText.trim());
+      }
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
@@ -1938,8 +1952,29 @@ export class AiIntegrationService {
           })
         )
       );
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'PENDING',
+          voice_name: voiceName,
+          details: { job_id: data?.job_id, gender, has_prompt_text: Boolean(promptText?.trim()) },
+        });
+      }
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'FAILED',
+          voice_name: voiceName,
+          error_message: error.message,
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to start voice clone', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -1977,6 +2012,26 @@ export class AiIntegrationService {
             this.logger.warn(`Failed to log clone usage for user ${userId}: ${logErr.message}`);
           }
         }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'SUCCESS',
+          voice_id: data.voice?.voice_id ?? null,
+          voice_name: data.voice?.name ?? null,
+          details: { job_id: jobId, expires_at: data.voice?.expires_at },
+        });
+      }
+      if (userId && data?.status === 'error') {
+        if (this.voiceQuotaService) {
+          await this.voiceQuotaService.refundQuota(userId);
+        }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'CLONE',
+          status: 'FAILED',
+          error_message: data?.error || 'MiniMax clone job failed',
+          details: { job_id: jobId },
+        });
       }
       return data;
     } catch (error: any) {
@@ -1991,7 +2046,7 @@ export class AiIntegrationService {
    * Timeout 60s (dài hơn poll status 15s): đường truyền tới api.minimax.io hay
    * chập chờn nên delete_voice bên AI đã có sẵn 3 lần thử x 30s.
    */
-  async deleteClonedVoice(voiceId: string): Promise<any> {
+  async deleteClonedVoice(voiceId: string, userId?: string): Promise<any> {
     const url = `${this.voiceAiServiceUrl}/api/voice/delete/${encodeURIComponent(voiceId)}/`;
     this.logger.log(`Calling AI Service: DELETE ${url}`);
 
@@ -2007,8 +2062,26 @@ export class AiIntegrationService {
           })
         )
       );
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'DELETE',
+          status: 'SUCCESS',
+          voice_id: voiceId,
+          details: { minimax_deleted: data.minimax_deleted },
+        });
+      }
       return data;
     } catch (error: any) {
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'DELETE',
+          status: 'FAILED',
+          voice_id: voiceId,
+          error_message: error.message,
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to delete voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -2429,9 +2502,14 @@ export class AiIntegrationService {
   /**
    * Generate Text-to-Speech using Minimax
    */
-  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string): Promise<any> {
+  async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string, emotion = 'calm'): Promise<any> {
+    // Kiểm tra và trừ hạn mức tạo voice trong ngày (mặc định 8 lượt/ngày)
+    if (userId && this.voiceQuotaService) {
+      await this.voiceQuotaService.checkAndConsumeQuota(userId);
+    }
+
     const url = `${this.voiceAiServiceUrl}/api/voice/tts/`;
-    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}`);
+    this.logger.log(`Calling AI Service: POST ${url} for voiceId=${voiceId}, emotion=${emotion}`);
 
     try {
       const { data } = await firstValueFrom(
@@ -2441,7 +2519,8 @@ export class AiIntegrationService {
           speed,
           pitch,
           volume,
-          language
+          language,
+          emotion: emotion || 'calm',
         }, {
           headers: this.minimaxHeaders(),
           timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
@@ -2498,9 +2577,41 @@ export class AiIntegrationService {
         } catch (logErr: any) {
           this.logger.warn(`Failed to log TTS usage for user ${userId}: ${logErr.message}`);
         }
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'TTS',
+          status: 'SUCCESS',
+          voice_id: voiceId,
+          input_text: text.slice(0, 500),
+          output_url: data?.audio_url || null,
+          characters: text.length,
+          details: {
+            speed,
+            pitch,
+            volume,
+            language,
+            emotion,
+            audio_file_id: data?.audio_file_id,
+          },
+        });
       }
       return data;
     } catch (error: any) {
+      if (userId && this.voiceQuotaService) {
+        await this.voiceQuotaService.refundQuota(userId);
+      }
+      if (userId) {
+        await this.logVoiceAction({
+          user_id: userId,
+          action_type: 'TTS',
+          status: 'FAILED',
+          voice_id: voiceId,
+          input_text: text.slice(0, 500),
+          characters: text.length,
+          error_message: error.message,
+          details: { speed, pitch, volume, language, emotion },
+        });
+      }
       if (error instanceof HttpException) throw error;
       throw new HttpException(error.message || 'Failed to generate voice', HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -2524,15 +2635,6 @@ export class AiIntegrationService {
             full_name: true,
             email: true,
             team: true,
-            team_memberships: {
-              select: {
-                team: {
-                  select: {
-                    name: true,
-                  },
-                },
-              },
-            },
           },
         },
       },
@@ -2547,16 +2649,11 @@ export class AiIntegrationService {
     for (const row of rows) {
       let entry = byUser.get(row.user_id);
       if (!entry) {
-        const membershipTeams = (row.user?.team_memberships || [])
-          .map((m: any) => m.team?.name)
-          .filter(Boolean);
-        const userTeam = row.user?.team || (membershipTeams.length > 0 ? membershipTeams.join(', ') : null);
-
         entry = {
           user_id: row.user_id,
           full_name: row.user?.full_name ?? row.user_id,
           email: row.user?.email ?? '',
-          team: userTeam,
+          team: row.user?.team ?? null,
           characters: 0,
           tts_count: 0,
           clone_count: 0,
@@ -2576,20 +2673,24 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
-    // Quy đổi điểm đã tiêu ra tiền theo đơn giá cấu hình (0 = chưa cấu hình, FE ẩn phần tiền)
-    const toVnd = (chars: number) => Math.round((chars / 1000) * this.minimaxVndPer1kChars);
+    // Quy đổi điểm đã tiêu và số giọng clone ra tiền theo đơn giá cấu hình
+    const toVnd = (chars: number, clones: number) =>
+      Math.round((chars / 1000) * this.minimaxVndPer1kChars) + clones * this.minimaxVndPerClone;
     const byUserList = [...byUser.values()]
-      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters) }))
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters, u.clone_count) }))
       .sort((a, b) => b.characters - a.characters);
 
     return {
       success: true,
-      pricing: { vnd_per_1k_chars: this.minimaxVndPer1kChars },
+      pricing: {
+        vnd_per_1k_chars: this.minimaxVndPer1kChars,
+        vnd_per_clone: this.minimaxVndPerClone,
+      },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
-        cost_vnd: toVnd(totalCharacters),
+        cost_vnd: toVnd(totalCharacters, totalClones),
       },
       by_user: byUserList,
     };
@@ -2743,260 +2844,6 @@ export class AiIntegrationService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PAAST — chấm điểm content theo khung PAAST (5 lớp x 6 tiêu chí). Gộp về đây
-  // (thay vì module `paast-analyzer` riêng) vì cùng là orchestration gọi AI
-  // service (Django) qua aiServiceUrl, giống mọi tính năng khác trong service
-  // này — tách module riêng chỉ để "gọi 1 endpoint AI khác" là thừa.
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Tìm bản phân tích PAAST gần nhất khớp ĐÚNG nội dung này (nếu có) — để FE tránh gọi phân tích lại
-   * khi content không đổi, kể cả sau khi user reload trang (cache trong React state bị mất khi remount,
-   * nhưng bản ghi trong DB thì còn).
-   *
-   * Cố ý KHÔNG lọc theo user: kết quả chấm PAAST chỉ phụ thuộc nội dung, nên editor chấm xong thì
-   * leader mở cùng content phải thấy lại kết quả đó thay vì tốn 1 lần gọi LLM chấm lại.
-   */
-  async findLatestByContent(content: string) {
-    return this.prisma.paastAnalysisHistory.findFirst({
-      where: { input_text: content, status: TransformStatus.SUCCESS },
-      orderBy: { created_at: 'desc' },
-    });
-  }
-
-  /**
-   * Phân tích content theo khung PAAST (5 lớp x 6 tiêu chí), tính điểm 0-100, lưu lịch sử.
-   */
-  async analyzeContent(userId: string, dto: AnalyzeContentDto) {
-    const history = await this.prisma.paastAnalysisHistory.create({
-      data: {
-        user_id: userId,
-        input_text: dto.content,
-        status: TransformStatus.PENDING,
-      },
-    });
-
-    const startTime = Date.now();
-    try {
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `${this.aiServiceUrl}/api/ai/paast/analyze/`,
-          { content: dto.content },
-          { timeout: 60000 },
-        ),
-      );
-
-      const { layers, total_score, verdict, cta_warning } = response.data;
-      const durationMs = Date.now() - startTime;
-
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          analysis_result: { layers, cta_warning, verdict },
-          total_score: total_score,
-          status: TransformStatus.SUCCESS,
-          model_used: 'deepseek-chat',
-          duration_ms: durationMs,
-        },
-      });
-    } catch (error: any) {
-      this.logger.error(`Failed to analyze PAAST content: ${error.message}`);
-      const errMsg = error.response?.data?.error || error.message || 'Lỗi không xác định trong quá trình phân tích';
-
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          status: TransformStatus.FAILED,
-          error_message: errMsg,
-          duration_ms: Date.now() - startTime,
-        },
-      });
-    }
-  }
-
-  /**
-   * Phân tích PAAST BẢN 2 — dùng cho video kênh nội bộ.
-   *
-   * Khác bản 1: không có thang điểm 0–100 (chỉ đếm element + kết luận đạt/chưa) và có thêm
-   * 16 hook gợi ý. Vẫn lưu chung bảng `paast_analysis_histories` vì cột `analysis_result` là
-   * JSON tự do; `total_score` để null — đó chính là dấu hiệu phân biệt bản 2 với bản 1, cùng
-   * với khoá `phien_ban` nằm trong JSON.
-   *
-   * Cố ý KHÔNG đụng analyzeContent() bản 1: task-auto đang chạy trên nó.
-   */
-  async analyzeContentV2(userId: string, content: string) {
-    const history = await this.prisma.paastAnalysisHistory.create({
-      data: { user_id: userId, input_text: content, status: TransformStatus.PENDING },
-    });
-
-    const startTime = Date.now();
-    try {
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `${this.aiServiceUrl}/api/ai/paast/analyze-v2/`,
-          { content },
-          // Sinh 16 hook là một lệnh gọi LLM riêng ngoài 5 lệnh phân loại — đo thật mất ~14
-          // giây, nên 60s của bản 1 là quá sát.
-          { timeout: 150000 },
-        ),
-      );
-
-      const { verdict, layers, ctaWarning, phien_ban } = response.data;
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          analysis_result: { phien_ban: phien_ban ?? 2, verdict, layers, ctaWarning },
-          status: TransformStatus.SUCCESS,
-          model_used: 'deepseek-chat',
-          duration_ms: Date.now() - startTime,
-        },
-      });
-    } catch (error: any) {
-      this.logger.error(`Failed to analyze PAAST v2: ${error.message}`);
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          status: TransformStatus.FAILED,
-          error_message: error.response?.data?.error || error.message || 'Lỗi không xác định',
-          duration_ms: Date.now() - startTime,
-        },
-      });
-    }
-  }
-
-  /**
-   * Trích các tiêu chí đang `miss` từ 1 bản phân tích đã lưu (loại tiêu chí `na` của Stick
-   * — không thể "nâng cấp" phần cần production bằng cách sửa text, business doc §11.2).
-   */
-  private extractMissingElements(analysisResult: any): MissingElement[] {
-    const layers = analysisResult?.layers || {};
-    const missing: MissingElement[] = [];
-    const criteriaLayers: Array<[string, string]> = [
-      ['action', 'criteria'],
-      ['acknowledge', 'criteria'],
-      ['stick', 'criteria'],
-      ['trust', 'criteria'],
-    ];
-
-    for (const [layerKey, field] of criteriaLayers) {
-      const criteria = layers[layerKey]?.[field] || [];
-      for (const c of criteria) {
-        if (c.status === 'miss') {
-          missing.push({ layer: layerKey, criterion: c.code, suggestion: c.evidence || '' });
-        }
-      }
-    }
-    return missing;
-  }
-
-  /**
-   * Nâng cấp content dựa trên bản phân tích đã lưu, lưu kết quả thành 1 record lịch sử mới
-   * liên kết `upgraded_from_id` về bản gốc — không giả định điểm chắc chắn tăng
-   * (business doc §11.1: luôn tính lại điểm toàn bộ sau khi nâng cấp).
-   */
-  async upgradeAnalysis(userId: string, analysisId: string) {
-    const original = await this.prisma.paastAnalysisHistory.findUnique({ where: { id: analysisId } });
-
-    if (!original) {
-      throw new NotFoundException('Không tìm thấy bản phân tích PAAST này');
-    }
-    if (original.status !== TransformStatus.SUCCESS || !original.analysis_result) {
-      throw new BadRequestException('Bản phân tích này chưa hoàn tất hoặc không có kết quả để nâng cấp');
-    }
-
-    const missingElements = this.extractMissingElements(original.analysis_result);
-
-    const history = await this.prisma.paastAnalysisHistory.create({
-      data: {
-        user_id: userId,
-        input_text: original.input_text,
-        status: TransformStatus.PENDING,
-        upgraded_from_id: original.id,
-      },
-    });
-
-    const startTime = Date.now();
-    try {
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `${this.aiServiceUrl}/api/ai/paast/upgrade/`,
-          { original_content: original.input_text, missing_elements: missingElements },
-          { timeout: 90000 },
-        ),
-      );
-
-      const { upgraded, changes_added, new_analysis } = response.data;
-      const durationMs = Date.now() - startTime;
-
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          input_text: upgraded,
-          analysis_result: { layers: new_analysis.layers, cta_warning: new_analysis.cta_warning, verdict: new_analysis.verdict, changes_added },
-          total_score: new_analysis.total_score,
-          status: TransformStatus.SUCCESS,
-          model_used: 'deepseek-chat',
-          duration_ms: durationMs,
-        },
-      });
-    } catch (error: any) {
-      this.logger.error(`Failed to upgrade PAAST content: ${error.message}`);
-      const errMsg = error.response?.data?.error || error.message || 'Lỗi không xác định trong quá trình nâng cấp';
-
-      return this.prisma.paastAnalysisHistory.update({
-        where: { id: history.id },
-        data: {
-          status: TransformStatus.FAILED,
-          error_message: errMsg,
-          duration_ms: Date.now() - startTime,
-        },
-      });
-    }
-  }
-
-  async getPaastUserHistory(userId: string, query: HistoryQueryDto) {
-    const page = Math.max(1, query.page || 1);
-    const limit = Math.max(1, Math.min(100, query.limit || 20));
-    const skip = (page - 1) * limit;
-
-    const where: any = { user_id: userId };
-    if (query.status) {
-      where.status = query.status as any;
-    }
-
-    const [total, items] = await Promise.all([
-      this.prisma.paastAnalysisHistory.count({ where }),
-      this.prisma.paastAnalysisHistory.findMany({
-        where,
-        orderBy: { created_at: 'desc' },
-        skip,
-        take: limit,
-      }),
-    ]);
-
-    return {
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-      items,
-    };
-  }
-
-  async getPaastHistoryDetail(id: string, userId: string) {
-    const history = await this.prisma.paastAnalysisHistory.findUnique({ where: { id } });
-
-    if (!history) {
-      throw new NotFoundException('Không tìm thấy bản ghi lịch sử');
-    }
-    if (history.user_id !== userId) {
-      throw new NotFoundException('Không tìm thấy bản ghi lịch sử');
-    }
-
-    return history;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
   // CHUYỂN ĐỔI CONTENT — viết kịch bản theo giọng nhân vật + chấm điểm PAAST cho kịch bản đó.
   // Gộp về đây từ module `content-transform` riêng (cùng lý do đã gộp PAAST Analyzer ở trên:
   // đây cũng chỉ là orchestration gọi AI service qua aiServiceUrl, tách module riêng chỉ để
@@ -3140,7 +2987,7 @@ export class AiIntegrationService {
         throw new NotFoundException('Không tìm thấy nhân vật phù hợp');
       }
 
-      const missing = this.extractMissingElements(previousScoreResult);
+      const missing = extractMissingElements(previousScoreResult);
       const upgradeSystemPrompt = buildPaastUpgradeSystemPrompt(previousScoreResult, missing);
       const upgradeUserPrompt = buildPaastUpgradeUserPrompt(source.input_text, character.system_prompt, source.output_text);
 
@@ -3499,8 +3346,8 @@ export class AiIntegrationService {
       ),
     );
 
-    const { layers, total_score, cta_warning, verdict, usage } = response.data;
-    return { payload: { layers, total_score, cta_warning, verdict }, usage: usage || {} };
+    const { layers, video_realism, total_score, score_band, cta_warning, verdict, usage } = response.data;
+    return { payload: { layers, video_realism, total_score, score_band, cta_warning, verdict }, usage: usage || {} };
   }
 
   /**
@@ -3573,7 +3420,7 @@ export class AiIntegrationService {
    *
    * Giới hạn trong bản ghi của chính user — điểm chỉ phụ thuộc nội dung nên về lý thuyết dùng
    * chung được, nhưng đọc sang bản ghi user khác là mở rộng phạm vi truy cập dữ liệu không cần
-   * thiết. Cùng cách phân quyền mà findLatestByContent() ở trên đang dùng cho PAAST Analyzer.
+   * thiết. Cùng cách phân quyền mà PaastService.findLatestByContent() đang dùng cho PAAST Analyzer.
    *
    * CÓ tính cả chính bản ghi đang chấm. Nếu loại trừ nó thì bấm "Chấm điểm lại" trên bản ghi đã
    * có điểm sẽ gọi AI chấm lại và ra điểm khác — đúng cái dao động cần loại bỏ.
@@ -3874,7 +3721,7 @@ export class AiIntegrationService {
    * Trước đây upgradeContent() tự gọi 2 request HTTP tuần tự (writeContentTransformWithRetry rồi
    * scoreContentWithRetry), mỗi request lại tự retry riêng tới 3 lần — tối đa 6 round-trip cho 1
    * lần bấm nút "Nâng cấp". Giờ dùng đúng 1 round-trip, khớp nguyên tắc mà /api/ai/paast/upgrade/
-   * (PAAST Analyzer độc lập) đã áp dụng từ trước — xem upgradeAnalysis() ở trên.
+   * (PAAST Analyzer độc lập) đã áp dụng từ trước — xem PaastService.upgradeAnalysis().
    *
    * KHÔNG tự retry ở tầng BE nữa (khác 2 hàm cũ): cả bước viết lẫn bước chấm giờ đã tự thử lại
    * TẠI CHỖ bên trong Django (_write_scripted_upgrade, _classify_group) — nếu BE retry lại nguyên
@@ -3999,10 +3846,10 @@ export class AiIntegrationService {
         baselineUsage = baseline.usage;
       }
 
-      // Các tiêu chí đang `miss` lấy bằng đúng hàm extractMissingElements() ở trên (dùng chung
-      // cho cả PAAST Analyzer lẫn luồng này) — hàm này đã loại sẵn tiêu chí `na` (cần
-      // production, không sửa được bằng cách viết thêm chữ).
-      const missing = this.extractMissingElements(previousScoreResult);
+      // Các tiêu chí đang `miss` lấy bằng đúng hàm extractMissingElements() dùng chung với
+      // PaastService (paast/paast-missing-elements.util.ts) — hàm này đã loại sẵn tiêu chí `na`
+      // (cần production, không sửa được bằng cách viết thêm chữ).
+      const missing = extractMissingElements(previousScoreResult);
       const upgradeSystemPrompt = buildPaastUpgradeSystemPrompt(previousScoreResult, missing);
       const upgradeUserPrompt = buildPaastUpgradeUserPrompt(inputText, character.system_prompt, currentOutputText);
 
@@ -4633,53 +4480,215 @@ export class AiIntegrationService {
   }
 
   /**
-   * Chuyển đổi file video/audio thành văn bản (dùng cho luồng chuyển đổi content).
+   * Header xác thực cho lệnh gọi transcribe sang AI service.
    *
-   * Trước đây forward nguyên Bearer JWT của FE sang AI — nhưng token đó phụ thuộc vào
-   * hạn dùng/claims phía FE và từng gây 403 khó chẩn đoán khi lệch cấu hình JWT_SECRET
-   * hoặc token gần hết hạn giữa lúc upload file lớn. Đổi sang dùng internal system token
-   * (cùng cơ chế `videoDownloaderAuthHeaders()` đã chạy ổn cho video-downloader), tự BE ký
-   * bằng jwtService của chính nó — không còn phụ thuộc vào token của user gọi request gốc.
+   * KHÔNG được dựa vào việc forward `Authorization` của request gốc: FE xác thực với BE bằng
+   * cookie HttpOnly (`apiClient` không hề gắn header Authorization — xem cookie-auth.service.ts
+   * và JwtStrategy đọc cookie TRƯỚC Bearer), nên với mọi request đến từ trình duyệt thì
+   * `req.headers.authorization` là undefined và AI service nhận được request KHÔNG có credential
+   * nào. Đã kiểm chứng bằng request thật: Django trả 403 "Authentication credentials were not
+   * provided." Đây là lỗi thứ hai, độc lập với lỗi timeout, và tự nó đủ làm hỏng tính năng.
+   *
+   * Cách đúng chính là cách các endpoint anh em trong file này đã dùng (videoDownloaderAuthHeaders):
+   * BE tự ký một token nội bộ bằng chung JWT_SECRET với AI service. Khác một điểm có chủ ý — ký
+   * theo ĐÚNG user gọi request chứ không phải một danh tính 'be-system' dùng chung, vì
+   * TranscribeUploadThrottle bên Django lấy `request.user.pk` làm khoá throttle: dùng danh tính
+   * chung sẽ gộp mọi nhân viên vào cùng một rổ 10 lần/phút.
+   */
+  private transcribeAiAuthHeaders(user?: { id?: string; email?: string }): { Authorization: string } {
+    const token = this.jwtService.sign({
+      sub: user?.id ?? 'be-system',
+      email: user?.email ?? 'be-system@internal.local',
+    });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  /**
+   * Chuyển đổi file video/audio thành văn bản (dùng cho luồng chuyển đổi content — cả bản đồng
+   * bộ lẫn worker job nền đều gọi hàm này).
    *
    * timeout/`timeout_seconds`: xem CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS. Gửi kèm
    * `timeout_seconds` để AI service dùng ĐÚNG ngân sách BE thực sự chờ (cùng quy ước đã dùng ở
    * callContentTransformAiService/callPaastAnalyzeApi), thay vì im lặng rơi về mặc định riêng
-   * của nó rồi lệch ngầm về sau. Timeout của axios ở đây được nới thêm 60s so với ngân sách gửi
-   * cho AI service — ngân sách đó chỉ tính từ lúc Django VÀO VIEW (tức SAU KHI đã nhận xong toàn
-   * bộ file), còn đồng hồ axios ở đây bắt đầu chạy từ lúc BE bắt đầu ĐẨY formData sang AI, nên
-   * cần chừa thêm thời gian truyền file (tới 200MB) trước khi Django kịp bắt đầu tính giờ của
-   * chính nó — vẫn nằm dưới timeout 510s phía FE nên không tạo ra khoảng lệch mới.
+   * của nó rồi lệch ngầm về sau — cùng 1 mốc cho cả axios timeout lẫn `timeout_seconds` gửi Django.
    */
-  async transcribeContentUpload(file: Express.Multer.File): Promise<any> {
+  async transcribeContentUpload(
+    file: Express.Multer.File,
+    authorization?: string,
+    user?: { id?: string; email?: string },
+  ): Promise<any> {
     const FormData = require('form-data');
     const url = `${this.aiServiceUrl}/api/content/transcribe-upload/`;
 
-    const aiBudgetMs = this.CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS;
-    const requestTimeoutMs = aiBudgetMs + 60_000;
+    const timeoutMs = this.CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS;
 
     const formData = new FormData();
     formData.append('file', file.buffer, {
       filename: file.originalname,
       contentType: file.mimetype,
     });
-    formData.append('timeout_seconds', String(Math.ceil(aiBudgetMs / 1000)));
+    // Giây, không phải ms — cùng quy ước với callContentTransformAiService/callPaastAnalyzeApi.
+    // Thiếu field này thì Django rơi về mặc định hard-code riêng của nó và hai phía lệch nhau
+    // âm thầm: ngân sách nội bộ của Django có thể dài hơn thời gian BE thực sự chờ, BE cắt
+    // trước, Django vẫn chạy tiếp và vẫn tốn tiền gọi Gemini cho một kết quả không ai nhận.
+    formData.append('timeout_seconds', String(Math.ceil(timeoutMs / 1000)));
 
     try {
       const response = await firstValueFrom(
         this.httpService.post(url, formData, {
-          // AI endpoint yêu cầu IsAuthenticated (NestJWTAuthentication, chung JWT_SECRET
-          // với BE) — dùng internal system token thay vì forward JWT gốc của user.
-          headers: { ...formData.getHeaders(), ...this.videoDownloaderAuthHeaders() },
+          // AI endpoint yêu cầu IsAuthenticated (core.authentication.NestJWTAuthentication).
+          // Giữ nguyên Bearer của client nếu request gốc có (Swagger, script nội bộ, client cũ);
+          // còn với FE chạy bằng cookie HttpOnly thì tự ký token nội bộ — xem transcribeAiAuthHeaders.
+          headers: {
+            ...formData.getHeaders(),
+            ...(authorization ? { Authorization: authorization } : this.transcribeAiAuthHeaders(user)),
+          },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          timeout: requestTimeoutMs,
+          timeout: timeoutMs,
         }),
       );
       return response.data;
     } catch (error: any) {
       this.logger.error(`Failed to transcribe file: ${error.message}`);
+
+      // Hết giờ ở tầng axios (không có response nào từ Django) — trước đây rơi vào nhánh
+      // `|| HttpStatus.INTERNAL_SERVER_ERROR` nên FE nhận 500 kèm nguyên văn tiếng Anh
+      // "timeout of 60000ms exceeded", vô nghĩa với người dùng cuối và khiến lỗi bị chẩn
+      // đoán nhầm thành lỗi hệ thống. Đây là timeout cổng vào -> đúng ngữ nghĩa là 504.
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT';
+      if (isTimeout && !error.response) {
+        throw new HttpException(
+          `Xử lý file vượt quá ${Math.round(timeoutMs / 1000)}s cho phép. ` +
+            'File càng dài và càng nặng thì càng lâu — vui lòng thử với file ngắn hơn hoặc thử lại sau.',
+          HttpStatus.GATEWAY_TIMEOUT,
+        );
+      }
+
       const errMsg = error.response?.data?.error_message || error.response?.data?.error || error.message || 'Lỗi kết nối tới AI Service';
       throw new HttpException(errMsg, error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR);
     }
+  }
+
+  /**
+   * Ghi nhận lịch sử thao tác Voice vào bảng voice_action_histories.
+   * Chạy ngầm, lỗi ghi log không bao giờ được làm crash tác vụ chính.
+   */
+  async logVoiceAction(params: {
+    user_id: string;
+    action_type: 'TTS' | 'CLONE' | 'DELETE' | 'TRANSLATE' | 'GRANT_QUOTA';
+    status?: 'SUCCESS' | 'FAILED' | 'PENDING';
+    voice_id?: string | null;
+    voice_name?: string | null;
+    input_text?: string | null;
+    output_url?: string | null;
+    characters?: number;
+    duration_ms?: number;
+    details?: any;
+    error_message?: string | null;
+  }): Promise<void> {
+    try {
+      if (!this.prisma?.voiceActionHistory) return;
+      await this.prisma.voiceActionHistory.create({
+        data: {
+          user_id: params.user_id,
+          action_type: params.action_type,
+          status: params.status || 'SUCCESS',
+          voice_id: params.voice_id || null,
+          voice_name: params.voice_name || null,
+          input_text: params.input_text || null,
+          output_url: params.output_url || null,
+          characters: params.characters || 0,
+          duration_ms: params.duration_ms || 0,
+          details: params.details || null,
+          error_message: params.error_message || null,
+        },
+      });
+    } catch (err: any) {
+      this.logger.warn(`Failed to log voice action (${params.action_type}): ${err?.message}`);
+    }
+  }
+
+  /**
+   * Lấy danh sách lịch sử thao tác Voice (phân trang, lọc theo action_type, user_id, status, khoảng ngày, search).
+   * Dành cho role ADMIN.
+   */
+  async getVoiceActionHistory(query: {
+    page?: number;
+    limit?: number;
+    action_type?: string;
+    user_id?: string;
+    status?: string;
+    date_from?: string;
+    date_to?: string;
+    search?: string;
+  }): Promise<any> {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+    if (query.action_type && query.action_type !== 'ALL') {
+      where.action_type = query.action_type.toUpperCase();
+    }
+    if (query.user_id) {
+      where.user_id = query.user_id;
+    }
+    if (query.status && query.status !== 'ALL') {
+      where.status = query.status.toUpperCase();
+    }
+    if (query.date_from || query.date_to) {
+      const dateFilter: any = {};
+      if (query.date_from) {
+        dateFilter.gte = new Date(`${query.date_from}T00:00:00.000+07:00`);
+      }
+      if (query.date_to) {
+        dateFilter.lte = new Date(`${query.date_to}T23:59:59.999+07:00`);
+      }
+      where.created_at = dateFilter;
+    }
+    if (query.search?.trim()) {
+      const s = query.search.trim();
+      where.OR = [
+        { voice_name: { contains: s, mode: 'insensitive' } },
+        { input_text: { contains: s, mode: 'insensitive' } },
+        { voice_id: { contains: s, mode: 'insensitive' } },
+        { user: { full_name: { contains: s, mode: 'insensitive' } } },
+        { user: { email: { contains: s, mode: 'insensitive' } } },
+      ];
+    }
+
+    const [total, items] = await Promise.all([
+      this.prisma.voiceActionHistory.count({ where }),
+      this.prisma.voiceActionHistory.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              full_name: true,
+              team: true,
+              image_url: true,
+            },
+          },
+        },
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+    return {
+      success: true,
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
   }
 }

@@ -1,13 +1,15 @@
-import { Injectable, NotFoundException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
+import { isAdminRole, buildAccountVisibilityWhere } from '../../../common/utils/social-roles.util';
 import { CryptoService } from '../crypto/crypto.service';
 import { InstagramScraperService } from '../../instagram-scraper/instagram-scraper.service';
 import { SocialPlatform } from '@prisma/client';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, FACEBOOK_GRAPH_ROOT } from '../platform-api.const';
 
 @Injectable()
-export class AccountsService implements OnModuleInit, OnModuleDestroy {
+export class AccountsService implements OnModuleDestroy {
   private readonly logger = new Logger(AccountsService.name);
   private readonly pagesCache = new Map<string, { data: any[]; expiresAt: number }>();
   private readonly pagesCacheCleanupInterval = setInterval(() => {
@@ -23,29 +25,30 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     private readonly instagramScraper: InstagramScraperService,
   ) { }
 
-  async onModuleInit() {
-    try {
-      await this.prisma.$executeRaw`UPDATE social_accounts SET is_shared = true WHERE is_active = true AND is_shared = false`;
-      this.logger.log('[onModuleInit] Đã cập nhật is_shared = true cho tất cả accounts cũ');
-    } catch (err: any) {
-      this.logger.warn(`[onModuleInit] Bỏ qua cập nhật is_shared: ${err.message}`);
-    }
-  }
 
   onModuleDestroy() {
     clearInterval(this.pagesCacheCleanupInterval);
   }
 
-  async findAll(userId: string) {
+  /**
+   * Danh sách tài khoản người gọi được nhìn thấy.
+   *
+   * ADMIN/MANAGER thấy toàn bộ, kèm chủ sở hữu để biết ai đã gắn tài khoản nào.
+   * LEADER và MEMBER chỉ thấy tài khoản do chính mình liên kết.
+   *
+   * `is_shared` CỐ TÌNH không tham gia vào điều kiện nhìn: nó là cờ cho phép người khác
+   * ĐĂNG BÀI lên tài khoản (xem findOne), không phải cờ hiển thị. Trộn hai khái niệm này
+   * chính là thứ khiến 287/287 tài khoản của 3 người hiện ra với tất cả mọi người.
+   */
+  async findAll(userId: string, callerRoles: string[] = []) {
+    const seesEverything = isAdminRole(callerRoles);
+
     const accounts = await this.prisma.socialAccount.findMany({
-      where: {
-        is_active: true,
-        OR: [
-          { user_id: userId },
-          { is_shared: true } as any,
-        ],
-      },
+      where: buildAccountVisibilityWhere(userId, callerRoles),
       orderBy: { created_at: 'desc' },
+      ...(seesEverything
+        ? { include: { user: { select: { id: true, full_name: true, email: true, team: true } } } }
+        : {}),
     });
     return accounts.map((a) => this.sanitize(a));
   }
@@ -178,7 +181,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
     const token = this.crypto.decrypt(account.access_token_enc);
 
     try {
-      const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+      const res = await axios.get(`${FACEBOOK_GRAPH_BASE}/me/accounts`, {
         params: {
           access_token: token,
           fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
@@ -192,7 +195,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
         id: p.id,
         name: p.name,
         access_token: p.access_token, // trả về FE để FE gọi save-page; KHÔNG cache
-        picture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
+        picture: p.picture?.data?.url || `${FACEBOOK_GRAPH_ROOT}/${p.id}/picture?type=large`,
         instagram: p.instagram_business_account
           ? {
             id: p.instagram_business_account.id,
@@ -218,7 +221,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
   private async fetchFacebookPagesWithTokens(accountId: string, userId: string) {
     const account = await this.findOneOwned(accountId, userId);
     const token = this.crypto.decrypt(account.access_token_enc);
-    const res = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+    const res = await axios.get(`${FACEBOOK_GRAPH_BASE}/me/accounts`, {
       params: {
         access_token: token,
         fields: 'id,name,access_token,picture.type(large),instagram_business_account{id,name,username,profile_picture_url}',
@@ -248,7 +251,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
             pageId: p.id,
             pageName: p.name,
             pageToken: p.access_token,
-            pagePicture: p.picture?.data?.url || `https://graph.facebook.com/${p.id}/picture?type=large`,
+            pagePicture: p.picture?.data?.url || `${FACEBOOK_GRAPH_ROOT}/${p.id}/picture?type=large`,
             igId: p.instagram_business_account?.id,
             igName: p.instagram_business_account?.name,
             igUsername: p.instagram_business_account?.username,
@@ -289,7 +292,7 @@ export class AccountsService implements OnModuleInit, OnModuleDestroy {
       platformId: `page_${opts.pageId}`,
       name: opts.pageName,
       username: opts.pageId,
-      avatarUrl: opts.pagePicture || `https://graph.facebook.com/${opts.pageId}/picture?type=large`,
+      avatarUrl: opts.pagePicture || `${FACEBOOK_GRAPH_ROOT}/${opts.pageId}/picture?type=large`,
 
       accessToken: opts.pageToken,
       parentId: opts.parentAccountId,

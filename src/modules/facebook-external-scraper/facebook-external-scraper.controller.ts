@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, HttpException, HttpStatus, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -25,6 +25,8 @@ function assertCanManageChannels(req: any): void {
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/fanpages')
 export class FacebookExternalScraperController {
+  private readonly logger = new Logger(FacebookExternalScraperController.name);
+
   constructor(
     private readonly service: FacebookExternalScraperService,
     private readonly readService: FacebookExternalScraperReadService,
@@ -35,11 +37,43 @@ export class FacebookExternalScraperController {
     return this.readService.discoveredFanpages(query);
   }
 
+  @Get('tags')
+  async listTags() {
+    return this.service.listTags();
+  }
+
+  @Post('tags')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async createTag(@Body() body: { name?: string; color?: string }) {
+    if (!body?.name) throw new HttpException({ error: 'name is required' }, HttpStatus.BAD_REQUEST);
+    return this.service.createTag(body.name, body.color);
+  }
+
   @Get(':fanpage_id')
   async detail(@Param('fanpage_id') fanpageId: string) {
     const result = await this.readService.fanpageDetail(BigInt(fanpageId));
     if (!result) throw new HttpException({ error: 'Not found' }, HttpStatus.NOT_FOUND);
     return result;
+  }
+
+  // Xoá cứng fanpage: bản ghi + toàn bộ reels/lịch sử chỉ số biến mất vĩnh viễn.
+  // Chỉ ADMIN/LEADER, khớp phân quyền của scrape-reels và scrape-by-url.
+  @Delete(':fanpage_id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async remove(@Param('fanpage_id') fanpageId: string) {
+    return this.service.deleteFanpage(BigInt(fanpageId));
+  }
+
+  @Patch(':fanpage_id/classification')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async updateClassification(
+    @Param('fanpage_id') fanpageId: string,
+    @Body() body: { channel_type?: string; product_lines?: string[] },
+  ) {
+    return this.service.updateClassification(BigInt(fanpageId), body);
   }
 
   @Post(':fanpage_id/toggle')
@@ -59,15 +93,17 @@ export class FacebookExternalScraperController {
   @Post('scrape-reels')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async scrapeReels(@Body() body: { fanpage_id?: number }) {
+  async scrapeReels(@Body() body: { fanpage_id?: number; num_of_posts?: number }) {
     if (!body?.fanpage_id) throw new HttpException({ error: 'fanpage_id is required' }, HttpStatus.BAD_REQUEST);
-    return this.service.triggerScrapeReels(BigInt(body.fanpage_id));
+    return this.service.triggerScrapeReels(BigInt(body.fanpage_id), body?.num_of_posts);
   }
 
   @Post('scrape-by-url')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async scrapeByUrl(@Body() body: { url?: string }) {
+  async scrapeByUrl(
+    @Body() body: { url?: string; num_of_posts?: number; channel_type?: string; product_lines?: string[] },
+  ) {
     const input = (body?.url || '').trim();
     if (!input) throw new HttpException({ error: 'url is required' }, HttpStatus.BAD_REQUEST);
 
@@ -77,6 +113,35 @@ export class FacebookExternalScraperController {
     if (!url.includes('facebook.com')) {
       throw new HttpException({ error: 'URL không hợp lệ. Ví dụ: https://www.facebook.com/pagename' }, HttpStatus.BAD_REQUEST);
     }
-    return this.service.scrapeByUrl(url);
+    return this.service.scrapeByUrl(url, body?.num_of_posts, {
+      channel_type: body?.channel_type,
+      product_lines: body?.product_lines,
+    });
+  }
+
+  @Post('bulk-add')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async bulkAdd(
+    @Body() body: { urls?: string[]; channel_type?: string; product_lines?: string[] },
+  ) {
+    const urls = body?.urls;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      throw new HttpException({ error: 'urls phải là một danh sách các đường link' }, HttpStatus.BAD_REQUEST);
+    }
+    return this.service.bulkAddFanpages(urls, {
+      channel_type: body?.channel_type,
+      product_lines: body?.product_lines,
+    });
+  }
+
+  @Post(['sync-all', 'periodic-refresh'])
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncAll() {
+    this.service.periodicRefresh().catch((err: any) => {
+      this.logger.error(`[FB-EXTERNAL-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
+    });
+    return { status: 'ok', message: 'Đã bắt đầu tiến trình đồng bộ lại các kênh Facebook.' };
   }
 }

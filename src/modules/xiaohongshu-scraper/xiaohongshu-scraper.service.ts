@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
 import { XiaohongshuAiClientService, ParsedXhsVideo, ParsedXhsAuthor } from './xiaohongshu-ai-client.service';
 import { XiaohongshuScraperReadService } from './xiaohongshu-scraper-read.service';
@@ -369,6 +370,24 @@ export class XiaohongshuScraperService {
     return this.toProfileDict(updated, true);
   }
 
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Khác 6 nền tảng cascade: khoá ngoại của XHS là onDelete SetNull, nên xoá profile
+  // KHÔNG dọn video mà chỉ set profile_id = null. Video mồ côi kiểu đó không còn thuộc
+  // kênh nào để xoá qua UI nữa, nhưng vẫn nằm trong DB và vẫn lọt vào truy vấn gom toàn
+  // bộ video. Vì vậy phải chủ động deleteMany trước.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperXiaohongshuProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    const { count } = await this.prisma.scraperXiaohongshuVideo.deleteMany({ where: { profile_id: id } });
+    await this.prisma.scraperXiaohongshuProfile.delete({ where: { id } });
+
+    const name = profile.nickname || profile.user_id;
+    this.logger.warn(`[XHS] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${count} video.`);
+    return buildDeleteChannelResult(id, name, count);
+  }
+
   // Tự mở khóa profile bị kẹt ở 'processing' quá lâu (worker crash giữa chừng), tránh
   // bị loại khỏi cron định kỳ vĩnh viễn — khớp pattern _reset_stale_locks() của Facebook.
   private async resetStaleLocks(): Promise<void> {
@@ -422,7 +441,7 @@ export class XiaohongshuScraperService {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperXiaohongshuProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: { is_tracked: true, scraping_status: { not: 'processing' } },
       orderBy: { last_scraped_at: 'asc' },
     });
 
@@ -437,7 +456,8 @@ export class XiaohongshuScraperService {
 
     for (const profile of profiles) {
       try {
-        await this.scrapeProfileVideos(profile.id, 10);
+        const count = profile.is_initial_scraped ? 10 : 30;
+        await this.scrapeProfileVideos(profile.id, count);
         done++;
       } catch (err: any) {
         failed++;

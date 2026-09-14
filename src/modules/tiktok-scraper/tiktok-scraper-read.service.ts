@@ -196,6 +196,7 @@ export class TiktokScraperReadService {
 
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string; is_owned?: string;
+    tracked?: string; bookmarked?: string; periodic?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -206,6 +207,8 @@ export class TiktokScraperReadService {
     const where: any = {};
     if (isOwnedParam === 'true') where.is_owned = true;
     else if (isOwnedParam === 'false') where.is_owned = false;
+    if (params.tracked === 'true' || params.periodic === 'true') where.is_tracked = true;
+    if (params.bookmarked === 'true') where.is_bookmarked = true;
     if (search) where.OR = [
       { username: { contains: search, mode: 'insensitive' } },
       { nickname: { contains: search, mode: 'insensitive' } },

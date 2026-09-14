@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { AiIntegrationService } from '../ai-integration/ai-integration.service';
+import { PaastService } from '../ai-integration/paast/paast.service';
 import { resolveAiServiceUrlFromEnv } from '../../common/config/ai-service-url';
 
 /**
@@ -59,7 +59,7 @@ export class OwnedScriptService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
-    private readonly aiIntegration: AiIntegrationService,
+    private readonly paast: PaastService,
   ) {}
 
   /**
@@ -200,7 +200,7 @@ export class OwnedScriptService {
       }
     }
 
-    const freshResult: any = await this.aiIntegration.analyzeContentV2(userId, scoredContent);
+    const freshResult: any = await this.paast.analyzeContentV2(userId, scoredContent);
     if (freshResult?.status === 'SUCCESS') {
       await this.prisma.ownedVideoScript.update({
         where: { id: script.id },

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
@@ -28,6 +28,17 @@ const WARNING_RATIO_THRESHOLD = 90;
 
 /** Cache TTL in milliseconds (5 minutes). */
 const CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Độ dài video Facebook được moi ra từ tham số `efg` (base64) nhúng trong video_url — xem
+ * DURATION_FACEBOOK cuối file. Facebook đổi format URL là toàn bộ độ dài tụt về NULL, khoá
+ * gom nhóm rơi xuống còn mỗi caption, và số liệu trùng lặp âm thầm sai mà không ai biết.
+ * Dưới ngưỡng này thì ghi log cảnh báo.
+ */
+const FACEBOOK_DURATION_COVERAGE_FLOOR = 50;
+
+/** Dưới số video này thì tỷ lệ không nói lên điều gì, đừng báo động. */
+const COVERAGE_SAMPLE_FLOOR = 50;
 
 export interface RawDuplicateGroupRow {
   platform: string;
@@ -59,6 +70,8 @@ interface RawDuplicateSummaryRow {
   so_video_trung: bigint;
   tong_video: bigint;
   so_kenh_dinh: bigint;
+  fb_tong: bigint;
+  fb_thieu_giay: bigint;
 }
 
 export interface ChannelAlert {
@@ -216,23 +229,38 @@ export function computeByChannel(rows: RawChannelVideoRow[]): DuplicateByChannel
 }
 
 /**
+ * Tỷ lệ video Facebook đọc được độ dài, tính theo phần trăm. Tụt thấp nghĩa là cách moi
+ * `efg` đã hỏng — xem FACEBOOK_DURATION_COVERAGE_FLOOR.
+ */
+export function facebookDurationCoverage(total: number, missing: number): number {
+  if (total <= 0) return 100;
+  return roundToOneDecimal(((total - missing) / total) * 100);
+}
+
+/** Có đủ mẫu và tỷ lệ đọc được đã tụt dưới ngưỡng chưa. */
+export function shouldWarnDurationCoverage(total: number, coverage: number): boolean {
+  return total >= COVERAGE_SAMPLE_FLOOR && coverage < FACEBOOK_DURATION_COVERAGE_FLOOR;
+}
+
+/**
  * Builds duplicate warning alerts for channels exceeding the warning threshold.
  */
 export function buildDuplicateAlerts(byChannel: DuplicateByChannel[]): ChannelAlert[] {
   return byChannel
     .filter((k) => k.totalVideos >= WARNING_VIDEO_FLOOR && k.duplicateRatio >= WARNING_RATIO_THRESHOLD)
     .map((k) => {
-      const message = `${k.duplicateVideos}/${k.totalVideos} videos duplicated with other channels (${k.duplicateRatio}%) — minimal unique content`;
+      // Chữ người dùng đọc nên là tiếng Việt ở CẢ hai khoá — xem ChannelAlert bên owned-stats.
+      const message = `${k.duplicateVideos}/${k.totalVideos} video trong kỳ trùng với kênh khác (${String(k.duplicateRatio).replace('.', ',')}%) — gần như không có nội dung riêng`;
       return {
         platform: k.platform,
         channel: k.name,
         content: message,
         level: 'b' as const,
-        label: 'Duplicate',
+        label: 'Trùng',
 
         // Backward compatibility
         kenh: k.name,
-        noi_dung: `${k.duplicateVideos}/${k.totalVideos} video trong kỳ trùng với kênh khác (${String(k.duplicateRatio).replace('.', ',')}%) — gần như không có nội dung riêng`,
+        noi_dung: message,
         muc: 'b' as const,
         nhan: 'Trùng',
       };
@@ -241,6 +269,8 @@ export function buildDuplicateAlerts(byChannel: DuplicateByChannel[]): ChannelAl
 
 @Injectable()
 export class OwnedDuplicateService {
+  private readonly logger = new Logger(OwnedDuplicateService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
@@ -265,21 +295,36 @@ export class OwnedDuplicateService {
     const toDate = new Date(`${endDate}T23:59:59.999+07:00`);
     const source = this.sourceDuplicateVideos(platform, fromDate, toDate);
 
-    const duplicateGroups = Prisma.sql`
-      SELECT v.platform, v.cap, v.giay
-      FROM (${source}) AS v
-      GROUP BY 1, 2, 3
-      HAVING COUNT(DISTINCT v.kenh_id) > 1
+    /**
+     * Khối UNION ALL 5 nền tảng là phần đắt nhất của cả request. Bản cũ nhúng thẳng nó vào
+     * mọi chỗ cần dùng — câu tóm tắt một mình đã quét lại nguồn 4 lần (hai câu đếm nhóm,
+     * mệnh đề FROM, và lần nữa bên trong LEFT JOIN) — tổng cộng 7 lượt quét cho một lần
+     * tải trang. Nay mỗi câu chỉ dựng nguồn MỘT lần trong CTE rồi dùng lại.
+     *
+     * MATERIALIZED để Postgres không "thông minh" đẩy CTE vào từng chỗ tham chiếu, tức là
+     * quét lại đúng như cũ.
+     */
+    const videoSource = Prisma.sql`v AS MATERIALIZED (${source})`;
+
+    /** Nhóm (nền tảng, caption, độ dài) xuất hiện ở nhiều hơn một kênh. */
+    const groupCte = Prisma.sql`
+      g AS (
+        SELECT v.platform, v.cap, v.giay, COUNT(DISTINCT v.kenh_id)::bigint AS so_kenh
+        FROM v
+        GROUP BY 1, 2, 3
+        HAVING COUNT(DISTINCT v.kenh_id) > 1
+      )
     `;
 
+    /** Gắn cờ trùng cho từng video: `g.cap IS NOT NULL` nghĩa là video nằm trong một nhóm trùng. */
     const joinGroups = Prisma.sql`
-      LEFT JOIN (${duplicateGroups}) AS g
-        ON g.platform = v.platform AND g.cap = v.cap AND g.giay IS NOT DISTINCT FROM v.giay
+      LEFT JOIN g ON g.platform = v.platform AND g.cap = v.cap
+                 AND g.giay IS NOT DISTINCT FROM v.giay
     `;
 
     const [groupsRaw, byChannelRaw, [summaryRaw]] = await Promise.all([
       this.prisma.$queryRaw<RawDuplicateGroupRow[]>`
-        WITH v AS (${source}),
+        WITH ${videoSource},
         k AS (
           SELECT v.platform, v.cap, v.giay, v.kenh_id,
                  MIN(v.kenh_ten) AS kenh_ten,
@@ -305,24 +350,24 @@ export class OwnedDuplicateService {
         LIMIT ${MAX_RETURNED_GROUPS}
       `,
       this.prisma.$queryRaw<RawChannelVideoRow[]>`
+        WITH ${videoSource}, ${groupCte}
         SELECT v.platform, v.kenh_id, MIN(v.kenh_ten) AS kenh_ten,
                COUNT(*) FILTER (WHERE g.cap IS NOT NULL)::bigint AS video_trung,
                COUNT(*)::bigint AS tong_video
-        FROM (${source}) AS v
+        FROM v
         ${joinGroups}
         GROUP BY 1, 2
       `,
       this.prisma.$queryRaw<RawDuplicateSummaryRow[]>`
-        SELECT (SELECT COUNT(*) FROM (${duplicateGroups}) AS a)::bigint AS so_nhom,
-               (SELECT COUNT(*) FROM (
-                  SELECT 1 FROM (${source}) AS b
-                  GROUP BY b.platform, b.cap, b.giay
-                  HAVING COUNT(DISTINCT b.kenh_id) >= 3
-                ) AS c)::bigint AS so_nhom_tu_3_kenh,
+        WITH ${videoSource}, ${groupCte}
+        SELECT (SELECT COUNT(*) FROM g)::bigint AS so_nhom,
+               (SELECT COUNT(*) FROM g WHERE g.so_kenh >= 3)::bigint AS so_nhom_tu_3_kenh,
                COUNT(*) FILTER (WHERE g.cap IS NOT NULL)::bigint AS so_video_trung,
                COUNT(*)::bigint AS tong_video,
-               COUNT(DISTINCT v.kenh_id) FILTER (WHERE g.cap IS NOT NULL)::bigint AS so_kenh_dinh
-        FROM (${source}) AS v
+               COUNT(DISTINCT v.kenh_id) FILTER (WHERE g.cap IS NOT NULL)::bigint AS so_kenh_dinh,
+               COUNT(*) FILTER (WHERE v.platform = 'facebook')::bigint AS fb_tong,
+               COUNT(*) FILTER (WHERE v.platform = 'facebook' AND v.giay IS NULL)::bigint AS fb_thieu_giay
+        FROM v
         ${joinGroups}
       `,
     ]);
@@ -334,6 +379,17 @@ export class OwnedDuplicateService {
     const groupCount = toNum(summaryRaw?.so_nhom);
     const groupsWithAtLeast3 = toNum(summaryRaw?.so_nhom_tu_3_kenh);
     const affectedChannels = toNum(summaryRaw?.so_kenh_dinh);
+
+    const durationCoverage = facebookDurationCoverage(
+      toNum(summaryRaw?.fb_tong),
+      toNum(summaryRaw?.fb_thieu_giay),
+    );
+    if (shouldWarnDurationCoverage(toNum(summaryRaw?.fb_tong), durationCoverage)) {
+      this.logger.warn(
+        `Chỉ đọc được độ dài của ${durationCoverage}% video Facebook (${toNum(summaryRaw?.fb_thieu_giay)}/${toNum(summaryRaw?.fb_tong)} video thiếu) — ` +
+          'nhiều khả năng Facebook đã đổi format video_url, số liệu trùng lặp đang gom nhóm chỉ bằng caption.',
+      );
+    }
 
     const groups = mergeGroups(groupsRaw);
     const filteredByChannel = byChannel.filter((k) => k.duplicateVideos > 0);
@@ -347,6 +403,8 @@ export class OwnedDuplicateService {
       totalVideos,
       duplicateRatio,
       affectedChannelCount: affectedChannels,
+      /** % video Facebook đọc được độ dài; thấp thì khoá gom nhóm chỉ còn caption. */
+      facebookDurationCoverage: durationCoverage,
 
       // Backward compatibility
       so_nhom: groupCount,
@@ -388,17 +446,19 @@ export class OwnedDuplicateService {
     const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
+      // Cùng tập kênh với owned-stats: page đã tắt không tính vào tỷ lệ trùng lặp.
       branches.push(Prisma.sql`
         SELECT 'facebook'::text AS platform,
-               COALESCE(mp.page_id, '')::text AS kenh_id,
-               COALESCE(mp.name, '')::text AS kenh_ten,
+               mp.page_id::text AS kenh_id,
+               mp.name::text AS kenh_ten,
                COALESCE(v.permalink_url, '')::text AS url,
                ${this.normalizeCaptionSql(Prisma.sql`v.caption`)} AS cap,
                ${DURATION_FACEBOOK} AS giay,
                v.view_count::bigint AS views,
                v.published_at AS ngay
         FROM video_management_ownedvideocontent v
-        LEFT JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id
+        JOIN video_management_managedfacebookpage mp
+          ON mp.id = v.managed_page_id AND mp.is_active = true
         ${EFG_FACEBOOK}
         WHERE v.published_at >= ${startDate} AND v.published_at <= ${endDate}
           AND length(btrim(v.caption)) >= ${MIN_CAPTION_LENGTH}
@@ -460,7 +520,7 @@ export class OwnedDuplicateService {
       branches.push(Prisma.sql`
         SELECT 'threads'::text AS platform,
                p.username::text AS kenh_id,
-               COALESCE(NULLIF(p.nickname, ''), p.username)::text AS kenh_ten,
+               COALESCE(NULLIF(p.name, ''), p.username)::text AS kenh_ten,
                tp.url::text AS url,
                ${this.normalizeCaptionSql(Prisma.sql`tp.text`)} AS cap,
                NULL::int AS giay,

@@ -211,6 +211,7 @@ export class KuaishouScraperReadService {
 
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string;
+    tracked?: string; bookmarked?: string; periodic?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -218,6 +219,8 @@ export class KuaishouScraperReadService {
     const sortBy = params.sort_by || 'followers';
 
     const where: any = {};
+    if (params.tracked === 'true' || params.periodic === 'true') where.is_tracked = true;
+    if (params.bookmarked === 'true') where.is_bookmarked = true;
     if (search) where.OR = [
       { nickname: { contains: search, mode: 'insensitive' } },
       { username: { contains: search, mode: 'insensitive' } },

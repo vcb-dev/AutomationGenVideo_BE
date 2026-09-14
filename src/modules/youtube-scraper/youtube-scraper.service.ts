@@ -4,6 +4,7 @@ import { NotificationsService } from '../task-auto/notifications/notifications.s
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
 import { readAiServiceError } from '../../common/utils/ai-service-error.util';
 import { YoutubeAiClientService, ParsedYoutubeChannel, ParsedYoutubeShort } from './youtube-ai-client.service';
+import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
 const STALE_LOCK_MINUTES = 30;
 
@@ -368,6 +369,23 @@ export class YoutubeScraperService {
   }
 
   // Tự mở khóa channel bị kẹt ở 'processing' quá lâu (worker crash giữa chừng).
+  // ─── Xoá cứng kênh ──────────────────────────────────────────────────────────
+
+  // Video/metrics gắn khoá ngoại onDelete Cascade nên Postgres tự dọn bảng con.
+  // Phải ĐẾM TRƯỚC khi xoá: đếm sau thì cascade đã quét sạch và con số báo về luôn là 0,
+  // trong khi FE dùng đúng con số này để nói người dùng vừa mất bao nhiêu video.
+  async deleteProfile(id: bigint): Promise<DeleteChannelResult> {
+    const profile = await this.prisma.scraperYoutubeProfile.findUnique({ where: { id } });
+    if (!profile) throw new HttpException({ error: 'Không tìm thấy kênh' }, HttpStatus.NOT_FOUND);
+
+    const videosDeleted = await this.prisma.scraperYoutubeShort.count({ where: { profile_id: id } });
+    await this.prisma.scraperYoutubeProfile.delete({ where: { id } });
+
+    const name = profile.title || profile.channel_id;
+    this.logger.warn(`[YOUTUBE] Đã xoá cứng kênh "${name}" (id=${id}) kèm ${videosDeleted} video.`);
+    return buildDeleteChannelResult(id, name, videosDeleted);
+  }
+
   private async resetStaleLocks(): Promise<void> {
     const cutoff = new Date(Date.now() - STALE_LOCK_MINUTES * 60_000);
     const result = await this.prisma.scraperYoutubeProfile.updateMany({
@@ -387,7 +405,7 @@ export class YoutubeScraperService {
     await this.resetStaleLocks();
 
     const profiles = await this.prisma.scraperYoutubeProfile.findMany({
-      where: { is_tracked: true, is_initial_scraped: true, scraping_status: { not: 'processing' } },
+      where: { is_tracked: true, scraping_status: { not: 'processing' } },
       orderBy: { last_scraped_at: 'asc' },
     });
 
@@ -402,7 +420,8 @@ export class YoutubeScraperService {
 
     for (const profile of profiles) {
       try {
-        await this.scrapeChannelShorts(profile.id, 10);
+        const count = profile.is_initial_scraped ? 10 : 30;
+        await this.scrapeChannelShorts(profile.id, count);
         done++;
       } catch (err: any) {
         failed++;

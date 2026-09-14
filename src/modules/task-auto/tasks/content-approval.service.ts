@@ -82,6 +82,22 @@ export class ContentApprovalService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
+  /** Đếm nhanh số yêu cầu PENDING khớp bộ lọc — dùng cho badge "Content chờ duyệt" ở
+   * tasks/page.tsx, chỉ cần count() thuần (không cần findMany như list()). */
+  async countPending(params: { team_id?: string; search?: string; assignee_id?: string }) {
+    const where: any = { status: "PENDING" };
+    const taskWhere: any = {};
+    const teamIdFilter = parseTeamIdFilter(params.team_id);
+    if (teamIdFilter) taskWhere.team_id = teamIdFilter;
+    if (params.assignee_id) taskWhere.assignee_id = params.assignee_id;
+    if (params.search) {
+      taskWhere.content = { title: { contains: params.search, mode: "insensitive" } };
+    }
+    if (Object.keys(taskWhere).length) where.task = taskWhere;
+
+    return this.prisma.taskContentApproval.count({ where });
+  }
+
   /** Yêu cầu duyệt content gần nhất của task (nếu có) — dùng để render badge trạng thái ở task detail. */
   async getCurrent(taskId: string) {
     return this.prisma.taskContentApproval.findFirst({

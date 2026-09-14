@@ -13,7 +13,7 @@ export class BilibiliScraperCronService {
 
   constructor(private readonly service: BilibiliScraperService) {}
 
-  @Cron('0 30 9 * * *', VN_TZ)
+  // @Cron('0 30 9 * * *', VN_TZ)
   async cronPeriodicRefresh(): Promise<void> {
     try {
       await this.service.periodicRefresh();
@@ -22,7 +22,7 @@ export class BilibiliScraperCronService {
     }
   }
 
-  @Cron('0 30 14 * * *', VN_TZ)
+  // @Cron('0 30 14 * * *', VN_TZ)
   async cronAutoRerunKeywords(): Promise<void> {
     try {
       await this.service.autoRerunTopKeywords();

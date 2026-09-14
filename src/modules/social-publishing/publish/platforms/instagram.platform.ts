@@ -1,20 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { FACEBOOK_GRAPH_BASE, INSTAGRAM_GRAPH_BASE } from '../../platform-api.const';
+import { CAROUSEL_MAX_ITEMS } from '../../platform-limits.const';
+import { withRetry, DEFAULT_MAX_ATTEMPTS } from '../retry.util';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Có 2 loại tài khoản Instagram:
  *
  * 1. instagram_business  — kết nối qua Facebook OAuth
  *    Token: Facebook Page token
- *    API:   graph.facebook.com/v21.0/{ig-user-id}/media
+ *    API:   FACEBOOK_GRAPH_BASE/{ig-user-id}/media
  *
  * 2. instagram_direct    — kết nối qua Instagram Login (personal)
  *    Token: Instagram token
- *    API:   graph.instagram.com/v21.0/{ig-user-id}/media
+ *    API:   INSTAGRAM_GRAPH_BASE/{ig-user-id}/media
+ *
+ * Phiên bản API khai báo ở platform-api.const.ts — đừng ghi số vào chú thích,
+ * nó sẽ lạc hậu ngay lần nâng cấp đầu tiên.
  */
 
-const FB_BASE = 'https://graph.facebook.com/v21.0';
-const IG_BASE = 'https://graph.instagram.com/v21.0';
+const FB_BASE = FACEBOOK_GRAPH_BASE;
+const IG_BASE = INSTAGRAM_GRAPH_BASE;
 
 function isVideoUrl(url: string): boolean {
   return /\.mp4(\?|$)/i.test(url) || /[?&]filename=[^&]+\.mp4(&|$)/i.test(url);
@@ -23,6 +31,17 @@ function isVideoUrl(url: string): boolean {
 @Injectable()
 export class InstagramPublisher {
   private readonly logger = new Logger(InstagramPublisher.name);
+
+  private resolveLocalFilePath(mediaUrl?: string): string | null {
+    if (!mediaUrl || !mediaUrl.includes('/api/social/media/')) return null;
+    const raw = mediaUrl.split('/api/social/media/').pop()?.split('?')[0];
+    if (!raw) return null;
+    const filename = path.basename(raw);
+    if (!filename) return null;
+    const uploadBase = process.env.SOCIAL_UPLOAD_DIR || path.join(process.cwd(), 'uploads', 'social');
+    const filePath = path.join(uploadBase, filename);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
 
   async publish(token: string, opts: {
     caption: string;
@@ -42,6 +61,11 @@ export class InstagramPublisher {
     this.logger.log(`[IG] Publish — accountType=${accountType ?? 'direct'} base=${base} igUserId=${igUserId}`);
 
     if (mediaUrls.length === 0) throw new Error('Instagram yêu cầu ít nhất 1 media');
+    if (mediaUrls.length > CAROUSEL_MAX_ITEMS) {
+      throw new Error(
+        `Instagram chỉ nhận tối đa ${CAROUSEL_MAX_ITEMS} media trong một carousel — nhận ${mediaUrls.length}.`,
+      );
+    }
 
     const isVideo = isVideoUrl(mediaUrls[0]);
     let postId: string;
@@ -134,11 +158,57 @@ export class InstagramPublisher {
       params.caption    = opts.caption;
       params.children   = opts.children!.join(',');
     } else if (opts.isVideo) {
-      params.media_type    = 'REELS';
-      params.video_url     = opts.mediaUrl;
-      params.share_to_feed = 'true';
-      if (opts.caption)        params.caption          = opts.caption;
-      if (opts.isCarouselItem) params.is_carousel_item = true;
+      const localFilePath = this.resolveLocalFilePath(opts.mediaUrl);
+      if (localFilePath) {
+        // Thử upload nhị phân trực tiếp (resumable) qua rupload — không phụ thuộc URL public
+        try {
+          const initRes = await axios.post(`${base}/${igUserId}/media`, {
+            access_token: token,
+            upload_type: 'resumable',
+            // Docs Instagram: "To create carousel item containers, create image or
+            // video containers instead (reels are not supported)". Phần tử con của
+            // carousel phải là VIDEO; đặt REELS làm container tạo lỗi. share_to_feed
+            // cũng vô nghĩa với item con vì chỉ container cha mới lên feed.
+            media_type: opts.isCarouselItem ? 'VIDEO' : 'REELS',
+            ...(opts.isCarouselItem ? { is_carousel_item: true } : { share_to_feed: 'true' }),
+            ...(opts.caption ? { caption: opts.caption } : {}),
+          }, { timeout: 60000 });
+
+          const containerId = initRes.data?.id;
+          const uploadUri = initRes.data?.uri;
+          if (containerId && uploadUri) {
+            const stat = fs.statSync(localFilePath);
+            const stream = fs.createReadStream(localFilePath);
+            await axios.post(uploadUri, stream, {
+              headers: {
+                Authorization: `OAuth ${token}`,
+                offset: '0',
+                file_size: String(stat.size),
+                'Content-Type': 'application/octet-stream',
+              },
+              maxBodyLength: Infinity,
+              maxContentLength: Infinity,
+              timeout: 300000,
+            });
+            this.logger.log(`[IG] Resumable direct upload thành công cho container: ${containerId}`);
+            return containerId;
+          }
+        } catch (resumableErr: any) {
+          const errDetail = resumableErr.response?.data ? JSON.stringify(resumableErr.response.data) : resumableErr.message;
+          this.logger.warn(`[IG] Resumable upload thất bại (${errDetail}), fallback sang video_url...`);
+        }
+      }
+
+      params.video_url = opts.mediaUrl;
+      if (opts.isCarouselItem) {
+        // Cùng lý do như nhánh resumable ở trên — item con không nhận REELS.
+        params.media_type       = 'VIDEO';
+        params.is_carousel_item = true;
+      } else {
+        params.media_type    = 'REELS';
+        params.share_to_feed = 'true';
+      }
+      if (opts.caption) params.caption = opts.caption;
     } else {
       params.image_url = opts.mediaUrl;
       if (opts.caption)        params.caption          = opts.caption;
@@ -170,24 +240,13 @@ export class InstagramPublisher {
       isCarousel?: boolean;
       children?: string[];
     },
-    maxAttempts = 3,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
   ): Promise<string> {
-    let lastErr: any;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.createContainer(base, igUserId, token, opts);
-      } catch (err: any) {
-        lastErr = err;
-        const status = err.status;
-        const retryable = !status || status === 429 || status >= 500;
-        if (attempt < maxAttempts && retryable) {
-          await new Promise(r => setTimeout(r, attempt * 800));
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastErr;
+    return withRetry(() => this.createContainer(base, igUserId, token, opts), {
+      maxAttempts,
+      onRetry: (err, attempt, wait) =>
+        this.logger.warn(`[IG] Tạo container lỗi (lượt ${attempt}), thử lại sau ${wait}ms: ${err.message}`),
+    });
   }
 
   private async waitForContainer(
@@ -207,10 +266,15 @@ export class InstagramPublisher {
           timeout: 15000,
         });
         const statusCode: string = res.data.status_code ?? res.data.status;
-        this.logger.log(`[IG] Container ${containerId} status: ${statusCode}`);
+        const statusDetail: string = res.data.status ?? '';
+        this.logger.log(`[IG] Container ${containerId} status: ${statusCode}${statusDetail && statusDetail !== statusCode ? ` | ${statusDetail}` : ''}`);
         if (statusCode === 'FINISHED') return;
         if (statusCode === 'ERROR') {
-          throw new Error(`Instagram container failed (status=ERROR)`);
+          this.logger.error(`[IG] Container ${containerId} thất bại: ${JSON.stringify(res.data)}`);
+          throw new Error(
+            `Instagram container failed: ${statusDetail || 'Meta không trả lý do'}` +
+            ` (thường do video sai định dạng, sai tỉ lệ, quá dài, hoặc URL media Meta không tải được)`,
+          );
         }
       } catch (err: any) {
         const status = err.response?.status;

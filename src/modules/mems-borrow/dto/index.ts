@@ -1,14 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsISO8601,
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   IsUUID,
   Min,
   ValidateNested,
@@ -31,16 +33,7 @@ export class BorrowLineDto {
 }
 
 export class CreateBorrowRequestDto {
-  @ApiPropertyOptional({
-    description:
-      'Bỏ trống thì server tự suy từ người đăng nhập. Client không nên tự khai mình thuộc ' +
-      'bộ phận nào — khai sai là quy trách nhiệm sai người.',
-  })
-  @IsOptional()
-  @IsUUID()
-  departmentId?: string;
-
-  @ApiProperty({ description: 'Dự án hoặc mục đích sử dụng — BR-19 bắt buộc' })
+    @ApiProperty({ description: 'Dự án hoặc mục đích sử dụng — BR-19 bắt buộc' })
   @IsString()
   @IsNotEmpty() // BR-19: chuỗi rỗng cũng là để trống, không được lọt
   project: string;
@@ -49,6 +42,17 @@ export class CreateBorrowRequestDto {
   @IsString()
   @IsNotEmpty()
   place: string;
+
+  @ApiPropertyOptional({
+    enum: ['WORK', 'PERSONAL'],
+    default: 'WORK',
+    description:
+      'PERSONAL là mượn phục vụ việc riêng — phiếu sẽ cần hai chữ ký: leader rồi admin. ' +
+      'Bỏ trống thì coi là việc của công ty.',
+  })
+  @IsOptional()
+  @IsIn(['WORK', 'PERSONAL'])
+  purpose?: 'WORK' | 'PERSONAL';
 
   @ApiProperty()
   @IsISO8601()
@@ -64,6 +68,86 @@ export class CreateBorrowRequestDto {
   @ValidateNested({ each: true })
   @Type(() => BorrowLineDto)
   lines: BorrowLineDto[];
+}
+
+/** Toàn bộ giá trị của enum `MemsRequestStatus`. */
+const REQUEST_STATUSES = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'APPROVED',
+  'REJECTED',
+  'PREPARING',
+  'ON_LOAN',
+  'PARTIALLY_RETURNED',
+  'CLOSED',
+  'CANCELLED',
+];
+
+/** Ô lọc để trống gửi lên chuỗi rỗng — coi như không lọc, đừng ném 400 vào mặt người bấm bỏ lọc. */
+const EmptyStringToUndefined = () =>
+  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
+
+/**
+ * Lọc danh sách phiếu. Nhận một hoặc nhiều trạng thái ngăn bằng dấu phẩy — màn Nhận trả gọi kèm
+ * `ON_LOAN,PARTIALLY_RETURNED`, màn Bàn giao gọi `APPROVED` rồi `PREPARING`.
+ *
+ * Trước đây chuỗi này đi thẳng xuống Prisma với `as any`: một giá trị lạ cho ra 500 kèm nguyên
+ * thông điệp của Prisma thay vì 400 nói rõ giá trị nào hợp lệ.
+ */
+export class ListRequestsQueryDto {
+  @ApiPropertyOptional({
+    description: `Một hoặc nhiều trạng thái ngăn bằng dấu phẩy. Hợp lệ: ${REQUEST_STATUSES.join(', ')}`,
+  })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsString()
+  @Matches(
+    new RegExp(`^\\s*(${REQUEST_STATUSES.join('|')})(\\s*,\\s*(${REQUEST_STATUSES.join('|')}))*\\s*$`),
+    { message: `status phải là các giá trị sau, ngăn bằng dấu phẩy: ${REQUEST_STATUSES.join(', ')}` },
+  )
+  status?: string;
+}
+
+/**
+ * Lọc nhật ký mượn của cả kho.
+ *
+ * `status` ở đây là trạng thái của MỘT LƯỢT MƯỢN (tính ra từ ba mốc thời gian), không phải trạng
+ * thái của phiếu — gửi nhầm `PENDING_APPROVAL` sang đây thì bảng trả về rỗng một cách khó hiểu.
+ */
+export class BorrowHistoryQueryDto {
+  @ApiPropertyOptional({ enum: ['HOLDING', 'OVERDUE', 'RETURNED'] })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsIn(['HOLDING', 'OVERDUE', 'RETURNED'])
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Ngày bắt đầu khoảng lọc, dạng ISO' })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Ngày kết thúc khoảng lọc, dạng ISO' })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ default: 20 })
+  @EmptyStringToUndefined()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pageSize?: number;
 }
 
 export class CheckAvailabilityQueryDto {

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AvailabilityResult, computeAvailability } from './availability';
 
@@ -16,34 +16,80 @@ export interface CheckAvailabilityOutput extends AvailabilityResult {
   bufferedTo: Date;
 }
 
-/** Trạng thái loại khỏi tổng máy dùng được (BR-14, cộng thêm BR-05 mà công thức gốc bỏ sót). */
-const NOT_USABLE_STATUSES = [
+/**
+ * Trạng thái loại khỏi tổng máy dùng được (BR-14, cộng thêm BR-05 mà công thức gốc bỏ sót).
+ *
+ * `POST_RETURN_CHECK` bắt buộc phải nằm đây. Máy trả về thiếu phụ kiện giữ nguyên `condition`
+ * là GOOD, nên mọi bộ lọc theo tình trạng đều cho nó lọt — chỉ cột trạng thái mới biết nó còn
+ * đang nằm trên bàn kiểm tra. Bỏ sót thì chiếc máy mất sạc đi thẳng sang người mượn kế tiếp,
+ * đúng cái BR-42 sinh ra để chặn.
+ *
+ * `UNDER_MAINTENANCE` cố ý KHÔNG nằm đây: máy đang bảo trì bị loại qua bảng `MemsMaintenance`.
+ * Chặn cả hai đường thì một chiếc máy bị trừ hai lần và tổng khả dụng báo thiếu.
+ */
+export const NOT_USABLE_STATUSES = [
   'PENDING_INSPECTION',
+  'POST_RETURN_CHECK',
   'BROKEN',
   'LOST',
   'DISPOSED',
 ] as const;
+
+/**
+ * Bốn bảng mà phép đếm khả dụng cần đọc — không hơn.
+ *
+ * Khai hẹp như vậy để cả `PrismaService` lẫn client của một giao dịch đang mở đều truyền vào
+ * được, mà người đọc vẫn thấy ngay hàm này chạm tới đúng những gì.
+ */
+export type AvailabilityReadClient = Pick<
+  PrismaService,
+  'memsAssetModel' | 'memsAsset' | 'memsReservation' | 'memsMaintenance'
+>;
 
 @Injectable()
 export class AvailabilityService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Đọc model kèm danh mục, hoặc báo không tìm thấy.
+   *
+   * Cố ý KHÔNG dùng `findUniqueOrThrow`: nó ném `PrismaClientKnownRequestError`, mà lỗi đó không
+   * phải `HttpException` nên bộ lọc toàn cục xếp vào 500 và trả nguyên thông điệp của Prisma về
+   * client — sai mã lỗi và lộ hình dạng truy vấn cùng lúc. `modelId` đã qua `@IsUUID` nên ca
+   * còn lại đúng là "UUID hợp lệ nhưng không có trong kho", xảy ra thật khi một model bị ngừng
+   * dùng trong lúc người mượn còn đang mở form.
+   */
+  private async requireModel(client: AvailabilityReadClient, modelId: string) {
+    const model = await client.memsAssetModel.findUnique({
+      where: { id: modelId },
+      include: { category: true },
+    });
+    if (!model) throw new NotFoundException(`Không có model thiết bị ${modelId} trong kho`);
+    return model;
+  }
+
+  /**
    * BR-11: không tồn tại khái niệm khả dụng chung chung. Mọi lời gọi đều phải kèm khoảng thời gian.
    *
    * Đây là cửa duy nhất để hỏi khả dụng. Màn hình nào tự viết phép trừ riêng là sai — hai chỗ
    * tính hai kiểu thì người dùng sẽ thấy hai con số khác nhau cho cùng một chiếc máy.
+   *
+   * `client` phải truyền khi gọi từ trong một giao dịch đang mở. Bỏ trống thì hàm đọc bằng
+   * `this.prisma`, tức là một KẾT NỐI KHÁC — nó không thấy bản ghi mà giao dịch kia vừa ghi và
+   * chưa commit. Chính chỗ đó từng làm một phiếu có hai dòng cùng model giữ chỗ gấp đôi số máy
+   * thực có: dòng sau hỏi lại và vẫn nhận về "còn đủ". Kèm theo đó là rủi ro cạn connection
+   * pool, vì một giao dịch đang giữ một kết nối lại đi xin kết nối thứ hai.
    */
-  async check(args: CheckAvailabilityArgs): Promise<CheckAvailabilityOutput> {
-    const model = await this.prisma.memsAssetModel.findUniqueOrThrow({
-      where: { id: args.modelId },
-      include: { category: true },
-    });
+  async check(
+    args: CheckAvailabilityArgs,
+    client: AvailabilityReadClient = this.prisma,
+  ): Promise<CheckAvailabilityOutput> {
+    const model = await this.requireModel(client, args.modelId);
 
     const bufferMinutes = model.category.buffer_minutes;
     const bufferedTo = new Date(args.toTime.getTime() + bufferMinutes * 60_000);
 
-    const totalUsableAssets = await this.prisma.memsAsset.count({
+    const totalUsableAssets = await client.memsAsset.count({
       where: {
         model_id: args.modelId,
         is_disabled: false,
@@ -52,7 +98,7 @@ export class AvailabilityService {
     });
 
     // Điều kiện giao nhau đẩy xuống DB để không kéo cả bảng giữ chỗ về ứng dụng.
-    const reservations = await this.prisma.memsReservation.findMany({
+    const reservations = await client.memsReservation.findMany({
       where: {
         model_id: args.modelId,
         status: { in: ['TENTATIVE', 'CONFIRMED'] as any },
@@ -62,7 +108,7 @@ export class AvailabilityService {
       select: { from_time: true, buffer_to_time: true },
     });
 
-    const maintenances = await this.prisma.memsMaintenance.findMany({
+    const maintenances = await client.memsMaintenance.findMany({
       where: {
         asset: { model_id: args.modelId },
         from_time: { lt: bufferedTo },
@@ -102,10 +148,7 @@ export class AvailabilityService {
    * còn tự do chọn chiếc nào. Chỉ giữ chỗ đã ghim `asset_id` mới loại máy đó ra.
    */
   async freeAssets(args: { modelId: string; fromTime: Date; toTime: Date }) {
-    const model = await this.prisma.memsAssetModel.findUniqueOrThrow({
-      where: { id: args.modelId },
-      include: { category: true },
-    });
+    const model = await this.requireModel(this.prisma, args.modelId);
     const bufferedTo = new Date(
       args.toTime.getTime() + model.category.buffer_minutes * 60_000,
     );
@@ -116,7 +159,15 @@ export class AvailabilityService {
         is_disabled: false,
         status: { notIn: [...NOT_USABLE_STATUSES] as any },
       },
-      include: { location: true },
+      include: {
+        location: true,
+        model: {
+          include: {
+            category: true,
+            accessories: { orderBy: { sort_order: 'asc' } },
+          },
+        },
+      },
       orderBy: { asset_code: 'asc' },
     });
 

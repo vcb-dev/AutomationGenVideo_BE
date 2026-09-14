@@ -12,7 +12,7 @@ import {
   Request,
 } from "@nestjs/common";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTeamsService } from "./teams.service";
@@ -29,7 +29,7 @@ import {
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoTeamsController {
   constructor(
@@ -162,6 +162,18 @@ export class TaskAutoTeamsController {
     return this.teams.updateTeamProduct(teamId, teamProductId, dto, req.user.id, req.user.roles ?? []);
   }
 
+  @Patch("teams/:id/products/:teamProductId/refresh-from-oms")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Làm mới sku/tên/giá/ảnh theo dữ liệu mới nhất từ OMS" })
+  refreshTeamProductFromOms(
+    @Param("id") teamId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Request() req: any,
+  ) {
+    return this.teams.refreshTeamProductFromOms(teamId, teamProductId, req.user.id, req.user.roles ?? []);
+  }
+
   @Patch("teams/:id/products/:teamProductId/push")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER", "LEADER")
@@ -203,6 +215,12 @@ export class TaskAutoTeamsController {
   ) {
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market } : undefined;
     return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts);
+  }
+
+  @Get("teams/:id/contents/:teamContentId")
+  @ApiOperation({ summary: "Get team content detail (with body/script)" })
+  getTeamContent(@Param("teamContentId") teamContentId: string) {
+    return this.teams.findOneTeamContent(teamContentId);
   }
 
   @Post("teams/:id/contents")
@@ -367,12 +385,18 @@ export class TaskAutoTeamsController {
   }
 
   @Get("dashboard")
-  @ApiOperation({ summary: "Dashboard summary stats" })
+  @ApiOperation({
+    summary:
+      "Dashboard summary stats. team_id/assignee_id chỉ có tác dụng với ADMIN/MANAGER (global dashboard) — khoan sâu về 1 team/1 thành viên cụ thể, bị bỏ qua ở LEADER/MEMBER vì 2 nhánh đó đã tự khoanh phạm vi theo JWT.",
+  })
   getDashboard(
     @Request() req: any,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
     @Query("month") month?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
     return this.tasks.getDashboard(
       req.user.id,
@@ -380,6 +404,31 @@ export class TaskAutoTeamsController {
       dateFrom,
       dateTo,
       month,
+      teamId,
+      assigneeId,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
+    );
+  }
+
+  @Get("product-video-stats")
+  @ApiOperation({
+    summary:
+      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
+  })
+  getProductVideoStats(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
+  ) {
+    return this.tasks.getProductVideoStatsForRole(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+      teamId,
+      assigneeId,
     );
   }
 
@@ -394,7 +443,13 @@ export class TaskAutoTeamsController {
     @Query("team") team?: string,
     @Query("date_from") dateFrom?: string,
     @Query("date_to") dateTo?: string,
+    @Query("pin_traffic_month") pinTrafficMonth?: string,
   ) {
-    return this.tasks.getTeamReport(team, dateFrom, dateTo);
+    return this.tasks.getTeamReport(
+      team,
+      dateFrom,
+      dateTo,
+      pinTrafficMonth === "1" || pinTrafficMonth === "true",
+    );
   }
 }

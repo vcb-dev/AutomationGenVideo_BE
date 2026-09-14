@@ -31,7 +31,7 @@ describe('TaskAutoTeamsService.setMemberContentCreator', () => {
         }),
       },
     };
-    const service = new TaskAutoTeamsService(prisma);
+    const service = new TaskAutoTeamsService(prisma, {} as any);
     return { service, prisma, updateCalls };
   }
 

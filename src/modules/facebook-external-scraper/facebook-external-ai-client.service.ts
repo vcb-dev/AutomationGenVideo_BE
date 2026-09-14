@@ -13,6 +13,16 @@ export interface ParsedFanpageProfile {
   followers_count: number;
 }
 
+export interface FetchPageReelsResult {
+  // Có lấy được dữ liệu THẬT từ RapidAPI hay không (profile API, hoặc author trong
+  // reel đầu tiên). False + profile != null nghĩa là `profile` chỉ là dữ liệu tạm
+  // dựng từ URL/cache — KHÔNG được ghi đè dữ liệu tốt đang có trong DB.
+  profile_api_ok: boolean;
+  fallback_used?: boolean;
+  profile: ParsedFanpageProfile | null;
+  reels: ParsedFacebookReel[];
+}
+
 export interface ParsedFacebookReel {
   post_id: string;
   shortcode: string;
@@ -48,7 +58,7 @@ export class FacebookExternalAiClientService {
     numOfPosts: number,
     excludePostIds: string[],
     startDate: string,
-  ): Promise<{ profile_api_ok: boolean; profile: ParsedFanpageProfile | null; reels: ParsedFacebookReel[] }> {
+  ): Promise<FetchPageReelsResult> {
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/scraper/fanpages/fetch/reels/`,
       {
@@ -57,7 +67,7 @@ export class FacebookExternalAiClientService {
         exclude_post_ids: excludePostIds,
         start_date: startDate,
       },
-      { headers: this.authHeaders(), timeout: 180_000 },
+      { headers: this.authHeaders(), timeout: 240_000 },
     );
     return data;
   }

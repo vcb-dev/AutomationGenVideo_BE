@@ -125,7 +125,7 @@ const CONTENT_ORIGINS = ["COLLECTED", "SELF_CREATED"];
 export class CreateContentDto {
   @ApiProperty({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) brand_type: BrandType;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiProperty() @IsString() @IsNotEmpty({ message: "Tiêu đề content là bắt buộc" }) title: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
@@ -240,6 +240,11 @@ export class CreateTeamProductDto {
   @ApiPropertyOptional({ description: 'Set to copy from global catalog; leave blank to create new' })
   @IsString() @IsOptional() source_product_id?: string;
 
+  @ApiPropertyOptional({ description: 'Set kèm oms_variant_id để kéo 1 SKU cụ thể từ OMS (kho tổng) về kho team' })
+  @IsString() @IsOptional() oms_product_id?: string;
+  @ApiPropertyOptional({ description: 'ID variant (SKU thật) bên OMS — bắt buộc nếu có oms_product_id' })
+  @IsString() @IsOptional() oms_variant_id?: string;
+
   @ApiPropertyOptional() @IsString() @IsOptional() sku?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() name?: string;
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
@@ -281,7 +286,8 @@ export class CreateTeamContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_content_id trống)' })
+  @ValidateIf(o => !o.source_content_id) @IsString() @IsNotEmpty({ message: 'Tiêu đề content là bắt buộc khi tạo mới' }) title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;
@@ -423,7 +429,8 @@ export class CreateEditorContentDto {
   @ApiPropertyOptional({ enum: BRAND_TYPES }) @IsEnum(BRAND_TYPES) @IsOptional() brand_type?: BrandType;
   @ApiPropertyOptional({ enum: TEAM_MARKETS }) @IsEnum(TEAM_MARKETS) @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() code?: string;
-  @ApiPropertyOptional() @IsString() @IsOptional() title?: string;
+  @ApiPropertyOptional({ description: 'Bắt buộc khi tạo mới (source_content_id trống)' })
+  @ValidateIf(o => !o.source_content_id) @IsString() @IsNotEmpty({ message: 'Tiêu đề content là bắt buộc khi tạo mới' }) title?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() body?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() script?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() file_content_url?: string;

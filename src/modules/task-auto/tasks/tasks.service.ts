@@ -6,21 +6,24 @@ import {
   Logger,
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
-import { Prisma } from "@prisma/client";
+import { Prisma, SocialPostStatus } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
 import { TaskPublishedLinkStatsService } from "./task-published-link-stats.service";
+import { TaskAutoContentWinPushService } from "./content-win-auto-push.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
   QueryTaskDto,
+  QueryTaskHeaderCountsDto,
   SubmitTaskDto,
   ReviewTaskDto,
   UpdatePublishedLinksDto,
 } from "./dto/task.dto";
 import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
+import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -41,6 +44,8 @@ const CATALOG_FIELDS = [
   "product_id",
   "editor_product_id",
   "team_product_id",
+  "oms_product_id",
+  "oms_variant_id",
   "source_outro_id",
   "source_extra_id",
   "source_workshop_id",
@@ -64,7 +69,60 @@ export class TaskAutoTasksService {
     private videoService: TaskAutoVideoService,
     private push: PushService,
     private linkStats: TaskPublishedLinkStatsService,
+    private oms: OmsIntegrationService,
+    private contentWinPush: TaskAutoContentWinPushService,
   ) {}
+
+  /**
+   * Task chọn sản phẩm trực tiếp từ kho tổng (OMS) không có Product local nào để trỏ vào —
+   * hệ thống tự tìm-hoặc-tạo (upsert theo oms_variant_id) 1 EditorProduct cho editor được giao,
+   * rồi Task trỏ editor_product_id vào đó thay vì product_id. Field nghiệp vụ (material/
+   * classification/priority/cooldown...) để trống, editor/leader tự điền sau ở kho cá nhân.
+   */
+  private async findOrCreateEditorProductFromOms(
+    userId: string,
+    teamId: string,
+    omsProductId: string,
+    omsVariantId: string,
+  ): Promise<string> {
+    const existing = await this.prisma.editorProduct.findFirst({
+      where: { user_id: userId, oms_variant_id: omsVariantId },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+
+    const { product, variant } = await this.oms.getProductVariant(omsProductId, omsVariantId);
+
+    const skuTaken = await this.prisma.editorProduct.findFirst({
+      where: { user_id: userId, sku: variant.sku },
+      select: { id: true },
+    });
+    if (skuTaken) {
+      throw new BadRequestException(
+        `SKU "${variant.sku}" đã có sẵn trong kho cá nhân của editor này (không liên kết OMS) — không thể tự tạo, cần xử lý thủ công`,
+      );
+    }
+
+    const team = await this.prisma.team.findUnique({ where: { id: teamId }, select: { brand_type: true } });
+
+    const created = await this.prisma.editorProduct.create({
+      data: {
+        user_id: userId,
+        added_by_id: userId,
+        oms_product_id: omsProductId,
+        oms_variant_id: omsVariantId,
+        sku: variant.sku,
+        name: product.name,
+        brand_type: team?.brand_type ?? "DO_DA",
+        image_url: variant.image_url ?? product.image_url,
+        image_urls: product.images.map((i) => i.url),
+        price: variant.price,
+        is_active: true,
+      },
+      select: { id: true },
+    });
+    return created.id;
+  }
 
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
   // (create/update/submit/review) trả về task để FE cập nhật cache/detail panel.
@@ -573,23 +631,7 @@ export class TaskAutoTasksService {
     } else {
       if (q.status) where.status = q.status;
       if (q.deadline_from || q.deadline_to) {
-        // Khoảng ngày: mặc định mở về quá khứ/tương lai nếu chỉ truyền 1 đầu mốc.
-        const rangeStart = q.deadline_from
-          ? new Date(`${q.deadline_from}T00:00:00+07:00`)
-          : undefined;
-        const rangeEnd = q.deadline_to
-          ? new Date(`${q.deadline_to}T23:59:59.999+07:00`)
-          : undefined;
-        const bounds: { gte?: Date; lte?: Date } = {};
-        if (rangeStart) bounds.gte = rangeStart;
-        if (rangeEnd) bounds.lte = rangeEnd;
-        // Task có deadline rơi vào khoảng lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
-        and.push({
-          OR: [
-            { deadline: bounds },
-            { deadline: null, created_at: bounds },
-          ],
-        });
+        and.push(this.buildDeadlineRangeAnd(q.deadline_from, q.deadline_to)!);
       } else if (q.deadline_date) {
         const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
         const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
@@ -639,6 +681,60 @@ export class TaskAutoTasksService {
     ]);
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  // Khoảng ngày lọc theo hạn chót; task chưa có hạn chót thì tính theo ngày tạo thay thế — tách
+  // riêng khỏi findAll() để dùng chung với getHeaderCounts(), tránh lệch ngữ nghĩa giữa 2 nơi.
+  private buildDeadlineRangeAnd(from?: string, to?: string) {
+    if (!from && !to) return null;
+    const rangeStart = from ? new Date(`${from}T00:00:00+07:00`) : undefined;
+    const rangeEnd = to ? new Date(`${to}T23:59:59.999+07:00`) : undefined;
+    const bounds: { gte?: Date; lte?: Date } = {};
+    if (rangeStart) bounds.gte = rangeStart;
+    if (rangeEnd) bounds.lte = rangeEnd;
+    return {
+      OR: [
+        { deadline: bounds },
+        { deadline: null, created_at: bounds },
+      ],
+    };
+  }
+
+  // Đếm nhanh cho header ("N task") + badge "Video chờ duyệt" trên tasks/page.tsx — dùng count()
+  // thuần (không kèm findMany như findAll()) vì FE chỉ cần con số, tránh tốn 1 lượt findMany thừa
+  // cho mỗi lần gọi. Badge "Content chờ duyệt" đếm riêng ở ContentApprovalService.countPending()
+  // vì khác bảng — controller gộp cả 2 lại bằng Promise.all (xem tasks.controller.ts).
+  async getHeaderCounts(q: QueryTaskHeaderCountsDto) {
+    const teamIdFilter = parseTeamIdFilter(q.team_id);
+
+    const totalWhere: any = {};
+    if (teamIdFilter) totalWhere.team_id = teamIdFilter;
+    if (q.assignee_id) totalWhere.assignee_id = q.assignee_id;
+    if (q.task_type === "auto") totalWhere.task_type = "AUTO";
+    if (q.task_type === "extra") totalWhere.task_type = "EXTRA";
+    if (q.status) totalWhere.status = q.status;
+    if (q.search) {
+      totalWhere.content = { title: { contains: q.search, mode: "insensitive" } };
+    }
+    const totalDeadlineAnd = this.buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
+    if (totalDeadlineAnd) totalWhere.AND = [totalDeadlineAnd];
+
+    // Badge "Video chờ duyệt": luôn status SUBMITTED, khoảng ngày riêng (pending_from/to) — khớp
+    // SubmittedVideosGrid, KHÔNG dùng chung deadline_from/to của header.
+    const submittedWhere: any = { status: "SUBMITTED" };
+    if (teamIdFilter) submittedWhere.team_id = teamIdFilter;
+    if (q.assignee_id) submittedWhere.assignee_id = q.assignee_id;
+    if (q.search) {
+      submittedWhere.content = { title: { contains: q.search, mode: "insensitive" } };
+    }
+    const submittedDeadlineAnd = this.buildDeadlineRangeAnd(q.pending_from, q.pending_to);
+    if (submittedDeadlineAnd) submittedWhere.AND = [submittedDeadlineAnd];
+
+    const [total, submittedTotal] = await Promise.all([
+      this.prisma.task.count({ where: totalWhere }),
+      this.prisma.task.count({ where: submittedWhere }),
+    ]);
+    return { total, submittedTotal };
   }
 
   async findOne(id: string) {
@@ -717,19 +813,44 @@ export class TaskAutoTasksService {
       );
     }
 
+    if (dto.oms_variant_id && !dto.oms_product_id) {
+      throw new BadRequestException(
+        "oms_product_id là bắt buộc khi có oms_variant_id",
+      );
+    }
+
     const team = await this.prisma.team.findUnique({
       where: { id: dto.team_id },
     });
     if (!team) throw new NotFoundException("Team not found");
 
+    // Fallback về content_line_id của bản ghi gốc (source_editor_content / source_team_content)
+    // khi field thô trên chính record bị null — cùng cách loadAssignmentPools (task-auto-assign.
+    // service.ts) đã làm cho lane auto-assign. TeamContent/Content chỉ copy content_line_id tại
+    // thời điểm push (copyEditorContentToTeam, pushTeamContentToGlobal — cái sau còn không copy
+    // luôn), nên record cũ hoặc content gốc được gán tuyến sau khi đã push vẫn có thể null dù
+    // nội dung thực sự thuộc 1 tuyến — thiếu fallback này khiến task tạo thủ công từ content đó
+    // bị content_line_id = null và rơi khỏi "Số video theo tuyến nội dung" (getVideoByContentLine).
     let resolvedContentLineId: string | null = null;
     if (dto.content_id) {
       const content = await this.prisma.content.findUnique({
         where: { id: dto.content_id },
-        select: { content_line_id: true },
+        select: {
+          content_line_id: true,
+          source_team_content: {
+            select: {
+              content_line_id: true,
+              source_editor_content: { select: { content_line_id: true } },
+            },
+          },
+        },
       });
       if (!content) throw new NotFoundException("Content not found");
-      resolvedContentLineId = content.content_line_id;
+      resolvedContentLineId =
+        content.content_line_id ??
+        content.source_team_content?.content_line_id ??
+        content.source_team_content?.source_editor_content?.content_line_id ??
+        null;
     } else if (dto.editor_content_id) {
       const ec = await this.prisma.editorContent.findUnique({
         where: { id: dto.editor_content_id },
@@ -740,10 +861,14 @@ export class TaskAutoTasksService {
     } else if (dto.team_content_id) {
       const tc = await this.prisma.teamContent.findUnique({
         where: { id: dto.team_content_id },
-        select: { content_line_id: true },
+        select: {
+          content_line_id: true,
+          source_editor_content: { select: { content_line_id: true } },
+        },
       });
       if (!tc) throw new NotFoundException("TeamContent not found");
-      resolvedContentLineId = tc.content_line_id;
+      resolvedContentLineId =
+        tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null;
     }
 
     if (!isPrivileged) {
@@ -756,8 +881,29 @@ export class TaskAutoTasksService {
       }
     }
 
+    // Sản phẩm chọn trực tiếp từ kho tổng (OMS) không có Product local để trỏ vào. Nếu đã biết
+    // assignee ngay lúc tạo (self-assign hoặc dto truyền sẵn), materialize luôn vào kho cá nhân
+    // editor đó và dùng editor_product_id như bình thường; nếu chưa (task tạo PENDING), tạm giữ
+    // oms_product_id/oms_variant_id trên Task, materialize sau lúc gán assignee — xem update().
+    let resolvedEditorProductId = dto.editor_product_id;
+    let pendingOmsProductId: string | undefined;
+    let pendingOmsVariantId: string | undefined;
+    if (dto.oms_variant_id) {
+      if (dto.assignee_id) {
+        resolvedEditorProductId = await this.findOrCreateEditorProductFromOms(
+          dto.assignee_id,
+          dto.team_id,
+          dto.oms_product_id!,
+          dto.oms_variant_id,
+        );
+      } else {
+        pendingOmsProductId = dto.oms_product_id;
+        pendingOmsVariantId = dto.oms_variant_id;
+      }
+    }
+
     const hasProduct =
-      dto.product_id || dto.editor_product_id || dto.team_product_id;
+      dto.product_id || resolvedEditorProductId || dto.team_product_id || pendingOmsVariantId;
 
     // Không dùng interactive transaction ($transaction(async tx => ...)) ở đây:
     // DATABASE_URL chạy qua Supabase pgbouncer (transaction-pooling mode, port 6543),
@@ -776,8 +922,8 @@ export class TaskAutoTasksService {
             ? { team_content_id: dto.team_content_id }
             : {}),
           ...(dto.product_id ? { product_id: dto.product_id } : {}),
-          ...(dto.editor_product_id
-            ? { editor_product_id: dto.editor_product_id }
+          ...(resolvedEditorProductId
+            ? { editor_product_id: resolvedEditorProductId }
             : {}),
           ...(dto.team_product_id
             ? { team_product_id: dto.team_product_id }
@@ -799,8 +945,10 @@ export class TaskAutoTasksService {
         editor_content_id: dto.editor_content_id ?? null,
         team_content_id: dto.team_content_id ?? null,
         product_id: dto.product_id ?? null,
-        editor_product_id: dto.editor_product_id ?? null,
+        editor_product_id: resolvedEditorProductId ?? null,
         team_product_id: dto.team_product_id ?? null,
+        oms_product_id: pendingOmsProductId ?? null,
+        oms_variant_id: pendingOmsVariantId ?? null,
         content_line_id: dto.content_line_id ?? resolvedContentLineId,
         source_outro_id: dto.source_outro_id ?? null,
         source_extra_id: dto.source_extra_id ?? null,
@@ -815,6 +963,10 @@ export class TaskAutoTasksService {
         team_source_workshop_id: dto.team_source_workshop_id ?? null,
         team_source_huyk_id: dto.team_source_huyk_id ?? null,
         assignee_id: dto.assignee_id,
+        // Ghi nhận ai đã set assignee_id — dùng ở remove() để phân biệt member tự tạo/tự nhận
+        // task (assigned_by_id === assignee_id, không bị khoá xoá) với leader giao tay
+        // (assigned_by_id khác assignee_id, bị khoá xoá với thành viên thường).
+        assigned_by_id: dto.assignee_id ? creatorId : undefined,
         deadline: dto.deadline ? parseVNDeadline(dto.deadline) : undefined,
         status: dto.assignee_id ? "ASSIGNED" : "PENDING",
         assigned_at: dto.assignee_id ? new Date() : undefined,
@@ -841,7 +993,10 @@ export class TaskAutoTasksService {
   ) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { task_type: true, assignee_id: true, status: true, team_id: true },
+      select: {
+        task_type: true, assignee_id: true, status: true, team_id: true,
+        editor_product_id: true, oms_product_id: true, oms_variant_id: true,
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
 
@@ -892,6 +1047,52 @@ export class TaskAutoTasksService {
 
     const data: any = { ...dto };
     if (dto.deadline) data.deadline = parseVNDeadline(dto.deadline);
+    if (dto.assignee_id !== undefined && dto.assignee_id !== task.assignee_id) {
+      // Ghi nhận ai vừa set assignee_id (xem create() để biết cách dùng ở remove()). Member tự
+      // nhận task (self-claim, nhánh !isPrivileged phía trên đã ép dto.assignee_id === userId)
+      // → assigned_by_id === assignee_id, không bị khoá xoá. Leader/admin/manager giao hoặc
+      // reassign cho người khác → assigned_by_id khác assignee_id, bị khoá xoá với thành viên.
+      data.assigned_by_id = dto.assignee_id ? userId : null;
+    }
+    if (dto.oms_variant_id) {
+      // Client đang chọn 1 sản phẩm OMS mới cho task này (sửa task EXTRA) — materialize ngay nếu
+      // đã biết assignee (kể cả khi assignee cũng đang được set cùng lúc trong request này).
+      if (!dto.oms_product_id) {
+        throw new BadRequestException(
+          "oms_product_id là bắt buộc khi có oms_variant_id",
+        );
+      }
+      const effectiveAssigneeId =
+        dto.assignee_id !== undefined ? dto.assignee_id : task.assignee_id;
+      if (effectiveAssigneeId) {
+        data.editor_product_id = await this.findOrCreateEditorProductFromOms(
+          effectiveAssigneeId,
+          task.team_id,
+          dto.oms_product_id,
+          dto.oms_variant_id,
+        );
+        data.oms_product_id = null;
+        data.oms_variant_id = null;
+      }
+      // else: chưa biết assignee — giữ nguyên oms_product_id/oms_variant_id (đã có trong `data`
+      // từ spread dto ở trên), materialize sau ở nhánh dưới khi assignee được set lần đầu.
+    } else if (
+      dto.assignee_id &&
+      dto.assignee_id !== task.assignee_id &&
+      task.oms_variant_id &&
+      !task.editor_product_id
+    ) {
+      // Task tạo PENDING với sản phẩm chọn từ kho tổng (OMS) chưa materialize được lúc tạo (chưa
+      // có assignee) — giờ assignee vừa được set lần đầu, materialize vào kho cá nhân của họ.
+      data.editor_product_id = await this.findOrCreateEditorProductFromOms(
+        dto.assignee_id,
+        task.team_id,
+        task.oms_product_id!,
+        task.oms_variant_id,
+      );
+      data.oms_product_id = null;
+      data.oms_variant_id = null;
+    }
     if (dto.assignee_id !== undefined) {
       data.assigned_at = dto.assignee_id ? new Date() : null;
       if (dto.assignee_id && task.status === "PENDING") {
@@ -954,13 +1155,19 @@ export class TaskAutoTasksService {
   async submit(id: string, dto: SubmitTaskDto, userId: string) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { assignee_id: true, status: true },
+      select: { assignee_id: true, status: true, result_url: true },
     });
     if (!task) throw new NotFoundException("Task not found");
     if (task.assignee_id !== userId)
       throw new ForbiddenException("Not your task");
     if (!["ASSIGNED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Task is not in a submittable state");
+    }
+    // Không cho nộp tay không: cần video (result_url từ Drive) hoặc link nhập tay.
+    if (!dto.result_url && !task.result_url) {
+      throw new BadRequestException(
+        "Cần upload video hoặc nhập link video trước khi nộp task",
+      );
     }
 
     const updated = await this.prisma.task.update({
@@ -1003,6 +1210,8 @@ export class TaskAutoTasksService {
         reviewed_by_id: reviewerId,
         reviewed_at: new Date(),
         reject_reason: dto.reject_reason,
+        // deletePendingVideo() dưới đây xoá video Drive → result_url không còn trỏ file thật.
+        ...(dto.action === "REJECTED" ? { result_url: null } : {}),
       },
       include: this.taskDetailInclude,
     });
@@ -1029,6 +1238,18 @@ export class TaskAutoTasksService {
         .catch((err) =>
           this.logger.warn(
             `[review] deletePendingVideo failed for task ${id}: ${err.message}`,
+          ),
+        );
+
+      // Bài lên lịch từ lúc SUBMITTED sẽ publish lỗi vì video vừa bị xoá — huỷ luôn, khỏi retry.
+      await this.prisma.socialPost
+        .updateMany({
+          where: { task_id: id, status: SocialPostStatus.PENDING },
+          data: { status: SocialPostStatus.CANCELLED, updated_at: new Date() },
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `[review] cancel scheduled posts failed for task ${id}: ${err.message}`,
           ),
         );
     }
@@ -1134,6 +1355,9 @@ export class TaskAutoTasksService {
   // — 2 cron độc lập, không chia sẻ resource nên chỉ là tránh dồn tải, không bắt buộc.
   // Platform chưa hỗ trợ (chưa qua TaskPublishedLinkStatsService) trả 'unsupported'
   // và bị bỏ qua êm — thêm platform mới sau này không cần sửa gì ở đây.
+  //
+  // Cũng là "khung giờ cố định mỗi ngày" mà thống kê Content Win/Fail (kpi.service.ts) dựa vào
+  // để có số view mới — phần đó chỉ cào thêm khi người dùng bấm "Cập nhật".
   @Cron("0 15 8 * * *", {
     name: "task-published-link-stats-refresh",
     timeZone: "Asia/Ho_Chi_Minh",
@@ -1193,6 +1417,14 @@ export class TaskAutoTasksService {
       this.logger.log(
         `[LINK-STATS-CRON] Xong: ${withLinks.length} task, ${linkCount} link (${successCount} OK, ${failCount} lỗi/unsupported)`,
       );
+
+      // Sau khi làm mới view: xét content-win — task APPROVED có link > ngưỡng thì TỰ đẩy content
+      // lên kho tổng. Idempotent (Task.content_win_pushed_at) nên chạy lại mỗi sáng không đẩy trùng.
+      await this.contentWinPush
+        .pushWinningTasks(withLinks.map((t) => t.id))
+        .catch((err: any) =>
+          this.logger.warn(`[LINK-STATS-CRON] content-win push lỗi: ${err?.message ?? err}`),
+        );
     } catch (err: any) {
       this.logger.warn(`[LINK-STATS-CRON] failed: ${err.message}`);
     }
@@ -1213,6 +1445,22 @@ export class TaskAutoTasksService {
     return { gte, lt };
   }
 
+  /**
+   * Cửa sổ ngày CHUẨN cho mọi dashboard (Global/Leader/Team report/Personal): một task "thuộc kỳ"
+   * nếu `deadline` rơi vào khoảng; task chưa đặt `deadline` thì tính theo `created_at` thay thế —
+   * ĐÚNG quy tắc bộ lọc `deadline_from`/`deadline_to` mà Kanban (findAll) dùng, để số trên "Tổng
+   * quan" khớp số thấy khi mở tab "Nhiệm vụ" cùng bộ lọc ngày. Mọi số liệu "việc làm được trong kỳ"
+   * (KPI hoàn thành ngày/tháng, video theo tuyến, sản phẩm theo dòng, content theo phân loại) đều
+   * lọc qua đây thay vì `reviewed_at` (ngày duyệt) hay `created_at` để không lệch chiều truy vấn.
+   * `range` null → trả `{}` (không giới hạn ngày).
+   */
+  private deadlineWindow(
+    range: { gte: Date; lt: Date } | null,
+  ): Prisma.TaskWhereInput {
+    if (!range) return {};
+    return { OR: [{ deadline: range }, { deadline: null, created_at: range }] };
+  }
+
   async getDashboard(
     userId: string,
     roles: string[],
@@ -1220,39 +1468,137 @@ export class TaskAutoTasksService {
     dateTo?: string,
     /** "YYYY-MM" — tháng báo cáo cho leader dashboard (mặc định tháng hiện tại nếu bỏ trống/sai định dạng). */
     month?: string,
+    /** Chỉ áp dụng cho ADMIN/MANAGER (global dashboard) — thu hẹp mọi số liệu về 1 team/1 thành
+     * viên cụ thể để "khoan sâu" thay vì chỉ xem tổng hệ thống. Bị bỏ qua ở nhánh LEADER/MEMBER vì
+     * 2 nhánh đó đã tự khoanh phạm vi theo JWT (team mình lead / chính mình) rồi. */
+    teamId?: string,
+    assigneeId?: string,
+    /** Tab "Thống kê theo ngày" của leader dashboard — giữ traffic/doanh thu theo tháng chứa `range`. */
+    pinTrafficMonth = false,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
-    if (isAdminOrManager) return this.getGlobalDashboard(range);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month);
-    return this.getPersonalDashboard(userId);
+    if (isAdminOrManager) return this.getGlobalDashboard(range, teamId, assigneeId);
+    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month, pinTrafficMonth);
+    return this.getPersonalDashboard(userId, range);
   }
 
-  private async getGlobalDashboard(range: { gte: Date; lt: Date } | null) {
+  /**
+   * "Video/sản phẩm theo dòng sản phẩm" — tách riêng khỏi getDashboard() để FE load độc lập thay vì
+   * gánh vào payload Tổng quan. Tự khoanh phạm vi theo role, CÙNG quy tắc với getDashboard():
+   *  - ADMIN/MANAGER: toàn hệ thống, có thể khoan sâu qua team_id/assignee_id.
+   *  - LEADER: tự động khoanh về (các) team đang lead — không nhận team_id/assignee_id (JWT quyết định).
+   *  - MEMBER: tự động khoanh về chính mình.
+   * Lọc theo `deadlineWindow` (deadline rơi vào `range`, chưa đặt deadline thì theo created_at) —
+   * CÙNG trục lọc với dashboard chính (getDashboard) để số liệu khớp nhau, thay vì `reviewed_at`
+   * (ngày duyệt) như trước. Không truyền range → mặc định KHÔNG giới hạn ngày (khác getDashboard,
+   * vốn mặc định về tháng hiện tại cho KPI) vì endpoint này không gắn với khái niệm "tháng KPI" nào.
+   */
+  async getProductVideoStatsForRole(
+    userId: string,
+    roles: string[],
+    dateFrom?: string,
+    dateTo?: string,
+    teamId?: string,
+    assigneeId?: string,
+  ) {
+    const range = this.parseDateRange(dateFrom, dateTo);
+    const isAdminOrManager = roles.includes("ADMIN") || roles.includes("MANAGER");
+    const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
+
+    const baseWhere: Prisma.TaskWhereInput = {
+      status: "APPROVED",
+      ...this.deadlineWindow(range),
+    };
+
+    let where: Prisma.TaskWhereInput;
+    if (isAdminOrManager) {
+      where = {
+        ...baseWhere,
+        ...(teamId ? { team_id: teamId } : {}),
+        ...(assigneeId ? { assignee_id: assigneeId } : {}),
+      };
+    } else if (isLeaderOnly) {
+      const teamsLed = await this.prisma.team.findMany({
+        where: { leader_id: userId },
+        select: { id: true },
+      });
+      const teamIds = teamsLed.map((t) => t.id);
+      if (teamIds.length === 0) {
+        return {
+          video_by_product_line: [],
+          products_with_video: 0,
+          products_with_video_by_line: [],
+          products_with_video_list: [],
+        };
+      }
+      where = { ...baseWhere, team_id: { in: teamIds } };
+    } else {
+      where = { ...baseWhere, assignee_id: userId };
+    }
+
+    const stats = await this.getProductVideoStats(where);
+    return {
+      video_by_product_line: stats.video_by_line,
+      products_with_video: stats.products_total,
+      products_with_video_by_line: stats.products_by_line,
+      products_with_video_list: stats.products,
+    };
+  }
+
+  /** Gộp nhiều `Prisma.TaskWhereInput` bỏ qua điều kiện rỗng — giữ nguyên hình dạng `where` cũ khi
+   * chỉ có 1 điều kiện thực (không bọc AND thừa) để không đổi hành vi/test hiện có khi không lọc
+   * theo team/thành viên. */
+  private mergeTaskWhere(...conditions: Prisma.TaskWhereInput[]): Prisma.TaskWhereInput {
+    const nonEmpty = conditions.filter((c) => c && Object.keys(c).length > 0);
+    if (nonEmpty.length === 0) return {};
+    if (nonEmpty.length === 1) return nonEmpty[0];
+    return { AND: nonEmpty };
+  }
+
+  private async getGlobalDashboard(
+    range: { gte: Date; lt: Date } | null,
+    teamId?: string,
+    assigneeId?: string,
+  ) {
     const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const todayStart = new Date(
       now.getFullYear(),
       now.getMonth(),
       now.getDate(),
     );
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
-
-    const monthlyCompletedWhere = range
-      ? { status: "APPROVED" as const, reviewed_at: range }
-      : {
-          status: "APPROVED" as const,
-          reviewed_at: { gte: monthStart, lt: monthEnd },
-        };
+    // "Khoan sâu" theo team/thành viên cụ thể — orthogonal với bộ lọc ngày (range) và áp dụng cho
+    // MỌI số liệu trên màn Tổng quan kể cả 2 cảnh báo "live" (today_deadline/overdue), vì đây là
+    // trục lọc THEO AI chứ không phải THEO KHI NÀO.
+    const scopeWhere: Prisma.TaskWhereInput = {
+      ...(teamId ? { team_id: teamId } : {}),
+      ...(assigneeId ? { assignee_id: assigneeId } : {}),
+    };
+    // Cùng 2 lớp lọc mà Kanban áp cho 4 cột không phải "Quá hạn" (xem TasksKanbanBoard.tsx +
+    // findAll() ở q.deadline_from/to và q.exclude_overdue):
+    // 1) Task có deadline rơi vào bộ lọc ngày; task chưa có deadline thì tính theo ngày tạo thay thế.
+    // 2) Trừ task đang xử lý (chưa xong việc — khớp doneStatuses ở findAll()) đã trễ hạn — nhóm
+    //    đó chỉ còn hiện ở "Quá hạn" (live, xem todayDeadline/overdue bên dưới), không tính trùng
+    //    vào breakdown theo trạng thái nữa.
+    const notOverdueOrDone: Prisma.TaskWhereInput = {
+      OR: [
+        { status: { in: ["APPROVED", "CANCELLED"] } },
+        { deadline: null },
+        { deadline: { gte: now } },
+      ],
+    };
+    const dateWindow = this.deadlineWindow(range);
+    const tasksByStatusWhere: Prisma.TaskWhereInput = range
+      ? this.mergeTaskWhere(dateWindow, notOverdueOrDone, scopeWhere)
+      : this.mergeTaskWhere(notOverdueOrDone, scopeWhere);
 
     const [
       tasksByStatus,
       todayDeadline,
       overdue,
-      monthlyCompleted,
       totalEditors,
       approvedEditors,
       pendingApprovals,
@@ -1260,11 +1606,12 @@ export class TaskAutoTasksService {
     ] = await Promise.all([
       this.prisma.task.groupBy({
         by: ["status"],
-        where: range ? { created_at: range } : undefined,
+        where: tasksByStatusWhere,
         _count: { id: true },
       }),
       this.prisma.task.count({
         where: {
+          ...scopeWhere,
           status: { notIn: ["APPROVED", "CANCELLED"] },
           OR: [
             { deadline: { gte: todayStart, lt: todayEnd } },
@@ -1274,16 +1621,18 @@ export class TaskAutoTasksService {
       }),
       this.prisma.task.count({
         where: {
+          ...scopeWhere,
           deadline: { lt: now },
           status: { notIn: ["APPROVED", "CANCELLED"] },
         },
       }),
-      this.prisma.task.count({ where: monthlyCompletedWhere }),
       this.prisma.user.count({ where: { is_active: true } }),
       this.prisma.editorApproval.count({ where: { status: "APPROVED" } }),
       this.prisma.editorApproval.count({ where: { status: "PENDING" } }),
-      // "Số video theo tuyến" toàn hệ thống — cùng khoảng thời gian với monthly_completed.
-      this.getVideoByContentLine({ reviewed_at: monthlyCompletedWhere.reviewed_at }),
+      // "Số video theo tuyến" toàn hệ thống — cùng cách lọc ngày với breakdown trạng thái ở trên
+      // (deadline trong kỳ, task chưa có deadline thì theo ngày tạo) để khớp đúng "Đã duyệt" trong
+      // kỳ đang hiển thị, thay vì lệch theo ngày duyệt (reviewed_at) như trước.
+      this.getVideoByContentLine({ ...dateWindow, ...scopeWhere }),
     ]);
 
     const taskMap = Object.fromEntries(
@@ -1298,7 +1647,9 @@ export class TaskAutoTasksService {
       },
       today_deadline: todayDeadline,
       overdue,
-      monthly_completed: monthlyCompleted,
+      /** Task đã duyệt trong kỳ đang chọn — nay khớp 1-1 với `tasks.approved` (cùng cách lọc ngày
+       * với tab "Nhiệm vụ"/Kanban) nên không cần đếm riêng theo reviewed_at nữa. */
+      monthly_completed: taskMap.approved ?? 0,
       editors: {
         total: totalEditors,
         approved: approvedEditors,
@@ -1306,6 +1657,8 @@ export class TaskAutoTasksService {
       },
       /** Số video (task đã duyệt) trong kỳ, gộp theo tuyến nội dung A1-A5. */
       video_by_line: videoByLine,
+      // "Video/sản phẩm theo dòng sản phẩm" đã tách sang GET /task-auto/product-video-stats
+      // (getProductVideoStatsForRole) — không tính lặp lại ở đây nữa.
     };
   }
 
@@ -1313,6 +1666,9 @@ export class TaskAutoTasksService {
     leaderId: string,
     range: { gte: Date; lt: Date } | null,
     month?: string,
+    /** Tab "Thống kê theo ngày": traffic/doanh thu vẫn hiển thị theo THÁNG chứa `range`, không co
+     * về đúng khoảng ngày như các số liệu khác. Bỏ qua khi không có `range` (chế độ xem theo tháng). */
+    pinTrafficMonth = false,
   ) {
     const now = new Date();
     const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -1333,10 +1689,25 @@ export class TaskAutoTasksService {
     // mới/cũ, sản phẩm...) — ưu tiên bộ lọc ngày (`range`) do trang Task Auto truyền xuống; không có
     // thì mặc định cả tháng đang xem, nhất quán với getGlobalDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
-    // "KPI ngày" luôn tính theo NGÀY THỰC TẾ (hôm nay) — không phụ thuộc bộ lọc ngày/tháng, vì đây là
-    // chỉ tiêu/tiến độ trong ngày, không có ý nghĩa khi xem lại một kỳ đã qua.
+    // "KPI ngày" mặc định tính theo NGÀY THỰC TẾ (hôm nay). Ngoại lệ: tab "Thống kê theo ngày" chọn
+    // đúng 1 ngày (range gói gọn 24h) → mọi chỉ số "ngày" (KPI ngày, task giao/duyệt trong ngày) quy
+    // về chính ngày đó để xem lại lịch sử; chọn nhiều ngày thì FE tự ẩn cụm KPI ngày.
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const isSingleDay =
+      !!range && range.lt.getTime() - range.gte.getTime() === 86_400_000;
+    const dayStart = isSingleDay ? range!.gte : todayStart;
+    const dayEnd = isSingleDay ? range!.lt : todayEnd;
+    const dayKpiDateStr = vietnamDateString(isSingleDay ? range!.gte : now);
+    // Traffic/doanh thu là "điểm cuối kỳ" của báo cáo tay — tab "Theo ngày" giữ theo THÁNG chứa ngày
+    // đang xem (pinTrafficMonth), không co về đúng 1 ngày như video/content.
+    const trafficRange =
+      pinTrafficMonth && range
+        ? {
+            gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
+            lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
+          }
+        : periodRange;
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
     // lead cả "Scale Data", "Team K1", "MEDIA") — findFirst sẽ âm thầm chỉ trả 1 team, làm mất dữ
@@ -1347,7 +1718,7 @@ export class TaskAutoTasksService {
         members: {
           where: { user: { is_active: true } },
           include: {
-            user: { select: { id: true, full_name: true, email: true } },
+            user: { select: { id: true, full_name: true, email: true, roles: true } },
           },
         },
       },
@@ -1362,6 +1733,7 @@ export class TaskAutoTasksService {
         kpi: null,
         video_by_line: [],
         product_by_category: [],
+        content_by_classification: [],
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1388,14 +1760,18 @@ export class TaskAutoTasksService {
       memberRevenueMonth,
       videoByLine,
       manualDailyKpis,
-      contentFreshnessByUser,
+      contentByClassification,
       productByCategory,
+      contentCreatorStats,
+      approvedEditors,
     ] = await Promise.all([
+      // Phân bố task theo trạng thái: cùng cửa sổ deadline (null → created_at) với mọi số liệu kỳ
+      // khác — không lọc khi không có bộ lọc ngày (giữ hành vi "toàn thời gian" như cũ).
       this.prisma.task.groupBy({
         by: ["status"],
         where: {
           team_id: { in: teamIds },
-          ...(range ? { created_at: range } : {}),
+          ...this.deadlineWindow(range),
         },
         _count: { id: true },
       }),
@@ -1404,18 +1780,29 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          ...(range ? { created_at: range } : {}),
+          ...this.deadlineWindow(range),
         },
         _count: { id: true },
       }),
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: currentMonth },
+        // allocations (type CONTENT_LINE) — để gộp "mục tiêu theo tuyến nội dung" của cả team cho
+        // biểu đồ "Video theo tuyến nội dung" hiển thị dạng đã-duyệt / mục-tiêu (vd 10/30).
+        include: {
+          allocations: {
+            where: { type: "CONTENT_LINE" },
+            select: { quantity: true, content_line: { select: { name: true } } },
+          },
+        },
       }),
+      // "Đã hoàn thành trong kỳ" của cả team = task APPROVED có deadline rơi vào kỳ (chưa đặt deadline
+      // thì theo created_at) — KHÔNG đếm theo reviewed_at nữa để khớp mục tiêu (vốn đếm theo deadline)
+      // và khớp tab "Nhiệm vụ".
       this.prisma.task.count({
         where: {
           team_id: { in: teamIds },
           status: "APPROVED",
-          reviewed_at: periodRange,
+          ...this.deadlineWindow(periodRange),
         },
       }),
       this.prisma.task.groupBy({
@@ -1423,30 +1810,30 @@ export class TaskAutoTasksService {
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: periodRange,
+          ...this.deadlineWindow(periodRange),
         },
         _count: { id: true },
       }),
-      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào hôm nay; task chưa có deadline thì
-      // tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal Dashboard.
+      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào NGÀY ĐANG XEM (mặc định hôm nay); task
+      // chưa có deadline thì tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal.
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          OR: [
-            { deadline: { gte: todayStart, lt: todayEnd } },
-            { deadline: null, created_at: { gte: todayStart, lt: todayEnd } },
-          ],
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
+      // "KPI ngày — đã hoàn thành": cùng cửa sổ deadline với mục tiêu ngày ở trên, chỉ thêm APPROVED
+      // (trước đây đếm theo reviewed_at nên lệch: task deadline hôm nay mà duyệt hôm sau không được
+      // tính, task deadline hôm qua duyệt hôm nay lại tính nhầm).
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: todayStart, lt: todayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
@@ -1458,7 +1845,7 @@ export class TaskAutoTasksService {
         ? this.prisma.trafficReport.findMany({
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: periodRange,
+              date: trafficRange,
             },
             select: { email: true, date: true, total_traffic: true },
           })
@@ -1469,45 +1856,62 @@ export class TaskAutoTasksService {
             by: ["email"],
             where: {
               email: { in: memberEmails, mode: "insensitive" as any },
-              date: periodRange,
+              date: trafficRange,
             },
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
-      // "TEAM - Số video theo tuyến": số task đã duyệt trong kỳ của cả team, gộp theo tuyến
-      // nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id, không gộp task
-      // không thuộc tuyến nào.
+      // "TEAM - Số video theo tuyến": task APPROVED có deadline rơi vào kỳ (null → created_at) của cả
+      // team, gộp theo tuyến nội dung (ContentLine, vd A1-A5) — chỉ tính task có gắn content_line_id,
+      // không gộp task không thuộc tuyến nào. Đếm theo deadline (không phải reviewed_at) để khớp KPI.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
-        reviewed_at: periodRange,
+        ...this.deadlineWindow(periodRange),
       }),
-      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      // KPI ngày set tay (EditorDailyKpi) cho NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(vietnamDateString(now)),
+          date: dailyKpiDate(dayKpiDateStr),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
       }),
-      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng kỳ đang xem (mới),
-      // còn lại tính là cũ — khoá theo `periodRange` (bộ lọc ngày nếu có, không thì cả tháng đang xem).
-      this.getContentFreshnessByAssignee(
-        {
-          team_id: { in: teamIds },
-          assignee_id: { in: memberIds },
-          status: { notIn: ["CANCELLED"] },
-          created_at: periodRange,
-        },
-        periodRange,
-      ),
-      // "TEAM - SẢN PHẨM": số video đã duyệt trong kỳ của cả team, gộp theo dòng sản phẩm
-      // (GMV/Traffic/Profit).
+      // "Content theo phân loại": gộp task có deadline rơi vào kỳ (null → created_at) theo
+      // ContentClassification của content gắn vào task (join động — phản ánh phân loại hiện tại của
+      // content). Đếm theo deadline như mọi số liệu kỳ khác. Thay biểu đồ "content mới/cũ" cũ.
+      this.getContentByClassification({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        ...this.deadlineWindow(periodRange),
+      }),
+      // "TEAM - SẢN PHẨM": task APPROVED có deadline rơi vào kỳ (null → created_at) của cả team, gộp
+      // theo dòng sản phẩm (GMV/Traffic/Profit). Breakdown theo sản phẩm riêng biệt đã tách sang
+      // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
         status: "APPROVED",
-        reviewed_at: periodRange,
+        ...this.deadlineWindow(periodRange),
+      }),
+      // Số liệu content creator (target tháng, sưu tầm/tự nghĩ trong kỳ, KPI ngày) — song song hoàn
+      // toàn với editorKpis/manualDailyKpis phía trên, chỉ áp dụng cho member có is_content_creator=true.
+      this.getContentCreatorStats({
+        teamIds,
+        memberIds,
+        periodRange,
+        todayStart: dayStart,
+        todayEnd: dayEnd,
+        dailyDateStr: dayKpiDateStr,
+        months: [currentMonth],
+      }),
+      // Ai đã được duyệt làm editor (EditorApproval, toàn cục theo user — không theo team) — dùng
+      // để loại thành viên chỉ mang vai trò quản lý (LEADER/ADMIN/MANAGER) khỏi danh sách card, xem
+      // isDashboardVisibleMember().
+      this.prisma.editorApproval.findMany({
+        where: { user_id: { in: memberIds }, status: "APPROVED" },
+        select: { user_id: true },
       }),
     ]);
 
@@ -1543,10 +1947,22 @@ export class TaskAutoTasksService {
       ]),
     );
 
+    // Chỉ hiện card cho thành viên thực sự sản xuất (content creator hoặc editor đã được duyệt) —
+    // loại người chỉ mang vai trò quản lý (LEADER/ADMIN/MANAGER) nhưng chưa từng được gán editor/
+    // content creator, dù họ luôn có mặt trong TeamMember của team mình lead (xem invariant ở
+    // teams.service.ts create()/update()).
+    const approvedEditorIds = new Set(approvedEditors.map((a) => a.user_id));
+    const visibleMemberRows = memberRows.filter((m) =>
+      this.isDashboardVisibleMember(m.is_content_creator, approvedEditorIds.has(m.user_id), m.user?.roles ?? []),
+    );
+
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
-    const members = memberRows.map((m) => {
+    const members = visibleMemberRows.map((m) => {
       const kpi = kpiByUser[m.user_id];
       const email = m.user?.email ?? "";
+      const isContentCreator = m.is_content_creator;
+      const ccCollected = contentCreatorStats.collectedMonthByUser[m.user_id] ?? 0;
+      const ccOriginal = contentCreatorStats.originalMonthByUser[m.user_id] ?? 0;
       return {
         user_id: m.user_id,
         full_name: m.user?.full_name ?? "",
@@ -1555,28 +1971,37 @@ export class TaskAutoTasksService {
         in_progress: memberStats[m.user_id]?.["in_progress"] ?? 0,
         submitted: memberStats[m.user_id]?.["submitted"] ?? 0,
         approved: memberStats[m.user_id]?.["approved"] ?? 0,
-        kpi_completed: kpiApprovedByUser[m.user_id] ?? 0,
-        kpi_target: kpi?.total_target ?? 0,
+        /** Content creator: tổng content sưu tầm + tự nghĩ trong kỳ; editor: số task đã duyệt
+         * trong kỳ (như cũ). */
+        kpi_completed: isContentCreator ? ccCollected + ccOriginal : kpiApprovedByUser[m.user_id] ?? 0,
+        /** Content creator: ContentCreatorKpi.content_target; editor: EditorKpi.total_target. */
+        kpi_target: isContentCreator
+          ? contentCreatorStats.targetByUser[m.user_id] ?? 0
+          : kpi?.total_target ?? 0,
         kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
         kpi_product_planned: kpi?.product_planned ?? 0,
-        /** KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task có
-         * deadline hôm nay (hoặc tạo hôm nay nếu chưa có deadline) như cũ. */
-        kpi_day_target:
-          manualDayTargetByUser[m.user_id] ??
-          assignedTodayByUser[m.user_id] ??
-          0,
-        /** Số task đã duyệt hôm nay — "hiện tại" của KPI ngày. */
-        kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
+        /** KPI ngày: content creator lấy từ ContentCreatorDailyKpi (không có fallback theo task vì
+         * content creator không được giao task theo nghĩa video); editor ưu tiên số set tay
+         * (EditorDailyKpi), chưa set → fallback số task có deadline hôm nay (hoặc tạo hôm nay nếu
+         * chưa có deadline) như cũ. */
+        kpi_day_target: isContentCreator
+          ? contentCreatorStats.dayTargetByUser[m.user_id] ?? 0
+          : manualDayTargetByUser[m.user_id] ?? assignedTodayByUser[m.user_id] ?? 0,
+        /** Content creator: số content thêm vào kho hôm nay; editor: số task đã duyệt hôm nay. */
+        kpi_day_completed: isContentCreator
+          ? contentCreatorStats.dayCompletedByUser[m.user_id] ?? 0
+          : approvedTodayByUser[m.user_id] ?? 0,
         /** Traffic tự báo cáo — lấy đúng ngày báo cáo gần nhất trong tháng (không cộng dồn qua các
          * ngày, vì traffic là điểm cuối kỳ), chưa có KPI/mục tiêu. */
         traffic_month: trafficMonthByEmail[email.toLowerCase().trim()] ?? 0,
         /** Tổng doanh thu tự báo cáo hằng ngày, cộng dồn trong tháng hiện tại — chưa có KPI/mục tiêu. */
         revenue_month: revenueMonthByEmail[email.toLowerCase().trim()] ?? 0,
-        /** Số task trong kỳ dùng content thêm vào kho ĐÚNG NGÀY task được tạo. */
-        content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
-        /** Số task trong kỳ dùng content đã có từ TRƯỚC ngày task được tạo (tiêu thụ tồn kho). */
-        content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
+        is_content_creator: isContentCreator,
+        content_collected_month: ccCollected,
+        content_original_month: ccOriginal,
+        /** Số content của người này đã được leader/admin/manager duyệt vào kho team trong kỳ. */
+        content_approved_month: contentCreatorStats.approvedMonthByUser[m.user_id] ?? 0,
       };
     });
 
@@ -1591,12 +2016,28 @@ export class TaskAutoTasksService {
       0,
     );
 
+    // Mục tiêu KPI theo tuyến nội dung của cả team = tổng EditorKpiAllocation.quantity (type
+    // CONTENT_LINE) tháng đang xem của mọi thành viên, gộp theo tên tuyến (A1-A5) — ghép vào từng cột
+    // biểu đồ để hiển thị đã-duyệt / mục-tiêu.
+    const lineTargetByName: Record<string, number> = {};
+    for (const k of editorKpis) {
+      for (const a of k.allocations ?? []) {
+        const name = a.content_line?.name;
+        if (!name) continue;
+        lineTargetByName[name] = (lineTargetByName[name] ?? 0) + a.quantity;
+      }
+    }
+    const videoByLineWithTarget = videoByLine.map((v) => ({
+      ...v,
+      target: lineTargetByName[v.line] ?? 0,
+    }));
+
     return {
       scope: "team" as const,
       team: {
         id: teamsLed[0].id,
         name: teamsLed.map((t) => t.name).join(", "),
-        member_count: memberRows.length,
+        member_count: visibleMemberRows.length,
       },
       tasks: {
         total: Object.values(taskMap).reduce((s, v) => s + v, 0),
@@ -1611,11 +2052,135 @@ export class TaskAutoTasksService {
         content_new: kpiContentNew,
         product_planned: kpiProductPlanned,
       },
-      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo tuyến nội dung A1-A5. */
-      video_by_line: videoByLine,
-      /** Số video (task đã duyệt) trong tháng của cả team, gộp theo dòng sản phẩm (GMV/Traffic/Profit). */
+      /** Số video (task APPROVED, deadline trong kỳ) của cả team theo tuyến A1-A5, kèm `target` = tổng
+       * mục tiêu KPI theo tuyến của mọi thành viên (0 = chưa phân bổ). */
+      video_by_line: videoByLineWithTarget,
+      /** Số video (task APPROVED, deadline trong kỳ) của cả team, gộp theo dòng sản phẩm (GMV/Traffic/Profit). */
       product_by_category: productByCategory,
+      /** Số task có deadline trong kỳ của cả team, gộp theo phân loại content (ContentClassification). */
+      content_by_classification: contentByClassification,
     };
+  }
+
+  /**
+   * Số liệu content creator — song song hoàn toàn với logic editor (EditorKpi/EditorDailyKpi/task
+   * APPROVED) nhưng đi theo đúng model của content creator: target tháng lấy từ
+   * ContentCreatorKpi.content_target, "đã làm" tính từ TeamContent thật sự thêm vào kho trong kỳ
+   * (gộp theo `origin`: COLLECTED = sưu tầm, SELF_CREATED = tự nghĩ), KPI ngày lấy từ
+   * ContentCreatorDailyKpi (không có fallback theo task như editor — content creator không được
+   * giao task theo nghĩa video). "Đã duyệt" đếm TeamPushRequest type CONTENT status APPROVED trong
+   * kỳ — trước đây hiện riêng ở TeamStatsTab (trang Đội nhóm), nay gộp vào đây cho leader/admin xem
+   * cùng chỗ với sưu tầm/tự nghĩ.
+   */
+  private async getContentCreatorStats(params: {
+    teamIds: string[];
+    memberIds: string[];
+    periodRange: { gte: Date; lt: Date };
+    todayStart: Date;
+    todayEnd: Date;
+    /** Ngày (YYYY-MM-DD giờ VN) để tra ContentCreatorDailyKpi — mặc định hôm nay; tab "Theo ngày"
+     * truyền đúng ngày đang xem. */
+    dailyDateStr?: string;
+    months: string[];
+  }) {
+    const result = {
+      targetByUser: {} as Record<string, number>,
+      collectedMonthByUser: {} as Record<string, number>,
+      originalMonthByUser: {} as Record<string, number>,
+      dayTargetByUser: {} as Record<string, number>,
+      dayCompletedByUser: {} as Record<string, number>,
+      approvedMonthByUser: {} as Record<string, number>,
+    };
+    const { teamIds, memberIds, periodRange, todayStart, todayEnd, dailyDateStr, months } =
+      params;
+    if (memberIds.length === 0) return result;
+
+    const [kpis, contentByOrigin, dailyKpis, contentToday, approvedPushes] = await Promise.all([
+      this.prisma.contentCreatorKpi.findMany({
+        where: { user_id: { in: memberIds }, month: { in: months } },
+      }),
+      this.prisma.teamContent.groupBy({
+        by: ["added_by_id", "origin"],
+        where: { added_by_id: { in: memberIds }, team_id: { in: teamIds }, added_at: periodRange },
+        _count: { id: true },
+      }),
+      this.prisma.contentCreatorDailyKpi.findMany({
+        where: {
+          user_id: { in: memberIds },
+          team_id: { in: teamIds },
+          date: dailyKpiDate(dailyDateStr ?? vietnamDateString(new Date())),
+          target: { gt: 0 },
+        },
+        select: { user_id: true, target: true },
+      }),
+      this.prisma.teamContent.groupBy({
+        by: ["added_by_id"],
+        where: {
+          added_by_id: { in: memberIds },
+          team_id: { in: teamIds },
+          added_at: { gte: todayStart, lt: todayEnd },
+        },
+        _count: { id: true },
+      }),
+      // Số content đã được leader/admin/manager duyệt vào kho team trong kỳ (TeamPushRequest type
+      // CONTENT, status APPROVED, khoá theo reviewed_at) — trước đây hiện riêng ở TeamStatsTab (trang
+      // Đội nhóm), nay gộp vào card content creator cho gọn, cùng chỗ với sưu tầm/tự nghĩ.
+      this.prisma.teamPushRequest.groupBy({
+        by: ["requested_by_id"],
+        where: {
+          requested_by_id: { in: memberIds },
+          team_id: { in: teamIds },
+          type: "CONTENT",
+          status: "APPROVED",
+          reviewed_at: periodRange,
+        },
+        _count: { id: true },
+      }),
+    ]);
+
+    for (const k of kpis) {
+      result.targetByUser[k.user_id] = (result.targetByUser[k.user_id] ?? 0) + k.content_target;
+    }
+    for (const g of contentByOrigin) {
+      if (g.origin === "COLLECTED") {
+        result.collectedMonthByUser[g.added_by_id] =
+          (result.collectedMonthByUser[g.added_by_id] ?? 0) + g._count.id;
+      } else if (g.origin === "SELF_CREATED") {
+        result.originalMonthByUser[g.added_by_id] =
+          (result.originalMonthByUser[g.added_by_id] ?? 0) + g._count.id;
+      }
+    }
+    for (const dk of dailyKpis) {
+      result.dayTargetByUser[dk.user_id] = (result.dayTargetByUser[dk.user_id] ?? 0) + dk.target;
+    }
+    for (const g of contentToday) {
+      result.dayCompletedByUser[g.added_by_id] = g._count.id;
+    }
+    for (const g of approvedPushes) {
+      result.approvedMonthByUser[g.requested_by_id] = g._count.id;
+    }
+
+    return result;
+  }
+
+  /**
+   * Dashboard leader/admin chỉ thống kê thành viên THỰC SỰ sản xuất (editor/content creator) —
+   * không phải mọi TeamMember. Leader (và đôi khi ADMIN/MANAGER) luôn có mặt trong TeamMember của
+   * chính team họ quản lý (invariant kỹ thuật ở teams.service.ts create()/update(), không phải quy
+   * ước nghiệp vụ), nên nếu không lọc thì tài khoản leader thuần quản lý sẽ hiện card KPI rỗng.
+   * Quy tắc: hiện nếu là content creator, HOẶC đã được duyệt editor (EditorApproval APPROVED —
+   * global theo user, không theo team), HOẶC không mang role quản lý nào (LEADER/ADMIN/MANAGER —
+   * member thường mặc định vẫn được coi là editor như hành vi cũ, dù chưa qua duyệt). Chỉ ẩn đúng
+   * trường hợp: role thuần quản lý VÀ chưa từng được gán editor/content creator.
+   */
+  private isDashboardVisibleMember(
+    isContentCreator: boolean,
+    isApprovedEditor: boolean,
+    roles: string[],
+  ): boolean {
+    if (isContentCreator || isApprovedEditor) return true;
+    const isManagementOnly = roles.some((r) => r === "LEADER" || r === "ADMIN" || r === "MANAGER");
+    return !isManagementOnly;
   }
 
   /** "YYYY-MM" của mọi tháng bị [start, end] chạm tới — dùng để gộp EditorKpi (chỉ lưu theo THÁNG
@@ -1660,23 +2225,19 @@ export class TaskAutoTasksService {
   }
 
   /**
-   * "Content mới" vs "Content cũ" trong 1 kỳ lọc (`period`): với mỗi task trong `where` (đã bị khoá
-   * created_at nằm trong `period` ở call site — "gắn vào task trong khoảng thời gian lọc"), tra ngày
-   * thêm vào kho của content đã dùng (content_id → Content.created_at, editor_content_id →
-   * EditorContent.added_at, team_content_id → TeamContent.added_at — mỗi task chỉ có đúng 1 trong 3
-   * field này được set). Content đó được thêm vào kho ĐÚNG TRONG `period` → "content mới" (task dùng
-   * content vừa bổ sung trong kỳ); còn lại — thêm từ trước kỳ, hoặc task không gắn content nào — đều
-   * tính là "content cũ" (số task còn lại không gắn với content mới). Gộp theo assignee_id — task
-   * không có assignee bị bỏ qua (không tính vào mẫu số).
+   * "Content theo phân loại": với mỗi task khớp `where` (call site khoá theo team + deadline trong
+   * kỳ, null → created_at + chưa huỷ), lấy ContentClassification HIỆN TẠI của content gắn vào task (content_id →
+   * Content, editor_content_id → EditorContent, team_content_id → TeamContent — mỗi task chỉ có đúng
+   * 1 trong 3 field được set) rồi đếm số task theo tên phân loại. Task có content chưa gắn phân loại
+   * — hoặc không gắn content nào / content đã bị xoá — dồn vào nhóm "Chưa phân loại". Join động lúc
+   * query nên số liệu phản ánh phân loại tại thời điểm xem, không "chụp" lúc tạo task.
    */
-  private async getContentFreshnessByAssignee(
+  private async getContentByClassification(
     where: Prisma.TaskWhereInput,
-    period: { gte: Date; lt: Date },
-  ): Promise<Record<string, { new: number; old: number }>> {
+  ): Promise<{ classification: string; count: number }[]> {
     const rows = await this.prisma.task.findMany({
       where,
       select: {
-        assignee_id: true,
         content_id: true,
         editor_content_id: true,
         team_content_id: true,
@@ -1697,44 +2258,52 @@ export class TaskAutoTasksService {
       contentIds.length > 0
         ? this.prisma.content.findMany({
             where: { id: { in: contentIds } },
-            select: { id: true, created_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
       editorContentIds.length > 0
         ? this.prisma.editorContent.findMany({
             where: { id: { in: editorContentIds } },
-            select: { id: true, added_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
       teamContentIds.length > 0
         ? this.prisma.teamContent.findMany({
             where: { id: { in: teamContentIds } },
-            select: { id: true, added_at: true },
+            select: { id: true, classification: { select: { name: true } } },
           })
         : Promise.resolve([]),
     ]);
 
-    const contentDateById = new Map(contents.map((c) => [c.id, c.created_at]));
-    const editorContentDateById = new Map(editorContents.map((c) => [c.id, c.added_at]));
-    const teamContentDateById = new Map(teamContents.map((c) => [c.id, c.added_at]));
+    const nameByContentId = new Map(
+      contents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
+    const nameByEditorContentId = new Map(
+      editorContents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
+    const nameByTeamContentId = new Map(
+      teamContents.map((c) => [c.id, c.classification?.name ?? null]),
+    );
 
-    const result: Record<string, { new: number; old: number }> = {};
+    const UNCLASSIFIED = "Chưa phân loại";
+    const countByName: Record<string, number> = {};
     for (const r of rows) {
-      if (!r.assignee_id) continue;
-      const contentAddedAt =
-        (r.content_id && contentDateById.get(r.content_id)) ||
-        (r.editor_content_id && editorContentDateById.get(r.editor_content_id)) ||
-        (r.team_content_id && teamContentDateById.get(r.team_content_id)) ||
+      const name =
+        (r.content_id ? nameByContentId.get(r.content_id) : null) ??
+        (r.editor_content_id ? nameByEditorContentId.get(r.editor_content_id) : null) ??
+        (r.team_content_id ? nameByTeamContentId.get(r.team_content_id) : null) ??
         null;
-      const bucket = (result[r.assignee_id] ??= { new: 0, old: 0 });
-      const isNew = !!contentAddedAt && contentAddedAt >= period.gte && contentAddedAt < period.lt;
-      if (isNew) {
-        bucket.new++;
-      } else {
-        bucket.old++;
-      }
+      const key = name ?? UNCLASSIFIED;
+      countByName[key] = (countByName[key] ?? 0) + 1;
     }
-    return result;
+
+    return Object.entries(countByName)
+      .map(([classification, count]) => ({ classification, count }))
+      .sort((a, b) => {
+        if (a.classification === UNCLASSIFIED) return 1;
+        if (b.classification === UNCLASSIFIED) return -1;
+        return b.count - a.count || a.classification.localeCompare(b.classification, "vi");
+      });
   }
 
   /**
@@ -1766,17 +2335,33 @@ export class TaskAutoTasksService {
   }
 
   /**
-   * "SẢN PHẨM" (GMV/Traffic/Profit): với mỗi task APPROVED trong `where`, xác định ProductLine của
-   * nó — ưu tiên Task.product_line_id (denormalized), fallback sang product_id/editor_product_id/
-   * team_product_id → product_line_id của Product/EditorProduct/TeamProduct tương ứng (mỗi task chỉ
-   * có tối đa 1 trong 3 field này được set). Nhãn nhóm = ProductLine.video_category nếu có set, nếu
-   * không thì fallback về chính ProductLine.name viết hoa (thực tế hiện tại các team đặt tên dòng SP
-   * thẳng là "GMV"/"Traffic"/"Profit" thay vì set field video_category riêng). Task không xác định
-   * được dòng sản phẩm nào bị bỏ qua (không tính vào mẫu số).
+   * "SẢN PHẨM" (GMV/Traffic/Profit): với mỗi task trong `where` (thường lọc thêm status: APPROVED),
+   * xác định ProductLine của nó — ưu tiên Task.product_line_id (denormalized), fallback sang
+   * product_id/editor_product_id/team_product_id → product_line_id của Product/EditorProduct/
+   * TeamProduct tương ứng (mỗi task chỉ có tối đa 1 trong 3 field này được set). Nhãn nhóm =
+   * ProductLine.video_category nếu có set, nếu không thì fallback về chính ProductLine.name viết hoa
+   * (thực tế hiện tại các team đặt tên dòng SP thẳng là "GMV"/"Traffic"/"Profit" thay vì set field
+   * video_category riêng). Task không xác định được dòng sản phẩm nào bị bỏ qua khỏi breakdown theo
+   * dòng (không tính vào mẫu số `video_by_line`/`products_by_line`).
+   *
+   * Đồng thời tính "sản phẩm được làm video": số SẢN PHẨM RIÊNG BIỆT (distinct) đứng sau các task
+   * trên — định danh 1 sản phẩm = giá trị của field product_id/editor_product_id/team_product_id có
+   * mặt trên task đó (tối đa 1 trong 3 field được set/task, giống hệt quy ước xác định dòng sản phẩm
+   * ở trên) — khác với `video_by_line` vốn đếm THEO TASK nên 1 sản phẩm được làm lại nhiều video sẽ
+   * bị đếm nhiều lần. Task chỉ có product_line_id (không gắn sản phẩm cụ thể nào) không tính vào đây.
+   *
+   * `products`: breakdown THEO TỪNG SẢN PHẨM riêng lẻ (tên/sku/dòng/số video) — tên hiển thị resolve
+   * qua đúng chuỗi fallback đã dùng ở FE (CreateTaskModal.tsx/TasksTable.tsx/TeamProductsTab.tsx):
+   * Product → source_team_product → source_team_product.source_editor_product, hoặc
+   * TeamProduct → source_editor_product — vì Product/TeamProduct có thể có name/sku NULL khi dữ liệu
+   * thật nằm ở bản ghi nguồn (được push/kéo từ kho khác).
    */
-  private async getApprovedProductLineBreakdown(
-    where: Prisma.TaskWhereInput,
-  ): Promise<{ category: string; count: number }[]> {
+  private async getProductVideoStats(where: Prisma.TaskWhereInput): Promise<{
+    video_by_line: { category: string; count: number }[];
+    products_total: number;
+    products_by_line: { category: string; count: number }[];
+    products: { id: string; name: string; sku: string | null; category: string | null; video_count: number }[];
+  }> {
     const rows = await this.prisma.task.findMany({
       where,
       select: {
@@ -1801,19 +2386,37 @@ export class TaskAutoTasksService {
       productIds.length > 0
         ? this.prisma.product.findMany({
             where: { id: { in: productIds } },
-            select: { id: true, product_line_id: true },
+            select: {
+              id: true,
+              product_line_id: true,
+              name: true,
+              sku: true,
+              source_team_product: {
+                select: {
+                  name: true,
+                  sku: true,
+                  source_editor_product: { select: { name: true, sku: true } },
+                },
+              },
+            },
           })
         : Promise.resolve([]),
       editorProductIds.length > 0
         ? this.prisma.editorProduct.findMany({
             where: { id: { in: editorProductIds } },
-            select: { id: true, product_line_id: true },
+            select: { id: true, product_line_id: true, name: true, sku: true },
           })
         : Promise.resolve([]),
       teamProductIds.length > 0
         ? this.prisma.teamProduct.findMany({
             where: { id: { in: teamProductIds } },
-            select: { id: true, product_line_id: true },
+            select: {
+              id: true,
+              product_line_id: true,
+              name: true,
+              sku: true,
+              source_editor_product: { select: { name: true, sku: true } },
+            },
           })
         : Promise.resolve([]),
       this.prisma.productLine.findMany({ select: { id: true, name: true, video_category: true } }),
@@ -1828,7 +2431,16 @@ export class TaskAutoTasksService {
       productLines.map((l) => [l.id, (l.video_category || l.name || "").toUpperCase()]),
     );
 
-    const countByCategory: Record<string, number> = {};
+    const productById = new Map(products.map((p) => [p.id, p]));
+    const editorProductById = new Map(editorProducts.map((p) => [p.id, p]));
+    const teamProductById = new Map(teamProducts.map((p) => [p.id, p]));
+
+    const videoCountByCategory: Record<string, number> = {};
+    const distinctProductKeys = new Set<string>();
+    const distinctByCategory = new Map<string, Set<string>>();
+    const videoCountByProductKey = new Map<string, number>();
+    const categoryByProductKey = new Map<string, string | null>();
+
     for (const r of rows) {
       const lineId =
         r.product_line_id ??
@@ -1836,13 +2448,72 @@ export class TaskAutoTasksService {
         (r.editor_product_id ? productLineIdByEditorProductId.get(r.editor_product_id) : null) ??
         (r.team_product_id ? productLineIdByTeamProductId.get(r.team_product_id) : null) ??
         null;
-      if (!lineId) continue;
-      const category = categoryByLineId.get(lineId);
-      if (!category) continue;
-      countByCategory[category] = (countByCategory[category] ?? 0) + 1;
+      const category = lineId ? categoryByLineId.get(lineId) : undefined;
+      if (category) {
+        videoCountByCategory[category] = (videoCountByCategory[category] ?? 0) + 1;
+      }
+
+      const productKey = r.product_id ?? r.editor_product_id ?? r.team_product_id ?? null;
+      if (productKey) {
+        distinctProductKeys.add(productKey);
+        videoCountByProductKey.set(productKey, (videoCountByProductKey.get(productKey) ?? 0) + 1);
+        categoryByProductKey.set(productKey, category ?? null);
+        if (category) {
+          if (!distinctByCategory.has(category)) distinctByCategory.set(category, new Set());
+          distinctByCategory.get(category)!.add(productKey);
+        }
+      }
     }
 
-    return Object.entries(countByCategory).map(([category, count]) => ({ category, count }));
+    const productsList = [...videoCountByProductKey.entries()].map(([key, video_count]) => {
+      const p = productById.get(key);
+      const ep = editorProductById.get(key);
+      const tp = teamProductById.get(key);
+      const name =
+        p?.name ??
+        p?.source_team_product?.name ??
+        p?.source_team_product?.source_editor_product?.name ??
+        ep?.name ??
+        tp?.name ??
+        tp?.source_editor_product?.name ??
+        null;
+      const sku =
+        p?.sku ??
+        p?.source_team_product?.sku ??
+        p?.source_team_product?.source_editor_product?.sku ??
+        ep?.sku ??
+        tp?.sku ??
+        tp?.source_editor_product?.sku ??
+        null;
+      return {
+        id: key,
+        name: name ?? "(Chưa đặt tên)",
+        sku,
+        category: categoryByProductKey.get(key) ?? null,
+        video_count,
+      };
+    }).sort((a, b) => b.video_count - a.video_count || a.name.localeCompare(b.name));
+
+    return {
+      video_by_line: Object.entries(videoCountByCategory).map(([category, count]) => ({
+        category,
+        count,
+      })),
+      products_total: distinctProductKeys.size,
+      products_by_line: [...distinctByCategory.entries()].map(([category, set]) => ({
+        category,
+        count: set.size,
+      })),
+      products: productsList,
+    };
+  }
+
+  /** Giữ nguyên tên/behaviour cho các call site cũ (getLeaderDashboard, getTeamReport) — chỉ trả phần
+   * "video theo dòng sản phẩm" của getProductVideoStats(). */
+  private async getApprovedProductLineBreakdown(
+    where: Prisma.TaskWhereInput,
+  ): Promise<{ category: string; count: number }[]> {
+    return (await this.getProductVideoStats(where)).video_by_line;
   }
 
   /**
@@ -1852,16 +2523,36 @@ export class TaskAutoTasksService {
    * "KPI ngày" vẫn luôn tính theo NGÀY THỰC TẾ (hôm nay), không phụ thuộc khoảng ngày đã chọn.
    * `team` khớp theo Team.name (unique) — cùng quy ước với bộ lọc team hiện có ở AdminOverviewFiltersContext (FE).
    */
-  async getTeamReport(team?: string, dateFrom?: string, dateTo?: string) {
+  async getTeamReport(
+    team?: string,
+    dateFrom?: string,
+    dateTo?: string,
+    /** Tab "Thống kê theo ngày": traffic/doanh thu vẫn hiển thị theo THÁNG chứa khoảng ngày. */
+    pinTrafficMonth = false,
+  ) {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
-    const range = this.parseDateRange(dateFrom, dateTo) ?? {
+    const explicitRange = this.parseDateRange(dateFrom, dateTo);
+    const range = explicitRange ?? {
       gte: new Date(now.getFullYear(), now.getMonth(), 1),
       lt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
     };
     const monthsTouched = this.monthsBetween(range.gte, new Date(range.lt.getTime() - 1));
+    // Tab "Theo ngày" chọn đúng 1 ngày (24h) → cụm "KPI ngày"/task giao-duyệt trong ngày quy về
+    // chính ngày đó; nhiều ngày thì FE tự ẩn. Traffic/doanh thu giữ theo THÁNG khi pinTrafficMonth.
+    const isSingleDay =
+      !!explicitRange && explicitRange.lt.getTime() - explicitRange.gte.getTime() === 86_400_000;
+    const dayStart = isSingleDay ? explicitRange!.gte : todayStart;
+    const dayEnd = isSingleDay ? explicitRange!.lt : todayEnd;
+    const dayKpiDateStr = vietnamDateString(isSingleDay ? explicitRange!.gte : now);
+    const trafficRange = pinTrafficMonth
+      ? {
+          gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
+          lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
+        }
+      : range;
 
     const isAllTeams = !team || team === "all";
 
@@ -1871,7 +2562,7 @@ export class TaskAutoTasksService {
         leader: { select: { full_name: true } },
         members: {
           where: { user: { is_active: true } },
-          include: { user: { select: { id: true, full_name: true, email: true } } },
+          include: { user: { select: { id: true, full_name: true, email: true, roles: true } } },
         },
       },
     });
@@ -1883,13 +2574,21 @@ export class TaskAutoTasksService {
         rows: [],
         video_by_line: [],
         product_by_category: [],
+        content_by_classification: [],
       };
     }
 
     const teamIds = teams.map((t) => t.id);
     const memberByUserId = new Map<
       string,
-      { user_id: string; team_id: string; full_name: string; email: string }
+      {
+        user_id: string;
+        team_id: string;
+        full_name: string;
+        email: string;
+        is_content_creator: boolean;
+        roles: string[];
+      }
     >();
     for (const t of teams) {
       for (const m of t.members) {
@@ -1898,6 +2597,8 @@ export class TaskAutoTasksService {
           team_id: t.id,
           full_name: m.user?.full_name ?? "",
           email: (m.user?.email ?? "").toLowerCase().trim(),
+          is_content_creator: m.is_content_creator,
+          roles: m.user?.roles ?? [],
         });
       }
     }
@@ -1914,80 +2615,106 @@ export class TaskAutoTasksService {
       memberRevenueInRange,
       videoByLine,
       manualDailyKpis,
-      contentFreshnessByUser,
+      contentByClassification,
       productByCategory,
+      contentCreatorStats,
+      approvedEditors,
     ] = await Promise.all([
       this.prisma.editorKpi.findMany({
         where: { user_id: { in: memberIds }, month: { in: monthsTouched } },
       }),
+      // "Đã hoàn thành trong kỳ" theo từng member = task APPROVED có deadline rơi vào kỳ (null →
+      // created_at), KHÔNG đếm theo reviewed_at để khớp mục tiêu (đếm theo deadline) + tab "Nhiệm vụ".
       this.prisma.task.groupBy({
         by: ["assignee_id"],
-        where: { assignee_id: { in: memberIds }, status: "APPROVED", reviewed_at: range },
+        where: { assignee_id: { in: memberIds }, status: "APPROVED", ...this.deadlineWindow(range) },
         _count: { id: true },
       }),
+      // "KPI ngày — mục tiêu" (fallback khi chưa set EditorDailyKpi) = số task có deadline rơi vào
+      // NGÀY ĐANG XEM (null → created_at) — thống nhất với getLeaderDashboard/Global/Personal (trước
+      // đây getTeamReport đếm theo assigned_at nên lệch).
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
-          assigned_at: { gte: todayStart, lt: todayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
+      // "KPI ngày — đã hoàn thành": cùng cửa sổ deadline với mục tiêu ngày, chỉ thêm APPROVED.
       this.prisma.task.groupBy({
         by: ["assignee_id"],
         where: {
           assignee_id: { in: memberIds },
           status: "APPROVED",
-          reviewed_at: { gte: todayStart, lt: todayEnd },
+          ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
         _count: { id: true },
       }),
-      // Lấy nguyên các dòng trong `range` (không SUM ở query) — traffic là điểm cuối kỳ, phải quy về
-      // đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn cả kỳ.
+      // Lấy nguyên các dòng trong `trafficRange` (không SUM ở query) — traffic là điểm cuối kỳ, phải
+      // quy về đúng ngày báo cáo gần nhất của từng người ở sumTrafficOnLatestDate(), không cộng dồn.
       memberEmails.length > 0
         ? this.prisma.trafficReport.findMany({
-            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: trafficRange },
             select: { email: true, date: true, total_traffic: true },
           })
         : Promise.resolve([]),
       memberEmails.length > 0
         ? this.prisma.revenueReport.groupBy({
             by: ["email"],
-            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: range },
+            where: { email: { in: memberEmails, mode: "insensitive" as any }, date: trafficRange },
             _sum: { total_revenue: true },
           })
         : Promise.resolve([]),
+      // Số video (task APPROVED, deadline trong kỳ) gộp theo tuyến nội dung — đếm theo deadline như KPI.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
-        reviewed_at: range,
+        ...this.deadlineWindow(range),
       }),
-      // KPI ngày set tay (EditorDailyKpi) cho hôm nay — target = 0 coi như chưa set (lọc tại query).
+      // KPI ngày set tay (EditorDailyKpi) cho NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(vietnamDateString(now)),
+          date: dailyKpiDate(dayKpiDateStr),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
       }),
-      // "Content mới/cũ": content được thêm vào kho VÀ gắn vào task trong đúng kỳ đang lọc (mới),
-      // còn lại tính là cũ.
-      this.getContentFreshnessByAssignee(
-        {
-          team_id: { in: teamIds },
-          assignee_id: { in: memberIds },
-          status: { notIn: ["CANCELLED"] },
-          created_at: range,
-        },
-        range,
-      ),
-      // "SẢN PHẨM": số video đã duyệt trong kỳ, gộp theo dòng sản phẩm (GMV/Traffic/Profit).
+      // "Content theo phân loại": gộp task có deadline rơi vào kỳ (null → created_at) theo
+      // ContentClassification của content gắn vào task (join động — phản ánh phân loại hiện tại).
+      // Đếm theo deadline như mọi số liệu kỳ khác. Thay biểu đồ "content mới/cũ" cũ.
+      this.getContentByClassification({
+        team_id: { in: teamIds },
+        assignee_id: { in: memberIds },
+        status: { notIn: ["CANCELLED"] },
+        ...this.deadlineWindow(range),
+      }),
+      // "SẢN PHẨM": task APPROVED có deadline rơi vào kỳ (null → created_at), gộp theo dòng sản phẩm
+      // (GMV/Traffic/Profit).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
         status: "APPROVED",
-        reviewed_at: range,
+        ...this.deadlineWindow(range),
+      }),
+      // Số liệu content creator (target tháng, sưu tầm/tự nghĩ trong kỳ, KPI ngày) — song song hoàn
+      // toàn với editorKpis/manualDailyKpis phía trên, chỉ áp dụng cho member có is_content_creator=true.
+      this.getContentCreatorStats({
+        teamIds,
+        memberIds,
+        periodRange: range,
+        todayStart: dayStart,
+        todayEnd: dayEnd,
+        dailyDateStr: dayKpiDateStr,
+        months: monthsTouched,
+      }),
+      // Ai đã được duyệt làm editor (EditorApproval, toàn cục theo user — không theo team) — dùng
+      // để loại thành viên chỉ mang vai trò quản lý (LEADER/ADMIN/MANAGER) khỏi danh sách card, xem
+      // isDashboardVisibleMember().
+      this.prisma.editorApproval.findMany({
+        where: { user_id: { in: memberIds }, status: "APPROVED" },
+        select: { user_id: true },
       }),
     ]);
 
@@ -2019,31 +2746,55 @@ export class TaskAutoTasksService {
         (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
     }
 
-    const perMember = memberRows.map((m) => ({
-      id: m.user_id,
-      team_id: m.team_id,
-      name: m.full_name || m.email,
-      kpi_completed: approvedByUser[m.user_id] ?? 0,
-      kpi_target: kpiTargetByUser[m.user_id] ?? 0,
-      kpi_day_completed: approvedTodayByUser[m.user_id] ?? 0,
-      // KPI ngày: ưu tiên số set tay (EditorDailyKpi); chưa set → fallback số task giao hôm nay.
-      kpi_day_target:
-        manualDayTargetByUser[m.user_id] ??
-        assignedTodayByUser[m.user_id] ??
-        0,
-      traffic_month: trafficByEmail[m.email] ?? 0,
-      revenue_month: revenueByEmail[m.email] ?? 0,
-      content_new: contentFreshnessByUser[m.user_id]?.new ?? 0,
-      content_old: contentFreshnessByUser[m.user_id]?.old ?? 0,
-    }));
+    // Chỉ hiện card cho thành viên thực sự sản xuất (content creator hoặc editor đã được duyệt) —
+    // loại người chỉ mang vai trò quản lý (LEADER/ADMIN/MANAGER) nhưng chưa từng được gán editor/
+    // content creator, dù họ luôn có mặt trong TeamMember của team mình lead/quản lý.
+    const approvedEditorIds = new Set(approvedEditors.map((a) => a.user_id));
+    const visibleMemberRows = memberRows.filter((m) =>
+      this.isDashboardVisibleMember(m.is_content_creator, approvedEditorIds.has(m.user_id), m.roles),
+    );
+
+    const perMember = visibleMemberRows.map((m) => {
+      const isContentCreator = m.is_content_creator;
+      const ccCollected = contentCreatorStats.collectedMonthByUser[m.user_id] ?? 0;
+      const ccOriginal = contentCreatorStats.originalMonthByUser[m.user_id] ?? 0;
+      return {
+        id: m.user_id,
+        team_id: m.team_id,
+        name: m.full_name || m.email,
+        is_content_creator: isContentCreator,
+        /** Content creator: tổng content sưu tầm + tự nghĩ trong kỳ; editor: số task đã duyệt
+         * trong kỳ (như cũ). */
+        kpi_completed: isContentCreator ? ccCollected + ccOriginal : approvedByUser[m.user_id] ?? 0,
+        /** Content creator: ContentCreatorKpi.content_target; editor: tổng EditorKpi.total_target. */
+        kpi_target: isContentCreator
+          ? contentCreatorStats.targetByUser[m.user_id] ?? 0
+          : kpiTargetByUser[m.user_id] ?? 0,
+        /** Content creator: số content thêm vào kho hôm nay; editor: số task đã duyệt hôm nay. */
+        kpi_day_completed: isContentCreator
+          ? contentCreatorStats.dayCompletedByUser[m.user_id] ?? 0
+          : approvedTodayByUser[m.user_id] ?? 0,
+        // KPI ngày: content creator lấy ContentCreatorDailyKpi (không fallback theo task); editor
+        // ưu tiên số set tay (EditorDailyKpi), chưa set → fallback số task giao hôm nay.
+        kpi_day_target: isContentCreator
+          ? contentCreatorStats.dayTargetByUser[m.user_id] ?? 0
+          : manualDayTargetByUser[m.user_id] ?? assignedTodayByUser[m.user_id] ?? 0,
+        traffic_month: trafficByEmail[m.email] ?? 0,
+        revenue_month: revenueByEmail[m.email] ?? 0,
+        content_collected_month: ccCollected,
+        content_original_month: ccOriginal,
+        content_approved_month: contentCreatorStats.approvedMonthByUser[m.user_id] ?? 0,
+      };
+    });
 
     if (!isAllTeams) {
       return {
         scope: "single_team" as const,
-        team: { id: teams[0].id, name: teams[0].name, member_count: memberRows.length },
+        team: { id: teams[0].id, name: teams[0].name, member_count: visibleMemberRows.length },
         rows: perMember,
         video_by_line: videoByLine,
         product_by_category: productByCategory,
+        content_by_classification: contentByClassification,
       };
     }
 
@@ -2060,8 +2811,6 @@ export class TaskAutoTasksService {
         kpi_day_target: number;
         traffic_month: number;
         revenue_month: number;
-        content_new: number;
-        content_old: number;
       }
     >();
     for (const t of teams) {
@@ -2075,21 +2824,21 @@ export class TaskAutoTasksService {
         kpi_day_target: 0,
         traffic_month: 0,
         revenue_month: 0,
-        content_new: 0,
-        content_old: 0,
       });
     }
     for (const pm of perMember) {
       const agg = teamAgg.get(pm.team_id);
       if (!agg) continue;
-      agg.kpi_completed += pm.kpi_completed;
-      agg.kpi_target += pm.kpi_target;
-      agg.kpi_day_completed += pm.kpi_day_completed;
-      agg.kpi_day_target += pm.kpi_day_target;
+      // Không cộng dồn kpi_completed/target/ngày của content creator vào tổng — đơn vị tính là
+      // "content", không phải "video", gộp chung sẽ làm sai lệch tổng video của cả team.
+      if (!pm.is_content_creator) {
+        agg.kpi_completed += pm.kpi_completed;
+        agg.kpi_target += pm.kpi_target;
+        agg.kpi_day_completed += pm.kpi_day_completed;
+        agg.kpi_day_target += pm.kpi_day_target;
+      }
       agg.traffic_month += pm.traffic_month;
       agg.revenue_month += pm.revenue_month;
-      agg.content_new += pm.content_new;
-      agg.content_old += pm.content_old;
     }
 
     return {
@@ -2098,10 +2847,14 @@ export class TaskAutoTasksService {
       rows: Array.from(teamAgg.values()),
       video_by_line: videoByLine,
       product_by_category: productByCategory,
+      content_by_classification: contentByClassification,
     };
   }
 
-  private async getPersonalDashboard(userId: string) {
+  private async getPersonalDashboard(
+    userId: string,
+    range: { gte: Date; lt: Date } | null,
+  ) {
     const now = new Date();
     const todayStart = new Date(
       now.getFullYear(),
@@ -2112,6 +2865,10 @@ export class TaskAutoTasksService {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // Bộ lọc ngày của trang (nếu có) — dùng cho video_by_line. KPI tháng (myKpiRows/monthlyApproved)
+    // vẫn neo theo THÁNG THỰC TẾ vì KPI target chỉ có khái niệm theo tháng trọn vẹn; chỉ đổi trục đếm
+    // "đã hoàn thành" từ reviewed_at (ngày duyệt) sang deadline trong tháng, cho khớp getLeaderDashboard.
+    const periodRange = range ?? { gte: monthStart, lt: monthEnd };
 
     const [
       tasksByStatus,
@@ -2121,6 +2878,7 @@ export class TaskAutoTasksService {
       myKpiRows,
       myDailyKpiAgg,
       videoByLine,
+      contentByClassification,
     ] = await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
@@ -2148,7 +2906,7 @@ export class TaskAutoTasksService {
           where: {
             assignee_id: userId,
             status: "APPROVED",
-            reviewed_at: { gte: monthStart, lt: monthEnd },
+            ...this.deadlineWindow({ gte: monthStart, lt: monthEnd }),
           },
         }),
         this.prisma.editorKpi.findMany({
@@ -2171,11 +2929,21 @@ export class TaskAutoTasksService {
           },
           _sum: { target: true },
         }),
-        // "Số video theo tuyến" của riêng editor này trong tháng — cùng khoảng thời gian với
-        // monthlyApproved (KPI hoàn thành tháng).
+        // "Số video theo tuyến" của riêng editor này — task APPROVED có deadline rơi vào bộ lọc ngày
+        // của trang (null → created_at; mặc định cả tháng hiện tại nếu trang không truyền), đếm theo
+        // deadline như dashboard leader/admin. "Video/sản phẩm theo dòng sản phẩm" đã tách sang
+        // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
         this.getVideoByContentLine({
           assignee_id: userId,
-          reviewed_at: { gte: monthStart, lt: monthEnd },
+          ...this.deadlineWindow(periodRange),
+        }),
+        // "Content theo phân loại" của riêng editor — task có deadline rơi vào bộ lọc ngày (null →
+        // created_at), gộp theo ContentClassification hiện tại của content gắn vào task. Song song với
+        // biểu đồ cùng tên ở getLeaderDashboard/getTeamReport, chỉ khác `where` (khoá theo assignee).
+        this.getContentByClassification({
+          assignee_id: userId,
+          status: { notIn: ["CANCELLED"] },
+          ...this.deadlineWindow(periodRange),
         }),
       ]);
 
@@ -2227,6 +2995,18 @@ export class TaskAutoTasksService {
           }
         : null;
 
+    // Mục tiêu KPI theo tuyến nội dung của chính editor (EditorKpiAllocation.quantity type
+    // CONTENT_LINE, đã gộp theo tuyến trong mergeAllocations) — ghép vào từng cột biểu đồ "Video theo
+    // tuyến nội dung" để hiển thị đã-duyệt / mục-tiêu (vd 10/30).
+    const lineTargetByName: Record<string, number> = {};
+    for (const a of myKpi?.content_allocations ?? []) {
+      lineTargetByName[a.name] = (lineTargetByName[a.name] ?? 0) + a.weight;
+    }
+    const videoByLineWithTarget = videoByLine.map((v) => ({
+      ...v,
+      target: lineTargetByName[v.line] ?? 0,
+    }));
+
     return {
       scope: "personal" as const,
       tasks: {
@@ -2237,8 +3017,11 @@ export class TaskAutoTasksService {
       overdue,
       /** KPI ngày set tay cho hôm nay (0 = chưa set) — hiển thị "Mục tiêu hôm nay" cá nhân. */
       daily_kpi_target: myDailyKpiAgg._sum.target ?? 0,
-      /** Số video (task đã duyệt) của chính mình trong tháng, gộp theo tuyến nội dung A1-A5. */
-      video_by_line: videoByLine,
+      /** Số video (task APPROVED, deadline trong kỳ) của chính mình theo tuyến A1-A5, kèm `target` =
+       * mục tiêu KPI theo tuyến của mình (0 = chưa phân bổ). */
+      video_by_line: videoByLineWithTarget,
+      /** Số task có deadline trong kỳ của chính mình, gộp theo phân loại content (ContentClassification). */
+      content_by_classification: contentByClassification,
       kpi: myKpi
         ? {
             month: myKpi.month,
@@ -2262,29 +3045,50 @@ export class TaskAutoTasksService {
   async remove(id: string, requesterId: string, roles: string[]) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { status: true, team_id: true, assignee_id: true },
+      select: {
+        status: true,
+        team_id: true,
+        assignee_id: true,
+        assigned_by_id: true,
+        run_id: true,
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
 
     const isAdminOrManager = roles.some((r) =>
       ["ADMIN", "MANAGER"].includes(r),
     );
-    const isOwnTask = task.assignee_id === requesterId;
+    if (isAdminOrManager) {
+      await this.prisma.task.delete({ where: { id } });
+      return { success: true };
+    }
 
-    if (!isAdminOrManager && !isOwnTask) {
-      // LEADER chỉ được xoá task thuộc team mình đang quản lý.
-      if (!roles.includes("LEADER")) {
-        throw new ForbiddenException("Không có quyền xoá task này");
-      }
+    // LEADER quản lý team của task → xoá được mọi task trong team, không bị chặn bởi luật
+    // "task do leader/hệ thống giao" ở dưới (leader có toàn quyền với task trong team mình).
+    if (roles.includes("LEADER")) {
       const team = await this.prisma.team.findUnique({
         where: { id: task.team_id },
         select: { leader_id: true },
       });
-      if (!team || team.leader_id !== requesterId) {
-        throw new ForbiddenException(
-          "Chỉ leader của team mới có thể xoá task của team mình",
-        );
+      if (team?.leader_id === requesterId) {
+        await this.prisma.task.delete({ where: { id } });
+        return { success: true };
       }
+    }
+
+    // Còn lại (thành viên thường, hoặc LEADER của team khác): chỉ được xoá task của chính mình,
+    // và chỉ khi task đó do chính mình tự nhận — không phải được leader giao tay
+    // (assigned_by_id khác assignee_id) hoặc hệ thống tự động chia (run_id != null).
+    if (task.assignee_id !== requesterId) {
+      throw new ForbiddenException("Không có quyền xoá task này");
+    }
+    const isSystemAssigned = task.run_id != null;
+    const isAssignedByOther =
+      task.assigned_by_id != null && task.assigned_by_id !== task.assignee_id;
+    if (isSystemAssigned || isAssignedByOther) {
+      throw new ForbiddenException(
+        "Task này được leader giao hoặc hệ thống tự động chia, bạn không thể tự xoá",
+      );
     }
 
     await this.prisma.task.delete({ where: { id } });

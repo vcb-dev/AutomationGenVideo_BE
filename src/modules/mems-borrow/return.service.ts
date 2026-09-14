@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateReturnDto } from './dto';
+import { assertPhotoEvidence } from './photo-evidence';
 import { conditionWorsened, resolveReturnStatus } from './return-rules';
 
 @Injectable()
@@ -75,14 +76,18 @@ export class ReturnService {
       }
 
       const handoverLines = request.handovers.flatMap((h) => h.lines);
-      const returnRecord = await tx.memsReturn.create({
-        data: {
-          request_id: requestId,
-          received_by: receivedById,
-          note: dto.note ?? null,
-        },
-      });
+      // Kiểm trọn vẹn TRƯỚC khi ghi bất cứ thứ gì. Trước đây bản ghi biên bản ra đời trước rồi
+      // mới xét từng máy, nên mọi lỗi giữa chừng đều phải trông vào việc giao dịch cuộn lại —
+      // đúng thì đúng, nhưng nó giấu mất thứ tự ưu tiên giữa các lỗi và làm test khó nói rõ
+      // "chưa ghi gì cả".
+      // Cùng một máy khai hai lần là hai dòng trả cho một chiếc — và nếu tình trạng tệ đi thì
+      // MỞ HAI bản ghi sự cố quy trách nhiệm cho người mượn về cùng một vết xước.
+      const returnedIds = dto.units.map((u) => u.assetId);
+      if (new Set(returnedIds).size !== returnedIds.length) {
+        throw new BadRequestException('Một máy được khai hai lần trong cùng biên bản nhận trả');
+      }
 
+      const lineByAssetId = new Map<string, (typeof handoverLines)[number]>();
       for (const unit of dto.units) {
         const handoverLine = handoverLines.find((l) => l.asset_id === unit.assetId);
         if (!handoverLine) {
@@ -93,6 +98,23 @@ export class ReturnService {
         if (handoverLine.returnLines.length > 0) {
           throw new ConflictException(`Máy ${unit.assetId} đã được nhận lại trước đó`);
         }
+        lineByAssetId.set(unit.assetId, handoverLine);
+      }
+
+      // Ảnh lúc trả là mốc đối chiếu sinh ra bản ghi sự cố, nên phải là ảnh có thật của đúng
+      // chiếc máy đó — đếm độ dài `photoKeys` không nói lên điều gì vì chuỗi đó do client gửi.
+      await assertPhotoEvidence(tx, dto.units);
+
+      const returnRecord = await tx.memsReturn.create({
+        data: {
+          request_id: requestId,
+          received_by: receivedById,
+          note: dto.note ?? null,
+        },
+      });
+
+      for (const unit of dto.units) {
+        const handoverLine = lineByAssetId.get(unit.assetId)!;
 
         const missingAccessories = (unit.accessories ?? []).filter((a) => !a.isPresent);
         const worsened = conditionWorsened(handoverLine.condition, unit.condition);
