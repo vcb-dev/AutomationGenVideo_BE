@@ -265,4 +265,18 @@ export class MemsCatalogController {
   createCategory(@Body() dto: CreateCategoryDto) {
     return this.service.createCategory(dto);
   }
+
+  @Roles(UserRole.ADMIN)
+  @Delete('models/:id')
+  @ApiOperation({ summary: 'Xóa model thiết bị (Chỉ Admin)' })
+  deleteModel(@Param('id') id: string) {
+    return this.service.deleteModel(id);
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Delete('categories/:id')
+  @ApiOperation({ summary: 'Xóa danh mục thiết bị (Chỉ Admin)' })
+  deleteCategory(@Param('id') id: string) {
+    return this.service.deleteCategory(id);
+  }
 }

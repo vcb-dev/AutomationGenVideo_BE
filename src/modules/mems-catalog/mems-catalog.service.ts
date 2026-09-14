@@ -50,14 +50,54 @@ export class MemsCatalogService {
    * kho hay nhập nhầm lô hàng đổi trả, và câu "serial đã tồn tại" trống trơn thì không tra được.
    */
   async createAsset(dto: CreateAssetDto) {
-    const duplicated = await this.prisma.memsAsset.findUnique({
-      where: { serial_number: dto.serialNumber },
-      select: { id: true, asset_code: true },
-    });
-    if (duplicated) {
-      throw new ConflictException(
-        `Số serial ${dto.serialNumber} đã thuộc thiết bị ${duplicated.asset_code}`,
+    let targetSerials: string[] = [];
+    if (dto.serialNumbers && dto.serialNumbers.length > 0) {
+      targetSerials = dto.serialNumbers.map((s) => s.trim()).filter(Boolean);
+    } else if (dto.serialNumber?.trim()) {
+      targetSerials = [dto.serialNumber.trim()];
+    }
+
+    if (targetSerials.length === 0) {
+      throw new BadRequestException('Vui lòng nhập số serial cho thiết bị');
+    }
+
+    const qty = Math.max(dto.quantity || 1, targetSerials.length, 1);
+
+    // Nếu người dùng yêu cầu số lượng > 1 nhưng chỉ nhập 1 serial cơ sở (hoặc ít hơn qty)
+    if (targetSerials.length === 1 && qty > 1) {
+      const baseSerial = targetSerials[0];
+      targetSerials = Array.from(
+        { length: qty },
+        (_, i) => `${baseSerial}-${String(i + 1).padStart(2, '0')}`,
       );
+    } else if (targetSerials.length < qty) {
+      const baseSerial = targetSerials[0];
+      const start = targetSerials.length;
+      for (let i = start; i < qty; i++) {
+        targetSerials.push(`${baseSerial}-${String(i + 1).padStart(2, '0')}`);
+      }
+    }
+
+    // Kiểm tra trùng lặp ngay trong danh sách gửi lên
+    const serialSet = new Set(targetSerials);
+    if (serialSet.size !== targetSerials.length) {
+      throw new BadRequestException('Danh sách số serial bị trùng lặp trong cùng lần nhập');
+    }
+
+    const releaseDuplicatedRecords: { id: string; serial: string }[] = [];
+    for (const sn of targetSerials) {
+      const duplicated = await this.prisma.memsAsset.findUnique({
+        where: { serial_number: sn },
+        select: { id: true, asset_code: true, is_disabled: true },
+      });
+      if (duplicated) {
+        if (!duplicated.is_disabled) {
+          throw new ConflictException(
+            `Số serial ${sn} đã thuộc thiết bị ${duplicated.asset_code}`,
+          );
+        }
+        releaseDuplicatedRecords.push({ id: duplicated.id, serial: sn });
+      }
     }
 
     const model = await this.prisma.memsAssetModel.findUniqueOrThrow({
@@ -66,11 +106,6 @@ export class MemsCatalogService {
     });
 
     const prefix = model.category.code;
-    const existing = await this.prisma.memsAsset.count({
-      where: { model: { category: { code: prefix } } },
-    });
-    const assetCode = `${prefix}-${String(existing + 1).padStart(3, '0')}`;
-
     // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';
@@ -83,39 +118,69 @@ export class MemsCatalogService {
         `SELECT pg_advisory_xact_lock(hashtext($1))`,
         `mems:asset-code:${prefix}`,
       );
+
+      for (let i = 0; i < releaseDuplicatedRecords.length; i++) {
+        const item = releaseDuplicatedRecords[i];
+        await tx.memsAsset.update({
+          where: { id: item.id },
+          data: {
+            serial_number: `${item.serial}__deleted_${Date.now()}_${item.id.slice(0, 8)}_${i}`,
+          },
+        });
+      }
+
       const existing = await tx.memsAsset.count({
         where: { model: { category: { code: prefix } } },
       });
-      const assetCode = `${prefix}-${String(existing + 1).padStart(3, '0')}`;
 
-      const asset = await tx.memsAsset.create({
-        data: {
-          asset_code: assetCode,
-          qr_code: `MEMS:${assetCode}`,
-          model_id: dto.modelId,
-          serial_number: dto.serialNumber,
-          location_id: dto.locationId ?? null,
-          purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
-          purchase_price: dto.purchasePrice ?? null,
-          status: status as any,
-          condition: condition as any,
-        },
-      });
+      const createdAssets = [];
+      for (let i = 0; i < targetSerials.length; i++) {
+        const sn = targetSerials[i];
+        const assetCode = `${prefix}-${String(existing + 1 + i).padStart(3, '0')}`;
 
-      // Nhật ký vòng đời bắt đầu từ đây chứ không phải từ lần bàn giao đầu tiên. Thiếu mốc này
-      // thì màn chi tiết của một chiếc máy chưa ai mượn trông như máy không có quá khứ.
-      await tx.memsAssetEvent.create({
-        data: {
-          asset_id: asset.id,
-          kind: 'INTAKE',
-          title: 'Nhập kho',
-          detail: [`tình trạng khi nhập ${condition}`, dto.intakeNote?.trim() || null]
-            .filter(Boolean)
-            .join(' · '),
-        },
-      });
+        const asset = await tx.memsAsset.create({
+          data: {
+            asset_code: assetCode,
+            qr_code: `MEMS:${assetCode}`,
+            model_id: dto.modelId,
+            serial_number: sn,
+            location_id: dto.locationId ?? null,
+            purchase_date: dto.purchaseDate ? new Date(dto.purchaseDate) : null,
+            purchase_price: dto.purchasePrice ?? null,
+            status: status as any,
+            condition: condition as any,
+          },
+        });
 
-      return asset;
+        // Nhật ký vòng đời bắt đầu từ đây chứ không phải từ lần bàn giao đầu tiên. Thiếu mốc này
+        // thì màn chi tiết của một chiếc máy chưa ai mượn trông như máy không có quá khứ.
+        await tx.memsAssetEvent.create({
+          data: {
+            asset_id: asset.id,
+            kind: 'INTAKE',
+            title: 'Nhập kho',
+            detail: [
+              `tình trạng khi nhập ${condition}`,
+              dto.intakeNote?.trim() || null,
+              targetSerials.length > 1 ? `(Nhập lô ${i + 1}/${targetSerials.length})` : null,
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          },
+        });
+
+        createdAssets.push(asset);
+      }
+
+      const firstAsset = createdAssets[0];
+      if (createdAssets.length === 1) {
+        return firstAsset;
+      }
+      return {
+        ...firstAsset,
+        assets: createdAssets,
+        totalCreated: createdAssets.length,
+      };
     });
   }
 
@@ -131,13 +196,18 @@ export class MemsCatalogService {
       throw new NotFoundException(`Không tìm thấy thiết bị với mã ${assetCode}`);
     }
 
+    let releaseDuplicatedId: string | null = null;
     // Nếu đổi serial number, kiểm tra xem có bị trùng với máy khác không
     if (dto.serialNumber && dto.serialNumber !== asset.serial_number) {
       const duplicated = await this.prisma.memsAsset.findUnique({
         where: { serial_number: dto.serialNumber },
+        select: { id: true, asset_code: true, is_disabled: true },
       });
       if (duplicated && duplicated.id !== asset.id) {
-        throw new ConflictException(`Số serial ${dto.serialNumber} đã thuộc thiết bị ${duplicated.asset_code}`);
+        if (!duplicated.is_disabled) {
+          throw new ConflictException(`Số serial ${dto.serialNumber} đã thuộc thiết bị ${duplicated.asset_code}`);
+        }
+        releaseDuplicatedId = duplicated.id;
       }
 
       // BR-04 nói serial không sửa được sau khi tạo, nhưng khoá cứng từ giây đầu thì một lỗi
@@ -228,6 +298,15 @@ export class MemsCatalogService {
         });
       }
 
+      if (releaseDuplicatedId) {
+        await tx.memsAsset.update({
+          where: { id: releaseDuplicatedId },
+          data: {
+            serial_number: `${dto.serialNumber}__deleted_${Date.now()}_${releaseDuplicatedId.slice(0, 8)}`,
+          },
+        });
+      }
+
       const updated = await tx.memsAsset.update({
         where: { id: asset.id },
         data: {
@@ -291,12 +370,20 @@ export class MemsCatalogService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // Soft delete: đánh dấu ngừng sử dụng để bảo toàn toàn bộ lịch sử kế toán/báo cáo
+      // Soft delete: đánh dấu ngừng sử dụng để bảo toàn toàn bộ lịch sử kế toán/báo cáo.
+      // Giải phóng số serial để có thể tái sử dụng hoặc nhập lại thiết bị mới mang serial này.
+      const freedSerial = asset.serial_number
+        ? (asset.serial_number.includes('__deleted_')
+            ? asset.serial_number
+            : `${asset.serial_number}__deleted_${Date.now()}_${asset.id.slice(0, 8)}`)
+        : undefined;
+
       await tx.memsAsset.update({
         where: { id: asset.id },
         data: {
           is_disabled: true,
           status: 'DISPOSED',
+          ...(freedSerial ? { serial_number: freedSerial } : {}),
         },
       });
 
@@ -333,8 +420,78 @@ export class MemsCatalogService {
         is_disabled: false,
         ...(filter.categoryId ? { category_id: filter.categoryId } : {}),
       },
-      include: { category: true, accessories: true, _count: { select: { assets: true } } },
+      include: {
+        category: true,
+        accessories: true,
+        _count: { select: { assets: { where: { is_disabled: false } } } },
+      },
       orderBy: { name: 'asc' },
+    });
+  }
+
+  async deleteModel(id: string) {
+    const model = await this.prisma.memsAssetModel.findUnique({
+      where: { id },
+      include: {
+        assets: {
+          where: { is_disabled: false },
+          select: { id: true, asset_code: true },
+        },
+      },
+    });
+
+    if (!model) {
+      throw new NotFoundException('Không tìm thấy model này');
+    }
+
+    if (model.assets.length > 0) {
+      throw new ConflictException(
+        `Model "${model.name}" đang có ${model.assets.length} thiết bị hoạt động trong kho (${model.assets.map((a) => a.asset_code).join(', ')}). Vui lòng xóa các thiết bị trước khi xóa model.`,
+      );
+    }
+
+    return this.prisma.memsAssetModel.update({
+      where: { id },
+      data: { is_disabled: true },
+    });
+  }
+
+  async deleteCategory(id: string) {
+    const category = await this.prisma.memsCategory.findUnique({
+      where: { id },
+      include: {
+        models: {
+          include: {
+            assets: {
+              where: { is_disabled: false },
+              select: { id: true, asset_code: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!category) {
+      throw new NotFoundException('Không tìm thấy danh mục này');
+    }
+
+    const activeAssets = category.models.flatMap((m) => m.assets);
+    if (activeAssets.length > 0) {
+      throw new ConflictException(
+        `Danh mục "${category.name}" đang có ${activeAssets.length} thiết bị hoạt động trong kho. Vui lòng xóa các thiết bị trước khi xóa danh mục.`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.memsAssetModel.updateMany({
+        where: { category_id: id },
+        data: { is_disabled: true },
+      });
+
+      return tx.memsCategory.update({
+        where: { id },
+        data: { is_disabled: true },
+      });
     });
   }
 
@@ -472,7 +629,11 @@ export class MemsCatalogService {
 
     return {
       // Ký URL ảnh: route phục vụ ảnh là công khai nên nó chỉ nhận đường dẫn có token còn hạn.
-      asset: { ...asset, photos: this.photoUrls.signAll(asset.photos) },
+      asset: {
+        ...asset,
+        photos: this.photoUrls.signAll(asset.photos),
+        serial_number: asset.serial_number?.split('__deleted_')[0] ?? asset.serial_number,
+      },
       events,
       next_reservation: nextReservation,
       siblings_available: siblingsAvailable,
@@ -501,6 +662,7 @@ export class MemsCatalogService {
     return assets.map((asset) => ({
       ...asset,
       photos: this.photoUrls.signAll(asset.photos),
+      serial_number: asset.serial_number?.split('__deleted_')[0] ?? asset.serial_number,
     }));
   }
 }
