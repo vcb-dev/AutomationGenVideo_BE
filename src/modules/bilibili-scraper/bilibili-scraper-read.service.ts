@@ -47,9 +47,13 @@ export class BilibiliScraperReadService {
       videos_count: p.videos_count,
       is_tracked: p.is_tracked,
       is_bookmarked: p.is_bookmarked,
+      bookmarked_by_name: p.bookmarked_by_name,
+      bookmarked_at: p.bookmarked_at,
       is_initial_scraped: p.is_initial_scraped,
       scraping_status: p.scraping_status,
       scrape_error: p.scrape_error,
+      channel_type: p.channel_type || 'product',
+      product_lines: p.product_lines || [],
       last_scraped_at: p.last_scraped_at,
       created_at: p.created_at,
       videos_in_db: videosInDb,
@@ -154,6 +158,7 @@ export class BilibiliScraperReadService {
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string;
     tracked?: string; bookmarked?: string; periodic?: string;
+    channel_type?: string; product_line?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -163,6 +168,8 @@ export class BilibiliScraperReadService {
     const where: any = {};
     if (params.tracked === 'true' || params.periodic === 'true') where.is_tracked = true;
     if (params.bookmarked === 'true') where.is_bookmarked = true;
+    if (params.channel_type && params.channel_type !== 'all') where.channel_type = params.channel_type;
+    if (params.product_line && params.product_line !== 'all') where.product_lines = { has: params.product_line };
     if (search) where.OR = [
       { nickname: { contains: search, mode: 'insensitive' } },
       { username: { contains: search, mode: 'insensitive' } },

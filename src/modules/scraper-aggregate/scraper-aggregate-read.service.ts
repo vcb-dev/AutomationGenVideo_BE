@@ -110,7 +110,9 @@ export class ScraperAggregateReadService {
     const branches: Prisma.Sql[] = [];
 
     if (!platform || platform === 'facebook') {
-      const conditions: Prisma.Sql[] = [];
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`(f.is_visible_on_ui = true OR f.is_visible_on_ui IS NULL)`,
+      ];
       if (dateFrom) conditions.push(Prisma.sql`r.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`r.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.views_count >= ${BigInt(minPlays)}`);
@@ -131,7 +133,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'tiktok') {
-      const conditions: Prisma.Sql[] = [];
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+      ];
       if (dateFrom) conditions.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.play_count >= ${BigInt(minPlays)}`);
@@ -150,7 +154,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'instagram') {
-      const conditions: Prisma.Sql[] = [];
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+      ];
       if (dateFrom) conditions.push(Prisma.sql`r.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`r.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.play_count >= ${BigInt(minPlays)}`);
@@ -180,7 +186,10 @@ export class ScraperAggregateReadService {
       conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, ' AND ')}` : Prisma.empty;
 
     if (!platform || platform === 'douyin') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        Prisma.sql`v.author_username NOT IN (SELECT dp.username FROM scraper_douyin_profiles dp WHERE dp.is_owned = true AND dp.username <> '')`,
+        Prisma.sql`v.search_keyword NOT IN (SELECT '@' || dp.username FROM scraper_douyin_profiles dp WHERE dp.is_owned = true AND dp.username <> '')`,
+      ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       // Douyin không công khai lượt xem → lọc theo lượt xem thì bỏ hẳn nhánh này ra.
@@ -199,7 +208,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'xiaohongshu') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+      ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) c.push(Prisma.sql`false`); // không công khai lượt xem
@@ -213,6 +224,7 @@ export class ScraperAggregateReadService {
                COALESCE(v.author_id, '') AS author_id, COALESCE(v.author_name, '') AS author_name,
                COALESCE(v.author_avatar, '') AS author_avatar, COALESCE(v.author_name, '') AS author_username
         FROM scraper_xiaohongshu_videos v
+        LEFT JOIN scraper_xiaohongshu_profiles p ON p.id = v.profile_id
         ${buildWhere(c)}
       `);
     }
@@ -257,7 +269,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'youtube') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+      ];
       // Bảng YouTube Shorts KHÔNG có ngày đăng — dùng thời điểm cào (created_at) thay thế,
       // nên lọc/sắp theo ngày với YouTube là theo ngày cào chứ không phải ngày đăng.
       if (dateFrom) c.push(Prisma.sql`v.created_at >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
@@ -278,7 +292,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'threads') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        Prisma.sql`p.is_owned = false`,
+      ];
       if (dateFrom) c.push(Prisma.sql`tp.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`tp.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) c.push(Prisma.sql`tp.views_count >= ${BigInt(minPlays)}`);

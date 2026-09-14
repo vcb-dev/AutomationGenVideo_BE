@@ -29,6 +29,7 @@ interface YoutubeProfileRow {
   avatar_url: string | null; banner_url: string | null; is_verified: boolean; has_business_email: boolean;
   subscriber_count: bigint; video_count: number; view_count: bigint; country: string | null;
   channel_created_at: Date | null; is_tracked: boolean; is_bookmarked: boolean; is_owned: boolean;
+  bookmarked_by_name?: string | null; bookmarked_at?: Date | null;
   is_initial_scraped: boolean; scraping_status: string; scrape_error: string | null;
   last_scraped_at: Date | null; created_at: Date; shorts_count: bigint;
 }
@@ -55,10 +56,14 @@ export class YoutubeScraperReadService {
       channel_created_at: p.channel_created_at,
       is_tracked: p.is_tracked,
       is_bookmarked: p.is_bookmarked,
+      bookmarked_by_name: p.bookmarked_by_name,
+      bookmarked_at: p.bookmarked_at,
       is_owned: p.is_owned,
       is_initial_scraped: p.is_initial_scraped,
       scraping_status: p.scraping_status,
       scrape_error: p.scrape_error,
+      channel_type: p.channel_type || 'product',
+      product_lines: p.product_lines || [],
       last_scraped_at: p.last_scraped_at,
       created_at: p.created_at,
       shorts_in_db: shortsInDb,
@@ -119,6 +124,7 @@ export class YoutubeScraperReadService {
   async listProfiles(params: {
     page?: string; page_size?: string; search?: string; sort_by?: string; is_owned?: string;
     tracked?: string; bookmarked?: string; periodic?: string;
+    channel_type?: string; product_line?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 12)!));
@@ -131,6 +137,8 @@ export class YoutubeScraperReadService {
     else if (isOwnedParam === 'false') conditions.push(Prisma.sql`is_owned = false`);
     if (params.tracked === 'true' || params.periodic === 'true') conditions.push(Prisma.sql`is_tracked = true`);
     if (params.bookmarked === 'true') conditions.push(Prisma.sql`is_bookmarked = true`);
+    if (params.channel_type && params.channel_type !== 'all') conditions.push(Prisma.sql`channel_type = ${params.channel_type}`);
+    if (params.product_line && params.product_line !== 'all') conditions.push(Prisma.sql`${params.product_line} = ANY(product_lines)`);
     if (search) conditions.push(unaccentLike(Prisma.sql`title`, search));
     const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
 
@@ -146,8 +154,8 @@ export class YoutubeScraperReadService {
     const profiles = await this.prisma.$queryRaw<YoutubeProfileRow[]>`
       SELECT p.id, p.channel_id, p.title, p.description, p.url, p.avatar_url, p.banner_url, p.is_verified,
              p.has_business_email, p.subscriber_count, p.video_count, p.view_count, p.country,
-             p.channel_created_at, p.is_tracked, p.is_bookmarked, p.is_owned, p.is_initial_scraped,
-             p.scraping_status, p.scrape_error, p.last_scraped_at, p.created_at,
+             p.channel_created_at, p.is_tracked, p.is_bookmarked, p.bookmarked_by_name, p.bookmarked_at, p.is_owned, p.is_initial_scraped,
+             p.scraping_status, p.scrape_error, p.channel_type, p.product_lines, p.last_scraped_at, p.created_at,
              (SELECT COUNT(*) FROM scraper_youtube_shorts s WHERE s.profile_id = p.id) AS shorts_count
       FROM scraper_youtube_profiles p
       ${whereClause}
