@@ -368,10 +368,10 @@ export class ScraperAggregateReadService {
     const channel = (params.channel || '').trim();
     const hashtag = (params.hashtag || '').trim();
 
-    /** Hai bộ lọc mới đều dựa vào chữ, mà mỗi nhánh gọi cột chữ một tên khác nhau. */
-    function filterByKeyword(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql): Prisma.Sql[] {
+    /** Hai bộ lọc thị trường và tuyến nội dung dựa vào chữ, mà mỗi nhánh gọi cột chữ và cột kênh một tên khác nhau. */
+    function filterByKeyword(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql, cotKenh?: Prisma.Sql): Prisma.Sql[] {
       const c: Prisma.Sql[] = [];
-      const tt = marketFilter(cotChu, market);
+      const tt = marketFilter(cotChu, market, cotKenh);
       if (tt) c.push(tt);
       const tuyen = contentLineFilter(cotChu, contentLine, cotHashtag);
       if (tuyen) c.push(tuyen);
@@ -404,7 +404,7 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`v.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...filterByKeyword(Prisma.sql`v.description`, Prisma.sql`v.hashtags`, Prisma.sql`p.username`));
       conditions.push(...filterByChannel(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'tiktok' AS platform, v.video_id AS post_id, v.url, v.description,
@@ -422,7 +422,7 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`r.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`r.description`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`r.description`, Prisma.sql`r.hashtags`));
+      conditions.push(...filterByKeyword(Prisma.sql`r.description`, Prisma.sql`r.hashtags`, Prisma.sql`p.username`));
       conditions.push(...filterByChannel(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'instagram' AS platform, r.post_id, r.url, r.description,
@@ -443,7 +443,7 @@ export class ScraperAggregateReadService {
         ...dateCond(Prisma.sql`v.date_posted`),
       ];
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`v.description`, Prisma.sql`v.hashtags`));
+      conditions.push(...filterByKeyword(Prisma.sql`v.description`, Prisma.sql`v.hashtags`, Prisma.sql`v.author_username`));
       conditions.push(...filterByChannel(Prisma.sql`v.author_username`));
       branches.push(Prisma.sql`
         SELECT 'douyin' AS platform, v.post_id, v.url, v.description,
@@ -463,7 +463,13 @@ export class ScraperAggregateReadService {
           searchCondition(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`, null, q),
         );
       }
-      conditions.push(...filterByKeyword(Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`));
+      conditions.push(
+        ...filterByKeyword(
+          Prisma.sql`(COALESCE(v.title, '') || ' ' || COALESCE(v.description, ''))`,
+          undefined,
+          Prisma.sql`v.author_name`,
+        ),
+      );
       conditions.push(...filterByChannel(Prisma.sql`v.author_id`));
       branches.push(Prisma.sql`
         SELECT 'xiaohongshu' AS platform, v.note_id AS post_id, v.url,
@@ -483,7 +489,7 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`s.created_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`s.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`s.title`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`s.title`, Prisma.sql`s.hashtags`));
+      conditions.push(...filterByKeyword(Prisma.sql`s.title`, Prisma.sql`s.hashtags`, Prisma.sql`p.title`));
       conditions.push(...filterByChannel(Prisma.sql`p.channel_id`));
       branches.push(Prisma.sql`
         SELECT 'youtube' AS platform, s.video_id AS post_id, s.url, s.title AS description,
@@ -503,7 +509,7 @@ export class ScraperAggregateReadService {
       const conditions = [...dateCond(Prisma.sql`v.published_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.caption`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`v.caption`));
+      conditions.push(...filterByKeyword(Prisma.sql`v.caption`, undefined, Prisma.sql`mp.name`));
       conditions.push(...filterByChannel(Prisma.sql`mp.page_id`));
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
@@ -525,7 +531,13 @@ export class ScraperAggregateReadService {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`tp.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`tp.views_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`tp.text`, null, q));
-      conditions.push(...filterByKeyword(Prisma.sql`tp.text`, Prisma.sql`tp.hashtags`));
+      conditions.push(
+        ...filterByKeyword(
+          Prisma.sql`tp.text`,
+          Prisma.sql`tp.hashtags`,
+          Prisma.sql`COALESCE(NULLIF(p.name, ''), p.username)`,
+        ),
+      );
       conditions.push(...filterByChannel(Prisma.sql`p.username`));
       branches.push(Prisma.sql`
         SELECT 'threads' AS platform, tp.post_id, tp.url, tp.text AS description,

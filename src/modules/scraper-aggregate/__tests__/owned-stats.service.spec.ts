@@ -179,8 +179,20 @@ describe('mergeMarkets', () => {
     ]);
 
     expect(res).toEqual([
-      { platform: 'tiktok', vn: 9_999, global: 0, posts_vn: 1, posts_global: 0 },
-      { platform: 'facebook', vn: 1000, global: 500, posts_vn: 10, posts_global: 5 },
+      { platform: 'tiktok', vn: 9_999, global: 0, doda: 0, posts_vn: 1, posts_global: 0, posts_doda: 0 },
+      { platform: 'facebook', vn: 1000, global: 500, doda: 0, posts_vn: 10, posts_global: 5, posts_doda: 0 },
+    ]);
+  });
+
+  it('correctly aggregates market: doda, vn, and global', () => {
+    const res = (buildService() as any).mergeMarkets([
+      { platform: 'facebook', market: 'doda', posts: BigInt(3), views: BigInt(300) },
+      { platform: 'facebook', market: 'vn', posts: BigInt(7), views: BigInt(700) },
+      { platform: 'facebook', market: 'global', posts: BigInt(2), views: BigInt(200) },
+    ]);
+
+    expect(res).toEqual([
+      { platform: 'facebook', vn: 700, global: 200, doda: 300, posts_vn: 7, posts_global: 2, posts_doda: 3 },
     ]);
   });
 
