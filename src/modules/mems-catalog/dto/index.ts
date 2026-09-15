@@ -70,10 +70,30 @@ export class CreateAssetDto {
   @IsUUID()
   modelId: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description: 'Số serial máy. Bắt buộc nếu không cung cấp danh sách serialNumbers',
+  })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  serialNumber: string;
+  serialNumber?: string;
+
+  @ApiPropertyOptional({
+    description: 'Danh sách các số serial khi nhập nhiều máy cùng lúc',
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  serialNumbers?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Số lượng thiết bị nhập kho (mặc định 1)',
+    default: 1,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  quantity?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
