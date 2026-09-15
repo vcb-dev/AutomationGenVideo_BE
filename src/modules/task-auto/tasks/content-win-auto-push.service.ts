@@ -8,6 +8,7 @@ const CONTENT_WIN_CLASSIFICATION_NAME = "Win";
 
 type WinningTaskRow = {
   id: string;
+  team_id: string;
   assignee_id: string | null;
   reviewed_by_id: string | null;
   brand_type: string | null;
@@ -48,6 +49,7 @@ export class TaskAutoContentWinPushService {
       where: { id: { in: ids }, status: "APPROVED", content_win_pushed_at: null },
       select: {
         id: true,
+        team_id: true,
         assignee_id: true,
         reviewed_by_id: true,
         brand_type: true,
@@ -110,6 +112,8 @@ export class TaskAutoContentWinPushService {
       });
       return;
     }
+
+    await this.ensureEditorContentInTeamCatalog(task, contentWinClassificationId);
 
     const month = this.currentMonth();
     const current = await this.prisma.content.findUnique({
@@ -180,6 +184,7 @@ export class TaskAutoContentWinPushService {
           brand_type: tc.brand_type,
           classification_id: contentWinClassificationId,
           origin: tc.origin,
+          content_line_id: task.content_line_id ?? undefined,
           added_by_id: task.assignee_id ?? tc.added_by_id,
         },
         select: { id: true },
@@ -219,6 +224,7 @@ export class TaskAutoContentWinPushService {
           script: ec.script,
           file_content_url: ec.file_content_url,
           classification_id: contentWinClassificationId,
+          content_line_id: task.content_line_id ?? undefined,
           added_by_id: task.assignee_id ?? ec.added_by_id ?? ec.user_id,
         },
         select: { id: true },
@@ -251,6 +257,57 @@ export class TaskAutoContentWinPushService {
       select: { id: true },
     });
     return created.id;
+  }
+  
+  private async ensureEditorContentInTeamCatalog(
+    task: WinningTaskRow,
+    contentWinClassificationId: string,
+  ): Promise<void> {
+    if (!task.editor_content_id || task.team_content_id) return;
+
+    const existing = await this.prisma.teamContent.findUnique({
+      where: {
+        team_id_source_editor_content_id: {
+          team_id: task.team_id,
+          source_editor_content_id: task.editor_content_id,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    const ec = await this.prisma.editorContent.findUnique({
+      where: { id: task.editor_content_id },
+      select: {
+        brand_type: true,
+        market: true,
+        content_line_id: true,
+        classification_id: true,
+        added_by_id: true,
+        user_id: true,
+      },
+    });
+    if (!ec) return;
+
+    try {
+      await this.prisma.teamContent.create({
+        data: {
+          team_id: task.team_id,
+          source_editor_content_id: task.editor_content_id,
+          brand_type: ec.brand_type,
+          classification_id: ec.classification_id ?? contentWinClassificationId,
+          added_by_id: task.assignee_id ?? ec.added_by_id ?? ec.user_id,
+          ...(ec.content_line_id ?? task.content_line_id
+            ? { content_line_id: ec.content_line_id ?? task.content_line_id ?? undefined }
+            : {}),
+          ...(ec.market ? { market: ec.market } : {}),
+        },
+      });
+    } catch (err: any) {
+      // Race: cron 8:15 và nút "Cập nhật" có thể cùng xử lý một task — @@unique(team_id,
+      // source_editor_content_id) chặn trùng, coi như đã có sẵn thay vì báo lỗi cả task.
+      if (err?.code !== "P2002") throw err;
+    }
   }
 
   private buildSyntheticTitle(task: WinningTaskRow): string {
