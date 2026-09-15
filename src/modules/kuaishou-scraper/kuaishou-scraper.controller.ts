@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, HttpException, HttpStatus, Logger, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -31,11 +31,24 @@ export class KuaishouScraperController {
   @Post(['profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async syncAll() {
-    this.service.periodicRefresh().catch((err: any) => {
+  async syncAll(
+    @Body()
+    body?: {
+      scope?: 'tracked' | 'bookmarked' | 'all';
+      mode?: 'count' | 'days';
+      count?: number;
+      days?: number;
+    },
+  ) {
+    this.service.periodicRefresh(body).catch((err: any) => {
       this.logger.error(`[KUAISHOU-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
     });
-    return { status: 'ok', message: 'Đã bắt đầu cào video mới cho các kênh KuaiShou chú ý trong nền!' };
+    const scopeLabel = body?.scope === 'bookmarked' ? 'kênh đã lưu' : body?.scope === 'all' ? 'tất cả kênh' : 'kênh chú ý';
+    const detailLabel = body?.mode === 'days' ? `${body.days || 7} ngày gần nhất` : `${body?.count || 20} video mới nhất`;
+    return {
+      status: 'ok',
+      message: `Đã bắt đầu cào video KuaiShou (${scopeLabel}, ${detailLabel}) trong nền!`,
+    };
   }
 
   @Get('videos')
@@ -131,7 +144,7 @@ export class KuaishouScraperController {
       throw new HttpException({ error: 'field must be is_bookmarked or is_tracked' }, HttpStatus.BAD_REQUEST);
     }
     if (field === 'is_tracked') assertCanManageChannels(req);
-    const newValue = await this.service.toggleProfile(BigInt(profileId), field);
+    const newValue = await this.service.toggleProfile(BigInt(profileId), field, req.user);
     return { status: 'ok', [field]: newValue };
   }
 
@@ -144,4 +157,15 @@ export class KuaishouScraperController {
     return this.service.deleteProfile(BigInt(profileId));
   }
 
+  @Patch('profiles/:profileId/classification')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async updateClassification(
+    @Param('profileId') profileId: string,
+    @Body() body: { channel_type?: string; product_lines?: string[] },
+  ) {
+    const channel_type = body.channel_type === 'content' ? 'content' : 'product';
+    const product_lines = Array.isArray(body.product_lines) ? body.product_lines : [];
+    return this.service.updateClassification(BigInt(profileId), channel_type, product_lines);
+  }
 }

@@ -22,28 +22,36 @@ const COT = Prisma.sql`v.caption`;
 const chu = (s: Prisma.Sql) => s.strings.join('?');
 const value = (s: Prisma.Sql) => s.values;
 
-describe('Bộ lọc thị trường VN / Global', () => {
-  it('chỉ nhận đúng hai giá trị, sai thì trả null để coi như không lọc', () => {
+describe('Bộ lọc thị trường VN / Global / Đồ Da', () => {
+  it('chỉ nhận đúng các giá trị hợp lệ (vn, global, doda), sai thì trả null để coi như không lọc', () => {
     expect(laThiTruongHopLe('vn')).toBe(true);
     expect(laThiTruongHopLe('GLOBAL')).toBe(true);
+    expect(laThiTruongHopLe('doda')).toBe(true);
+    expect(laThiTruongHopLe('DoDa')).toBe(true);
     expect(marketFilter(COT, 'xxx')).toBeNull();
     expect(marketFilter(COT, '')).toBeNull();
   });
 
-  it('VN và Global là hai vế đối nhau của CÙNG một mẫu chữ', () => {
+  it('hỗ trợ lọc riêng phân khúc Đồ Da', () => {
+    const doda = marketFilter(COT, 'doda')!;
+    expect(chu(doda)).toContain('~*');
+    expect(value(doda).length).toBeGreaterThan(0);
+  });
+
+  it('VN và Global là hai vế đối nhau và đều loại trừ Đồ Da', () => {
     const vn = marketFilter(COT, 'vn')!;
     const global = marketFilter(COT, 'global')!;
     expect(chu(vn)).toContain('~*');
     expect(chu(global)).toContain('!~*');
-    // Cùng một mẫu nhận diện tiếng Việt → cộng hai nhóm lại đúng bằng tổng.
+    expect(chu(vn)).toContain('NOT');
+    expect(chu(global)).toContain('NOT');
     expect(value(vn)).toEqual(value(global));
   });
 
-  it('bọc COALESCE quanh cột chữ — caption NULL mà không bọc thì video rơi khỏi CẢ HAI nhóm', () => {
-    // Trong SQL, NULL ~* mẫu cho ra NULL (không phải false), nên WHERE loại nó ở cả nhánh
-    // VN lẫn nhánh Global. Người dùng cộng hai con số lại thấy thiếu video mà không hiểu vì sao.
+  it('bọc COALESCE quanh cột chữ — caption NULL mà không bọc thì video rơi khỏi các nhóm', () => {
     expect(chu(marketFilter(COT, 'vn')!)).toContain('COALESCE');
     expect(chu(marketFilter(COT, 'global')!)).toContain('COALESCE');
+    expect(chu(marketFilter(COT, 'doda')!)).toContain('COALESCE');
   });
 
   it('mẫu nhận diện chỉ gồm chữ có dấu và đ, không có a-z trơn', () => {

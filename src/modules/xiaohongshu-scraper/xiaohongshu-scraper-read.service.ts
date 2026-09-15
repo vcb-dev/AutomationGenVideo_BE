@@ -105,8 +105,12 @@ export class XiaohongshuScraperReadService {
       is_verified: p.is_verified,
       is_tracked: p.is_tracked,
       is_bookmarked: p.is_bookmarked,
+      bookmarked_by_name: p.bookmarked_by_name,
+      bookmarked_at: p.bookmarked_at,
       is_owned: p.is_owned,
       is_initial_scraped: p.is_initial_scraped,
+      channel_type: p.channel_type || 'product',
+      product_lines: p.product_lines || [],
       last_scraped_at: p.last_scraped_at,
       scraping_status: p.scraping_status,
       scrape_error: p.scrape_error,
@@ -183,6 +187,7 @@ export class XiaohongshuScraperReadService {
 
   async listProfiles(params: {
     page?: string; page_size?: string; q?: string; search?: string; bookmarked?: string; tracked?: string; periodic?: string; is_owned?: string;
+    channel_type?: string; product_line?: string;
   }) {
     const q = (params.q || params.search || '').trim();
     const bookmarked = params.bookmarked || '';
@@ -202,6 +207,8 @@ export class XiaohongshuScraperReadService {
     if (tracked === 'true') where.is_tracked = true;
     if (isOwnedParam === 'true') where.is_owned = true;
     else if (isOwnedParam === 'false') where.is_owned = false;
+    if (params.channel_type && params.channel_type !== 'all') where.channel_type = params.channel_type;
+    if (params.product_line && params.product_line !== 'all') where.product_lines = { has: params.product_line };
 
     const total = await this.prisma.scraperXiaohongshuProfile.count({ where });
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
