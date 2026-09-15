@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsArray, IsEnum, Matches } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEnum, IsUrl, Matches } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { BrandType, TeamKind } from '@prisma/client'
 
@@ -15,6 +15,10 @@ export class CreateTeamDto {
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean
   @ApiPropertyOptional({ type: [String] })
   @IsArray() @IsString({ each: true }) @IsOptional() member_ids?: string[]
+  @ApiPropertyOptional({ description: 'Webhook bot Lark riêng của team — thông báo task/content cần duyệt của team này chỉ đẩy vào đây' })
+  @IsUrl({ require_protocol: true }) @IsOptional() lark_webhook_url?: string
+  @ApiPropertyOptional({ description: 'Secret Key ký số của bot Lark trên — chỉ cần khi bot đó bật "Ký số bảo mật" trong cài đặt Lark' })
+  @IsString() @IsOptional() lark_webhook_secret?: string
 }
 
 export class UpdateTeamDto {
@@ -26,6 +30,10 @@ export class UpdateTeamDto {
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean
   @ApiPropertyOptional({ type: [String] })
   @IsArray() @IsString({ each: true }) @IsOptional() member_ids?: string[]
+  @ApiPropertyOptional({ description: 'Webhook bot Lark riêng của team — thông báo task/content cần duyệt của team này chỉ đẩy vào đây' })
+  @IsUrl({ require_protocol: true }) @IsOptional() lark_webhook_url?: string
+  @ApiPropertyOptional({ description: 'Secret Key ký số của bot Lark trên — chỉ cần khi bot đó bật "Ký số bảo mật" trong cài đặt Lark' })
+  @IsString() @IsOptional() lark_webhook_secret?: string
 }
 
 export class AddMemberDto {

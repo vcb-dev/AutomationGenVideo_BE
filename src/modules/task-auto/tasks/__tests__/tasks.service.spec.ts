@@ -36,7 +36,7 @@ describe('TaskAutoTasksService.create — fallback content_line_id qua bản ghi
         }),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma, getCreateArgs: () => createArgs };
   }
 
@@ -171,7 +171,7 @@ describe('TaskAutoTasksService.create — chọn sản phẩm từ OMS', () => {
     }
     const oms: any = { getProductVariant: jest.fn(async () => ({ product: sampleProduct, variant: sampleVariant })) }
     const push: any = { sendToUser: jest.fn(async () => ({})) }
-    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any, oms, {} as any)
+    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any, oms, {} as any, {} as any)
     return { service, prisma, oms }
   }
 
@@ -282,7 +282,7 @@ describe('TaskAutoTasksService — ghi nhận assigned_by_id ở create()/update
       notification: { create: jest.fn(async () => ({})) },
     };
     const push: any = { sendToUser: jest.fn(async () => ({})) };
-    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, push, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma };
   }
 
@@ -409,7 +409,7 @@ describe('TaskAutoTasksService.remove — xoá task ở mọi trạng thái, the
         ),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, prisma, deleteCalls };
   }
 
@@ -567,7 +567,7 @@ describe('TaskAutoTasksService.getHeaderCounts', () => {
         }),
       },
     };
-    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, countCalls };
   }
 
@@ -650,7 +650,7 @@ describe('ContentApprovalService.countPending', () => {
         }),
       },
     };
-    const service = new ContentApprovalService(prisma, {} as any);
+    const service = new ContentApprovalService(prisma, {} as any, {} as any);
     return { service, countCalls };
   }
 
@@ -687,6 +687,7 @@ describe('TaskAutoTasksService.submit — bắt buộc có video trước khi n�
         update: jest.fn(async () => ({ team: { leader_id: null } })),
       },
     };
+    const larkWebhook: any = { sendApprovalNotice: jest.fn(async () => undefined) };
     const service = new TaskAutoTasksService(
       prisma,
       {} as any,
@@ -694,6 +695,7 @@ describe('TaskAutoTasksService.submit — bắt buộc có video trước khi n�
       {} as any,
       {} as any,
       {} as any,
+      larkWebhook,
     );
     return { service, prisma };
   }
@@ -756,6 +758,7 @@ describe('TaskAutoTasksService.review — dọn dẹp khi từ chối task', () 
     const service = new TaskAutoTasksService(
       prisma,
       videoService,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,

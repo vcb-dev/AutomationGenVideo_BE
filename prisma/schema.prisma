@@ -2570,6 +2570,8 @@ model Team {
   /// PRODUCTION = team sản xuất video (mặc định), CONTENT = team chuyên sưu tầm/dịch content
   team_kind  TeamKind  @default(PRODUCTION)
   is_active  Boolean   @default(true)
+  lark_webhook_url String?
+  lark_webhook_secret String?
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
 
@@ -3617,6 +3619,16 @@ model AutoAssignSetting {
   updated_at            DateTime @updatedAt
 
   @@map("auto_assign_settings")
+}
+
+model LarkWebhookSetting {
+  id             Int      @id @default(1)
+  webhook_url    String?
+  webhook_secret String?
+  updated_by     String?
+  updated_at     DateTime @updatedAt
+
+  @@map("lark_webhook_settings")
 }
 
 model Notification {
