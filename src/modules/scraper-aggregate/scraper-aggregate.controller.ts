@@ -31,7 +31,7 @@ export class ScraperAggregateController {
     if (!channelId) {
       return { success: false, views: 0, message: 'channelId is required' };
     }
-    return this.trafficInsightsService.getTrafficInsights(channelId, date, scope, platform);
+    return this.trafficInsightsService.getTrafficInsights(channelId, date, scope || 'mtd', platform);
   }
 
   @Get('all-videos')

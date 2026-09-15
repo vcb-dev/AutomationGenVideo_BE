@@ -15,7 +15,7 @@ export class TrafficInsightsService {
   async getTrafficInsights(
     channelId: string,
     date?: string,
-    scope: 'day' | 'mtd' = 'day',
+    scope: 'day' | 'mtd' = 'mtd',
     platform?: string,
   ): Promise<{
     success: boolean;
@@ -222,7 +222,7 @@ export class TrafficInsightsService {
               try {
                 const insightRes = await axios.get(`https://graph.facebook.com/v21.0/${targetPlatformId}/insights`, {
                   params: {
-                    metric: 'page_video_views,page_video_views_organic,page_posts_impressions_organic,page_post_engagements',
+                    metric: 'page_media_view,page_video_views,page_video_views_organic,page_posts_impressions_organic,page_post_engagements',
                     period: 'day',
                     since: sinceUnix,
                     until: untilUnix,
@@ -232,42 +232,55 @@ export class TrafficInsightsService {
                 });
                 const dataList = insightRes.data?.data || [];
 
-                let videoViewsTotal = 0;   // page_video_views: Đã bao gồm cả organic và paid!
-                let videoViewsOrganic = 0; // page_video_views_organic: Chỉ organic
-                let postImpressionsOrganic = 0; // Organic impressions
+                let pageMediaViews = 0;         // page_media_view: Số view chuẩn trên Meta Business Suite & Smart BI
+                let pageImpressionsTotal = 0;   // page_impressions: Tổng hiển thị Trang
+                let postImpressionsTotal = 0;   // page_posts_impressions: Tổng hiển thị bài viết (gồm cả Ads)
+                let postImpressionsOrganic = 0; // page_posts_impressions_organic: Hiển thị tự nhiên
+                let videoViewsTotal = 0;        // page_video_views: Lượt xem video
+                let videoViewsOrganic = 0;      // page_video_views_organic
                 let postEngagements = 0;
 
                 for (const item of dataList) {
                   const values = item.values || [];
                   const sumVal = values.reduce((acc: number, cur: any) => acc + Number(cur.value || 0), 0);
-                  if (item.name === 'page_video_views') {
+                  if (item.name === 'page_media_view') {
+                    pageMediaViews = sumVal;
+                  } else if (item.name === 'page_impressions') {
+                    pageImpressionsTotal = sumVal;
+                  } else if (item.name === 'page_posts_impressions') {
+                    postImpressionsTotal = sumVal;
+                  } else if (item.name === 'page_posts_impressions_organic') {
+                    postImpressionsOrganic = sumVal;
+                  } else if (item.name === 'page_video_views') {
                     videoViewsTotal = sumVal;
                   } else if (item.name === 'page_video_views_organic') {
                     videoViewsOrganic = sumVal;
-                  } else if (item.name === 'page_posts_impressions_organic') {
-                    postImpressionsOrganic = sumVal;
                   } else if (item.name === 'page_post_engagements') {
                     postEngagements = sumVal;
                   }
                 }
 
-                // CHUẨN HOÁ THEO ĐỊNH NGHĨA "LƯỢT XEM" TRÊN META BUSINESS SUITE:
-                // "Lượt xem: Số lượt phát hoặc hiển thị nội dung của bạn. Nội dung bao gồm thước phim, bài viết, tin và quảng cáo."
-                // Metric page_posts_impressions_organic đo lường số lượt hiển thị/phát nội dung khớp chính xác với tab "Lượt xem" của Meta Business Suite.
-                // Metric page_video_views là lượt xem video >= 3s.
-                const totalViews = postImpressionsOrganic > 0
-                  ? postImpressionsOrganic
-                  : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic);
+                // CÔNG THỨC CHUẨN CỦA META BUSINESS SUITE VÀ SMART BI:
+                // "Số view" của Trang = page_media_view (Tổng số lượt xem tất cả media: video, bài viết, reels)
+                const totalViews = pageMediaViews > 0
+                  ? pageMediaViews
+                  : (postImpressionsTotal > 0
+                    ? postImpressionsTotal
+                    : (pageImpressionsTotal > 0
+                      ? pageImpressionsTotal
+                      : (postImpressionsOrganic > 0
+                        ? postImpressionsOrganic
+                        : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic))));
 
-                // Đã gọi thành công Meta Graph API — trả về số liệu chính thức (kể cả views = 0)
+                // Đã gọi thành công Meta Graph API — trả về số liệu chính thức
                 return {
                   success: true,
                   views: totalViews,
                   period,
-                  source: 'meta_graph_page_insights',
+                  source: pageMediaViews > 0 ? 'meta_graph_page_media_view' : 'meta_graph_page_insights',
                   videoViewsTotal,
                   videoViewsOrganic,
-                  impressions: postImpressionsOrganic,
+                  impressions: totalViews,
                   engagements: postEngagements,
                 };
               } catch (fbErr: any) {
@@ -489,7 +502,7 @@ export class TrafficInsightsService {
           try {
             const insightRes = await axios.get(`https://graph.facebook.com/v21.0/${managedFbPage.page_id}/insights`, {
               params: {
-                metric: 'page_video_views,page_video_views_organic,page_posts_impressions_organic,page_post_engagements',
+                metric: 'page_media_view,page_video_views,page_video_views_organic,page_posts_impressions_organic,page_post_engagements',
                 period: 'day',
                 since: sinceUnix,
                 until: untilUnix,
@@ -498,6 +511,7 @@ export class TrafficInsightsService {
               timeout: 8000,
             });
             const dataList = insightRes.data?.data || [];
+            let pageMediaViews = 0;
             let videoViewsTotal = 0;
             let videoViewsOrganic = 0;
             let postImpressionsOrganic = 0;
@@ -506,7 +520,9 @@ export class TrafficInsightsService {
             for (const item of dataList) {
               const values = item.values || [];
               const sumVal = values.reduce((acc: number, cur: any) => acc + Number(cur.value || 0), 0);
-              if (item.name === 'page_video_views') {
+              if (item.name === 'page_media_view') {
+                pageMediaViews = sumVal;
+              } else if (item.name === 'page_video_views') {
                 videoViewsTotal = sumVal;
               } else if (item.name === 'page_video_views_organic') {
                 videoViewsOrganic = sumVal;
@@ -518,18 +534,20 @@ export class TrafficInsightsService {
             }
 
             // CHUẨN HOÁ THEO ĐỊNH NGHĨA "LƯỢT XEM" TRÊN META BUSINESS SUITE
-            const totalViews = postImpressionsOrganic > 0
-              ? postImpressionsOrganic
-              : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic);
+            const totalViews = pageMediaViews > 0
+              ? pageMediaViews
+              : (postImpressionsOrganic > 0
+                ? postImpressionsOrganic
+                : (videoViewsTotal > 0 ? videoViewsTotal : videoViewsOrganic));
 
             return {
               success: true,
               views: totalViews,
               period,
-              source: 'meta_graph_page_insights',
+              source: pageMediaViews > 0 ? 'meta_graph_page_media_view' : 'meta_graph_page_insights',
               videoViewsTotal,
               videoViewsOrganic,
-              impressions: postImpressionsOrganic,
+              impressions: totalViews,
               engagements: postEngagements,
             };
           } catch (fbErr: any) {
@@ -590,7 +608,123 @@ export class TrafficInsightsService {
         }
       }
 
-      // D) Không tìm thấy hoặc chưa có số liệu: trả về 0 một cách an toàn
+      // D) NẾU CÓ DỮ LIỆU QUẢNG CÁO (ads_campaign_stats):
+      // Công thức: Số view (Lượt hiển thị) = SUM(impressions)
+      try {
+        const isFbAdsId = channelIdClean.startsWith('120');
+        const isTtAdsId = channelIdClean.startsWith('185') || channelIdClean.startsWith('187');
+
+        const adsWhere: any = {
+          OR: [
+            { campaign_id: channelIdClean },
+            { account_id: channelIdClean },
+            { campaign_name: { equals: channelIdClean, mode: 'insensitive' } },
+            { campaign_name: { equals: cleanName, mode: 'insensitive' } },
+            ...(cleanName.length >= 3 ? [{ campaign_name: { contains: cleanName, mode: 'insensitive' } }] : []),
+          ],
+        };
+
+        if (expectedPlatform === 'FACEBOOK' || isFbAdsId) {
+          adsWhere.platform = { in: ['meta', 'facebook'] };
+        } else if (expectedPlatform === 'TIKTOK' || isTtAdsId) {
+          adsWhere.platform = 'tiktok';
+        }
+
+        adsWhere.year = targetYear;
+        adsWhere.month = targetMonth;
+
+        let adsAgg = await this.prisma.adsCampaignStats.aggregate({
+          where: adsWhere,
+          _sum: {
+            impressions: true,
+            reach: true,
+            spend: true,
+            clicks: true,
+          },
+        });
+
+        let adsImpressions = Number(adsAgg._sum.impressions || 0);
+
+        // Fallback: nếu tháng hiện tại chưa có sync, tìm tháng gần nhất có data
+        if (adsImpressions === 0) {
+          const fallbackWhere = { ...adsWhere };
+          delete fallbackWhere.year;
+          delete fallbackWhere.month;
+          const latestAds = await this.prisma.adsCampaignStats.findFirst({
+            where: fallbackWhere,
+            orderBy: { synced_at: 'desc' },
+          });
+          if (latestAds) {
+            fallbackWhere.year = latestAds.year;
+            fallbackWhere.month = latestAds.month;
+            const fallbackAgg = await this.prisma.adsCampaignStats.aggregate({
+              where: fallbackWhere,
+              _sum: {
+                impressions: true,
+                reach: true,
+                spend: true,
+                clicks: true,
+              },
+            });
+            const fallbackImpressions = Number(fallbackAgg._sum.impressions || 0);
+            if (fallbackImpressions > 0) {
+              adsAgg = fallbackAgg;
+              adsImpressions = fallbackImpressions;
+              period.label = `Tháng ${latestAds.month}/${latestAds.year} (Dữ liệu Ads gần nhất)`;
+            }
+          }
+        }
+
+        if (adsImpressions > 0) {
+          const detectedSource = isFbAdsId
+            ? 'facebook_ads_impressions'
+            : (isTtAdsId ? 'tiktok_ads_impressions' : 'ads_campaign_impressions');
+          return {
+            success: true,
+            views: adsImpressions, // 👈 Công thức: Số view (Lượt hiển thị) = SUM(impressions)
+            impressions: adsImpressions,
+            reach: Number(adsAgg._sum.reach || 0),
+            period,
+            source: detectedSource,
+          };
+        }
+      } catch (adsErr: any) {
+        this.logger.warn(`[TrafficInsights] Ads campaign stats check error: ${adsErr.message}`);
+      }
+
+      // E) NẾU CÓ TRONG SOCIAL VIDEO REPORT (social_video_report):
+      try {
+        const svrAgg = await this.prisma.socialVideoReport.aggregate({
+          where: {
+            ...(expectedPlatform ? { platform: expectedPlatform.toLowerCase() } : {}),
+            OR: [
+              { channel_name: { equals: channelIdClean, mode: 'insensitive' } },
+              { channel_name: { equals: cleanName, mode: 'insensitive' } },
+              { username: { equals: channelIdClean, mode: 'insensitive' } },
+              { username: { equals: cleanName, mode: 'insensitive' } },
+            ],
+            year: targetYear,
+            month: targetMonth,
+            is_active: true,
+          },
+          _sum: { views: true },
+        });
+
+        const svrViews = Number(svrAgg._sum.views || 0);
+        if (svrViews > 0) {
+          return {
+            success: true,
+            views: svrViews,
+            impressions: svrViews,
+            period,
+            source: 'social_video_report',
+          };
+        }
+      } catch (svrErr: any) {
+        this.logger.warn(`[TrafficInsights] SocialVideoReport check error: ${svrErr.message}`);
+      }
+
+      // F) Không tìm thấy hoặc chưa có số liệu: trả về 0 một cách an toàn
       return { success: true, views: 0, period, source: 'none' };
     } catch (error: any) {
       this.logger.error(`[TrafficInsights] Error: ${error.message}`);

@@ -254,6 +254,7 @@ export class BilibiliScraperService {
   async scrapeProfileVideos(
     profileId: bigint,
     numOfPosts: number,
+    options?: { mode?: 'count' | 'days'; days?: number },
   ): Promise<{ created: number; updated: number; items_returned: number }> {
     const profile = await this.prisma.scraperBilibiliProfile.findUnique({ where: { id: profileId } });
     if (!profile) throw new Error(`Profile ${profileId} không tồn tại`);
@@ -290,9 +291,16 @@ export class BilibiliScraperService {
         await this.prisma.scraperBilibiliProfile.update({ where: { id: profileId }, data: { is_initial_scraped: true } });
       }
 
+      const cutoffDate = options?.mode === 'days' && options?.days && options.days > 0
+        ? new Date(Date.now() - options.days * 86400000)
+        : null;
+
       let created = 0;
       let updated = 0;
       for (const v of videos) {
+        if (cutoffDate && v.date_posted && new Date(v.date_posted) < cutoffDate) {
+          continue;
+        }
         const r = await this.upsertVideo(profileId, v);
         if (r.created) created++;
         else updated++;
@@ -426,11 +434,27 @@ export class BilibiliScraperService {
 
   // ─── Toggle bookmark/tracked ─────────────────────────────────────────────
 
-  async toggleProfile(id: bigint, field: 'is_bookmarked' | 'is_tracked'): Promise<boolean> {
+  async toggleProfile(
+    id: bigint,
+    field: 'is_bookmarked' | 'is_tracked',
+    user?: { id?: string; full_name?: string; email?: string },
+  ): Promise<boolean> {
     const profile = await this.prisma.scraperBilibiliProfile.findUnique({ where: { id } });
     if (!profile) throw new HttpException({ error: 'Profile not found' }, HttpStatus.NOT_FOUND);
     const newValue = !profile[field];
-    await this.prisma.scraperBilibiliProfile.update({ where: { id }, data: { [field]: newValue } });
+    const updateData: any = { [field]: newValue };
+    if (field === 'is_bookmarked') {
+      if (newValue) {
+        updateData.bookmarked_by_id = user?.id || null;
+        updateData.bookmarked_by_name = user?.full_name || user?.email || null;
+        updateData.bookmarked_at = new Date();
+      } else {
+        updateData.bookmarked_by_id = null;
+        updateData.bookmarked_by_name = null;
+        updateData.bookmarked_at = null;
+      }
+    }
+    await this.prisma.scraperBilibiliProfile.update({ where: { id }, data: updateData });
     return newValue;
   }
 
@@ -497,27 +521,51 @@ export class BilibiliScraperService {
     return { keywords, created, updated };
   }
 
-  async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
+  async periodicRefresh(options?: {
+    scope?: 'tracked' | 'bookmarked' | 'all';
+    mode?: 'count' | 'days';
+    count?: number;
+    days?: number;
+  }): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
+    const scope = options?.scope || 'tracked';
+    const where: any = { scraping_status: { not: 'processing' } };
+    if (scope === 'tracked') {
+      where.is_tracked = true;
+    } else if (scope === 'bookmarked') {
+      where.is_bookmarked = true;
+    }
+
     const profiles = await this.prisma.scraperBilibiliProfile.findMany({
-      where: { is_tracked: true, scraping_status: { not: 'processing' } },
+      where,
       orderBy: { last_scraped_at: 'asc' },
     });
 
     if (profiles.length === 0) {
-      this.logger.log('[BILIBILI-PERIODIC] Không có profile nào cần cào định kỳ.');
+      this.logger.log(`[BILIBILI-PERIODIC] Không có profile (${scope}) nào cần cào định kỳ.`);
       return { total: 0, done: 0, failed: 0 };
     }
 
-    this.logger.log(`═══ [BILIBILI-PERIODIC] Cào video mới cho ${profiles.length} profile(s) ═══`);
+    this.logger.log(`═══ [BILIBILI-PERIODIC] Cào video mới cho ${profiles.length} profile(s) (scope: ${scope}, mode: ${options?.mode || 'default'}) ═══`);
     let done = 0;
     let failed = 0;
 
     for (const profile of profiles) {
       try {
-        const count = profile.is_initial_scraped ? 10 : 30;
-        await this.scrapeProfileVideos(profile.id, count);
+        const mode = options?.mode || (options?.days ? 'days' : options?.count ? 'count' : 'default');
+        let count = 20;
+        if (mode === 'count') {
+          count = options?.count && options.count > 0 ? options.count : (profile.is_initial_scraped ? 10 : 30);
+        } else if (mode === 'days') {
+          count = options?.count && options.count > 0 ? options.count : 50;
+        } else {
+          count = profile.is_initial_scraped ? 10 : 30;
+        }
+        await this.scrapeProfileVideos(profile.id, count, {
+          mode: options?.mode,
+          days: options?.days,
+        });
         done++;
       } catch (err: any) {
         failed++;
@@ -528,5 +576,12 @@ export class BilibiliScraperService {
 
     this.logger.log(`═══ [BILIBILI-PERIODIC] Xong: ${done}/${profiles.length} OK, ${failed} lỗi ═══`);
     return { total: profiles.length, done, failed };
+  }
+
+  async updateClassification(id: bigint, channel_type: string, product_lines: string[]) {
+    return this.prisma.scraperBilibiliProfile.update({
+      where: { id },
+      data: { channel_type, product_lines },
+    });
   }
 }

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { DODA_CHANNEL_PATTERN, DODA_CAPTION_PATTERN } from './content-filters';
 
 /**
  * Summary metrics for the "Internal Channel Overview" dashboard.
@@ -53,6 +54,11 @@ export const HASHTAG_PATTERN = '#([[:alnum:]_]{2,64})';
  * Recognizes Vietnamese characters in caption for market classification (VN vs Global).
  */
 const VIETNAMESE_ACCENTS = Prisma.sql`(COALESCE(v.mo_ta, '') ~* '[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]')`;
+
+/**
+ * Nhận diện bài đăng / kênh thuộc line Đồ da (Nhạn Nhạn, Vân Phong Các, xưởng da, thợ da...).
+ */
+const DODA_PREDICATE = Prisma.sql`(COALESCE(v.kenh_ten, '') ~* ${DODA_CHANNEL_PATTERN} OR COALESCE(v.mo_ta, '') ~* ${DODA_CAPTION_PATTERN})`;
 
 export interface RawAggregateMetricsRow {
   platform: string;
@@ -113,7 +119,8 @@ interface RawVideoRow {
 
 interface RawMarketRow {
   platform: string;
-  vn: boolean;
+  market?: string;
+  vn?: boolean;
   posts: bigint;
   views: bigint;
 }
@@ -253,7 +260,12 @@ export class OwnedStatsService {
           LIMIT 12
         `,
         this.prisma.$queryRaw<RawMarketRow[]>`
-          SELECT v.platform, ${VIETNAMESE_ACCENTS} AS vn,
+          SELECT v.platform,
+                 CASE
+                   WHEN (${DODA_PREDICATE}) THEN 'doda'
+                   WHEN (${VIETNAMESE_ACCENTS}) THEN 'vn'
+                   ELSE 'global'
+                 END AS market,
                  COUNT(*)::bigint AS posts,
                  COALESCE(SUM(v.views), 0)::bigint AS views
           FROM (${currentPeriod}) AS v
@@ -647,12 +659,26 @@ export class OwnedStatsService {
   }
 
   private mergeMarkets(rows: RawMarketRow[]) {
-    const byPlatform = new Map<string, { platform: string; vn: number; global: number; posts_vn: number; posts_global: number }>();
+    const byPlatform = new Map<
+      string,
+      {
+        platform: string;
+        vn: number;
+        global: number;
+        doda: number;
+        posts_vn: number;
+        posts_global: number;
+        posts_doda: number;
+      }
+    >();
     for (const r of rows) {
       const cur =
         byPlatform.get(r.platform) ??
-        { platform: r.platform, vn: 0, global: 0, posts_vn: 0, posts_global: 0 };
-      if (r.vn) {
+        { platform: r.platform, vn: 0, global: 0, doda: 0, posts_vn: 0, posts_global: 0, posts_doda: 0 };
+      if (r.market === 'doda') {
+        cur.doda += toNum(r.views);
+        cur.posts_doda += toNum(r.posts);
+      } else if (r.market === 'vn' || r.vn === true) {
         cur.vn += toNum(r.views);
         cur.posts_vn += toNum(r.posts);
       } else {
@@ -661,7 +687,7 @@ export class OwnedStatsService {
       }
       byPlatform.set(r.platform, cur);
     }
-    return [...byPlatform.values()].sort((a, b) => b.vn + b.global - (a.vn + a.global));
+    return [...byPlatform.values()].sort((a, b) => b.vn + b.global + b.doda - (a.vn + a.global + a.doda));
   }
 
   private mergeContentLines(rows: RawContentLineRow[]) {

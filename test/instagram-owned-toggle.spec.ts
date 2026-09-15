@@ -1,11 +1,11 @@
 import { ForbiddenException, HttpException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { InstagramScraperController } from '../instagram-scraper.controller';
+import { InstagramScraperController } from '../src/modules/instagram-scraper/instagram-scraper.controller';
 import {
   InstagramScraperService,
   MANAGED_TOGGLE_FIELDS,
   TOGGLE_FIELDS,
-} from '../instagram-scraper.service';
+} from '../src/modules/instagram-scraper/instagram-scraper.service';
 
 /**
  * Đánh dấu một profile Instagram là kênh nội bộ.
@@ -40,7 +40,7 @@ describe('Toggle kênh nội bộ cho Instagram', () => {
 
     const res = await controller.toggle('7', { field: 'is_owned' }, asUser(UserRole.LEADER));
 
-    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_owned');
+    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_owned', { roles: [UserRole.LEADER] });
     expect(res).toEqual({ status: 'ok', is_owned: true });
   });
 
@@ -49,7 +49,7 @@ describe('Toggle kênh nội bộ cho Instagram', () => {
 
     await controller.toggle('7', { field: 'is_owned' }, asUser(UserRole.ADMIN));
 
-    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_owned');
+    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_owned', { roles: [UserRole.ADMIN] });
   });
 
   it('người thường KHÔNG được bật — số liệu công ty phụ thuộc vào cờ này', async () => {
@@ -66,7 +66,7 @@ describe('Toggle kênh nội bộ cho Instagram', () => {
 
     await controller.toggle('7', { field: 'is_bookmarked' }, asUser(UserRole.MEMBER));
 
-    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_bookmarked');
+    expect(toggleProfile).toHaveBeenCalledWith(BigInt(7), 'is_bookmarked', { roles: [UserRole.MEMBER] });
     expect(MANAGED_TOGGLE_FIELDS).not.toContain('is_bookmarked');
   });
 

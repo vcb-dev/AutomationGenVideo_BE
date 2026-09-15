@@ -15,6 +15,7 @@ function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 's
 function winTask(id: string, over: Partial<Record<string, any>> = {}) {
   return {
     id,
+    team_id: 'team-1',
     assignee_id: 'assignee-1',
     reviewed_by_id: 'reviewer-1',
     brand_type: 'TRANG_SUC',
@@ -37,8 +38,10 @@ function build(opts: {
   contentByWinUrl?: Record<string, { id: string }>;
   contentById?: Record<string, { classification_id: string | null; won_at: Date | null }>;
   teamContentById?: Record<string, any>;
+  teamContentByTeamEditor?: Record<string, { id: string }>;
   editorContentById?: Record<string, any>;
   contentUpdateImpl?: jest.Mock;
+  teamContentCreateImpl?: jest.Mock;
 } = {}) {
   const clsResolved =
     opts.classificationId === undefined
@@ -48,6 +51,7 @@ function build(opts: {
         : { id: opts.classificationId };
 
   const created: Array<{ id: string; data: any }> = [];
+  const teamContentCreated: Array<{ id: string; data: any }> = [];
   const prisma: any = {
     task: {
       findMany: jest.fn(async () => opts.tasks ?? []),
@@ -68,7 +72,23 @@ function build(opts: {
       }),
       update: opts.contentUpdateImpl ?? jest.fn(async (a: any) => a),
     },
-    teamContent: { findUnique: jest.fn(async (a: any) => opts.teamContentById?.[a.where.id] ?? null) },
+    teamContent: {
+      findUnique: jest.fn(async (a: any) => {
+        if (a.where.id) return opts.teamContentById?.[a.where.id] ?? null;
+        if (a.where.team_id_source_editor_content_id) {
+          const { team_id, source_editor_content_id } = a.where.team_id_source_editor_content_id;
+          return opts.teamContentByTeamEditor?.[`${team_id}:${source_editor_content_id}`] ?? null;
+        }
+        return null;
+      }),
+      create:
+        opts.teamContentCreateImpl ??
+        jest.fn(async (a: any) => {
+          const id = `team-content-new-${teamContentCreated.length + 1}`;
+          teamContentCreated.push({ id, data: a.data });
+          return { id };
+        }),
+    },
     editorContent: { findUnique: jest.fn(async (a: any) => opts.editorContentById?.[a.where.id] ?? null) },
     contentClassification: {
       findUnique: jest.fn(async () => clsResolved),
@@ -78,7 +98,7 @@ function build(opts: {
     $transaction: jest.fn(async (fn: any) => fn(prisma)),
   };
   const service = new TaskAutoContentWinPushService(prisma);
-  return { service, prisma, created };
+  return { service, prisma, created, teamContentCreated };
 }
 
 describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
@@ -166,6 +186,7 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
       brand_type: 'DO_DA',
       classification_id: 'cls-win',
       origin: 'COLLECTED',
+      content_line_id: 'cl-A4',
       added_by_id: 'assignee-1',
     });
   });
@@ -207,9 +228,109 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
       script: 'Script',
       file_content_url: 'http://f',
       classification_id: 'cls-win',
+      content_line_id: 'cl-A4',
       added_by_id: 'ec-owner',
     });
     expect(created[0].data).not.toHaveProperty('code');
+  });
+
+  it('content-win từ kho cá nhân còn tìm-hoặc-tạo TeamContent tương ứng trong kho team (không đụng TeamContentWarehouse)', async () => {
+    const { service, prisma, teamContentCreated } = build({
+      tasks: [winTask('t1', { team_id: 'team-9', editor_content_id: 'ec1', assignee_id: null, published_links: fbLink(15000) })],
+      editorContentById: {
+        ec1: {
+          brand_type: 'TRANG_SUC', market: 'JAPAN', content_line_id: null, classification_id: null,
+          title: 'Tiêu đề', body: 'Body', script: 'Script', file_content_url: 'http://f',
+          added_by_id: 'ec-owner', user_id: 'ec-user',
+        },
+      },
+    });
+
+    const res = await service.pushWinningTasks(['t1']);
+
+    expect(res.pushed).toBe(1);
+    expect(teamContentCreated).toHaveLength(1);
+    expect(teamContentCreated[0].data).toEqual({
+      team_id: 'team-9',
+      source_editor_content_id: 'ec1',
+      brand_type: 'TRANG_SUC',
+      classification_id: 'cls-win',
+      added_by_id: 'ec-owner',
+      content_line_id: 'cl-A4',
+      market: 'JAPAN',
+    });
+    expect(prisma).not.toHaveProperty('teamContentWarehouse');
+  });
+
+  it('content-win từ kho cá nhân nhưng TeamContent đã có sẵn trong kho team → không tạo lại', async () => {
+    const { service, teamContentCreated } = build({
+      tasks: [winTask('t1', { team_id: 'team-9', editor_content_id: 'ec1' })],
+      teamContentByTeamEditor: { 'team-9:ec1': { id: 'tc-existing' } },
+    });
+
+    await service.pushWinningTasks(['t1']);
+
+    expect(teamContentCreated).toHaveLength(0);
+  });
+
+  it('tạo TeamContent đụng race (cron 8:15 + nút "Cập nhật" cùng lúc) → nuốt lỗi P2002, vẫn tính là pushed', async () => {
+    const raceCreate = jest.fn(async () => {
+      const err: any = new Error('Unique constraint failed on the fields: (`team_id`,`source_editor_content_id`)');
+      err.code = 'P2002';
+      throw err;
+    });
+    const { service, prisma, teamContentCreated } = build({
+      tasks: [winTask('t1', { team_id: 'team-9', editor_content_id: 'ec1' })],
+      editorContentById: {
+        ec1: {
+          brand_type: 'TRANG_SUC', market: 'JAPAN', content_line_id: null, classification_id: null,
+          added_by_id: 'ec-owner', user_id: 'ec-user',
+        },
+      },
+      teamContentCreateImpl: raceCreate,
+    });
+
+    const res = await service.pushWinningTasks(['t1']);
+
+    expect(res).toEqual({ pushed: 1, skipped: 0, failed: 0 });
+    expect(teamContentCreated).toHaveLength(0);
+    // Task vẫn được đánh dấu content_win_pushed_at — không bị coi là lỗi rồi treo lại chờ cron sau.
+    expect(prisma.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 't1' }, data: expect.objectContaining({ content_win_pushed_at: expect.any(Date) }) }),
+    );
+  });
+
+  it('tạo TeamContent lỗi khác P2002 → vẫn ném ra ngoài, task tính là failed (không đánh dấu đã xử lý)', async () => {
+    const boomCreate = jest.fn(async () => {
+      throw new Error('db boom');
+    });
+    const { service, teamContentCreated } = build({
+      tasks: [winTask('t1', { team_id: 'team-9', editor_content_id: 'ec1' })],
+      editorContentById: {
+        ec1: {
+          brand_type: 'TRANG_SUC', market: 'JAPAN', content_line_id: null, classification_id: null,
+          added_by_id: 'ec-owner', user_id: 'ec-user',
+        },
+      },
+      teamContentCreateImpl: boomCreate,
+    });
+
+    const res = await service.pushWinningTasks(['t1']);
+
+    expect(res).toEqual({ pushed: 0, skipped: 0, failed: 1 });
+    expect(teamContentCreated).toHaveLength(0);
+  });
+
+  it('task đã có sẵn team_content_id (đã ở kho team) → không chạy bước tìm-hoặc-tạo TeamContent', async () => {
+    const { service, prisma, teamContentCreated } = build({
+      tasks: [winTask('t1', { team_content_id: 'tc1', editor_content_id: 'ec1' })],
+      contentBySourceTeam: { tc1: { id: 'c-existing' } },
+    });
+
+    await service.pushWinningTasks(['t1']);
+
+    expect(teamContentCreated).toHaveLength(0);
+    expect(prisma.editorContent.findUnique).not.toHaveBeenCalled();
   });
 
   it('task sáng tạo KHÔNG gắn content nào → tạo Content mới đại diện video thắng (không source_*), title theo tuyến', async () => {

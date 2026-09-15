@@ -430,11 +430,27 @@ export class FacebookExternalScraperService {
 
   // ─── Toggle bookmark/periodic_crawl ─────────────────────────────────────────
 
-  async toggleFanpage(id: bigint, field: 'is_bookmarked' | 'is_periodic_crawl'): Promise<any> {
+  async toggleFanpage(
+    id: bigint,
+    field: 'is_bookmarked' | 'is_periodic_crawl',
+    user?: { id?: string; full_name?: string; email?: string },
+  ): Promise<any> {
     const fp = await this.prisma.scraperFanpage.findUnique({ where: { id } });
     if (!fp) throw new HttpException({ error: 'Not found' }, HttpStatus.NOT_FOUND);
     const newValue = !fp[field];
-    await this.prisma.scraperFanpage.update({ where: { id }, data: { [field]: newValue } });
+    const updateData: any = { [field]: newValue };
+    if (field === 'is_bookmarked') {
+      if (newValue) {
+        updateData.bookmarked_by_id = user?.id || null;
+        updateData.bookmarked_by_name = user?.full_name || user?.email || null;
+        updateData.bookmarked_at = new Date();
+      } else {
+        updateData.bookmarked_by_id = null;
+        updateData.bookmarked_by_name = null;
+        updateData.bookmarked_at = null;
+      }
+    }
+    await this.prisma.scraperFanpage.update({ where: { id }, data: updateData });
     return { id: Number(id), [field]: newValue };
   }
 
@@ -540,7 +556,10 @@ export class FacebookExternalScraperService {
   // ─── Periodic (cron): lenient — không hard-fail nếu profile API thất bại,
   // luôn ingest bất kể profile_api_ok (khớp scrape_reels_sync/periodic task cũ). ────
 
-  private async periodicScrapeOne(fanpageId: bigint): Promise<{ created: number; updated: number }> {
+  private async periodicScrapeOne(
+    fanpageId: bigint,
+    options?: { mode?: 'count' | 'days'; count?: number; days?: number },
+  ): Promise<{ created: number; updated: number }> {
     const fanpage = await this.prisma.scraperFanpage.findUniqueOrThrow({ where: { id: fanpageId } });
 
     await this.prisma.scraperFanpage.update({ where: { id: fanpageId }, data: { scraping_status: 'processing' } });
@@ -554,10 +573,23 @@ export class FacebookExternalScraperService {
       });
       const existingIds = existingRows.map((r) => r.post_id);
 
-      const startDate = fanpage.is_initial_scraped && fanpage.last_scraped_at
-        ? fanpage.last_scraped_at.toISOString().slice(0, 10)
-        : '';
-      const numPosts = fanpage.is_initial_scraped ? 20 : 50;
+      const mode = options?.mode || (options?.days ? 'days' : options?.count ? 'count' : 'default');
+      let startDate = '';
+      let numPosts = 20;
+
+      if (mode === 'days') {
+        const days = options?.days && options.days > 0 ? options.days : 7;
+        startDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+        numPosts = options?.count && options.count > 0 ? options.count : 50;
+      } else if (mode === 'count') {
+        numPosts = options?.count && options.count > 0 ? options.count : 20;
+        startDate = '';
+      } else {
+        startDate = fanpage.is_initial_scraped && fanpage.last_scraped_at
+          ? fanpage.last_scraped_at.toISOString().slice(0, 10)
+          : '';
+        numPosts = fanpage.is_initial_scraped ? 20 : 50;
+      }
 
       const { profile_api_ok, profile, reels } = await this.aiClient.fetchPageReels(fanpage.page_url, numPosts, existingIds, startDate);
 
@@ -572,32 +604,47 @@ export class FacebookExternalScraperService {
     }
   }
 
-  // is_periodic_crawl là tiêu chí chọn lọc duy nhất; scraping_status chỉ dùng để loại trừ
-  // fanpage đang cào dở (!= 'processing'), không so khớp cứng 1 giá trị cụ thể.
-  async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
+  // is_periodic_crawl là tiêu chí chọn lọc mặc định; hỗ trợ thêm scope 'bookmarked' hoặc 'all'
+  async periodicRefresh(options?: {
+    scope?: 'tracked' | 'bookmarked' | 'all';
+    mode?: 'count' | 'days';
+    count?: number;
+    days?: number;
+  }): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
+    const scope = options?.scope || 'tracked';
+    const where: any = {
+      is_visible_on_ui: true,
+      scraping_status: { not: 'processing' },
+    };
+    if (scope === 'tracked') {
+      where.is_periodic_crawl = true;
+    } else if (scope === 'bookmarked') {
+      where.is_bookmarked = true;
+    }
+
     const pages = await this.prisma.scraperFanpage.findMany({
-      where: {
-        is_periodic_crawl: true,
-        is_visible_on_ui: true,
-        scraping_status: { not: 'processing' },
-      },
+      where,
       orderBy: { last_scraped_at: 'asc' },
     });
 
     if (pages.length === 0) {
-      this.logger.log('[FB-EXTERNAL-PERIODIC] Không có page nào cần cào định kỳ.');
+      this.logger.log(`[FB-EXTERNAL-PERIODIC] Không có page (${scope}) nào cần cào định kỳ.`);
       return { total: 0, done: 0, failed: 0 };
     }
 
-    this.logger.log(`═══ [FB-EXTERNAL-PERIODIC] Cào reels mới cho ${pages.length} page(s) đánh dấu ═══`);
+    this.logger.log(`═══ [FB-EXTERNAL-PERIODIC] Cào reels mới cho ${pages.length} page(s) (scope: ${scope}, mode: ${options?.mode || 'default'}) ═══`);
     let done = 0;
     let failed = 0;
 
     for (const fp of pages) {
       try {
-        const result = await this.periodicScrapeOne(fp.id);
+        const result = await this.periodicScrapeOne(fp.id, {
+          mode: options?.mode,
+          count: options?.count,
+          days: options?.days,
+        });
         done++;
         this.logger.log(`  ✅ ${fp.name}: +${result.created} mới`);
       } catch (err: any) {

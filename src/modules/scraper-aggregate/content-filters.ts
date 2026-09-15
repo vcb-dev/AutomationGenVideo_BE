@@ -28,7 +28,7 @@ import { Prisma } from '@prisma/client';
 export const CONTENT_LINES = ['A1', 'A2', 'A3', 'A4', 'A5'] as const;
 export type ContentLine = (typeof CONTENT_LINES)[number];
 
-export const MARKETS = ['vn', 'global'] as const;
+export const MARKETS = ['vn', 'global', 'doda'] as const;
 export type Market = (typeof MARKETS)[number];
 
 /**
@@ -40,6 +40,18 @@ const CHU_TIENG_VIET =
 
 const MAU_TIENG_VIET = `[${CHU_TIENG_VIET}]`;
 
+/**
+ * Mẫu nhận diện kênh / page đồ da (Nhạn Nhạn, Vân Phong Các, xưởng da, thợ da, đồ da, leathercraft...).
+ */
+export const DODA_CHANNEL_PATTERN =
+  'nhạn|nyan|vân phong các|van phong cac|thợ da|tho da|xưởng da|xuong da|đồ da|do da|leather|chinhandoda|nhannhan';
+
+/**
+ * Mẫu nhận diện caption / bài đăng thuộc line đồ da.
+ */
+export const DODA_CAPTION_PATTERN =
+  'nhạn nhạn|chị nhạn|chi nhan|vân phong các|thợ da|xưởng da|đồ da|ví da|túi da|da bò|da thật|da thủ công|#doda|#dathat|#xuongda|#thoda|#leather';
+
 export function laTuyenHopLe(value: string): value is ContentLine {
   return (CONTENT_LINES as readonly string[]).includes(value.toUpperCase());
 }
@@ -49,20 +61,32 @@ export function laThiTruongHopLe(value: string): value is Market {
 }
 
 /**
- * Điều kiện lọc theo thị trường.
+ * Điều kiện lọc theo thị trường (vn / global / doda).
  *
- * @param cot biểu thức SQL trỏ tới cột chữ của nhánh (mỗi nền tảng một tên: description /
- *            title / caption), nên phải truyền vào chứ không viết cứng được.
+ * @param cot biểu thức SQL trỏ tới cột chữ của nhánh (description / title / caption).
+ * @param cotKenh biểu thức SQL trỏ tới tên kênh / page để nhận diện chính xác các kênh đồ da.
  */
-export function marketFilter(cot: Prisma.Sql, market: string): Prisma.Sql | null {
+export function marketFilter(
+  cot: Prisma.Sql,
+  market: string,
+  cotKenh?: Prisma.Sql,
+): Prisma.Sql | null {
   const m = (market || '').toLowerCase();
   if (!laThiTruongHopLe(m)) return null;
-  // COALESCE: caption NULL thì `~*` trả NULL chứ không trả false, video sẽ rơi khỏi CẢ HAI
-  // nhóm VN lẫn Global — cộng hai nhóm lại không bằng tổng, nhìn như mất video.
+
   const chu = Prisma.sql`COALESCE(${cot}, '')`;
-  return m === 'vn'
-    ? Prisma.sql`${chu} ~* ${MAU_TIENG_VIET}`
-    : Prisma.sql`${chu} !~* ${MAU_TIENG_VIET}`;
+  const isDoda = cotKenh
+    ? Prisma.sql`(COALESCE(${cotKenh}, '') ~* ${DODA_CHANNEL_PATTERN} OR ${chu} ~* ${DODA_CAPTION_PATTERN})`
+    : Prisma.sql`(${chu} ~* ${DODA_CAPTION_PATTERN})`;
+
+  if (m === 'doda') {
+    return isDoda;
+  }
+  if (m === 'vn') {
+    return Prisma.sql`(${chu} ~* ${MAU_TIENG_VIET} AND NOT ${isDoda})`;
+  }
+  // m === 'global'
+  return Prisma.sql`(${chu} !~* ${MAU_TIENG_VIET} AND NOT ${isDoda})`;
 }
 
 /**

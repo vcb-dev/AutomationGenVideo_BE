@@ -119,6 +119,7 @@ model User {
   content_transforms               ContentTransformHistory[]      @relation("ContentTransformOf")
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
+  id_photo_batches_created         IdPhotoBatchJob[]              @relation("IdPhotoBatchCreatedBy")
   api_keys_created                  ApiKey[]                      @relation("ApiKeyCreatedBy")
   api_key_principal                ApiKey?                       @relation("ApiKeyServiceUser")
 
@@ -1635,6 +1636,9 @@ model ScraperFanpage {
   is_periodic_crawl   Boolean                 @default(false)
   crawl_interval_days Int                     @default(1)
   is_bookmarked       Boolean                 @default(false)
+  bookmarked_by_id    String?                 @db.Uuid
+  bookmarked_by_name  String?                 @db.VarChar(255)
+  bookmarked_at       DateTime?               @db.Timestamptz(6)
   is_initial_scraped  Boolean                 @default(false)
   scraping_status     String                  @default("idle") @db.VarChar(20)
   last_scraped_at     DateTime?               @db.Timestamptz(6)
@@ -1835,19 +1839,25 @@ model ScraperDouyinProfile {
   is_verified        Boolean                       @default(false)
   followers_count    BigInt                        @default(0)
   is_bookmarked      Boolean                       @default(false)
+  bookmarked_by_id   String?                       @db.Uuid
+  bookmarked_by_name String?                       @db.VarChar(255)
+  bookmarked_at      DateTime?                     @db.Timestamptz(6)
   is_tracked         Boolean                       @default(false)
   is_owned           Boolean                       @default(false)
   is_initial_scraped Boolean                       @default(false)
   last_scraped_at    DateTime?                     @db.Timestamptz(6)
   scraping_status    String                        @default("idle") @db.VarChar(20)
   scrape_error       String?                       @db.Text
-  created_at         DateTime                      @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime                      @updatedAt @db.Timestamptz(6)
-  metrics_history    ScraperDouyinProfileMetrics[]
+  channel_type        String                        @default("product") @db.VarChar(20)
+  product_lines       String[]                      @default([])
+  created_at          DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime                      @updatedAt @db.Timestamptz(6)
+  metrics_history     ScraperDouyinProfileMetrics[]
 
   @@index([uid])
   @@index([username])
   @@index([nickname])
+  @@index([channel_type])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([is_owned])
@@ -1889,11 +1899,16 @@ model ScraperTikTokProfile {
   videos_count       Int                           @default(0)
   is_tracked         Boolean                       @default(false)
   is_bookmarked      Boolean                       @default(false)
+  bookmarked_by_id   String?                       @db.Uuid
+  bookmarked_by_name String?                       @db.VarChar(255)
+  bookmarked_at      DateTime?                     @db.Timestamptz(6)
   is_owned           Boolean                       @default(false)
   is_initial_scraped Boolean                       @default(false)
   last_scraped_at    DateTime?                     @db.Timestamptz(6)
   scraping_status    String                        @default("idle") @db.VarChar(20)
   scrape_error       String?                       @db.Text
+  channel_type       String                        @default("product") @db.VarChar(20)
+  product_lines      String[]                      @default([])
   created_at         DateTime                      @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                      @updatedAt @db.Timestamptz(6)
   videos             ScraperTikTokProfileVideo[]
@@ -1901,6 +1916,7 @@ model ScraperTikTokProfile {
 
   @@index([sec_uid])
   @@index([username])
+  @@index([channel_type])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([is_owned])
@@ -1976,17 +1992,23 @@ model ScraperInstagramProfile {
   posts_count        Int                              @default(0)
   is_tracked         Boolean                          @default(false)
   is_bookmarked      Boolean                          @default(false)
+  bookmarked_by_id   String?                          @db.Uuid
+  bookmarked_by_name String?                          @db.VarChar(255)
+  bookmarked_at      DateTime?                        @db.Timestamptz(6)
   is_owned           Boolean                          @default(false)
   is_initial_scraped Boolean                          @default(false)
   last_scraped_at    DateTime?                        @db.Timestamptz(6)
   scraping_status    String                           @default("idle") @db.VarChar(20)
   scrape_error       String?                          @db.Text
+  channel_type       String                           @default("product") @db.VarChar(20)
+  product_lines      String[]                         @default([])
   created_at         DateTime                         @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                         @updatedAt @db.Timestamptz(6)
   reels              ScraperInstagramReel[]
   metrics_history    ScraperInstagramProfileMetrics[]
 
   @@index([username])
+  @@index([channel_type])
   @@index([is_tracked, last_scraped_at])
   @@index([is_owned])
   @@index([is_bookmarked])
@@ -2145,16 +2167,22 @@ model ScraperXiaohongshuProfile {
   is_verified        Boolean   @default(false)
   is_tracked         Boolean   @default(true)
   is_bookmarked      Boolean   @default(false)
+  bookmarked_by_id   String?   @db.Uuid
+  bookmarked_by_name String?   @db.VarChar(255)
+  bookmarked_at      DateTime? @db.Timestamptz(6)
   is_owned           Boolean   @default(false)
   is_initial_scraped Boolean   @default(false)
   last_scraped_at    DateTime? @db.Timestamptz(6)
   scraping_status    String    @default("idle") @db.VarChar(20)
   scrape_error       String?   @db.Text
+  channel_type       String    @default("product") @db.VarChar(20)
+  product_lines      String[]  @default([])
   created_at         DateTime  @default(now()) @db.Timestamptz(6)
   updated_at         DateTime  @updatedAt @db.Timestamptz(6)
 
   videos ScraperXiaohongshuVideo[]
 
+  @@index([channel_type])
   @@index([is_tracked])
   @@index([is_bookmarked])
   @@index([is_owned])
@@ -2185,17 +2213,23 @@ model ScraperYoutubeProfile {
   channel_created_at DateTime?                      @db.Timestamptz(6)
   is_tracked         Boolean                        @default(false)
   is_bookmarked      Boolean                        @default(false)
+  bookmarked_by_id   String?                        @db.Uuid
+  bookmarked_by_name String?                        @db.VarChar(255)
+  bookmarked_at      DateTime?                      @db.Timestamptz(6)
   is_owned           Boolean                        @default(false)
   is_initial_scraped Boolean                        @default(false)
   last_scraped_at    DateTime?                      @db.Timestamptz(6)
   scraping_status    String                         @default("idle") @db.VarChar(20)
   scrape_error       String?                        @db.Text
+  channel_type       String                         @default("product") @db.VarChar(20)
+  product_lines      String[]                       @default([])
   created_at         DateTime                       @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                       @updatedAt @db.Timestamptz(6)
   shorts             ScraperYoutubeShort[]
   metrics_history    ScraperYoutubeProfileMetrics[]
 
   @@index([title])
+  @@index([channel_type])
   @@index([is_owned])
   @@index([is_bookmarked])
   @@index([subscriber_count(sort: Desc)])
@@ -2267,16 +2301,22 @@ model ScraperKuaishouProfile {
   videos_count       Int                             @default(0)
   is_tracked         Boolean                         @default(false)
   is_bookmarked      Boolean                         @default(false)
+  bookmarked_by_id   String?                         @db.Uuid
+  bookmarked_by_name String?                         @db.VarChar(255)
+  bookmarked_at      DateTime?                       @db.Timestamptz(6)
   is_initial_scraped Boolean                         @default(false)
   last_scraped_at    DateTime?                       @db.Timestamptz(6)
   scraping_status    String                          @default("idle") @db.VarChar(20)
   scrape_error       String?                         @db.Text
+  channel_type       String                          @default("product") @db.VarChar(20)
+  product_lines      String[]                        @default([])
   created_at         DateTime                        @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                        @updatedAt @db.Timestamptz(6)
   videos             ScraperKuaishouVideo[]
   metrics_history    ScraperKuaishouProfileMetrics[]
 
   @@index([username])
+  @@index([channel_type])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([followers_count(sort: Desc)])
@@ -2391,16 +2431,22 @@ model ScraperBilibiliProfile {
   videos_count       Int                             @default(0)
   is_tracked         Boolean                         @default(false)
   is_bookmarked      Boolean                         @default(false)
+  bookmarked_by_id   String?                         @db.Uuid
+  bookmarked_by_name String?                         @db.VarChar(255)
+  bookmarked_at      DateTime?                       @db.Timestamptz(6)
   is_initial_scraped Boolean                         @default(false)
   last_scraped_at    DateTime?                       @db.Timestamptz(6)
   scraping_status    String                          @default("idle") @db.VarChar(20)
   scrape_error       String?                         @db.Text
+  channel_type       String                          @default("product") @db.VarChar(20)
+  product_lines      String[]                        @default([])
   created_at         DateTime                        @default(now()) @db.Timestamptz(6)
   updated_at         DateTime                        @updatedAt @db.Timestamptz(6)
   videos             ScraperBilibiliVideo[]
   metrics_history    ScraperBilibiliProfileMetrics[]
 
   @@index([username])
+  @@index([channel_type])
   @@index([is_tracked, last_scraped_at])
   @@index([is_bookmarked])
   @@index([followers_count(sort: Desc)])
@@ -2569,6 +2615,8 @@ model Team {
   /// PRODUCTION = team sản xuất video (mặc định), CONTENT = team chuyên sưu tầm/dịch content
   team_kind  TeamKind  @default(PRODUCTION)
   is_active  Boolean   @default(true)
+  lark_webhook_url String?
+  lark_webhook_secret String?
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
 
@@ -3618,6 +3666,16 @@ model AutoAssignSetting {
   @@map("auto_assign_settings")
 }
 
+model LarkWebhookSetting {
+  id             Int      @id @default(1)
+  webhook_url    String?
+  webhook_secret String?
+  updated_by     String?
+  updated_at     DateTime @updatedAt
+
+  @@map("lark_webhook_settings")
+}
+
 model Notification {
   id         String    @id @default(uuid())
   user_id    String
@@ -4366,8 +4424,11 @@ model IdPhotoHistory {
   employee_name String
   employee_team String
   employee_id   String
-  /// Tiền tố chức danh in trước tên trên thẻ, vd "HĐ." → "HĐ. BẢO VIỆT" (xem thẻ mẫu thật).
-  /// Nullable vì phần lớn thẻ không cần — để trống thì in mỗi tên, không đổi hành vi cũ.
+  /// [ĐÃ NGỪNG DÙNG từ 2026-09-09] Trước đây là tiền tố chức danh in trước tên trên thẻ
+  /// (vd "HĐ." → "HĐ. BẢO VIỆT"). Nghiệp vụ đã bỏ hẳn field này ở CẢ luồng đơn lẻ lẫn hàng
+  /// loạt: API không còn nhận/trả, FE không còn form nhập, PDF chỉ in tên thường.
+  /// CỐ Ý GIỮ LẠI CỘT (không migration) để không mất dữ liệu tiền tố đã lưu của bản ghi cũ.
+  /// ĐỪNG thêm lại vào DTO/select/hiển thị — xem git log commit bỏ field nếu cần khôi phục.
   employee_title_prefix String?
 
   /// Chỉ lưu Ý NGHĨA cấp bậc, KHÔNG lưu tên màu khung — tầng hiển thị (FE) và bước export-pdf
@@ -4385,15 +4446,67 @@ model IdPhotoHistory {
   /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
   pdf_url String?
 
+  /// "Điều chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) — cả 3 cột NULLABLE, mặc định
+  /// NULL = dùng vị trí gốc như trước khi có tính năng này (không breaking với ảnh cũ). Toạ độ
+  /// tính theo TỈ LỆ cạnh khung tròn (không phải pixel/point tuyệt đối) — xem công thức dùng
+  /// chung ở id-photo-crop.util.ts (BE) / crop-math.ts (FE): offsetX/Y = độ lệch tâm ảnh so với
+  /// tâm khung; scale = hệ số phóng to trên nền "phủ khít khung" (scale=1 ⇔ hành vi cũ).
+  /// Reset về NULL mỗi khi ảnh ghép áo bị GHÉP LẠI (remerge-outfit/batch remerge): ảnh mới có
+  /// bố cục khác, giữ crop cũ dễ lệch — xem IdPhotoService#remergeOutfit.
+  crop_offset_x Float?
+  crop_offset_y Float?
+  crop_scale    Float?
+
+  /// Job cha nếu ảnh này được tạo trong 1 lượt "Tạo ảnh thẻ hàng loạt" (module id-photo/batch).
+  /// NULL = ảnh tạo đơn lẻ theo luồng upload → merge-outfit → create như cũ (không đổi hành vi
+  /// luồng đơn lẻ). Trỏ về IdPhotoBatchJob để worker nền + poll trạng thái tra ngược được.
+  batch_job_id String? @db.Uuid
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  createdByUser User @relation("IdPhotoCreatedBy", fields: [created_by], references: [id])
+  createdByUser User             @relation("IdPhotoCreatedBy", fields: [created_by], references: [id])
+  batchJob      IdPhotoBatchJob? @relation("IdPhotoBatchItems", fields: [batch_job_id], references: [id], onDelete: SetNull)
 
   @@index([created_by])
   @@index([status])
   @@index([created_at])
+  @@index([batch_job_id]) // poll trạng thái batch: lấy toàn bộ item con của 1 job cha
+  @@index([batch_job_id, status]) // worker quét item con PENDING của 1 job cha theo thứ tự
   @@map("id_photo_histories")
+}
+
+/// Job CHA của 1 lượt "Tạo ảnh thẻ hàng loạt" — gom N dòng IdPhotoHistory con (mỗi dòng 1 người).
+///
+/// Worker nền (id-photo-batch.worker.ts) xử lý TUẦN TỰ từng item con, mỗi lần xử lý xong 1 người
+/// thì bump `updated_at` làm HEARTBEAT — cron reconcile (reconcileStuckIdPhotoBatchJobs) dựa vào
+/// mốc này để phát hiện job chết cứng do BE restart/crash giữa chừng (giống cơ chế
+/// reconcileStuckContentTransformJobs của content-transform).
+model IdPhotoBatchJob {
+  // @db.Uuid để cột `id` là UUID thật — phải KHỚP KIỂU với IdPhotoHistory.batch_job_id (cũng
+  // UUID) thì Postgres mới tạo được FK (kiểu lệch → lỗi 42804). Nhất quán với User.id.
+  id          String             @id @default(uuid()) @db.Uuid
+  created_by  String             @db.Uuid // Người bấm tạo batch (LEADER/ADMIN) — FK users.id
+  total_count Int // Số người trong batch — chốt lúc tạo, tối đa 20 (chặn cứng ở BE)
+  status      IdPhotoBatchStatus @default(PENDING)
+
+  created_at DateTime @default(now())
+  /// Vừa là updated_at thường vừa là HEARTBEAT của worker — xem ghi chú model.
+  updated_at DateTime @updatedAt
+
+  createdByUser User             @relation("IdPhotoBatchCreatedBy", fields: [created_by], references: [id])
+  items         IdPhotoHistory[] @relation("IdPhotoBatchItems")
+
+  @@index([created_by])
+  @@index([status, updated_at]) // cron reconcile quét job PENDING/PROCESSING quá hạn heartbeat
+  @@map("id_photo_batch_jobs")
+}
+
+enum IdPhotoBatchStatus {
+  PENDING // Vừa tạo, worker chưa nhận
+  PROCESSING // Worker đang xử lý tuần tự các item con
+  COMPLETED // Đã xử lý hết mọi item con (kể cả khi có người FAILED)
+  FAILED // Job chết cứng do restart/crash — cron reconcile đánh dấu
 }
 
 /// Cấp bậc nhân viên — quyết định màu khung khi xuất PDF (ánh xạ ở id-photo.service.ts,

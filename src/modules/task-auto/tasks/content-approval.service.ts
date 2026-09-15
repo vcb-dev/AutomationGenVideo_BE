@@ -10,6 +10,7 @@ import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/task.dto";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
+import { LarkWebhookNotifyService } from "./lark-webhook-notify.service";
 
 const approvalInclude = {
   requested_by: { select: { id: true, full_name: true, email: true } },
@@ -49,6 +50,7 @@ export class ContentApprovalService {
   constructor(
     private prisma: PrismaService,
     private push: PushService,
+    private larkWebhook: LarkWebhookNotifyService,
   ) {}
 
   /** Danh sách yêu cầu duyệt content (mặc định PENDING) — dùng cho tab "Content chờ duyệt". */
@@ -112,8 +114,11 @@ export class ContentApprovalService {
       where: { id: taskId },
       select: {
         assignee_id: true,
-        team: { select: { leader_id: true, name: true } },
+        team: { select: { leader_id: true, name: true, lark_webhook_url: true, lark_webhook_secret: true } },
         video_script: { select: { content: true } },
+        content: { select: { title: true } },
+        editor_content: { select: { title: true } },
+        team_content: { select: { title: true } },
       },
     });
     if (!task) throw new NotFoundException("Task not found");
@@ -150,6 +155,21 @@ export class ContentApprovalService {
         taskId,
       );
     }
+
+    const contentTitle =
+      task.content?.title ?? task.editor_content?.title ?? task.team_content?.title ?? null;
+    this.larkWebhook
+      .sendApprovalNotice({
+        taskId,
+        teamName: task.team.name,
+        teamWebhookUrl: task.team.lark_webhook_url,
+        teamWebhookSecret: task.team.lark_webhook_secret,
+        personName: request.requested_by?.full_name ?? null,
+        contentTitle,
+        kind: "CONTENT",
+      })
+      .catch(() => {});
+
     return request;
   }
 

@@ -97,6 +97,23 @@ export function resolveInstagramUserId(extra: Record<string, unknown> | null, pl
   return platformId || null;
 }
 
+function isTransientError(msg?: string): boolean {
+  if (!msg) return false;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('status code 502') ||
+    lower.includes('status code 503') ||
+    lower.includes('status code 504') ||
+    lower.includes('econnrefused') ||
+    lower.includes('etimedout') ||
+    lower.includes('timedout') ||
+    lower.includes('timeout') ||
+    lower.includes('econnreset') ||
+    lower.includes('enotfound') ||
+    lower.includes('network error')
+  );
+}
+
 @Injectable()
 export class InstagramOwnedAccountsService {
   private readonly logger = new Logger(InstagramOwnedAccountsService.name);
@@ -178,13 +195,14 @@ export class InstagramOwnedAccountsService {
         failed++;
         this.logger.error(`❌ [IGSync] Lỗi đồng bộ ${account.username || account.name}: ${err.message}`);
         if (account.username) {
+          const isTransient = isTransientError(err.message);
           await this.prisma.scraperInstagramProfile
             .updateMany({
               where: { username: account.username },
               data: {
                 last_scraped_at: new Date(),
-                scraping_status: 'failed',
-                scrape_error: err.message,
+                scraping_status: isTransient ? 'idle' : 'failed',
+                scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
               },
             })
             .catch(() => {});
@@ -221,6 +239,7 @@ export class InstagramOwnedAccountsService {
         is_owned: true,
         is_tracked: true,
         last_scraped_at: true,
+        scraping_status: true,
         scrape_error: true,
       },
     });
@@ -314,23 +333,46 @@ export class InstagramOwnedAccountsService {
         date_posted: new Date(item.timestamp),
       };
 
-      await this.prisma.scraperInstagramReel.upsert({
-        where: { post_id: item.id },
-        create: data,
-        // Giữ nguyên profile_id cũ: một reel không đổi chủ, và ghi đè sẽ hỏng nếu username
-        // vừa được đổi tên thành một profile khác.
-        update: {
-          url: data.url,
-          description: data.description,
-          hashtags: data.hashtags,
-          thumbnail_url: data.thumbnail_url,
-          play_count: data.play_count,
-          likes_count: data.likes_count,
-          comments_count: data.comments_count,
-          date_posted: data.date_posted,
-        },
-      });
-      count++;
+      try {
+        const existing = await this.prisma.scraperInstagramReel.findFirst({
+          where: {
+            OR: [{ post_id: item.id }, { shortcode }],
+          },
+        });
+
+        if (existing) {
+          const updatePayload: any = {
+            url: data.url,
+            description: data.description,
+            hashtags: data.hashtags,
+            thumbnail_url: data.thumbnail_url ?? existing.thumbnail_url,
+            play_count: data.play_count,
+            likes_count: data.likes_count,
+            comments_count: data.comments_count,
+            date_posted: data.date_posted,
+          };
+          if (existing.post_id !== item.id) {
+            const conflict = await this.prisma.scraperInstagramReel.findUnique({
+              where: { post_id: item.id },
+              select: { id: true },
+            });
+            if (!conflict) {
+              updatePayload.post_id = item.id;
+            }
+          }
+          await this.prisma.scraperInstagramReel.update({
+            where: { id: existing.id },
+            data: updatePayload,
+          });
+        } else {
+          await this.prisma.scraperInstagramReel.create({
+            data,
+          });
+        }
+        count++;
+      } catch (mediaErr: any) {
+        this.logger.warn(`[IGSync] Lỗi khi lưu reel ${item.id} (${shortcode}): ${mediaErr?.message || mediaErr}`);
+      }
     }
 
     return count;
