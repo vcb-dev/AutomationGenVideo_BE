@@ -1,5 +1,5 @@
 
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -243,6 +243,21 @@ export class LarkService implements OnModuleInit {
         }
     }
 
+    /**
+     * Cảnh báo trả kèm khi tài khoản nộp báo cáo mà chưa thuộc team nào.
+     *
+     * Mọi bảng điều khiển (thẻ team ở /dashboard/admin, bảng Trưởng nhóm, hiệu suất) đều gom số
+     * THEO TEAM. Báo cáo của người không có team vẫn được lưu đúng vào traffic_reports /
+     * revenue_reports / checklist_reports, nhưng không xuất hiện ở bất kỳ thẻ nào — người nộp
+     * tưởng hệ thống nuốt mất dữ liệu và đi báo lỗi, trong khi dữ liệu vẫn nguyên.
+     *
+     * Đã xác nhận trên production: có tài khoản đã nộp báo cáo nhưng `users.team` để trống.
+     */
+    private buildTeamlessWarning(team?: string | null): string | undefined {
+        if (team && String(team).trim()) return undefined;
+        return 'Đã lưu báo cáo, nhưng tài khoản của bạn chưa thuộc team nào nên số liệu sẽ KHÔNG hiện trong báo cáo team và hiệu suất. Liên hệ quản trị viên để được gán team.';
+    }
+
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate, team: payloadTeam } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
@@ -324,6 +339,8 @@ export class LarkService implements OnModuleInit {
                         alreadySubmitted: true,
                         existingRecordDate: existingTraffic.created_at || existingTraffic.date,
                         recordIds: [],
+                        // Xem ghi chú ở submitRevenueReport: nhánh "đã nộp rồi" cũng cần cảnh báo.
+                        warning: this.buildTeamlessWarning(existingTraffic.team),
                     };
                 }
             }
@@ -411,7 +428,8 @@ export class LarkService implements OnModuleInit {
 
             return {
                 message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
-                recordIds: recordsToCreate.map(r => r.id)
+                recordIds: recordsToCreate.map(r => r.id),
+                warning: this.buildTeamlessWarning(team)
             };
         } catch (dbError) {
             this.logger.error('Error saving multi-row traffic report:', dbError);
@@ -490,6 +508,10 @@ export class LarkService implements OnModuleInit {
                         alreadySubmitted: true,
                         existingRecordDate: existingRevenue.created_at || existingRevenue.date,
                         recordIds: [],
+                        // Nhánh "đã nộp rồi" cũng phải cảnh báo: người chưa có team thường nộp lại
+                        // nhiều lần vì không thấy số liệu đâu — đúng lúc họ cần lời giải thích nhất.
+                        // `team` chưa được phân giải ở đây nên lấy theo bản ghi đã lưu.
+                        warning: this.buildTeamlessWarning(existingRevenue.team),
                     };
                 }
             }
@@ -566,7 +588,8 @@ export class LarkService implements OnModuleInit {
 
             return {
                 message: `Revenue report submitted successfully. Created ${recordsToCreate.length} records.`,
-                recordIds: recordsToCreate.map(r => r.id)
+                recordIds: recordsToCreate.map(r => r.id),
+                warning: this.buildTeamlessWarning(team)
             };
         } catch (dbError) {
             this.logger.error('Error saving multi-row revenue report:', dbError);
@@ -697,6 +720,7 @@ export class LarkService implements OnModuleInit {
         return {
             success: true,
             message: existing ? 'Cập nhật báo cáo thành công' : 'Gửi báo cáo thành công',
+            warning: this.buildTeamlessWarning(finalTeam),
             alreadySubmitted: !!existing,
             id: reportId
         };
@@ -3438,7 +3462,63 @@ export class LarkService implements OnModuleInit {
         };
     }
 
-    async getUserReportDetails(email: string, dateStr: string) {
+    /**
+     * Ai được xem báo cáo của ai.
+     *
+     * - Chính mình: luôn được.
+     * - ADMIN / MANAGER: xem được của tất cả.
+     * - LEADER: chỉ xem được người thuộc (các) team mình lãnh đạo.
+     * - Còn lại: không.
+     *
+     * Trước đây endpoint nhận thẳng `email` từ query mà không đối chiếu người đang đăng nhập —
+     * đổi email trên URL là đọc được nội dung báo cáo ngày của bất kỳ đồng nghiệp nào.
+     */
+    private async canViewReportOf(
+        targetEmail: string,
+        caller?: { email?: string | null; roles?: string[] | null; id?: string } | null,
+    ): Promise<boolean> {
+        const target = (targetEmail ?? '').toLowerCase().trim();
+        const callerEmail = (caller?.email ?? '').toLowerCase().trim();
+        if (!caller || !callerEmail) return false;
+        if (target && target === callerEmail) return true;
+
+        const roles = caller.roles ?? [];
+        if (roles.includes('ADMIN' as any) || roles.includes('MANAGER' as any)) return true;
+
+        if (roles.includes('LEADER' as any) && caller.id) {
+            const ledTeams = await this.prisma.team.findMany({
+                where: { leader_id: caller.id },
+                select: { name: true },
+            });
+            const ledNames = ledTeams
+                .map((t) => t.name.trim().toLowerCase())
+                .filter(Boolean);
+            if (ledNames.length === 0) return false;
+
+            const targetUser = await this.prisma.user.findFirst({
+                where: { email: { equals: target, mode: 'insensitive' as any } },
+                select: { team: true },
+            });
+            const targetTeams = (targetUser?.team ?? '')
+                .split(',')
+                .map((t) => t.trim().toLowerCase())
+                .filter(Boolean);
+            return targetTeams.some((t) => ledNames.includes(t));
+        }
+
+        return false;
+    }
+
+    async getUserReportDetails(
+        email: string,
+        dateStr: string,
+        caller?: { email?: string | null; roles?: string[] | null; id?: string } | null,
+    ) {
+        // Chỉ chặn khi có thông tin người gọi (controller luôn truyền). Giữ nhánh không có caller
+        // cho các lời gọi nội bộ/cron hiện có, tránh làm hỏng luồng đang chạy.
+        if (caller !== undefined && !(await this.canViewReportOf(email, caller))) {
+            throw new ForbiddenException('Bạn không có quyền xem báo cáo của người này');
+        }
         // `dateStr` = ngày báo cáo (reportDate) user chọn trên form (VN). Nộp sáng ngày reportDate là
         // báo cáo VỀ ngày reportDate-1 → submitChecklistReport/submitTrafficReport lưu `date` = hôm qua.
         // Đọc lại phải dùng CÙNG ngày đã lưu (reportDate-1), không dùng reportDate thô, nếu không sẽ
