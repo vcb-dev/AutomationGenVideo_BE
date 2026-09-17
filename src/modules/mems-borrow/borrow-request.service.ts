@@ -19,6 +19,16 @@ import { CreateBorrowRequestDto } from './dto';
  */
 const CANCELLABLE_STATUSES: string[] = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'PREPARING'];
 
+/**
+ * Bộ phận hứng những người chưa được gán vào đâu, để ai cũng tạo được phiếu mượn.
+ *
+ * Tồn tại vì bộ phận trên phiếu chỉ dùng để QUY TRÁCH NHIỆM và hiển thị: `borrow_limit` chưa
+ * chặn gì, còn duyệt phiếu thì xét vai trò LEADER/MANAGER/ADMIN chứ không xét leader bộ phận.
+ * Chặn người chưa có bộ phận là khoá họ khỏi một việc họ vốn được phép làm.
+ */
+const FALLBACK_DEPARTMENT_CODE = 'UNASSIGNED';
+const FALLBACK_DEPARTMENT_NAME = 'Chưa phân bộ phận';
+
 @Injectable()
 export class BorrowRequestService {
   constructor(
@@ -36,7 +46,7 @@ export class BorrowRequestService {
    *   1. Bảng thành viên MEMS, nếu ai đó đã gán
    *   2. Trường team trên hồ sơ người dùng, khớp với mã hoặc tên bộ phận
    *   3. Cả hệ thống chỉ có một bộ phận thì dùng luôn nó
-   * Hết cả ba thì báo lỗi nói rõ phải làm gì, chứ không đoán bừa một bộ phận.
+   * Hết cả ba thì rơi vào bộ phận mặc định — KHÔNG chặn người dùng.
    */
   private async resolveDepartment(tx: any, ownerId: string): Promise<string> {
     const membership = await tx.memsMember.findFirst({
@@ -66,9 +76,36 @@ export class BorrowRequestService {
     const all = await tx.memsDepartment.findMany({ where: { is_disabled: false }, select: { id: true } });
     if (all.length === 1) return all[0].id;
 
-    throw new BadRequestException(
-      'Chưa xác định được bộ phận của bạn. Nhờ quản trị gán bạn vào một bộ phận trong MEMS.',
+    return this.fallbackDepartmentId(tx);
+  }
+
+  /**
+   * Bộ phận mặc định, tạo lần đầu nếu chưa có.
+   *
+   * Khoá tư vấn trước khi đọc chứ không bắt lỗi trùng `code` rồi đọc lại: hai phiếu đầu tiên gửi
+   * cùng lúc sẽ cùng thấy "chưa có" rồi cùng tạo, và trong một giao dịch Postgres thì câu lệnh
+   * lỗi làm HỎNG cả giao dịch — đọc lại sau khi dính lỗi chỉ nhận thêm "transaction is aborted".
+   * Khoá nằm SAU các khoá model và ai cũng lấy theo đúng thứ tự này nên không ôm chéo.
+   */
+  private async fallbackDepartmentId(tx: any): Promise<string> {
+    await tx.$executeRawUnsafe(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      `mems:department:${FALLBACK_DEPARTMENT_CODE}`,
     );
+
+    // Không lọc `is_disabled`: bộ phận mặc định có bị tắt thì vẫn dùng lại bản ghi đó, chứ tạo
+    // thêm một bản trùng mã là vỡ ràng buộc unique.
+    const existing = await tx.memsDepartment.findUnique({
+      where: { code: FALLBACK_DEPARTMENT_CODE },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+
+    const created = await tx.memsDepartment.create({
+      data: { code: FALLBACK_DEPARTMENT_CODE, name: FALLBACK_DEPARTMENT_NAME },
+      select: { id: true },
+    });
+    return created.id;
   }
 
   async create(ownerId: string, dto: CreateBorrowRequestDto) {
@@ -78,6 +115,20 @@ export class BorrowRequestService {
       throw new BadRequestException('Thời điểm trả phải sau thời điểm nhận');
     }
 
+    // Một model khai làm nhiều dòng là phiếu vô nghĩa: mỗi dòng hỏi khả dụng riêng nên cùng nhận
+    // về "còn 1 máy", người dùng tưởng xin được 3 chiếc của model chỉ có 1. Ở đây không hỏng dữ
+    // liệu — dòng sau thành Chờ hàng — nhưng phiếu mang hai dòng chờ hàng ảo mà kho không bao giờ
+    // đáp ứng được. Cần nhiều máy cùng loại thì tăng số lượng của MỘT dòng.
+    const seenModelIds = new Set<string>();
+    for (const line of dto.lines) {
+      if (seenModelIds.has(line.modelId)) {
+        throw new BadRequestException(
+          'Mỗi model chỉ được khai một dòng. Cần nhiều máy cùng loại thì tăng số lượng của dòng đó.',
+        );
+      }
+      seenModelIds.add(line.modelId);
+    }
+
     return this.prisma.$transaction(async (tx) => {
       // BR-13: kiểm tra khả dụng rồi ghi giữ chỗ phải nằm trong CÙNG một giao dịch có khoá.
       // Không có khoá thì hai người cùng xin chiếc máy cuối cùng sẽ cùng đọc "còn 1" rồi cùng
@@ -85,8 +136,8 @@ export class BorrowRequestService {
       // Khoá theo thứ tự ĐÃ SẮP, không theo thứ tự client gửi. Phiếu A xin [b, a] và phiếu B xin
       // [a, b] cùng lúc thì A giữ b đợi a, B giữ a đợi b — Postgres phát hiện deadlock và giết
       // một giao dịch, người dùng ăn 500 giữa lúc gửi phiếu. Sắp trước thì mọi giao dịch đi cùng
-      // một chiều nên chỉ xếp hàng, không bao giờ ôm chéo. Lọc trùng để một model khai hai dòng
-      // không xin khoá hai lần.
+      // một chiều nên chỉ xếp hàng, không bao giờ ôm chéo. Vẫn lọc trùng dù khai trùng model đã
+      // bị chặn ở trên: chỗ này không nên phụ thuộc vào một phép kiểm ở xa nó.
       const modelIdsToLock = [...new Set(dto.lines.map((line) => line.modelId))].sort();
       for (const modelId of modelIdsToLock) {
         await tx.$executeRawUnsafe(
