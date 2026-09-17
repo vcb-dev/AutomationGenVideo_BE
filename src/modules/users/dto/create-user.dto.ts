@@ -60,4 +60,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   team?: string;
+
+  @ApiPropertyOptional({ example: ["social:external:all", "social:external:tiktok"], description: "Danh sách mã quyền chi tiết (Granular Permissions)" })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  permissions?: string[];
 }

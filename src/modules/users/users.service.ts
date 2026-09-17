@@ -102,6 +102,7 @@ export class UsersService {
         password_hash,
         roles,
         manager_id: createUserDto.manager_id || null,
+        permissions: createUserDto.permissions ?? [],
       },
     });
 
@@ -115,6 +116,7 @@ export class UsersService {
         email: true,
         full_name: true,
         roles: true,
+        permissions: true,
         team: true,
         manager_id: true,
         is_active: true,
@@ -138,6 +140,7 @@ export class UsersService {
         email: true,
         full_name: true,
         roles: true,
+        permissions: true,
         team: true,
         manager_id: true,
         is_active: true,
@@ -182,6 +185,7 @@ export class UsersService {
         email: true,
         full_name: true,
         roles: true,
+        permissions: true,
         team: true,
         manager_id: true,
         is_active: true,
@@ -270,6 +274,7 @@ export class UsersService {
           email: true,
           full_name: true,
           roles: true,
+          permissions: true,
           team: true,
           manager_id: true,
           is_active: true,
@@ -577,6 +582,9 @@ export class UsersService {
       email: true,
       full_name: true,
       roles: true,
+      // Màn hình Quản lý nhân sự đổ thẳng field này vào cây phân quyền rồi gửi ngược lên khi
+      // lưu — thiếu nó thì mọi lần sửa nhân sự đều ghi đè permissions thành mảng rỗng.
+      permissions: true,
       team: true,
       manager_id: true,
       is_active: true,
@@ -644,6 +652,8 @@ export class UsersService {
         email: true,
         full_name: true,
         roles: true,
+        // Xem getTeamMembers(): danh sách này cũng nuôi cây phân quyền trong HRModal.
+        permissions: true,
         team: true,
         manager_id: true,
         is_active: true,
@@ -705,6 +715,7 @@ export class UsersService {
       // for a LEADER, this only closes a direct-API gap.
       delete dto.manager_id;
       delete (dto as any).is_active;
+      delete dto.permissions;
     }
 
     // Validate tên team TRƯỚC khi tạo user: với role không phải LEADER, tên team lạ sẽ bị
@@ -757,6 +768,7 @@ export class UsersService {
       // (manager_id). The UI never sends these for a LEADER.
       delete dto.manager_id;
       delete (dto as any).is_active;
+      delete dto.permissions;
       // team/team_leader_id giờ là giá trị phái sinh — không set trực tiếp qua dto, xử lý bằng
       // TeamMember sau khi update() xong (xem claimToCallerId/releaseTarget bên dưới). Chụp lại ý
       // định "release" (dto.team === null) trước khi xoá field.

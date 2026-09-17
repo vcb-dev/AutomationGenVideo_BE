@@ -1,6 +1,8 @@
 import { Controller, ForbiddenException, Get, Body, HttpException, HttpStatus, Logger, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';
@@ -42,6 +44,8 @@ export class FacebookOwnedPagesController {
   }
 
   @Post('import')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
   async import(@Body() body: { user_access_token?: string }) {
     try {
       const { created, updated, newPageIds } = await this.service.importManagedPages(body?.user_access_token);
@@ -62,6 +66,8 @@ export class FacebookOwnedPagesController {
   }
 
   @Post('sync')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
   async sync(@Body() body: { page_id?: string }) {
     const pageId = body?.page_id;
     if (!pageId) throw new HttpException({ error: 'page_id is required' }, HttpStatus.BAD_REQUEST);
@@ -123,6 +129,8 @@ export class FacebookOwnedPagesController {
   }
 
   @Post('backfill')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
   async backfill(@Body() body: { page_id?: string }) {
     const pageId = body?.page_id;
     if (!pageId) throw new HttpException({ error: 'page_id is required' }, HttpStatus.BAD_REQUEST);

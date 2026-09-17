@@ -36,6 +36,7 @@ model User {
   created_at              DateTime   @default(now())
   updated_at              DateTime   @updatedAt
   roles                   UserRole[] @default([])
+  permissions             String[]   @default([])
   team                    String?
   /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
   lark_employee_record_id String?    @unique
