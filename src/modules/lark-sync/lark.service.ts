@@ -1,5 +1,5 @@
 
-import { ForbiddenException, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -9,6 +9,27 @@ import { CacheService } from '../../common/cache/cache.service';
 import { Semaphore } from '../../common/utils/semaphore';
 import { dailyKpiDate } from '../../utils/date.utils';
 import { SapoIntegrationService } from '../sapo-integration/sapo-integration.service';
+
+/** Số đơn Sapo gom theo nền tảng và theo team, dùng cho dải KPI hiệu suất. */
+export interface SapoOrderStats {
+    totalOrders: number;
+    byPlatform: Record<string, number>;
+    byTeam: Record<string, number>;
+}
+
+/**
+ * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
+ * `SapoIntegrationService`.
+ *
+ * `getOrderStats` để optional CÓ CHỦ ĐÍCH: module `sapo-integration` có thể chưa cung cấp phương
+ * thức này (nó được thêm ở một thay đổi độc lập). Khai optional buộc trình biên dịch bắt phải kiểm
+ * tra trước khi gọi, nên module báo cáo biên dịch và chạy được ở mọi thứ tự triển khai — thiếu thì
+ * hiện 0 đơn kèm cảnh báo trong log, có thì hiện số thật. Đây KHÔNG phải nới lỏng kiểu: chữ ký vẫn
+ * được kiểm đầy đủ, chỉ có sự TỒN TẠI của phương thức là tuỳ chọn.
+ */
+export interface SapoOrderStatsPort {
+    getOrderStats?(from: string, to: string, team?: string): Promise<SapoOrderStats>;
+}
 
 /**
  * Đọc một ô số liệu người dùng nhập trong báo cáo Traffic/Doanh thu.
@@ -88,7 +109,8 @@ export class LarkService implements OnModuleInit {
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
         private readonly cacheService: CacheService,
-        @Optional() private readonly sapoService?: SapoIntegrationService,
+        // Token tiêm vẫn là class thật; kiểu tham chiếu là cổng tối giản — xem SapoOrderStatsPort.
+        @Optional() @Inject(SapoIntegrationService) private readonly sapoService?: SapoOrderStatsPort,
     ) {
         // Load credentials from environment
         this.APP_ID = this.configService.get<string>('LARK_APP_ID');
@@ -912,6 +934,35 @@ export class LarkService implements OnModuleInit {
     }
 
     // Clear cache immediately after a report submission to prevent stale UI
+    /**
+     * Đọc số đơn Sapo cho dải KPI hiệu suất. Không bao giờ ném lỗi — thiếu số đơn thì bảng vẫn phải
+     * hiện, chỉ là ô đó bằng 0.
+     *
+     * Ba nhánh, mỗi nhánh một nguyên nhân khác hẳn nhau nên phải phân biệt:
+     * - Không có `sapoService`: module sapo không được nạp (cấu hình triển khai) — im lặng, đúng ý.
+     * - Có service nhưng THIẾU `getOrderStats`: phiên bản sapo đang chạy cũ hơn phần báo cáo. Phải
+     *   CẢNH BÁO, nếu không thì bảng hiện 0 đơn mà không ai biết vì sao — đúng kiểu hỏng âm thầm.
+     * - Gọi được nhưng lỗi: đã có log ở nhánh catch.
+     */
+    private async readSapoOrderStats(from: string, to: string, team?: string): Promise<SapoOrderStats> {
+        const rong: SapoOrderStats = { totalOrders: 0, byPlatform: {}, byTeam: {} };
+        if (!this.sapoService) return rong;
+
+        if (typeof this.sapoService.getOrderStats !== 'function') {
+            this.logger.warn(
+                '[Sapo] Bản sapo-integration đang chạy chưa có getOrderStats — dải KPI hiệu suất sẽ hiện 0 đơn.',
+            );
+            return rong;
+        }
+
+        try {
+            return await this.sapoService.getOrderStats(from, to, team);
+        } catch (err: any) {
+            this.logger.warn(`[Sapo] Không lấy được số đơn, trả 0: ${err?.message || err}`);
+            return rong;
+        }
+    }
+
     invalidateActivityCache() {
         this.cacheService.invalidate('activity:');
         this.cacheService.invalidate('dashboard-analytics:');
@@ -1582,9 +1633,7 @@ export class LarkService implements OnModuleInit {
                         this.logger.warn(`[Global Indo] lark_kpi_global_indo query failed, fallback []: ${err?.message || err}`);
                         return [];
                     }) as Promise<any[]>,
-                    this.sapoService
-                        ? this.sapoService.getOrderStats(uiDayStartStr, uiDayEndStr, teamFilterNormalized || undefined).catch(() => ({ totalOrders: 0, byPlatform: {}, byTeam: {} }))
-                        : Promise.resolve({ totalOrders: 0, byPlatform: {}, byTeam: {} }),
+                    this.readSapoOrderStats(uiDayStartStr, uiDayEndStr, teamFilterNormalized || undefined),
                 ]);
 
                 const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows] = await Promise.all([
