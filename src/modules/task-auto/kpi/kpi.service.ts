@@ -2,7 +2,9 @@ import {
   Injectable,
   ForbiddenException,
   BadRequestException,
+  NotFoundException,
 } from "@nestjs/common";
+import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import {
   UpsertTeamKpiDto,
@@ -25,6 +27,26 @@ import {
   isSupportedLinkStatsPlatform,
   isLinkStatsFresh,
 } from "../tasks/task-published-link-stats.service";
+import { deadlineWindow } from "../tasks/deadline-window.util";
+import {
+  productLineCategoryLabel,
+  resolveTaskProductLineId,
+} from "../tasks/product-line-category.util";
+import {
+  KPI_PAYROLL_SYNC_CONTRACT_VERSION,
+  METRICS_WITHOUT_ACTUAL_SOURCE,
+  PRODUCT_CATEGORY_TO_METRIC,
+  contentRouteCodeOf,
+  mapContentCreator,
+  mapEditorContentRoutes,
+  mapEditorKpi,
+  mergeContributions,
+  missingEmployeeIdWarnings,
+  type ContentRouteCode,
+  type KpiPayrollSyncResponse,
+  type KpiPayrollSyncWarning,
+  type MetricContribution,
+} from "./kpi-payroll-sync.mapper";
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -560,6 +582,7 @@ export class TaskAutoKpiService {
     user_ids?: string[];
     from?: string;
     to?: string;
+    range?: { gte?: Date; lt?: Date } | null;
   }) {
     const { user_id, team_id, user_ids, from, to } = params;
     if (!user_id && !team_id && !user_ids?.length)
@@ -578,7 +601,7 @@ export class TaskAutoKpiService {
 
     if (userIds.length === 0) return [];
 
-    const range = this.parseFromTo(from, to);
+    const range = params.range !== undefined ? params.range : this.parseFromTo(from, to);
 
     const [users, collectedGroups, translationGroups, tasks] = await Promise.all([
       this.prisma.user.findMany({
@@ -930,4 +953,322 @@ export class TaskAutoKpiService {
     set_by: { select: { id: true, full_name: true } },
     team: { select: { id: true, name: true } },
   };
+
+  private monthRangeVN(month: string): { gte: Date; lt: Date } {
+    const start = DateTime.fromFormat(month, "yyyy-MM", {
+      zone: "Asia/Ho_Chi_Minh",
+    }).startOf("month");
+    return { gte: start.toJSDate(), lt: start.plus({ months: 1 }).toJSDate() };
+  }
+
+  private async buildEditorReportActuals(
+    tasks: Array<{
+      assignee_id: string | null;
+      content_line_id: string | null;
+      product_line_id: string | null;
+      product_id: string | null;
+      editor_product_id: string | null;
+      team_product_id: string | null;
+    }>,
+  ): Promise<{
+    byUser: Map<
+      string,
+      {
+        videos_approved: number;
+        routes: Partial<Record<ContentRouteCode, number>>;
+        products: Record<string, number>;
+      }
+    >;
+    unmappedProductCategories: string[];
+  }> {
+    const byUser = new Map<
+      string,
+      {
+        videos_approved: number;
+        routes: Partial<Record<ContentRouteCode, number>>;
+        products: Record<string, number>;
+      }
+    >();
+    const unmapped = new Set<string>();
+    if (tasks.length === 0) return { byUser, unmappedProductCategories: [] };
+
+    const idsOf = (pick: (t: (typeof tasks)[number]) => string | null) => [
+      ...new Set(tasks.map(pick).filter((id): id is string => !!id)),
+    ];
+    const productIds = idsOf((t) => t.product_id);
+    const editorProductIds = idsOf((t) => t.editor_product_id);
+    const teamProductIds = idsOf((t) => t.team_product_id);
+
+    const [contentLines, productLines, products, editorProducts, teamProducts] = await Promise.all([
+      this.prisma.contentLine.findMany({ select: { id: true, name: true, a_type: true } }),
+      this.prisma.productLine.findMany({
+        select: { id: true, name: true, video_category: true },
+      }),
+      productIds.length
+        ? this.prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, product_line_id: true },
+          })
+        : Promise.resolve([]),
+      editorProductIds.length
+        ? this.prisma.editorProduct.findMany({
+            where: { id: { in: editorProductIds } },
+            select: { id: true, product_line_id: true },
+          })
+        : Promise.resolve([]),
+      teamProductIds.length
+        ? this.prisma.teamProduct.findMany({
+            where: { id: { in: teamProductIds } },
+            select: { id: true, product_line_id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const routeByLineId = new Map(
+      contentLines.map((cl) => [cl.id, contentRouteCodeOf(cl)] as const),
+    );
+    const categoryByLineId = new Map(
+      productLines.map((pl) => [pl.id, productLineCategoryLabel(pl)] as const),
+    );
+    const lookup = {
+      byProductId: new Map(products.map((p) => [p.id, p.product_line_id])),
+      byEditorProductId: new Map(editorProducts.map((p) => [p.id, p.product_line_id])),
+      byTeamProductId: new Map(teamProducts.map((p) => [p.id, p.product_line_id])),
+    };
+
+    for (const task of tasks) {
+      const uid = task.assignee_id;
+      if (!uid) continue;
+      const acc =
+        byUser.get(uid) ?? { videos_approved: 0, routes: {}, products: {} };
+      acc.videos_approved += 1;
+
+      const route = task.content_line_id ? routeByLineId.get(task.content_line_id) : null;
+      if (route) acc.routes[route] = (acc.routes[route] ?? 0) + 1;
+
+      const lineId = resolveTaskProductLineId(task, lookup);
+      const category = lineId ? categoryByLineId.get(lineId) : undefined;
+      if (category) {
+        const metric = PRODUCT_CATEGORY_TO_METRIC[category];
+        if (metric) acc.products[metric] = (acc.products[metric] ?? 0) + 1;
+        else unmapped.add(category);
+      }
+
+      byUser.set(uid, acc);
+    }
+
+    return { byUser, unmappedProductCategories: [...unmapped].sort() };
+  }
+
+  async getTeamKpiPayrollSync(
+    teamId: string,
+    month: string,
+  ): Promise<KpiPayrollSyncResponse> {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      select: { id: true, name: true },
+    });
+    if (!team) throw new NotFoundException("Team not found");
+
+    const range = this.monthRangeVN(month);
+
+    const [editorKpis, creatorKpis, creatorMembers] = await Promise.all([
+      this.prisma.editorKpi.findMany({
+        where: { team_id: teamId, month },
+        select: {
+          user_id: true,
+          total_target: true,
+          video_win: true,
+          video_fail: true,
+          content_new: true,
+          content_collected: true,
+          content_win_cover: true,
+          product_planned: true,
+          product_win_collect: true,
+          product_profit: true,
+          user: { select: { id: true, employee_id: true } },
+          allocations: {
+            select: {
+              type: true,
+              quantity: true,
+              content_line: { select: { id: true, a_type: true, name: true } },
+            },
+          },
+        },
+        orderBy: { user_id: "asc" },
+      }),
+      this.prisma.contentCreatorKpi.findMany({
+        where: { team_id: teamId, month },
+        select: {
+          user_id: true,
+          content_target: true,
+          translation_target: true,
+          user: { select: { id: true, employee_id: true } },
+        },
+        orderBy: { user_id: "asc" },
+      }),
+      this.prisma.teamMember.findMany({
+        where: { team_id: teamId, is_content_creator: true },
+        select: { user_id: true, user: { select: { id: true, employee_id: true } } },
+        orderBy: { user_id: "asc" },
+      }),
+    ]);
+
+    const employeeIds = new Map<string, string | null>();
+    for (const row of [...editorKpis, ...creatorKpis, ...creatorMembers])
+      employeeIds.set(row.user_id, row.user?.employee_id ?? null);
+
+    const creatorIds = Array.from(
+      new Set([...creatorMembers.map((m) => m.user_id), ...creatorKpis.map((k) => k.user_id)]),
+    ).sort();
+
+    const editorIds = editorKpis.map((k) => k.user_id);
+
+    const [approvedTasks, editorWinFail, memberships] = await Promise.all([
+      editorIds.length
+        ? this.prisma.task.findMany({
+            where: {
+              team_id: teamId,
+              assignee_id: { in: editorIds },
+              status: "APPROVED",
+              ...deadlineWindow(range),
+            },
+            select: {
+              assignee_id: true,
+              content_line_id: true,
+              product_line_id: true,
+              product_id: true,
+              editor_product_id: true,
+              team_product_id: true,
+            },
+          })
+        : Promise.resolve([]),
+      editorIds.length ? this.mergeWinFailByMember(editorIds, [], range) : Promise.resolve([]),
+      editorIds.length || creatorIds.length
+        ? this.prisma.teamMember.findMany({
+            where: { user_id: { in: [...new Set([...editorIds, ...creatorIds])] } },
+            select: { user_id: true, team_id: true },
+          })
+        : Promise.resolve([] as Array<{ user_id: string; team_id: string }>),
+    ]);
+
+    const editorActuals = await this.buildEditorReportActuals(approvedTasks);
+
+    const teamsPerUser = new Map<string, Set<string>>();
+    for (const m of memberships) {
+      const set = teamsPerUser.get(m.user_id) ?? new Set<string>();
+      set.add(m.team_id);
+      teamsPerUser.set(m.user_id, set);
+    }
+    const inMultipleTeams = (uid: string) => (teamsPerUser.get(uid)?.size ?? 0) > 1;
+
+    const warnings: KpiPayrollSyncWarning[] = [];
+    const contributions: MetricContribution[] = [];
+
+    const editorWinFailByUser = new Map(editorWinFail.map((r) => [r.user_id, r]));
+
+    for (const kpi of editorKpis) {
+      const wf = editorWinFailByUser.get(kpi.user_id);
+      const report = editorActuals.byUser.get(kpi.user_id);
+      contributions.push(
+        ...mapEditorKpi(kpi, {
+          videos_approved: report?.videos_approved ?? 0,
+          win: wf?.win ?? 0,
+          fail: wf?.fail ?? 0,
+          product_gmv: report?.products.PRODUCT_PLANNED ?? 0,
+          product_traffic: report?.products.PRODUCT_COLLECTED ?? 0,
+          product_profit: report?.products.PRODUCT_PROFIT ?? 0,
+        }),
+      );
+      const routes = mapEditorContentRoutes(kpi, report?.routes ?? {});
+      contributions.push(...routes.contributions);
+      warnings.push(...routes.warnings);
+
+      if (inMultipleTeams(kpi.user_id))
+        warnings.push({
+          code: "UNSCOPED_EDITOR_ACTUAL",
+          user_id: kpi.user_id,
+          message:
+            "User thuộc nhiều team; actual VIDEO_WIN/VIDEO_FAIL chưa quy được chính xác cho một team",
+        });
+    }
+
+    if (editorKpis.length > 0)
+      warnings.push({
+        code: "NO_ACTUAL_SOURCE",
+        message: `Chưa có nguồn báo cáo cho actual của: ${METRICS_WITHOUT_ACTUAL_SOURCE.join(
+          ", ",
+        )} — các metric này chỉ có target, actual = null`,
+      });
+
+    if (editorActuals.unmappedProductCategories.length > 0)
+      warnings.push({
+        code: "UNKNOWN_PRODUCT_LINE_CATEGORY",
+        message: `Dòng sản phẩm không khớp GMV/Traffic/Profit nên không tính vào metric nào: ${editorActuals.unmappedProductCategories.join(
+          ", ",
+        )}`,
+      });
+
+    if (creatorIds.length > 0) {
+      const creatorReport = await this.getContentCreatorKpiReport({
+        user_ids: creatorIds,
+        team_id: teamId,
+        range,
+      });
+      const winFail = await this.mergeWinFailByMember(creatorIds, creatorReport, range);
+
+      const reportByUser = new Map(creatorReport.map((r) => [r.user_id, r]));
+      const winFailByUser = new Map(winFail.map((r) => [r.user_id, r]));
+      const targetByUser = new Map(creatorKpis.map((k) => [k.user_id, k]));
+
+      for (const uid of creatorIds) {
+        const report = reportByUser.get(uid);
+        const wf = winFailByUser.get(uid);
+        const target = targetByUser.get(uid);
+
+        contributions.push(
+          ...mapContentCreator({
+            user_id: uid,
+            target: target
+              ? {
+                  content_target: target.content_target,
+                  translation_target: target.translation_target,
+                }
+              : null,
+            actual: report
+              ? {
+                  content_collected: report.content_collected,
+                  translations_count: report.translations_count,
+                  videos_made: report.videos_made,
+                  win: wf?.win ?? 0,
+                  fail: wf?.fail ?? 0,
+                }
+              : null,
+          }),
+        );
+
+        if (inMultipleTeams(uid))
+          warnings.push({
+            code: "UNSCOPED_CREATOR_ACTUAL",
+            user_id: uid,
+            message:
+              "User thuộc nhiều team; actual bản dịch/video/win/fail chưa quy được chính xác cho một team",
+          });
+      }
+    }
+
+    const { records, warnings: mergeWarnings } = mergeContributions(contributions, (uid) =>
+      employeeIds.get(uid) ?? null,
+    );
+    warnings.push(...mergeWarnings, ...missingEmployeeIdWarnings(records));
+
+    return {
+      contract_version: KPI_PAYROLL_SYNC_CONTRACT_VERSION,
+      month,
+      team: { id: team.id, name: team.name },
+      generated_at: new Date().toISOString(),
+      records,
+      warnings,
+    };
+  }
 }

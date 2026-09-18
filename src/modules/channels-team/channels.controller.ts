@@ -23,12 +23,14 @@ import { CreateChannelDto } from "./dto/create-channel.dto";
 import { UpdateChannelDto } from "./dto/update-channel.dto";
 import { ChannelsService } from "./channels.service";
 import { ChannelResponseDto } from "./dto/response-channel.dto";
-import { JwtAuthGuard } from "@/modules/auth/guards/jwt-auth.guard";
+import { JwtOrApiKeyGuard } from "@/modules/api-keys/guards/jwt-or-api-key.guard";
+import { ApiKeyReadOnly } from "@/modules/api-keys/decorators/api-key-read-only.decorator";
 
 @ApiTags("channels")
 @Controller("channels")
 @SkipThrottle({ long: true, short: true })
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtOrApiKeyGuard)
+@ApiKeyReadOnly()
 @UseInterceptors(ClassSerializerInterceptor)
 @ApiBearerAuth()
 export class ChannelsController {
@@ -44,6 +46,7 @@ export class ChannelsController {
 
   @Post("scraper-lookup")
   @HttpCode(200)
+  @ApiKeyReadOnly()
   @ApiOperation({ summary: "Bulk lookup team/owner by channel URLs or platform IDs (no team filter)" })
   async scraperLookup(@Body() body: { identifiers?: string[] }) {
     return this.channelsService.lookupByIdentifiers(body.identifiers ?? []);
