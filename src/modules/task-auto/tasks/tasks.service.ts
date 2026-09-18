@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
   Logger,
+  Optional,
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { Prisma, SocialPostStatus } from "@prisma/client";
@@ -30,6 +31,7 @@ import {
   productLineCategoryLabel,
   resolveTaskProductLineId,
 } from "./product-line-category.util";
+import { SapoIntegrationService } from "../../sapo-integration/sapo-integration.service";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -78,6 +80,7 @@ export class TaskAutoTasksService {
     private oms: OmsIntegrationService,
     private contentWinPush: TaskAutoContentWinPushService,
     private larkWebhook: LarkWebhookNotifyService,
+    @Optional() private sapo?: SapoIntegrationService,
   ) {}
 
   /**
@@ -1739,6 +1742,7 @@ export class TaskAutoTasksService {
         tasks: { total: 0 },
         members: [],
         kpi: null,
+        total_orders: 0,
         video_by_line: [],
         product_by_category: [],
         content_by_classification: [],
@@ -2040,6 +2044,19 @@ export class TaskAutoTasksService {
       target: lineTargetByName[v.line] ?? 0,
     }));
 
+    let totalOrders = 0;
+    if (this.sapo) {
+      try {
+        const fromStr = vietnamDateString(periodRange.gte);
+        const toStr = vietnamDateString(new Date(periodRange.lt.getTime() - 1));
+        const teamFilter = teamsLed.length === 1 ? teamsLed[0]?.name : undefined;
+        const stats = await this.sapo.getOrderStats(fromStr, toStr, teamFilter);
+        totalOrders = stats.totalOrders;
+      } catch (err: any) {
+        this.logger.warn(`Failed to fetch Sapo orders for leader dashboard: ${err?.message || err}`);
+      }
+    }
+
     return {
       scope: "team" as const,
       team: {
@@ -2052,6 +2069,7 @@ export class TaskAutoTasksService {
         ...taskMap,
       },
       members,
+      total_orders: totalOrders,
       kpi: {
         month: currentMonth,
         total_target: kpiTotal,
@@ -2579,6 +2597,7 @@ export class TaskAutoTasksService {
         scope: isAllTeams ? ("all_teams" as const) : ("single_team" as const),
         team: null,
         rows: [],
+        total_orders: 0,
         video_by_line: [],
         product_by_category: [],
         content_by_classification: [],
@@ -2794,11 +2813,25 @@ export class TaskAutoTasksService {
       };
     });
 
+    let totalOrders = 0;
+    if (this.sapo) {
+      try {
+        const fromStr = vietnamDateString(range.gte);
+        const toStr = vietnamDateString(new Date(range.lt.getTime() - 1));
+        const teamFilter = isAllTeams ? undefined : team;
+        const stats = await this.sapo.getOrderStats(fromStr, toStr, teamFilter);
+        totalOrders = stats.totalOrders;
+      } catch (err: any) {
+        this.logger.warn(`Failed to fetch Sapo orders for team report: ${err?.message || err}`);
+      }
+    }
+
     if (!isAllTeams) {
       return {
         scope: "single_team" as const,
         team: { id: teams[0].id, name: teams[0].name, member_count: visibleMemberRows.length },
         rows: perMember,
+        total_orders: totalOrders,
         video_by_line: videoByLine,
         product_by_category: productByCategory,
         content_by_classification: contentByClassification,
@@ -2852,6 +2885,7 @@ export class TaskAutoTasksService {
       scope: "all_teams" as const,
       team: null,
       rows: Array.from(teamAgg.values()),
+      total_orders: totalOrders,
       video_by_line: videoByLine,
       product_by_category: productByCategory,
       content_by_classification: contentByClassification,
