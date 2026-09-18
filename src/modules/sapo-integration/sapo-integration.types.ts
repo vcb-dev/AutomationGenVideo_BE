@@ -62,3 +62,14 @@ export interface SapoRevenuePreviewResponse {
   unassignedRevenue?: string;
   message?: string;
 }
+
+export interface DiscoveredTiktokChannel {
+  name: string;
+  channelId: string;
+  link_channel: string | null;
+  username: string | null;
+  type: 'TikTok Business' | 'TikTok Shop';
+  orderCount: number;
+  latestOrderDate: string;
+  isImported: boolean;
+}
