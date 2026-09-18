@@ -122,10 +122,22 @@ describe('Nộp và sửa checklist trong ngày', () => {
             ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
         });
 
-        it('ADMIN thì KHÔNG bị chặn', async () => {
-            const { service, upsert } = buildService({ userRoles: ['ADMIN'] });
+        // Ngoại lệ "admin bỏ qua ràng buộc" là dành cho rule khung giờ 17:00-18:00, KHÔNG dành cho
+        // ngày tương lai — hai thứ từng nằm chung một khối `if (!isAdmin)`.
+        it.each([['ADMIN'], ['MANAGER']])('%s cũng bị chặn, không có ngoại lệ cho ngày tương lai', async (role) => {
+            const { service, upsert } = buildService({ userRoles: [role] });
 
-            await service.submitChecklistReport(basePayload({ reportDate: tomorrowVN }));
+            await expect(
+                service.submitChecklistReport(basePayload({ reportDate: tomorrowVN })),
+            ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
+
+            expect(upsert).not.toHaveBeenCalled();
+        });
+
+        it('nộp bù ngày ĐÃ QUA vẫn mở cho mọi vai trò', async () => {
+            const { service, upsert } = buildService({ userRoles: ['MEMBER'] });
+
+            await service.submitChecklistReport(basePayload({ reportDate: '2026-09-01' }));
 
             expect(upsert).toHaveBeenCalled();
         });

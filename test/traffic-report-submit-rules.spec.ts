@@ -110,30 +110,36 @@ describe('Luật nộp báo cáo traffic', () => {
             ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
         });
 
-        it('ADMIN thì KHÔNG bị chặn — đây là ngoại lệ dễ bị bỏ sót khi test bằng tài khoản member', async () => {
-            const { service, createMany } = buildService({ userRoles: ['ADMIN'] });
+        // Ngoại lệ "admin bỏ qua ràng buộc" là dành cho rule khung giờ 17:00-18:00, KHÔNG dành cho
+        // ngày tương lai — nhưng hai thứ từng nằm chung một khối `if (!isAdmin)`, nên admin nộp
+        // được cho ngày chưa tới. Dữ liệu rơi vào ngày tương lai làm lệch tổng tháng và không hiện
+        // ở bộ lọc nào.
+        it.each([['ADMIN'], ['MANAGER']])('%s cũng bị chặn — ngoại lệ admin không áp cho ngày tương lai', async (role) => {
+            const { service, createMany } = buildService({ userRoles: [role] });
 
-            const res = await service.submitTrafficReport(
-                basePayload({
-                    reportDate: tomorrowVN,
-                    traffic: { fb: '100', ig: '', tiktok: '', yt: '', thread: '', zalo: '' },
-                }),
-            );
-
-            expect(res.alreadySubmitted).toBeUndefined();
-            expect(createMany).toHaveBeenCalled();
-        });
-
-        it('MANAGER cũng không bị chặn', async () => {
-            const { service } = buildService({ userRoles: ['MANAGER'] });
             await expect(
                 service.submitTrafficReport(
                     basePayload({
                         reportDate: tomorrowVN,
-                        traffic: { fb: '1', ig: '', tiktok: '', yt: '', thread: '', zalo: '' },
+                        traffic: { fb: '100', ig: '', tiktok: '', yt: '', thread: '', zalo: '' },
                     }),
                 ),
-            ).resolves.toBeDefined();
+            ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
+
+            expect(createMany).not.toHaveBeenCalled();
+        });
+
+        it('nộp bù ngày ĐÃ QUA vẫn mở cho mọi vai trò', async () => {
+            const { service, createMany } = buildService({ userRoles: ['MEMBER'] });
+
+            await service.submitTrafficReport(
+                basePayload({
+                    reportDate: '2026-09-01',
+                    traffic: { fb: '100', ig: '', tiktok: '', yt: '', thread: '', zalo: '' },
+                }),
+            );
+
+            expect(createMany).toHaveBeenCalled();
         });
     });
 
@@ -164,15 +170,39 @@ describe('Luật nộp báo cáo traffic', () => {
             expect(rows[0].traffic_fb).toBe(BigInt(0));
         });
 
-        it('toàn bộ ô để trống thì KHÔNG ghi gì nhưng vẫn báo thành công', async () => {
+        it('toàn bộ ô để trống thì KHÔNG ghi gì và phải NÓI RÕ là chưa lưu được', async () => {
             const { service, createMany } = buildService();
 
             const res = await service.submitTrafficReport(basePayload());
 
             expect(createMany).not.toHaveBeenCalled();
             expect(res.recordIds).toEqual([]);
-            // Thông điệp vẫn là "successfully" dù không lưu gì — dễ làm người nộp tưởng đã xong.
-            expect(res.message).toContain('Created 0 records');
+            // Trước đây trả "submitted successfully" nên người nộp yên tâm đóng form, hôm sau mới
+            // biết mình bị tính là chưa báo cáo.
+            expect(res.savedNothing).toBe(true);
+            expect(res.message).not.toContain('successfully');
+            expect(res.message).toContain('Chưa lưu được số liệu nào');
+        });
+
+        it('chỉ toàn chữ không phải số cũng phải báo là chưa lưu được', async () => {
+            const { service } = buildService();
+
+            const res = await service.submitTrafficReport(
+                basePayload({ traffic: { fb: 'abc', ig: 'xyz', tiktok: '', yt: '', thread: '', zalo: '' } }),
+            );
+
+            expect(res.savedNothing).toBe(true);
+        });
+
+        it('có ít nhất một ô hợp lệ thì KHÔNG gắn cờ savedNothing', async () => {
+            const { service } = buildService();
+
+            const res = await service.submitTrafficReport(
+                basePayload({ traffic: { fb: '0', ig: '', tiktok: '', yt: '', thread: '', zalo: '' } }),
+            );
+
+            expect(res.savedNothing).toBeUndefined();
+            expect(res.message).toContain('Created 1 records');
         });
 
         it('dấu phân cách nghìn được hiểu đúng', async () => {

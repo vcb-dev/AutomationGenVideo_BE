@@ -29,6 +29,37 @@ function readReportedValue(raw: unknown): number | null {
     return Number.isFinite(value) ? value : null;
 }
 
+/** Các từ đánh dấu nhân sự KHÔNG còn làm việc, đã bỏ dấu tiếng Việt. */
+const INACTIVE_STATUS_WORDS = ['nghi', 'off', 'khoa'];
+
+/**
+ * Nhân sự này có còn đang làm việc không — dùng để loại người đã nghỉ khỏi bảng hiệu suất, tránh
+ * làm lệch tỷ lệ nộp báo cáo của team.
+ *
+ * Khớp theo TỪ chứ không theo chuỗi con. Bản cũ dùng `includes('off')` nên mọi status chứa cụm đó
+ * (vd "Back Office", "Officer") đều bị coi là đã nghỉ — nhân sự biến mất khỏi bảng mà không ai
+ * hiểu vì sao. Dữ liệu hiện tại chưa có status nào rơi vào bẫy này, nhưng nó nằm sẵn ở đó chờ
+ * người đầu tiên khai status có chữ "office".
+ *
+ * Status để TRỐNG được coi là đang làm việc: trên DB thật có 18 tài khoản `employee_status` null
+ * và họ đều đang đi làm.
+ *
+ * Export để test được — trước đây hàm này nằm lọt trong getUserActivityReports nên không bài test
+ * nào chạm tới được.
+ */
+export function isActiveEmployeeStatusValue(raw: unknown): boolean {
+    const normalized = String(raw || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/đ/g, 'd')
+        .trim();
+    if (!normalized) return true;
+
+    const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+    return !words.some((w) => INACTIVE_STATUS_WORDS.includes(w));
+}
+
 @Injectable()
 export class LarkService implements OnModuleInit {
     private readonly logger = new Logger(LarkService.name);
@@ -289,19 +320,12 @@ export class LarkService implements OnModuleInit {
 
         // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
 
-        // Check if user is Admin/Manager to bypass constraint
-        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        // 0. Validate and check date (only for non-admins)
-        if (!isAdmin) {
-            // Use Intl-based helper to get current date string in VN
-            const todayVN = this.toVietnamDateKey(new Date());
-
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Ngày tương lai bị chặn với MỌI vai trò, kể cả ADMIN/MANAGER. Trước đây khối này nằm trong
+        // `if (!isAdmin)` chung với rule khung giờ 17:00-18:00 — ngoại lệ đó dành cho khung giờ, còn
+        // ngày tương lai thì không ai có lý do chính đáng để nộp: dữ liệu rơi vào ngày chưa tới sẽ
+        // làm lệch tổng tháng và không hiện ở bộ lọc nào. Nộp bù ngày ĐÃ QUA vẫn mở cho tất cả.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         const trafficDetails = (payload as any).trafficDetails;
@@ -428,6 +452,19 @@ export class LarkService implements OnModuleInit {
 
             this.invalidateActivityCache();
 
+            if (recordsToCreate.length === 0) {
+                // KHÔNG lưu được dòng nào: mọi ô đều trống hoặc không phải số (readReportedValue trả
+                // null). Trước đây vẫn trả "submitted successfully" nên người nộp yên tâm đóng form,
+                // hôm sau mới biết mình bị tính là chưa báo cáo. Ô nhập số 0 vẫn tạo dòng bình
+                // thường — đây chỉ là nhánh thật sự không có gì để lưu.
+                return {
+                    message: 'Chưa lưu được số liệu nào: tất cả ô traffic đang để trống hoặc không phải số. Nhập số 0 nếu nền tảng đó không có traffic.',
+                    savedNothing: true,
+                    recordIds: [],
+                    warning: this.buildTeamlessWarning(team),
+                };
+            }
+
             return {
                 message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
                 recordIds: recordsToCreate.map(r => r.id),
@@ -468,15 +505,9 @@ export class LarkService implements OnModuleInit {
             };
         };
 
-        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        if (!isAdmin) {
-            const todayVN = this.toVietnamDateKey(new Date());
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Chặn ngày tương lai với MỌI vai trò — xem ghi chú ở submitTrafficReport.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         const revenueDetails = (payload as any).revenueDetails;
@@ -670,16 +701,9 @@ export class LarkService implements OnModuleInit {
 
         const bounds = getVietnamBounds(targetDateKey);
 
-        // Check for Admin/Manager to bypass constraints
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        // Block future dates
-        if (!isAdmin) {
-            const todayVN = this.toVietnamDateKey(new Date());
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Chặn ngày tương lai với MỌI vai trò — xem ghi chú ở submitTrafficReport.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update (upsert theo existing.id).
@@ -976,8 +1000,16 @@ export class LarkService implements OnModuleInit {
                 // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
                 // Không cần fetch lại trong shared dataset cache.
 
-                // --- MODIFIED: Removed team enforcement for Members/Leaders to allow full transparency in rankings ---
-                const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
+                // PHẠM VI DỮ LIỆU: endpoint này CỐ Ý trả toàn bộ nhân sự cho MỌI vai trò — bảng xếp
+                // hạng traffic/doanh thu là công khai trong công ty. MEMBER gọi thẳng
+                // `GET /lark/user-activity` cũng nhận đủ danh sách kèm số liệu.
+                //
+                // Ở đây từng có biến `isInternalAdmin` khai ra nhưng KHÔNG dùng ở bất kỳ đâu — đọc
+                // qua rất dễ tưởng đã có chốt chặn theo team. Đã gỡ để không ai nhầm nữa.
+                //
+                // Phần bị chặn thật là NỘI DUNG báo cáo ngày của từng người: xem canViewReportOf()
+                // — LEADER chỉ mở được chi tiết của team mình lãnh đạo, MEMBER chỉ của chính mình.
+                // Nếu sau này cần siết cả danh sách thì đó là đổi nghiệp vụ, phải quyết riêng.
 
                 // Fetch reports with optional filters
                 const getVietnamParts = (dateInput?: string | Date) => {
@@ -1167,17 +1199,7 @@ export class LarkService implements OnModuleInit {
                 const compactNameKey = (val: string | null | undefined) => normName(val || '').replace(/\s+/g, '');
                 const looseNameKey = (val: string | null | undefined) => normName(val || '').replace(/[^a-z0-9]/g, '');
                 const isDoDaTeamFilter = normalizeTeamKey(dbTeamFilter) === normalizeTeamKey('Đồ Da');
-
-                const isActiveEmployeeStatus = (raw: unknown): boolean => {
-                    const st = String(raw || '')
-                        .toLowerCase()
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/đ/g, 'd')
-                        .trim();
-                    if (!st) return true;
-                    return !st.includes('nghi') && !st.includes('off') && !st.includes('khoa');
-                };
+                const isActiveEmployeeStatus = isActiveEmployeeStatusValue;
 
                 // users.team → checklist (lark_reports). lark_kpi.team → hiệu suất (performance).
                 // Role + employee_status: from users table.
