@@ -50,8 +50,41 @@ describe('buildAccountVisibilityWhere', () => {
     expect(where.is_active).toBe(true);
   });
 
-  it.each([['LEADER'], ['MEMBER']])('%s chỉ thấy tài khoản do chính mình liên kết', (role) => {
-    expect(buildAccountVisibilityWhere(CALLER, [role]).user_id).toBe(CALLER);
+  it('MEMBER chỉ thấy tài khoản do chính mình liên kết', () => {
+    expect(buildAccountVisibilityWhere(CALLER, ['MEMBER']).user_id).toBe(CALLER);
+  });
+
+  it('LEADER thấy tài khoản của mình VÀ của thành viên trong team', () => {
+    const where = buildAccountVisibilityWhere(CALLER, ['LEADER'], ['m1', 'm2']);
+
+    expect(where.user_id).toEqual({ in: [CALLER, 'm1', 'm2'] });
+  });
+
+  it('LEADER luôn có mặt trong danh sách, kể cả khi không nằm trong TeamMember của team mình', () => {
+    const where = buildAccountVisibilityWhere(CALLER, ['LEADER'], ['m1']);
+
+    expect((where.user_id as { in: string[] }).in).toContain(CALLER);
+  });
+
+  it('LEADER không có thành viên nào thì chỉ thấy của mình, không hoá thành thấy tất cả', () => {
+    // Nhánh nguy hiểm: trả về { is_active: true } khi mảng rỗng là mở toang cả hệ thống.
+    expect(buildAccountVisibilityWhere(CALLER, ['LEADER'], []).user_id).toBe(CALLER);
+    expect(buildAccountVisibilityWhere(CALLER, ['LEADER'], undefined).user_id).toBe(CALLER);
+    expect(buildAccountVisibilityWhere(CALLER, ['LEADER'], null).user_id).toBe(CALLER);
+  });
+
+  it('MEMBER có bị truyền nhầm danh sách thành viên cũng không thấy thêm ai', () => {
+    expect(buildAccountVisibilityWhere(CALLER, ['MEMBER'], ['m1', 'm2']).user_id).toBe(CALLER);
+  });
+
+  it('vừa LEADER vừa ADMIN thì theo quyền admin — thấy toàn bộ', () => {
+    expect(buildAccountVisibilityWhere(CALLER, ['LEADER', 'ADMIN'], ['m1']).user_id).toBeUndefined();
+  });
+
+  it('không trùng id khi leader cũng nằm trong danh sách thành viên', () => {
+    const where = buildAccountVisibilityWhere(CALLER, ['LEADER'], [CALLER, 'm1']);
+
+    expect((where.user_id as { in: string[] }).in).toEqual([CALLER, 'm1']);
   });
 
   it('không có vai trò thì coi như quyền thấp nhất', () => {

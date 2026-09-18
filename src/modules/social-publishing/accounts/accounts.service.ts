@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../../common/prisma/prisma.service';
-import { isAdminRole, buildAccountVisibilityWhere } from '../../../common/utils/social-roles.util';
+import { isAdminRole, isLeaderRole, buildAccountVisibilityWhere } from '../../../common/utils/social-roles.util';
+import { getTeamMemberIdsForLeader } from '../../../common/utils/team-membership.util';
 import { CryptoService } from '../crypto/crypto.service';
 import { InstagramScraperService } from '../../instagram-scraper/instagram-scraper.service';
 import { SocialPlatform } from '@prisma/client';
@@ -42,11 +43,19 @@ export class AccountsService implements OnModuleDestroy {
    */
   async findAll(userId: string, callerRoles: string[] = []) {
     const seesEverything = isAdminRole(callerRoles);
+    const isLeader = isLeaderRole(callerRoles);
+
+    // Leader nhìn phạm vi team — chỉ truy DB khi đúng là leader, để member và admin không
+    // phải gánh thêm hai câu truy vấn mỗi lần mở màn hình.
+    const teammateIds = isLeader
+      ? await getTeamMemberIdsForLeader(this.prisma, userId)
+      : undefined;
 
     const accounts = await this.prisma.socialAccount.findMany({
-      where: buildAccountVisibilityWhere(userId, callerRoles),
+      where: buildAccountVisibilityWhere(userId, callerRoles, teammateIds),
       orderBy: { created_at: 'desc' },
-      ...(seesEverything
+      // Leader cũng cần biết kênh đang hiện là của thành viên nào, không chỉ admin.
+      ...(seesEverything || isLeader
         ? { include: { user: { select: { id: true, full_name: true, email: true, team: true } } } }
         : {}),
     });
