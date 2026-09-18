@@ -1,9 +1,11 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
   Logger,
+  Optional,
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { Prisma, SocialPostStatus } from "@prisma/client";
@@ -30,6 +32,24 @@ import {
   productLineCategoryLabel,
   resolveTaskProductLineId,
 } from "./product-line-category.util";
+import { SapoIntegrationService } from "../../sapo-integration/sapo-integration.service";
+
+/**
+ * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
+ * `SapoIntegrationService`.
+ *
+ * `getOrderStats` để optional CÓ CHỦ ĐÍCH: phương thức này được thêm ở một thay đổi độc lập của
+ * module sapo-integration. Khai optional buộc trình biên dịch bắt phải kiểm tra trước khi gọi, nên
+ * module task-auto lên main theo thứ tự nào cũng chạy. Không phải nới lỏng kiểu — chữ ký vẫn được
+ * kiểm đầy đủ, chỉ có SỰ TỒN TẠI của phương thức là tuỳ chọn.
+ */
+interface SapoOrderStatsPort {
+  getOrderStats?(
+    from: string,
+    to: string,
+    team?: string,
+  ): Promise<{ totalOrders: number }>;
+}
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -78,7 +98,43 @@ export class TaskAutoTasksService {
     private oms: OmsIntegrationService,
     private contentWinPush: TaskAutoContentWinPushService,
     private larkWebhook: LarkWebhookNotifyService,
+    // Token tiêm vẫn là class thật; kiểu tham chiếu là cổng tối giản — xem SapoOrderStatsPort.
+    @Optional() @Inject(SapoIntegrationService) private sapo?: SapoOrderStatsPort,
   ) {}
+
+  /**
+   * Tổng số đơn Sapo trong khoảng ngày. Không bao giờ ném lỗi — thiếu số đơn thì bảng điều khiển
+   * vẫn phải hiện, chỉ là ô đó bằng 0.
+   *
+   * Ba nhánh, mỗi nhánh một nguyên nhân khác hẳn nhau nên phải phân biệt:
+   * - Không có `sapo`: module sapo không được nạp (cấu hình triển khai) — im lặng, đúng ý.
+   * - Có service nhưng THIẾU `getOrderStats`: phiên bản sapo đang chạy cũ hơn phần task-auto. Phải
+   *   CẢNH BÁO, nếu không thì bảng hiện 0 đơn mà không ai biết vì sao — đúng kiểu hỏng âm thầm.
+   * - Gọi được nhưng lỗi: log như cũ.
+   */
+  private async readSapoOrderTotal(
+    from: string,
+    to: string,
+    team: string | undefined,
+    boiCanh: string,
+  ): Promise<number> {
+    if (!this.sapo) return 0;
+
+    if (typeof this.sapo.getOrderStats !== "function") {
+      this.logger.warn(
+        `[Sapo] Bản sapo-integration đang chạy chưa có getOrderStats — ${boiCanh} sẽ hiện 0 đơn.`,
+      );
+      return 0;
+    }
+
+    try {
+      const stats = await this.sapo.getOrderStats(from, to, team);
+      return stats.totalOrders;
+    } catch (err: any) {
+      this.logger.warn(`Failed to fetch Sapo orders for ${boiCanh}: ${err?.message || err}`);
+      return 0;
+    }
+  }
 
   /**
    * Task chọn sản phẩm trực tiếp từ kho tổng (OMS) không có Product local nào để trỏ vào —
@@ -1739,6 +1795,7 @@ export class TaskAutoTasksService {
         tasks: { total: 0 },
         members: [],
         kpi: null,
+        total_orders: 0,
         video_by_line: [],
         product_by_category: [],
         content_by_classification: [],
@@ -2040,6 +2097,13 @@ export class TaskAutoTasksService {
       target: lineTargetByName[v.line] ?? 0,
     }));
 
+    const totalOrders = await this.readSapoOrderTotal(
+      vietnamDateString(periodRange.gte),
+      vietnamDateString(new Date(periodRange.lt.getTime() - 1)),
+      teamsLed.length === 1 ? teamsLed[0]?.name : undefined,
+      "leader dashboard",
+    );
+
     return {
       scope: "team" as const,
       team: {
@@ -2052,6 +2116,7 @@ export class TaskAutoTasksService {
         ...taskMap,
       },
       members,
+      total_orders: totalOrders,
       kpi: {
         month: currentMonth,
         total_target: kpiTotal,
@@ -2579,6 +2644,7 @@ export class TaskAutoTasksService {
         scope: isAllTeams ? ("all_teams" as const) : ("single_team" as const),
         team: null,
         rows: [],
+        total_orders: 0,
         video_by_line: [],
         product_by_category: [],
         content_by_classification: [],
@@ -2794,11 +2860,19 @@ export class TaskAutoTasksService {
       };
     });
 
+    const totalOrders = await this.readSapoOrderTotal(
+      vietnamDateString(range.gte),
+      vietnamDateString(new Date(range.lt.getTime() - 1)),
+      isAllTeams ? undefined : team,
+      "team report",
+    );
+
     if (!isAllTeams) {
       return {
         scope: "single_team" as const,
         team: { id: teams[0].id, name: teams[0].name, member_count: visibleMemberRows.length },
         rows: perMember,
+        total_orders: totalOrders,
         video_by_line: videoByLine,
         product_by_category: productByCategory,
         content_by_classification: contentByClassification,
@@ -2852,6 +2926,7 @@ export class TaskAutoTasksService {
       scope: "all_teams" as const,
       team: null,
       rows: Array.from(teamAgg.values()),
+      total_orders: totalOrders,
       video_by_line: videoByLine,
       product_by_category: productByCategory,
       content_by_classification: contentByClassification,
