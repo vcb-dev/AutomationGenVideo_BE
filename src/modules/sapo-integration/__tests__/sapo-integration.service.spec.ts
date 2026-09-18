@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { of } from 'rxjs';
 import { SapoIntegrationService } from '../sapo-integration.service';
 import { PrismaService } from '../../../common/prisma/prisma.service';
+import { CryptoService } from '../../social-publishing/crypto/crypto.service';
 import { SapoOrder } from '../sapo-integration.types';
 
 describe('SapoIntegrationService', () => {
@@ -92,6 +93,15 @@ describe('SapoIntegrationService', () => {
             trackedChannel: {
               findMany: jest.fn().mockResolvedValue([]),
             },
+          },
+        },
+        {
+          // Service mã hoá token đồng bộ khi tạo kênh TikTok từ đơn Sapo. Thiếu provider này thì
+          // Nest không dựng nổi SapoIntegrationService và cả file spec đỏ ở bước khởi tạo.
+          provide: CryptoService,
+          useValue: {
+            encrypt: jest.fn((plain: string) => `enc:${plain}`),
+            decrypt: jest.fn((cipher: string) => cipher.replace(/^enc:/, '')),
           },
         },
       ],
