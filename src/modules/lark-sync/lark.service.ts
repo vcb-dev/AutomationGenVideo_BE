@@ -1,5 +1,5 @@
 
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -8,6 +8,28 @@ import { Prisma, UserRole } from '@prisma/client';
 import { CacheService } from '../../common/cache/cache.service';
 import { Semaphore } from '../../common/utils/semaphore';
 import { dailyKpiDate } from '../../utils/date.utils';
+import { SapoIntegrationService } from '../sapo-integration/sapo-integration.service';
+
+/** Số đơn Sapo gom theo nền tảng và theo team, dùng cho dải KPI hiệu suất. */
+export interface SapoOrderStats {
+    totalOrders: number;
+    byPlatform: Record<string, number>;
+    byTeam: Record<string, number>;
+}
+
+/**
+ * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
+ * `SapoIntegrationService`.
+ *
+ * `getOrderStats` để optional CÓ CHỦ ĐÍCH: module `sapo-integration` có thể chưa cung cấp phương
+ * thức này (nó được thêm ở một thay đổi độc lập). Khai optional buộc trình biên dịch bắt phải kiểm
+ * tra trước khi gọi, nên module báo cáo biên dịch và chạy được ở mọi thứ tự triển khai — thiếu thì
+ * hiện 0 đơn kèm cảnh báo trong log, có thì hiện số thật. Đây KHÔNG phải nới lỏng kiểu: chữ ký vẫn
+ * được kiểm đầy đủ, chỉ có sự TỒN TẠI của phương thức là tuỳ chọn.
+ */
+export interface SapoOrderStatsPort {
+    getOrderStats?(from: string, to: string, team?: string): Promise<SapoOrderStats>;
+}
 
 /**
  * Đọc một ô số liệu người dùng nhập trong báo cáo Traffic/Doanh thu.
@@ -26,6 +48,37 @@ function readReportedValue(raw: unknown): number | null {
     if (digits === '') return null;
     const value = Number.parseInt(digits, 10);
     return Number.isFinite(value) ? value : null;
+}
+
+/** Các từ đánh dấu nhân sự KHÔNG còn làm việc, đã bỏ dấu tiếng Việt. */
+const INACTIVE_STATUS_WORDS = ['nghi', 'off', 'khoa'];
+
+/**
+ * Nhân sự này có còn đang làm việc không — dùng để loại người đã nghỉ khỏi bảng hiệu suất, tránh
+ * làm lệch tỷ lệ nộp báo cáo của team.
+ *
+ * Khớp theo TỪ chứ không theo chuỗi con. Bản cũ dùng `includes('off')` nên mọi status chứa cụm đó
+ * (vd "Back Office", "Officer") đều bị coi là đã nghỉ — nhân sự biến mất khỏi bảng mà không ai
+ * hiểu vì sao. Dữ liệu hiện tại chưa có status nào rơi vào bẫy này, nhưng nó nằm sẵn ở đó chờ
+ * người đầu tiên khai status có chữ "office".
+ *
+ * Status để TRỐNG được coi là đang làm việc: trên DB thật có 18 tài khoản `employee_status` null
+ * và họ đều đang đi làm.
+ *
+ * Export để test được — trước đây hàm này nằm lọt trong getUserActivityReports nên không bài test
+ * nào chạm tới được.
+ */
+export function isActiveEmployeeStatusValue(raw: unknown): boolean {
+    const normalized = String(raw || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/đ/g, 'd')
+        .trim();
+    if (!normalized) return true;
+
+    const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+    return !words.some((w) => INACTIVE_STATUS_WORDS.includes(w));
 }
 
 @Injectable()
@@ -56,6 +109,8 @@ export class LarkService implements OnModuleInit {
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
         private readonly cacheService: CacheService,
+        // Token tiêm vẫn là class thật; kiểu tham chiếu là cổng tối giản — xem SapoOrderStatsPort.
+        @Optional() @Inject(SapoIntegrationService) private readonly sapoService?: SapoOrderStatsPort,
     ) {
         // Load credentials from environment
         this.APP_ID = this.configService.get<string>('LARK_APP_ID');
@@ -243,6 +298,21 @@ export class LarkService implements OnModuleInit {
         }
     }
 
+    /**
+     * Cảnh báo trả kèm khi tài khoản nộp báo cáo mà chưa thuộc team nào.
+     *
+     * Mọi bảng điều khiển (thẻ team ở /dashboard/admin, bảng Trưởng nhóm, hiệu suất) đều gom số
+     * THEO TEAM. Báo cáo của người không có team vẫn được lưu đúng vào traffic_reports /
+     * revenue_reports / checklist_reports, nhưng không xuất hiện ở bất kỳ thẻ nào — người nộp
+     * tưởng hệ thống nuốt mất dữ liệu và đi báo lỗi, trong khi dữ liệu vẫn nguyên.
+     *
+     * Đã xác nhận trên production: có tài khoản đã nộp báo cáo nhưng `users.team` để trống.
+     */
+    private buildTeamlessWarning(team?: string | null): string | undefined {
+        if (team && String(team).trim()) return undefined;
+        return 'Đã lưu báo cáo, nhưng tài khoản của bạn chưa thuộc team nào nên số liệu sẽ KHÔNG hiện trong báo cáo team và hiệu suất. Liên hệ quản trị viên để được gán team.';
+    }
+
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate, team: payloadTeam } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
@@ -272,19 +342,12 @@ export class LarkService implements OnModuleInit {
 
         // Remove time constraint 17:00 - 18:00 to match frontend's "Tạm tắt rule chặn thời gian"
 
-        // Check if user is Admin/Manager to bypass constraint
-        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        // 0. Validate and check date (only for non-admins)
-        if (!isAdmin) {
-            // Use Intl-based helper to get current date string in VN
-            const todayVN = this.toVietnamDateKey(new Date());
-
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Ngày tương lai bị chặn với MỌI vai trò, kể cả ADMIN/MANAGER. Trước đây khối này nằm trong
+        // `if (!isAdmin)` chung với rule khung giờ 17:00-18:00 — ngoại lệ đó dành cho khung giờ, còn
+        // ngày tương lai thì không ai có lý do chính đáng để nộp: dữ liệu rơi vào ngày chưa tới sẽ
+        // làm lệch tổng tháng và không hiện ở bộ lọc nào. Nộp bù ngày ĐÃ QUA vẫn mở cho tất cả.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         const trafficDetails = (payload as any).trafficDetails;
@@ -324,6 +387,8 @@ export class LarkService implements OnModuleInit {
                         alreadySubmitted: true,
                         existingRecordDate: existingTraffic.created_at || existingTraffic.date,
                         recordIds: [],
+                        // Xem ghi chú ở submitRevenueReport: nhánh "đã nộp rồi" cũng cần cảnh báo.
+                        warning: this.buildTeamlessWarning(existingTraffic.team),
                     };
                 }
             }
@@ -409,9 +474,23 @@ export class LarkService implements OnModuleInit {
 
             this.invalidateActivityCache();
 
+            if (recordsToCreate.length === 0) {
+                // KHÔNG lưu được dòng nào: mọi ô đều trống hoặc không phải số (readReportedValue trả
+                // null). Trước đây vẫn trả "submitted successfully" nên người nộp yên tâm đóng form,
+                // hôm sau mới biết mình bị tính là chưa báo cáo. Ô nhập số 0 vẫn tạo dòng bình
+                // thường — đây chỉ là nhánh thật sự không có gì để lưu.
+                return {
+                    message: 'Chưa lưu được số liệu nào: tất cả ô traffic đang để trống hoặc không phải số. Nhập số 0 nếu nền tảng đó không có traffic.',
+                    savedNothing: true,
+                    recordIds: [],
+                    warning: this.buildTeamlessWarning(team),
+                };
+            }
+
             return {
                 message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
-                recordIds: recordsToCreate.map(r => r.id)
+                recordIds: recordsToCreate.map(r => r.id),
+                warning: this.buildTeamlessWarning(team)
             };
         } catch (dbError) {
             this.logger.error('Error saving multi-row traffic report:', dbError);
@@ -448,15 +527,9 @@ export class LarkService implements OnModuleInit {
             };
         };
 
-        const userRec = await this.prisma.user.findFirst({ where: { email: { equals: normalizedSubmitterEmail, mode: 'insensitive' as any } } });
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        if (!isAdmin) {
-            const todayVN = this.toVietnamDateKey(new Date());
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Chặn ngày tương lai với MỌI vai trò — xem ghi chú ở submitTrafficReport.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         const revenueDetails = (payload as any).revenueDetails;
@@ -490,6 +563,10 @@ export class LarkService implements OnModuleInit {
                         alreadySubmitted: true,
                         existingRecordDate: existingRevenue.created_at || existingRevenue.date,
                         recordIds: [],
+                        // Nhánh "đã nộp rồi" cũng phải cảnh báo: người chưa có team thường nộp lại
+                        // nhiều lần vì không thấy số liệu đâu — đúng lúc họ cần lời giải thích nhất.
+                        // `team` chưa được phân giải ở đây nên lấy theo bản ghi đã lưu.
+                        warning: this.buildTeamlessWarning(existingRevenue.team),
                     };
                 }
             }
@@ -566,7 +643,8 @@ export class LarkService implements OnModuleInit {
 
             return {
                 message: `Revenue report submitted successfully. Created ${recordsToCreate.length} records.`,
-                recordIds: recordsToCreate.map(r => r.id)
+                recordIds: recordsToCreate.map(r => r.id),
+                warning: this.buildTeamlessWarning(team)
             };
         } catch (dbError) {
             this.logger.error('Error saving multi-row revenue report:', dbError);
@@ -645,16 +723,9 @@ export class LarkService implements OnModuleInit {
 
         const bounds = getVietnamBounds(targetDateKey);
 
-        // Check for Admin/Manager to bypass constraints
-        const roles = userRec?.roles || [];
-        const isAdmin = roles.includes('ADMIN') || roles.includes('MANAGER');
-
-        // Block future dates
-        if (!isAdmin) {
-            const todayVN = this.toVietnamDateKey(new Date());
-            if (reportDate && reportDate > todayVN) {
-                throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
-            }
+        // Chặn ngày tương lai với MỌI vai trò — xem ghi chú ở submitTrafficReport.
+        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+            throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
         // Logic chống spam/duplicate: nếu hôm nay đã báo cáo rồi thì update (upsert theo existing.id).
@@ -697,6 +768,7 @@ export class LarkService implements OnModuleInit {
         return {
             success: true,
             message: existing ? 'Cập nhật báo cáo thành công' : 'Gửi báo cáo thành công',
+            warning: this.buildTeamlessWarning(finalTeam),
             alreadySubmitted: !!existing,
             id: reportId
         };
@@ -862,6 +934,35 @@ export class LarkService implements OnModuleInit {
     }
 
     // Clear cache immediately after a report submission to prevent stale UI
+    /**
+     * Đọc số đơn Sapo cho dải KPI hiệu suất. Không bao giờ ném lỗi — thiếu số đơn thì bảng vẫn phải
+     * hiện, chỉ là ô đó bằng 0.
+     *
+     * Ba nhánh, mỗi nhánh một nguyên nhân khác hẳn nhau nên phải phân biệt:
+     * - Không có `sapoService`: module sapo không được nạp (cấu hình triển khai) — im lặng, đúng ý.
+     * - Có service nhưng THIẾU `getOrderStats`: phiên bản sapo đang chạy cũ hơn phần báo cáo. Phải
+     *   CẢNH BÁO, nếu không thì bảng hiện 0 đơn mà không ai biết vì sao — đúng kiểu hỏng âm thầm.
+     * - Gọi được nhưng lỗi: đã có log ở nhánh catch.
+     */
+    private async readSapoOrderStats(from: string, to: string, team?: string): Promise<SapoOrderStats> {
+        const rong: SapoOrderStats = { totalOrders: 0, byPlatform: {}, byTeam: {} };
+        if (!this.sapoService) return rong;
+
+        if (typeof this.sapoService.getOrderStats !== 'function') {
+            this.logger.warn(
+                '[Sapo] Bản sapo-integration đang chạy chưa có getOrderStats — dải KPI hiệu suất sẽ hiện 0 đơn.',
+            );
+            return rong;
+        }
+
+        try {
+            return await this.sapoService.getOrderStats(from, to, team);
+        } catch (err: any) {
+            this.logger.warn(`[Sapo] Không lấy được số đơn, trả 0: ${err?.message || err}`);
+            return rong;
+        }
+    }
+
     invalidateActivityCache() {
         this.cacheService.invalidate('activity:');
         this.cacheService.invalidate('dashboard-analytics:');
@@ -950,8 +1051,16 @@ export class LarkService implements OnModuleInit {
                 // requesterRole và requesterTeam đã được resolve + cached bên ngoài (10 phút)
                 // Không cần fetch lại trong shared dataset cache.
 
-                // --- MODIFIED: Removed team enforcement for Members/Leaders to allow full transparency in rankings ---
-                const isInternalAdmin = requesterRole === 'admin' || requesterRole === 'manager';
+                // PHẠM VI DỮ LIỆU: endpoint này CỐ Ý trả toàn bộ nhân sự cho MỌI vai trò — bảng xếp
+                // hạng traffic/doanh thu là công khai trong công ty. MEMBER gọi thẳng
+                // `GET /lark/user-activity` cũng nhận đủ danh sách kèm số liệu.
+                //
+                // Ở đây từng có biến `isInternalAdmin` khai ra nhưng KHÔNG dùng ở bất kỳ đâu — đọc
+                // qua rất dễ tưởng đã có chốt chặn theo team. Đã gỡ để không ai nhầm nữa.
+                //
+                // Phần bị chặn thật là NỘI DUNG báo cáo ngày của từng người: xem canViewReportOf()
+                // — LEADER chỉ mở được chi tiết của team mình lãnh đạo, MEMBER chỉ của chính mình.
+                // Nếu sau này cần siết cả danh sách thì đó là đổi nghiệp vụ, phải quyết riêng.
 
                 // Fetch reports with optional filters
                 const getVietnamParts = (dateInput?: string | Date) => {
@@ -1064,12 +1173,25 @@ export class LarkService implements OnModuleInit {
                     `[KPI-DateMap] uiPerformance=${uiDayStartStr}..${uiDayEndStr} -> lark_kpi.report_date/traffic VN [${larkKpiStartOfDay.toISOString()}..${larkKpiEndOfDay.toISOString()}]; checklist + report_kpi (D+1) VN [${memberReportStart.toISOString()}..${memberReportEnd.toISOString()}] (day ${dataDayStartStr}..${dataDayEndStr})`,
                 );
 
-                // Checklist: record đã lưu thẳng `date` = ngày nghiệp vụ D (submitChecklistReport tự
-                // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
-                whereClause.date = {
-                    gte: larkKpiStartOfDay,
-                    lte: larkKpiEndOfDay,
+                // In-app reports (checklist, traffic, revenue) được submit với reportDate D,
+                // nhưng nghiệp vụ nộp sáng D là báo cáo về ngày D-1 nên DB lưu `date` = D-1 (previousVietnamDateKey).
+                // Khi đọc lại từ UI chọn ngày D, phải tìm theo cả 2 cửa sổ:
+                // 1) date = D-1 (inAppReportStart..inAppReportEnd: theo quy ước lưu lùi 1 ngày)
+                // 2) date = D hoặc created_at = D (larkKpiStartOfDay..larkKpiEndOfDay)
+                const inAppDayStartStr = this.previousVietnamDateKey(uiDayStartStr);
+                const inAppDayEndStr = this.previousVietnamDateKey(uiDayEndStr);
+                const inAppReportStart = getVietnamBounds(inAppDayStartStr).start;
+                const inAppReportEnd = getVietnamBounds(inAppDayEndStr).end;
+
+                const inAppDateFilter = {
+                    OR: [
+                        { date: { gte: inAppReportStart, lte: inAppReportEnd } },
+                        { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                        { created_at: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } },
+                    ],
                 };
+
+                whereClause.OR = inAppDateFilter.OR;
 
                 let kpiMonthFallback = false;
 
@@ -1128,17 +1250,7 @@ export class LarkService implements OnModuleInit {
                 const compactNameKey = (val: string | null | undefined) => normName(val || '').replace(/\s+/g, '');
                 const looseNameKey = (val: string | null | undefined) => normName(val || '').replace(/[^a-z0-9]/g, '');
                 const isDoDaTeamFilter = normalizeTeamKey(dbTeamFilter) === normalizeTeamKey('Đồ Da');
-
-                const isActiveEmployeeStatus = (raw: unknown): boolean => {
-                    const st = String(raw || '')
-                        .toLowerCase()
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/đ/g, 'd')
-                        .trim();
-                    if (!st) return true;
-                    return !st.includes('nghi') && !st.includes('off') && !st.includes('khoa');
-                };
+                const isActiveEmployeeStatus = isActiveEmployeeStatusValue;
 
                 // users.team → checklist (lark_reports). lark_kpi.team → hiệu suất (performance).
                 // Role + employee_status: from users table.
@@ -1479,13 +1591,12 @@ export class LarkService implements OnModuleInit {
                     totalKpiCount,
                     reportsUnfilteredCount,
                     globalIndoKpisRaw,
+                    sapoOrdersStats,
                 ] = await Promise.all([
-                    // trafficReport: record đã lưu thẳng `date` = ngày nghiệp vụ D (submitTrafficReport tự
-                    // trừ lùi 1 ngày so với ngày nộp) → đọc đúng cửa sổ D (larkKpiStartOfDay/EndOfDay).
-                    this.prisma.trafficReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
-                    // revenueReport: cùng cơ chế lưu/đọc như trafficReport (submitRevenueReport cũng trừ
-                    // lùi 1 ngày). Đây là nguồn doanh thu MỚI (nhập tay theo nền tảng).
-                    this.prisma.revenueReport.findMany({ where: { date: { gte: larkKpiStartOfDay, lte: larkKpiEndOfDay } } }),
+                    // trafficReport: record lưu theo quy ước ngày nghiệp vụ (hỗ trợ cả date D-1 và date/created_at trong D)
+                    this.prisma.trafficReport.findMany({ where: inAppDateFilter }),
+                    // revenueReport: cùng cơ chế lưu/đọc như trafficReport
+                    this.prisma.revenueReport.findMany({ where: inAppDateFilter }),
                     // Toàn bộ traffic trong tháng để tính traffic_range cho Summary Cards & Ranking
                     this.prisma.trafficReport.findMany({
                         where: { date: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
@@ -1522,6 +1633,7 @@ export class LarkService implements OnModuleInit {
                         this.logger.warn(`[Global Indo] lark_kpi_global_indo query failed, fallback []: ${err?.message || err}`);
                         return [];
                     }) as Promise<any[]>,
+                    this.readSapoOrderStats(uiDayStartStr, uiDayEndStr, teamFilterNormalized || undefined),
                 ]);
 
                 const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows] = await Promise.all([
@@ -2407,15 +2519,13 @@ export class LarkService implements OnModuleInit {
                         ? checklistTeams
                         : [(r.team || '').trim() || 'Khác'];
 
-                    // r.date là ngày NỘP (D+1); ngày báo cáo VỀ là D = date - 1 ngày → key tháng phải theo D
-                    // để khớp với roster/kpi của ngày đang xem (quan trọng khi nộp vào mùng 1 đầu tháng).
-                    const vn = getVietnamParts(
-                        r.date ? new Date(new Date(r.date).getTime() - 24 * 60 * 60 * 1000) : new Date(),
-                    );
+                    // r.date đã được trừ lùi khi lưu; map theo monthInfo của range đang xem để khớp với roster
+                    const vn = getVietnamParts(r.date ? new Date(r.date) : new Date());
+                    const targetMonthInfo = monthsInRange[0] || { monthNum: vn.m, year: vn.y };
 
                     teams.forEach(team => {
                         const teamNorm = normalizeTeamKey(team);
-                        const personMonthKey = getAggKey(pKey, teamNorm, { monthNum: vn.m, year: vn.y });
+                        const personMonthKey = getAggKey(pKey, teamNorm, targetMonthInfo);
 
                         if (!kpisForAggregation.has(personMonthKey)) {
                             kpisForAggregation.set(personMonthKey, {
@@ -3204,6 +3314,7 @@ export class LarkService implements OnModuleInit {
                     totalRevenueTarget: 0,
                     totalRevenueCompleted: 0,
                     totalChannels: totalChannelsMatchingFilter,
+                    totalOrders: sapoOrdersStats?.totalOrders || 0,
                     totalReports: 0,
                     reportedCount: 0
                 };
@@ -3344,9 +3455,23 @@ export class LarkService implements OnModuleInit {
                 })).sort((a, b) => b.videoPct - a.videoPct);
 
                 // Calculate Group-level contributions (Global vs Việt Nam)
+                let sapoVnOrders = 0;
+                let sapoGlobalOrders = 0;
+                if (sapoOrdersStats?.byTeam) {
+                    for (const [tName, count] of Object.entries(sapoOrdersStats.byTeam)) {
+                        const reg = getRegionInternal(tName);
+                        const c = Number(count || 0);
+                        if (reg === 'global') sapoGlobalOrders += c;
+                        else sapoVnOrders += c;
+                    }
+                }
+                if (sapoVnOrders === 0 && sapoGlobalOrders === 0 && (sapoOrdersStats?.totalOrders || 0) > 0) {
+                    sapoVnOrders = sapoOrdersStats.totalOrders;
+                }
+
                 const groupTotals = {
-                    global: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.global },
-                    vn: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn }
+                    global: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.global, orders: sapoGlobalOrders },
+                    vn: { videos: 0, traffic: 0, revenue: 0, channels: regionalChannelCounts.vn, orders: sapoVnOrders }
                 };
 
                 const globalTeamNames = ['Global - JP1', 'Global - JP2', 'Global JP3', 'Global JP4', 'Global - Indo', 'Global Thái Lan', 'Global- Thái Lan 1', 'Global- Thái Lan 2', 'Global Đài Loan'];
@@ -3382,20 +3507,24 @@ export class LarkService implements OnModuleInit {
                         traffic: groupTotals.global.traffic,
                         revenue: groupTotals.global.revenue,
                         channels: groupTotals.global.channels,
+                        orders: groupTotals.global.orders,
                         videoPct: globalTotals.videos ? Math.round((groupTotals.global.videos / globalTotals.videos) * 100) : 0,
                         trafficPct: globalTotals.traffic ? Math.round((groupTotals.global.traffic / globalTotals.traffic) * 100) : 0,
                         revenuePct: globalTotals.revenue ? Math.round((groupTotals.global.revenue / globalTotals.revenue) * 100) : 0,
-                        channelPct: globalTotals.channels ? Math.round((groupTotals.global.channels / globalTotals.channels) * 100) : 0
+                        channelPct: globalTotals.channels ? Math.round((groupTotals.global.channels / globalTotals.channels) * 100) : 0,
+                        orderPct: (aggregates.totalOrders || 0) ? Math.round((groupTotals.global.orders / aggregates.totalOrders) * 100) : 0
                     },
                     vn: {
                         videos: groupTotals.vn.videos,
                         traffic: groupTotals.vn.traffic,
                         revenue: groupTotals.vn.revenue,
                         channels: groupTotals.vn.channels,
+                        orders: groupTotals.vn.orders,
                         videoPct: globalTotals.videos ? Math.round((groupTotals.vn.videos / globalTotals.videos) * 100) : 0,
                         trafficPct: globalTotals.traffic ? Math.round((groupTotals.vn.traffic / globalTotals.traffic) * 100) : 0,
                         revenuePct: globalTotals.revenue ? Math.round((groupTotals.vn.revenue / globalTotals.revenue) * 100) : 0,
-                        channelPct: globalTotals.channels ? Math.round((groupTotals.vn.channels / globalTotals.channels) * 100) : 0
+                        channelPct: globalTotals.channels ? Math.round((groupTotals.vn.channels / globalTotals.channels) * 100) : 0,
+                        orderPct: (aggregates.totalOrders || 0) ? Math.round((groupTotals.vn.orders / aggregates.totalOrders) * 100) : 0
                     }
                 };
 
@@ -3438,7 +3567,63 @@ export class LarkService implements OnModuleInit {
         };
     }
 
-    async getUserReportDetails(email: string, dateStr: string) {
+    /**
+     * Ai được xem báo cáo của ai.
+     *
+     * - Chính mình: luôn được.
+     * - ADMIN / MANAGER: xem được của tất cả.
+     * - LEADER: chỉ xem được người thuộc (các) team mình lãnh đạo.
+     * - Còn lại: không.
+     *
+     * Trước đây endpoint nhận thẳng `email` từ query mà không đối chiếu người đang đăng nhập —
+     * đổi email trên URL là đọc được nội dung báo cáo ngày của bất kỳ đồng nghiệp nào.
+     */
+    private async canViewReportOf(
+        targetEmail: string,
+        caller?: { email?: string | null; roles?: string[] | null; id?: string } | null,
+    ): Promise<boolean> {
+        const target = (targetEmail ?? '').toLowerCase().trim();
+        const callerEmail = (caller?.email ?? '').toLowerCase().trim();
+        if (!caller || !callerEmail) return false;
+        if (target && target === callerEmail) return true;
+
+        const roles = caller.roles ?? [];
+        if (roles.includes('ADMIN' as any) || roles.includes('MANAGER' as any)) return true;
+
+        if (roles.includes('LEADER' as any) && caller.id) {
+            const ledTeams = await this.prisma.team.findMany({
+                where: { leader_id: caller.id },
+                select: { name: true },
+            });
+            const ledNames = ledTeams
+                .map((t) => t.name.trim().toLowerCase())
+                .filter(Boolean);
+            if (ledNames.length === 0) return false;
+
+            const targetUser = await this.prisma.user.findFirst({
+                where: { email: { equals: target, mode: 'insensitive' as any } },
+                select: { team: true },
+            });
+            const targetTeams = (targetUser?.team ?? '')
+                .split(',')
+                .map((t) => t.trim().toLowerCase())
+                .filter(Boolean);
+            return targetTeams.some((t) => ledNames.includes(t));
+        }
+
+        return false;
+    }
+
+    async getUserReportDetails(
+        email: string,
+        dateStr: string,
+        caller?: { email?: string | null; roles?: string[] | null; id?: string } | null,
+    ) {
+        // Chỉ chặn khi có thông tin người gọi (controller luôn truyền). Giữ nhánh không có caller
+        // cho các lời gọi nội bộ/cron hiện có, tránh làm hỏng luồng đang chạy.
+        if (caller !== undefined && !(await this.canViewReportOf(email, caller))) {
+            throw new ForbiddenException('Bạn không có quyền xem báo cáo của người này');
+        }
         // `dateStr` = ngày báo cáo (reportDate) user chọn trên form (VN). Nộp sáng ngày reportDate là
         // báo cáo VỀ ngày reportDate-1 → submitChecklistReport/submitTrafficReport lưu `date` = hôm qua.
         // Đọc lại phải dùng CÙNG ngày đã lưu (reportDate-1), không dùng reportDate thô, nếu không sẽ

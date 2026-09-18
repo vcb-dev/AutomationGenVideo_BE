@@ -7,6 +7,7 @@ import { LarkService } from './lark.service';
 import { LarkNotifyService } from './lark-notify.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { CacheModule } from '../../common/cache/cache.module';
+import { SapoIntegrationModule } from '../sapo-integration/sapo-integration.module';
 
 @Module({
     imports: [
@@ -14,6 +15,7 @@ import { CacheModule } from '../../common/cache/cache.module';
         ConfigModule,
         PrismaModule,
         CacheModule,
+        SapoIntegrationModule,
     ],
     controllers: [LarkController],
     providers: [LarkService, LarkNotifyService],
