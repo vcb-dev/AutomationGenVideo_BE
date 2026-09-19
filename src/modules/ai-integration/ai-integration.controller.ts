@@ -790,9 +790,8 @@ export class AiIntegrationController {
   }
 
   @Get('voice/history')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Lấy danh sách lịch sử thao tác voice của người dùng (Chỉ dành cho ADMIN)' })
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Lấy danh sách lịch sử thao tác voice của người dùng (User xem của mình, ADMIN xem toàn bộ)' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'action_type', required: false, type: String })
@@ -801,8 +800,23 @@ export class AiIntegrationController {
   @ApiQuery({ name: 'date_from', required: false, type: String })
   @ApiQuery({ name: 'date_to', required: false, type: String })
   @ApiQuery({ name: 'search', required: false, type: String })
-  async getVoiceActionHistory(@Query() query: any) {
-    return this.aiService.getVoiceActionHistory(query);
+  async getVoiceActionHistory(@Query() query: any, @Req() req: any) {
+    const isAdmin = req.user?.role === UserRole.ADMIN || req.user?.roles?.includes(UserRole.ADMIN);
+    const targetUserId = isAdmin ? query.user_id : req.user?.id;
+    return this.aiService.getVoiceActionHistory({
+      ...query,
+      user_id: targetUserId,
+    });
+  }
+
+  @Post('voice/check-duplicate')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Kiểm tra xem kịch bản đã từng được tạo voice trước đó chưa' })
+  async checkDuplicateVoice(@Body() body: { text: string; voice_id?: string }, @Req() req: any) {
+    if (!body?.text?.trim()) {
+      return { is_duplicate: false };
+    }
+    return this.aiService.checkDuplicateVoice(req.user?.id, body.text, body.voice_id);
   }
 
   @Get('voice/usage/stats')
