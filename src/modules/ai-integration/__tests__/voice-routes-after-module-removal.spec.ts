@@ -38,12 +38,13 @@ describe('gỡ VoiceModule không được làm mất route voice', () => {
     'voice/tts',
     'voice/translate-text',
     'voice/history',
+    'voice/check-duplicate',
   ])('ai-integration vẫn phục vụ %s', (route) => {
     expect(paths).toContain(route);
   });
 
-  it('controller khai đủ 13 route voice, không hụt cái nào', () => {
-    expect(paths.filter((p) => p.startsWith('voice'))).toHaveLength(13);
+  it('controller khai đủ 14 route voice, không hụt cái nào', () => {
+    expect(paths.filter((p) => p.startsWith('voice'))).toHaveLength(14);
   });
 
   it('app.module không còn nhắc tới VoiceModule', () => {
