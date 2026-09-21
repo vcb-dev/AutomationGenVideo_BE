@@ -1,4 +1,4 @@
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { LarkService } from '../src/modules/work-report/work-report.service';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';

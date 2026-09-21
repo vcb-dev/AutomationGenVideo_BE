@@ -1,4 +1,4 @@
-import { LarkService } from './lark.service';
+import { WorkReportService, LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * submitRevenueReport — báo cáo doanh thu nhập tay theo nền tảng, mirror

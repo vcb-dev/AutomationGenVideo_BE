@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookAiClientService } from '../facebook-owned-pages/facebook-ai-client.service';
-import { LarkNotifyService, LarkSendError } from '../lark-sync/lark-notify.service';
+import { LarkNotifyService, LarkSendError } from '../work-report/lark-notify.service';
 import {
   DEFAULT_VIEW_THRESHOLD,
   filterByThreshold,

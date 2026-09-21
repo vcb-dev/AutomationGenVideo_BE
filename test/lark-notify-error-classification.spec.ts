@@ -1,6 +1,6 @@
 import { of, throwError } from 'rxjs';
 
-import { LarkNotifyService, LarkSendError, isPermanentError } from '../lark-notify.service';
+import { LarkNotifyService, LarkSendError, isPermanentError } from '../src/modules/work-report/lark-notify.service';
 
 /**
  * Các mã lỗi dưới đây lấy từ lệnh gọi THẬT lên Lark trong lúc dựng tính năng (06–07/08/2026),

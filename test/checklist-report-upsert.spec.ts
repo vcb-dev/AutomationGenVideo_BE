@@ -1,4 +1,4 @@
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { WorkReportService as LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * Chức năng: nộp / sửa checklist hằng ngày (`POST /lark/checklist-report`).

@@ -1,4 +1,4 @@
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { WorkReportService as LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * Chức năng: trạng thái hiển thị trên thẻ nhân sự ở bảng Hiệu suất.

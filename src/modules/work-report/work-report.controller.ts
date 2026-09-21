@@ -4,7 +4,7 @@ import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInter
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
-import { LarkService } from './lark.service';
+import { WorkReportService } from './work-report.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -13,16 +13,16 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { UserRole } from '@prisma/client';
 
-@ApiTags('Lark Report')
+@ApiTags('Work Report')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('lark')
+@Controller(['work-report', 'lark'])
 @SkipThrottle({ long: true, short: true })
-export class LarkController {
-    private readonly logger = new Logger(LarkController.name);
+export class WorkReportController {
+    private readonly logger = new Logger(WorkReportController.name);
 
     constructor(
-        private readonly larkService: LarkService,
+        private readonly larkService: WorkReportService,
         private readonly prisma: PrismaService,
     ) { }
 
@@ -333,3 +333,6 @@ export class LarkController {
         return { message: 'Files uploaded successfully', fileTokens };
     }
 }
+
+/** Alias tương thích ngược */
+export { WorkReportController as LarkController };

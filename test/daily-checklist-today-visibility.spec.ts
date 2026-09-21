@@ -1,4 +1,4 @@
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { WorkReportService as LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * Chức năng: Báo cáo công việc hôm nay (checklist) phải hiển thị đúng trên tab Checklist hôm nay.

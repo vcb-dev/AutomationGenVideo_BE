@@ -1,4 +1,4 @@
-import { isActiveEmployeeStatusValue } from '../src/modules/lark-sync/lark.service';
+import { isActiveEmployeeStatusValue } from '../src/modules/work-report/work-report.service';
 
 /**
  * Chức năng: xác định nhân sự còn đang làm việc hay đã nghỉ, để loại người đã nghỉ khỏi bảng hiệu

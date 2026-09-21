@@ -1,9 +1,8 @@
-
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
-import { LarkController } from './lark.controller';
-import { LarkService } from './lark.service';
+import { WorkReportController } from './work-report.controller';
+import { WorkReportService } from './work-report.service';
 import { LarkNotifyService } from './lark-notify.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { CacheModule } from '../../common/cache/cache.module';
@@ -17,8 +16,11 @@ import { SapoIntegrationModule } from '../sapo-integration/sapo-integration.modu
         CacheModule,
         SapoIntegrationModule,
     ],
-    controllers: [LarkController],
-    providers: [LarkService, LarkNotifyService],
-    exports: [LarkService, LarkNotifyService],
+    controllers: [WorkReportController],
+    providers: [WorkReportService, LarkNotifyService],
+    exports: [WorkReportService, LarkNotifyService],
 })
-export class LarkModule { }
+export class WorkReportModule { }
+
+/** Alias tương thích ngược */
+export { WorkReportModule as LarkModule };

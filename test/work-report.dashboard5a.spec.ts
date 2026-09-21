@@ -1,4 +1,4 @@
-import { LarkService } from './lark.service';
+import { WorkReportService, LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * getDashboard5AForTeams — gộp dashboard 5A cho leader lead CÙNG LÚC nhiều team (có thật trên DB:

@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { LarkService } from '../src/modules/work-report/work-report.service';
 
 async function run() {
     console.log('Initializing app context to trigger Channel Sync on production DB...');

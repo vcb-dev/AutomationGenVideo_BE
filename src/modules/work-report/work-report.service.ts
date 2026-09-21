@@ -82,8 +82,8 @@ export function isActiveEmployeeStatusValue(raw: unknown): boolean {
 }
 
 @Injectable()
-export class LarkService implements OnModuleInit {
-    private readonly logger = new Logger(LarkService.name);
+export class WorkReportService implements OnModuleInit {
+    private readonly logger = new Logger(WorkReportService.name);
     private accessToken: string;
     private tokenExpiresAt: number;
     private readonly activitySharedCacheTtlMs: number;
@@ -442,7 +442,7 @@ export class LarkService implements OnModuleInit {
         });
 
         // 2. Fallback for legacy submissions (if no breakdown entries were created but traffic object has values)
-        if (recordsToCreate.length === 0) {
+        if (recordsToCreate.length === 0 && traffic) {
             platformKeys.forEach(pKey => {
                 const val = readReportedValue(traffic[pKey as keyof typeof traffic]);
                 if (val !== null) {
@@ -674,11 +674,11 @@ export class LarkService implements OnModuleInit {
         console.log('Final Answers collected:', JSON.stringify(finalAnswers, null, 2));
 
         const { email, name, team, reportDate, userEmail, userName, userTeam } = payload;
-
         const normalizedEmail = (email || userEmail || '').trim().toLowerCase();
+        const effectiveReportDate = reportDate || payload.date;
         // Nghiệp vụ: nộp sáng ngày reportDate là báo cáo VỀ ngày reportDate-1 (checklist hỏi "hôm qua...")
         // → lưu `date` = hôm qua, không phải ngày nộp (ví dụ nộp sáng 17/7 → lưu 16/7).
-        const targetDateKey = this.previousVietnamDateKey(reportDate || undefined);
+        const targetDateKey = this.previousVietnamDateKey(effectiveReportDate || undefined);
         const dateObj = this.vietnamNoonUtcFromKey(targetDateKey);
 
         // Check for existing user to get fallback values
@@ -724,7 +724,7 @@ export class LarkService implements OnModuleInit {
         const bounds = getVietnamBounds(targetDateKey);
 
         // Chặn ngày tương lai với MỌI vai trò — xem ghi chú ở submitTrafficReport.
-        if (reportDate && reportDate > this.toVietnamDateKey(new Date())) {
+        if (effectiveReportDate && effectiveReportDate > this.toVietnamDateKey(new Date())) {
             throw new Error('Không thể gửi báo cáo cho ngày trong tương lai.');
         }
 
@@ -5317,3 +5317,6 @@ export class LarkService implements OnModuleInit {
         return this.prisma.reportedTask.deleteMany();
     }
 }
+
+/** Alias tương thích ngược */
+export { WorkReportService as LarkService };

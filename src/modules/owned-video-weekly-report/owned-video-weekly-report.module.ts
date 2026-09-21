@@ -3,7 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { FacebookOwnedPagesModule } from '../facebook-owned-pages/facebook-owned-pages.module';
-import { LarkModule } from '../lark-sync/lark.module';
+import { WorkReportModule } from '../work-report/work-report.module';
 import { WeeklyReportController } from './weekly-report.controller';
 import { WeeklyReportCronService } from './weekly-report.cron.service';
 import { WeeklyReportService } from './weekly-report.service';
@@ -15,7 +15,7 @@ import { WeeklyReportService } from './weekly-report.service';
  * lại — cả hai đã có chủ ở module khác.
  */
 @Module({
-  imports: [PrismaModule, ConfigModule, LarkModule, FacebookOwnedPagesModule],
+  imports: [PrismaModule, ConfigModule, WorkReportModule, FacebookOwnedPagesModule],
   controllers: [WeeklyReportController],
   providers: [WeeklyReportService, WeeklyReportCronService],
   exports: [WeeklyReportService],
