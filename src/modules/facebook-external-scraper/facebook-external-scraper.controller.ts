@@ -87,7 +87,7 @@ export class FacebookExternalScraperController {
       throw new HttpException({ error: 'field must be is_bookmarked or is_periodic_crawl' }, HttpStatus.BAD_REQUEST);
     }
     if (field === 'is_periodic_crawl') assertCanManageChannels(req);
-    return this.service.toggleFanpage(BigInt(fanpageId), field);
+    return this.service.toggleFanpage(BigInt(fanpageId), field, req.user);
   }
 
   @Post('scrape-reels')
@@ -135,13 +135,26 @@ export class FacebookExternalScraperController {
     });
   }
 
-  @Post(['sync-all', 'periodic-refresh'])
+  @Post(['sync-all', 'profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
-  async syncAll() {
-    this.service.periodicRefresh().catch((err: any) => {
+  async syncAll(
+    @Body()
+    body?: {
+      scope?: 'tracked' | 'bookmarked' | 'all';
+      mode?: 'count' | 'days';
+      count?: number;
+      days?: number;
+    },
+  ) {
+    this.service.periodicRefresh(body).catch((err: any) => {
       this.logger.error(`[FB-EXTERNAL-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
     });
-    return { status: 'ok', message: 'Đã bắt đầu tiến trình đồng bộ lại các kênh Facebook.' };
+    const scopeLabel = body?.scope === 'bookmarked' ? 'kênh đã lưu' : body?.scope === 'all' ? 'tất cả kênh' : 'kênh chú ý';
+    const detailLabel = body?.mode === 'days' ? `${body.days || 7} ngày gần nhất` : `${body?.count || 20} video mới nhất`;
+    return {
+      status: 'ok',
+      message: `Đã bắt đầu cào video Facebook (${scopeLabel}, ${detailLabel}) trong nền!`,
+    };
   }
 }

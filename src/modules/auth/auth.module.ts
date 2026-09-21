@@ -11,6 +11,8 @@ import { CacheModule } from "../../common/cache/cache.module";
 import { getRuntimeJwtSecret } from "./jwt-secret.util";
 import { CookieAuthService } from "./cookie-auth.service";
 
+import { PermissionsGuard } from "./guards/permissions.guard";
+
 @Module({
   imports: [
     UsersModule,
@@ -30,8 +32,8 @@ import { CookieAuthService } from "./cookie-auth.service";
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, CookieAuthService],
-  exports: [AuthService, CookieAuthService],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, CookieAuthService, PermissionsGuard],
+  exports: [AuthService, CookieAuthService, PermissionsGuard],
 })
 export class AuthModule {}
 

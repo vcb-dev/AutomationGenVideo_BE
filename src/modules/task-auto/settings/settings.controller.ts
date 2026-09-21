@@ -13,14 +13,18 @@ import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoAssignService } from "../task-auto-assign/task-auto-assign.service";
-import { UpdateAutoAssignSettingDto } from "./dto/settings.dto";
+import { LarkWebhookNotifyService } from "../tasks/lark-webhook-notify.service";
+import { UpdateAutoAssignSettingDto, UpdateLarkWebhookSettingDto } from "./dto/settings.dto";
 
 @ApiTags("task-auto")
 @ApiBearerAuth()
 @UseGuards(JwtOrApiKeyGuard)
 @Controller("task-auto")
 export class TaskAutoSettingsController {
-  constructor(private assign: TaskAutoAssignService) {}
+  constructor(
+    private assign: TaskAutoAssignService,
+    private larkWebhook: LarkWebhookNotifyService,
+  ) {}
 
   @Get("settings")
   @ApiOperation({ summary: "Get auto-assign settings" })
@@ -53,5 +57,21 @@ export class TaskAutoSettingsController {
       timestamp: new Date(),
       ...result,
     };
+  }
+
+  @Get("settings/lark-webhook")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Webhook Lark DÙNG CHUNG — không bao giờ trả secret thật, chỉ báo đã cấu hình hay chưa" })
+  getLarkWebhookSetting() {
+    return this.larkWebhook.getGlobalSettingForDisplay();
+  }
+
+  @Put("settings/lark-webhook")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Cập nhật webhook Lark DÙNG CHUNG. Bỏ trống field = giữ nguyên, gửi null = xoá" })
+  updateLarkWebhookSetting(@Body() dto: UpdateLarkWebhookSettingDto, @Request() req: any) {
+    return this.larkWebhook.updateGlobalSetting(dto, req.user.id);
   }
 }

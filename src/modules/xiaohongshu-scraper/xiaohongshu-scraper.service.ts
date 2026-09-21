@@ -169,6 +169,8 @@ export class XiaohongshuScraperService {
       is_verified: profile.is_verified,
       is_tracked: profile.is_tracked,
       is_bookmarked: profile.is_bookmarked,
+      bookmarked_by_name: profile.bookmarked_by_name,
+      bookmarked_at: profile.bookmarked_at,
       is_owned: profile.is_owned,
       is_initial_scraped: profile.is_initial_scraped,
       last_scraped_at: profile.last_scraped_at,
@@ -185,6 +187,7 @@ export class XiaohongshuScraperService {
   async scrapeProfileVideos(
     profileId: bigint,
     numOfPosts: number,
+    options?: { mode?: 'count' | 'days'; days?: number },
   ): Promise<{ created: number; updated: number; videos_returned: number }> {
     const profile = await this.prisma.scraperXiaohongshuProfile.findUnique({ where: { id: profileId } });
     if (!profile) throw new Error(`Profile ${profileId} không tồn tại`);
@@ -210,9 +213,16 @@ export class XiaohongshuScraperService {
 
       if (author) await this.applyAuthorUpdate(profileId, author);
 
+      const cutoffDate = options?.mode === 'days' && options?.days && options.days > 0
+        ? new Date(Date.now() - options.days * 86400000)
+        : null;
+
       let created = 0;
       let updated = 0;
       for (const v of videos) {
+        if (cutoffDate && v.date_posted && new Date(v.date_posted) < cutoffDate) {
+          continue;
+        }
         const r = await this.upsertVideo(v, { profileId });
         if (r.created) created++;
         else updated++;
@@ -355,13 +365,29 @@ export class XiaohongshuScraperService {
 
   // ─── Patch (toggle) tracked/bookmarked — khớp PATCH xhs_profile_detail cũ ────
 
-  async patchProfile(id: bigint, patch: { is_tracked?: boolean; is_bookmarked?: boolean }): Promise<any> {
+  async patchProfile(
+    id: bigint,
+    patch: { is_tracked?: boolean; is_bookmarked?: boolean },
+    user?: { id?: string; full_name?: string; email?: string },
+  ): Promise<any> {
     const profile = await this.prisma.scraperXiaohongshuProfile.findUnique({ where: { id } });
     if (!profile) throw new HttpException({ error: 'Profile not found' }, HttpStatus.NOT_FOUND);
 
     const data: any = {};
     if (patch.is_tracked !== undefined) data.is_tracked = !!patch.is_tracked;
-    if (patch.is_bookmarked !== undefined) data.is_bookmarked = !!patch.is_bookmarked;
+    if (patch.is_bookmarked !== undefined) {
+      const isBookmarked = !!patch.is_bookmarked;
+      data.is_bookmarked = isBookmarked;
+      if (isBookmarked) {
+        data.bookmarked_by_id = user?.id || null;
+        data.bookmarked_by_name = user?.full_name || user?.email || null;
+        data.bookmarked_at = new Date();
+      } else {
+        data.bookmarked_by_id = null;
+        data.bookmarked_by_name = null;
+        data.bookmarked_at = null;
+      }
+    }
 
     const updated = Object.keys(data).length > 0
       ? await this.prisma.scraperXiaohongshuProfile.update({ where: { id }, data })
@@ -437,27 +463,51 @@ export class XiaohongshuScraperService {
     return { keywords, created, updated };
   }
 
-  async periodicRefresh(): Promise<{ total: number; done: number; failed: number }> {
+  async periodicRefresh(options?: {
+    scope?: 'tracked' | 'bookmarked' | 'all';
+    mode?: 'count' | 'days';
+    count?: number;
+    days?: number;
+  }): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
+    const scope = options?.scope || 'tracked';
+    const where: any = { scraping_status: { not: 'processing' }, is_owned: false };
+    if (scope === 'tracked') {
+      where.is_tracked = true;
+    } else if (scope === 'bookmarked') {
+      where.is_bookmarked = true;
+    }
+
     const profiles = await this.prisma.scraperXiaohongshuProfile.findMany({
-      where: { is_tracked: true, scraping_status: { not: 'processing' } },
+      where,
       orderBy: { last_scraped_at: 'asc' },
     });
 
     if (profiles.length === 0) {
-      this.logger.log('[XHS-PERIODIC] Không có profile nào cần cào định kỳ.');
+      this.logger.log(`[XHS-PERIODIC] Không có profile (${scope}) nào cần cào định kỳ.`);
       return { total: 0, done: 0, failed: 0 };
     }
 
-    this.logger.log(`═══ [XHS-PERIODIC] Cào video mới cho ${profiles.length} profile(s) ═══`);
+    this.logger.log(`═══ [XHS-PERIODIC] Cào video mới cho ${profiles.length} profile(s) (scope: ${scope}, mode: ${options?.mode || 'default'}) ═══`);
     let done = 0;
     let failed = 0;
 
     for (const profile of profiles) {
       try {
-        const count = profile.is_initial_scraped ? 10 : 30;
-        await this.scrapeProfileVideos(profile.id, count);
+        const mode = options?.mode || (options?.days ? 'days' : options?.count ? 'count' : 'default');
+        let count = 20;
+        if (mode === 'count') {
+          count = options?.count && options.count > 0 ? options.count : (profile.is_initial_scraped ? 10 : 30);
+        } else if (mode === 'days') {
+          count = options?.count && options.count > 0 ? options.count : 50;
+        } else {
+          count = profile.is_initial_scraped ? 10 : 30;
+        }
+        await this.scrapeProfileVideos(profile.id, count, {
+          mode: options?.mode,
+          days: options?.days,
+        });
         done++;
       } catch (err: any) {
         failed++;
@@ -468,5 +518,12 @@ export class XiaohongshuScraperService {
 
     this.logger.log(`═══ [XHS-PERIODIC] Xong: ${done}/${profiles.length} OK, ${failed} lỗi ═══`);
     return { total: profiles.length, done, failed };
+  }
+
+  async updateClassification(id: bigint, channel_type: string, product_lines: string[]) {
+    return this.prisma.scraperXiaohongshuProfile.update({
+      where: { id },
+      data: { channel_type, product_lines },
+    });
   }
 }

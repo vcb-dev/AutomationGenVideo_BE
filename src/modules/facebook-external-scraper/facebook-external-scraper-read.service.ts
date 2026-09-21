@@ -47,6 +47,8 @@ export class FacebookExternalScraperReadService {
       is_visible_on_ui: p.is_visible_on_ui,
       is_periodic_crawl: p.is_periodic_crawl,
       is_bookmarked: p.is_bookmarked,
+      bookmarked_by_name: p.bookmarked_by_name,
+      bookmarked_at: p.bookmarked_at,
       is_initial_scraped: p.is_initial_scraped,
       scraping_status: p.scraping_status,
       last_scraped_at: p.last_scraped_at,
@@ -93,12 +95,14 @@ export class FacebookExternalScraperReadService {
       id: bigint; profile_id: string; name: string; handle: string; page_url: string; avatar_url: string | null;
       avatar_drive_url: string | null; is_verified: boolean | null; followers_count: bigint; likes_count: bigint;
       is_visible_on_ui: boolean; is_periodic_crawl: boolean; is_bookmarked: boolean; is_initial_scraped: boolean;
+      bookmarked_by_name: string | null; bookmarked_at: Date | null;
       scraping_status: string; last_scraped_at: Date | null; scrape_error: string | null; created_at: Date;
       channel_type: string; product_lines: string[];
       reels_count: bigint;
     }[]>`
       SELECT p.id, p.profile_id, p.name, p.handle, p.page_url, p.avatar_url, p.avatar_drive_url, p.is_verified,
              p.followers_count, p.likes_count, p.is_visible_on_ui, p.is_periodic_crawl, p.is_bookmarked,
+             p.bookmarked_by_name, p.bookmarked_at,
              p.is_initial_scraped, p.scraping_status, p.last_scraped_at, p.scrape_error, p.created_at,
              p.channel_type, p.product_lines,
              (SELECT COUNT(*) FROM scraper_facebook_reels r WHERE r.fanpage_id = p.id) AS reels_count

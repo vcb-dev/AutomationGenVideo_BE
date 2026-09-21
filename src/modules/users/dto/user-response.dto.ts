@@ -18,6 +18,9 @@ export class UserResponseDto {
   @ApiProperty({ enum: UserRole, isArray: true })
   roles: UserRole[];
 
+  @ApiProperty({ type: [String], required: false })
+  permissions: string[];
+
   @ApiProperty({ required: false })
   manager_id?: string;
 

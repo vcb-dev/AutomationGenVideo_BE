@@ -209,7 +209,10 @@ export class ChannelsService {
   async findOne(id: string, user: { roles: UserRole[]; team: string | null }) {
     const channel = await this.findChannelOrThrow(id);
 
-    if (channel.channel_team?.name !== user.team) {
+    if (
+      !this.isAdminOrManager(user.roles) &&
+      channel.channel_team?.name !== user.team
+    ) {
       throw new ForbiddenException("You do not have access to this channel");
     }
 
@@ -280,24 +283,18 @@ export class ChannelsService {
   }
 
   /**
-   * Tra cứu team + owner theo danh sách URL kênh hoặc channel_id nền tảng.
-   * FE gửi lên mảng identifiers (URL hoặc platform ID), BE trả về map.
+   * Tra cứu team + owner theo danh sách URL kênh, channel_id nền tảng hoặc tên kênh.
+   * FE gửi lên mảng identifiers (URL, username, ID, name), BE trả về map.
    */
   async lookupByIdentifiers(
     identifiers: string[],
   ): Promise<Record<string, { team_name: string | null; owner_name: string | null }>> {
     if (!identifiers.length) return {};
     const unique = [...new Set(identifiers.filter(Boolean))];
-    const where = {
-      OR: [
-        { link_channel: { in: unique } },
-        { channel_id: { in: unique } },
-      ],
-    };
     const ownerSelect = { select: { full_name: true } } as const;
 
-    // Thử JOIN teams trước; nếu bảng teams chưa tồn tại trong DB thì fallback không JOIN
     type Row = {
+      name: string | null;
       link_channel: string | null;
       channel_id: string | null;
       owner: string | null;
@@ -307,8 +304,8 @@ export class ChannelsService {
     let rows: Row[];
     try {
       rows = (await this.prisma.channel.findMany({
-        where,
         select: {
+          name: true,
           link_channel: true,
           channel_id: true,
           owner: true,
@@ -318,8 +315,8 @@ export class ChannelsService {
       })) as Row[];
     } catch {
       rows = (await this.prisma.channel.findMany({
-        where,
         select: {
+          name: true,
           link_channel: true,
           channel_id: true,
           owner: true,
@@ -328,14 +325,56 @@ export class ChannelsService {
       })) as Row[];
     }
 
+    const normalizeKey = (str?: string | null): string => {
+      if (!str) return '';
+      let s = str.trim().toLowerCase();
+      s = s.replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, '');
+      const fbId = s.match(/profile\.php\?id=(\d+)/);
+      if (fbId) return fbId[1];
+      const fbIdParam = s.match(/[?&]id=(\d+)/);
+      if (fbIdParam) return fbIdParam[1];
+      s = s.replace(/^(facebook\.com|fb\.com|instagram\.com|threads\.net|tiktok\.com|youtube\.com)\//, '');
+      s = s.replace(/\/(reels|videos|shorts|featured).*$/, '');
+      s = s.replace(/\?.*$/, '');
+      s = s.replace(/^@/, '');
+      return s.trim();
+    };
+
     const result: Record<string, { team_name: string | null; owner_name: string | null }> = {};
     for (const c of rows) {
       const info = {
         team_name: c.channel_team?.name ?? null,
         owner_name: c.channel_owner?.full_name ?? c.owner ?? null,
       };
-      if (c.link_channel && unique.includes(c.link_channel)) result[c.link_channel] = info;
-      if (c.channel_id && unique.includes(c.channel_id)) result[c.channel_id] = info;
+
+      const cNormLink = normalizeKey(c.link_channel);
+      const cNormId = normalizeKey(c.channel_id);
+      const cNormName = normalizeKey(c.name);
+
+      for (const id of unique) {
+        if (result[id]) continue;
+
+        // 1. So khớp trực tiếp
+        if (
+          (c.link_channel && c.link_channel === id) ||
+          (c.channel_id && c.channel_id === id) ||
+          (c.name && c.name === id)
+        ) {
+          result[id] = info;
+          continue;
+        }
+
+        // 2. So khớp sau khi chuẩn hoá URL / ID / Name
+        const normId = normalizeKey(id);
+        if (
+          normId &&
+          (normId === cNormLink ||
+            normId === cNormId ||
+            (cNormName && normId === cNormName))
+        ) {
+          result[id] = info;
+        }
+      }
     }
     return result;
   }

@@ -34,6 +34,11 @@ export class TaskAutoTeamsService {
     _count: { select: { members: true, tasks: true } },
   }
 
+  private redactTeam<T extends { lark_webhook_secret?: string | null }>(team: T) {
+    const { lark_webhook_secret, ...rest } = team
+    return { ...rest, lark_webhook_secret_set: !!lark_webhook_secret }
+  }
+
   /**
    * Đồng bộ User.team/team_leader_id (phái sinh) cho danh sách user bị ảnh hưởng bởi một thay đổi
    * Team/TeamMember. PHẢI gọi với transaction client của chính thao tác ghi membership đó — nếu
@@ -46,10 +51,11 @@ export class TaskAutoTeamsService {
   }
 
   async findAll() {
-    return this.prisma.team.findMany({
+    const teams = await this.prisma.team.findMany({
       include: this.teamInclude,
       orderBy: { name: 'asc' },
     })
+    return teams.map((t) => this.redactTeam(t))
   }
 
   async findOne(id: string) {
@@ -66,7 +72,61 @@ export class TaskAutoTeamsService {
       },
     })
     if (!team) throw new NotFoundException('Team not found')
-    return team
+    return this.redactTeam(team)
+  }
+
+  async findOneForPayrollSync(id: string) {
+    const team = await this.prisma.team.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        leader_id: true,
+        is_active: true,
+        updated_at: true,
+        members: {
+          select: {
+            user_id: true,
+            joined_at: true,
+            is_content_creator: true,
+            user: {
+              select: {
+                full_name: true,
+                email: true,
+                employee_id: true,
+                employee_position: true,
+                manager_id: true,
+                is_active: true,
+                deleted_at: true,
+                employee_status: true,
+              },
+            },
+          },
+        },
+      },
+    })
+    if (!team) throw new NotFoundException('Team not found')
+
+    return {
+      id: team.id,
+      name: team.name,
+      leader_id: team.leader_id,
+      is_active: team.is_active,
+      updated_at: team.updated_at,
+      members: team.members.map((m) => ({
+        user_id: m.user_id,
+        joined_at: m.joined_at,
+        is_content_creator: m.is_content_creator,
+        full_name: m.user.full_name,
+        email: m.user.email,
+        employee_id: m.user.employee_id,
+        employee_position: m.user.employee_position,
+        manager_id: m.user.manager_id,
+        is_active: m.user.is_active,
+        deleted_at: m.user.deleted_at,
+        employee_status: m.user.employee_status,
+      })),
+    }
   }
 
   /** Kiểm tra team tồn tại, không load quan hệ nào — dùng khi chỉ cần existence-check. */
@@ -107,6 +167,8 @@ export class TaskAutoTeamsService {
           leader_id: dto.leader_id,
           team_kind: dto.team_kind,
           is_active: dto.is_active ?? true,
+          lark_webhook_url: dto.lark_webhook_url,
+          lark_webhook_secret: dto.lark_webhook_secret,
           members: memberIds.length
             ? { create: memberIds.map(uid => ({ user_id: uid })) }
             : undefined,
@@ -118,7 +180,7 @@ export class TaskAutoTeamsService {
       // luồng HR-management (assignUserToTeams), để member vào team từ màn nào cũng như nhau.
       await seedEditorKpiForMembers(tx, memberIds, [team.id], creatorId)
       await this.syncAffectedUsers(tx, memberIds)
-      return team
+      return this.redactTeam(team)
     }, TEAM_TX_OPTIONS)
   }
 
@@ -179,7 +241,7 @@ export class TaskAutoTeamsService {
         ...(updated.leader_id ? [updated.leader_id] : []),
       ])
 
-      return updated
+      return this.redactTeam(updated)
     }, TEAM_TX_OPTIONS)
   }
 
@@ -1091,7 +1153,11 @@ export class TaskAutoTeamsService {
     const [globalCounts, teamCounts] = await Promise.all([
       this.prisma.source.groupBy({
         by: ['added_by_id'],
-        where: { added_by_id: { in: memberIds }, created_at: { gte: startDate, lte: endDate } },
+        where: {
+          added_by_id: { in: memberIds },
+          created_at: { gte: startDate, lte: endDate },
+          source_team_source_id: null,
+        },
         _count: { id: true },
       }),
       this.prisma.teamSource.groupBy({

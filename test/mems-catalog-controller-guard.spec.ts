@@ -1,6 +1,6 @@
-import { ROLES_KEY } from '../../auth/decorators/roles.decorator';
-import { MemsMediaLeaderGuard } from '../../../common/guards/mems-media-leader.guard';
-import { MemsCatalogController } from '../mems-catalog.controller';
+import { ROLES_KEY } from '../src/modules/auth/decorators/roles.decorator';
+import { MemsMediaLeaderGuard } from '../src/common/guards/mems-media-leader.guard';
+import { MemsCatalogController } from '../src/modules/mems-catalog/mems-catalog.controller';
 
 /**
  * Chức năng: mọi route GHI vào kho thiết bị phải đi qua cửa canh Team Media.
@@ -51,7 +51,9 @@ describe('MemsCatalogController — cửa canh Team Media', () => {
         'createLocation',
         'createModel',
         'deleteAsset',
+        'deleteCategory',
         'deleteLocation',
+        'deleteModel',
         'inspect',
         'pendingInspection',
         'removePhoto',

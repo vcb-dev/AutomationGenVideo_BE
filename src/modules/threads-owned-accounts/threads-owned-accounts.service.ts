@@ -30,6 +30,23 @@ export interface FetchedThreadsMedia {
   quotes?: number;
 }
 
+function isTransientError(msg?: string): boolean {
+  if (!msg) return false;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('status code 502') ||
+    lower.includes('status code 503') ||
+    lower.includes('status code 504') ||
+    lower.includes('econnrefused') ||
+    lower.includes('etimedout') ||
+    lower.includes('timedout') ||
+    lower.includes('timeout') ||
+    lower.includes('econnreset') ||
+    lower.includes('enotfound') ||
+    lower.includes('network error')
+  );
+}
+
 @Injectable()
 export class ThreadsOwnedAccountsService {
   private readonly logger = new Logger(ThreadsOwnedAccountsService.name);
@@ -98,12 +115,13 @@ export class ThreadsOwnedAccountsService {
         failed++;
         this.logger.error(`❌ [ThreadsSync] Lỗi đồng bộ tài khoản ${sa.username || sa.name}: ${err.message}`);
         if (sa.username) {
+          const isTransient = isTransientError(err.message);
           await this.prisma.scraperThreadsProfile.updateMany({
             where: { username: sa.username },
             data: {
               last_scraped_at: new Date(),
-              scraping_status: 'failed',
-              scrape_error: err.message,
+              scraping_status: isTransient ? 'idle' : 'failed',
+              scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
             },
           }).catch(() => {});
         }
@@ -188,56 +206,60 @@ export class ThreadsOwnedAccountsService {
     let count = 0;
 
     for (const item of posts) {
-      const insights = await this.fetchMediaInsights(item.id, accessToken);
-      const viewsCount = insights?.views ?? item.views ?? 0;
-      const likesCount = insights?.likes ?? item.likes ?? 0;
-      const repliesCount = insights?.replies ?? item.replies ?? 0;
-      const repostsCount = insights?.reposts ?? item.reposts ?? 0;
-      const quotesCount = insights?.quotes ?? item.quotes ?? 0;
+      try {
+        const insights = await this.fetchMediaInsights(item.id, accessToken);
+        const viewsCount = insights?.views ?? item.views ?? 0;
+        const likesCount = insights?.likes ?? item.likes ?? 0;
+        const repliesCount = insights?.replies ?? item.replies ?? 0;
+        const repostsCount = insights?.reposts ?? item.reposts ?? 0;
+        const quotesCount = insights?.quotes ?? item.quotes ?? 0;
 
-      const hashtags = this.extractHashtags(item.text || '');
-      const thumbnail = item.thumbnail_url || (item.media_type === 'IMAGE' ? item.media_url : null);
-      const url = item.permalink || `https://www.threads.net/t/${item.shortcode || item.id}`;
+        const hashtags = this.extractHashtags(item.text || '');
+        const thumbnail = item.thumbnail_url || (item.media_type === 'IMAGE' ? item.media_url : null);
+        const url = item.permalink || `https://www.threads.net/t/${item.shortcode || item.id}`;
 
-      const existing = await this.prisma.scraperThreadsPost.findUnique({
-        where: { post_id: item.id },
-        select: { id: true, views_count: true },
-      });
+        const existing = await this.prisma.scraperThreadsPost.findUnique({
+          where: { post_id: item.id },
+          select: { id: true, views_count: true },
+        });
 
-      const postData = {
-        profile_id: profileId,
-        shortcode: item.shortcode || null,
-        url,
-        text: item.text || '',
-        hashtags,
-        thumbnail_url: thumbnail,
-        media_type: item.media_type || 'TEXT',
-        views_count: BigInt(viewsCount),
-        likes_count: BigInt(likesCount),
-        replies_count: BigInt(repliesCount),
-        reposts_count: BigInt(repostsCount),
-        quotes_count: BigInt(quotesCount),
-        date_posted: new Date(item.timestamp),
-      };
+        const postData = {
+          profile_id: profileId,
+          shortcode: item.shortcode || null,
+          url,
+          text: item.text || '',
+          hashtags,
+          thumbnail_url: thumbnail,
+          media_type: item.media_type || 'TEXT',
+          views_count: BigInt(viewsCount),
+          likes_count: BigInt(likesCount),
+          replies_count: BigInt(repliesCount),
+          reposts_count: BigInt(repostsCount),
+          quotes_count: BigInt(quotesCount),
+          date_posted: new Date(item.timestamp),
+        };
 
-      if (existing) {
-        // Giữ số views cũ nếu lần này trả 0 hoặc lỗi insight
-        if (viewsCount === 0 && Number(existing.views_count) > 0) {
-          postData.views_count = existing.views_count;
+        if (existing) {
+          // Giữ số views cũ nếu lần này trả 0 hoặc lỗi insight
+          if (viewsCount === 0 && Number(existing.views_count) > 0) {
+            postData.views_count = existing.views_count;
+          }
+          await this.prisma.scraperThreadsPost.update({
+            where: { id: existing.id },
+            data: postData,
+          });
+        } else {
+          await this.prisma.scraperThreadsPost.create({
+            data: {
+              post_id: item.id,
+              ...postData,
+            },
+          });
         }
-        await this.prisma.scraperThreadsPost.update({
-          where: { id: existing.id },
-          data: postData,
-        });
-      } else {
-        await this.prisma.scraperThreadsPost.create({
-          data: {
-            post_id: item.id,
-            ...postData,
-          },
-        });
+        count++;
+      } catch (postErr: any) {
+        this.logger.warn(`[ThreadsSync] Lỗi khi lưu bài post ${item.id}: ${postErr?.message || postErr}`);
       }
-      count++;
     }
 
     return count;

@@ -24,6 +24,12 @@ import {
 import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
+import { LarkWebhookNotifyService } from "./lark-webhook-notify.service";
+import { deadlineWindow } from "./deadline-window.util";
+import {
+  productLineCategoryLabel,
+  resolveTaskProductLineId,
+} from "./product-line-category.util";
 
 // FE gửi deadline từ <input type="datetime-local"> — chuỗi này KHÔNG có timezone,
 // nên new Date() mặc định hiểu theo giờ local của tiến trình Node. Ở local (máy VN) thì
@@ -71,6 +77,7 @@ export class TaskAutoTasksService {
     private linkStats: TaskPublishedLinkStatsService,
     private oms: OmsIntegrationService,
     private contentWinPush: TaskAutoContentWinPushService,
+    private larkWebhook: LarkWebhookNotifyService,
   ) {}
 
   /**
@@ -131,7 +138,7 @@ export class TaskAutoTasksService {
     // thay vì phải query lại team.findUnique riêng chỉ để lấy leader_id (xem bên dưới).
     // market: FE dùng để biết editor đang làm task cho thị trường nào (xem ContentSection —
     // gợi ý dùng/dịch bản content sang đúng thị trường team khi content nguồn là tiếng Việt).
-    team: { select: { id: true, name: true, leader_id: true, market: true } },
+    team: { select: { id: true, name: true, leader_id: true, market: true, lark_webhook_url: true } },
     content: {
       select: {
         id: true,
@@ -1131,6 +1138,7 @@ export class TaskAutoTasksService {
           id,
         );
       }
+      this.notifyTaskSubmittedToLark(updated).catch(() => {});
     }
     if (dto.status === "APPROVED" && task.assignee_id) {
       await this.notify(
@@ -1189,6 +1197,7 @@ export class TaskAutoTasksService {
         id,
       );
     }
+    this.notifyTaskSubmittedToLark(updated).catch(() => {});
 
     return updated;
   }
@@ -1457,8 +1466,7 @@ export class TaskAutoTasksService {
   private deadlineWindow(
     range: { gte: Date; lt: Date } | null,
   ): Prisma.TaskWhereInput {
-    if (!range) return {};
-    return { OR: [{ deadline: range }, { deadline: null, created_at: range }] };
+    return deadlineWindow(range);
   }
 
   async getDashboard(
@@ -2428,7 +2436,7 @@ export class TaskAutoTasksService {
     );
     const productLineIdByTeamProductId = new Map(teamProducts.map((p) => [p.id, p.product_line_id]));
     const categoryByLineId = new Map(
-      productLines.map((l) => [l.id, (l.video_category || l.name || "").toUpperCase()]),
+      productLines.map((l) => [l.id, productLineCategoryLabel(l)]),
     );
 
     const productById = new Map(products.map((p) => [p.id, p]));
@@ -2442,12 +2450,11 @@ export class TaskAutoTasksService {
     const categoryByProductKey = new Map<string, string | null>();
 
     for (const r of rows) {
-      const lineId =
-        r.product_line_id ??
-        (r.product_id ? productLineIdByProductId.get(r.product_id) : null) ??
-        (r.editor_product_id ? productLineIdByEditorProductId.get(r.editor_product_id) : null) ??
-        (r.team_product_id ? productLineIdByTeamProductId.get(r.team_product_id) : null) ??
-        null;
+      const lineId = resolveTaskProductLineId(r, {
+        byProductId: productLineIdByProductId,
+        byEditorProductId: productLineIdByEditorProductId,
+        byTeamProductId: productLineIdByTeamProductId,
+      });
       const category = lineId ? categoryByLineId.get(lineId) : undefined;
       if (category) {
         videoCountByCategory[category] = (videoCountByCategory[category] ?? 0) + 1;
@@ -3131,6 +3138,34 @@ export class TaskAutoTasksService {
       );
     this.push
       .sendToUser(userId, { title, url: "/dashboard/task-auto/tasks" })
+      .catch(() => {});
+  }
+
+  private async notifyTaskSubmittedToLark(updated: {
+    id: string;
+    team: { id: string; name: string; lark_webhook_url: string | null };
+    assignee: { full_name: string } | null;
+    content: { title: string } | null;
+    editor_content: { title: string } | null;
+    team_content: { title: string } | null;
+  }): Promise<void> {
+    const contentTitle =
+      updated.content?.title ?? updated.editor_content?.title ?? updated.team_content?.title ?? null;
+
+    const teamRow = await this.prisma.team
+      .findUnique({ where: { id: updated.team.id }, select: { lark_webhook_secret: true } })
+      .catch(() => null);
+
+    this.larkWebhook
+      .sendApprovalNotice({
+        taskId: updated.id,
+        teamName: updated.team.name,
+        teamWebhookUrl: updated.team.lark_webhook_url,
+        teamWebhookSecret: teamRow?.lark_webhook_secret ?? null,
+        personName: updated.assignee?.full_name ?? null,
+        contentTitle,
+        kind: "TASK",
+      })
       .catch(() => {});
   }
 }
