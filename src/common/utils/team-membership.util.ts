@@ -351,3 +351,48 @@ export function parseTeamIdFilter(raw?: string): string | { in: string[] } | und
   if (ids.length === 0) return undefined;
   return ids.length > 1 ? { in: ids } : ids[0];
 }
+
+/**
+ * Id của toàn bộ nhân sự thuộc (các) team mà `leaderId` đang lãnh đạo.
+ *
+ * Gộp HAI nguồn có chủ đích, vì trong repo này chúng chưa bao giờ trùng khớp hoàn toàn:
+ *   1. `TeamMember` — nguồn chuẩn, được ghi khi tạo/sửa nhân sự qua màn hình Quản lý nhân sự.
+ *   2. Chuỗi `User.team` — nguồn mà getTeamMembers() đang thực dùng, kèm ghi chú "team_members
+ *      hiện rỗng trên thực tế".
+ *
+ * Chỉ đọc một nguồn thì có nhánh dữ liệu leader không thấy được thành viên của mình — lỗi im
+ * lặng, rất khó lần ra vì màn hình vẫn hiện bình thường, chỉ thiếu người.
+ */
+export async function getTeamMemberIdsForLeader(db: Db, leaderId: string): Promise<string[]> {
+  const ids = new Set<string>();
+
+  const viaMembership = await db.teamMember.findMany({
+    where: { team: { leader_id: leaderId } },
+    select: { user_id: true },
+  });
+  viaMembership.forEach((m: { user_id: string }) => ids.add(m.user_id));
+
+  const ledTeams = await db.team.findMany({
+    where: { leader_id: leaderId },
+    select: { name: true },
+  });
+  const ledNames = ledTeams
+    .map((t: { name: string }) => t.name.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (ledNames.length > 0) {
+    const candidates = await db.user.findMany({
+      where: { deleted_at: null, team: { not: null } },
+      select: { id: true, team: true },
+    });
+    for (const u of candidates as Array<{ id: string; team: string | null }>) {
+      const memberTeams = (u.team ?? '')
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .filter(Boolean);
+      if (memberTeams.some((t) => ledNames.includes(t))) ids.add(u.id);
+    }
+  }
+
+  return Array.from(ids);
+}
