@@ -5,6 +5,8 @@ import { SapoIntegrationService } from './sapo-integration.service';
 import { SapoIntegrationController } from './sapo-integration.controller';
 import { SapoRevenueCronService } from './sapo-revenue-cron.service';
 
+import { CryptoService } from '../social-publishing/crypto/crypto.service';
+
 @Module({
   imports: [
     HttpModule.register({
@@ -14,7 +16,7 @@ import { SapoRevenueCronService } from './sapo-revenue-cron.service';
     PrismaModule,
   ],
   controllers: [SapoIntegrationController],
-  providers: [SapoIntegrationService, SapoRevenueCronService],
+  providers: [SapoIntegrationService, SapoRevenueCronService, CryptoService],
   exports: [SapoIntegrationService],
 })
 export class SapoIntegrationModule {}
