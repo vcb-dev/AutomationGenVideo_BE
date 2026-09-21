@@ -1,7 +1,7 @@
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
-import { LarkService } from '../src/modules/lark-sync/lark.service';
+import { LarkService } from '../src/modules/work-report/work-report.service';
 import { PrismaClient } from '@prisma/client';
 
 async function bootstrap() {

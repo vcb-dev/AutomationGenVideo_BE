@@ -1,4 +1,4 @@
-import { LarkService } from './lark.service';
+import { WorkReportService, LarkService } from '../src/modules/work-report/work-report.service';
 
 /**
  * submitRevenueReport — báo cáo doanh thu nhập tay theo nền tảng, mirror
@@ -123,17 +123,22 @@ describe('LarkService.submitRevenueReport', () => {
     ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
   });
 
-  it('KHÔNG chặn ngày tương lai với admin/manager', async () => {
+  // Đổi hành vi có chủ đích: ngoại lệ "admin bỏ qua ràng buộc" là dành cho rule khung giờ
+  // 17:00-18:00, KHÔNG dành cho ngày tương lai — nhưng hai thứ từng nằm chung một khối
+  // `if (!isAdmin)`. Doanh thu ghi vào ngày chưa tới làm lệch tổng tháng và không hiện ở bộ lọc nào.
+  it('chặn ngày tương lai với CẢ admin/manager — không có ngoại lệ', async () => {
     const { service, createdRows } = build({ userRoles: ['ADMIN'] });
     const farFuture = '2099-01-01';
 
-    await service.submitRevenueReport({
-      ...basePayload,
-      reportDate: farFuture,
-      revenueDetails: { breakdown: { tiktok: [{ value: '100000', channel: 'X' }] } },
-    });
+    await expect(
+      service.submitRevenueReport({
+        ...basePayload,
+        reportDate: farFuture,
+        revenueDetails: { breakdown: { tiktok: [{ value: '100000', channel: 'X' }] } },
+      }),
+    ).rejects.toThrow('Không thể gửi báo cáo cho ngày trong tương lai.');
 
-    expect(createdRows).toHaveLength(1);
+    expect(createdRows).toHaveLength(0);
   });
 });
 

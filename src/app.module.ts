@@ -24,7 +24,7 @@ import { HeygenVideoModule } from "./modules/heygen-video/heygen-video.module";
 import { DouyinModule } from './douyin/douyin.module';
 import { XiaohongshuModule } from './xiaohongshu/xiaohongshu.module';
 import { SearchRecommendationModule } from './modules/search-recommendations/search-recommendations.module';
-import { LarkModule } from './modules/lark-sync/lark.module';
+import { WorkReportModule } from './modules/work-report/work-report.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { SocialPublishingModule } from './modules/social-publishing/social-publishing.module';
 import { ContentReportModule } from './modules/content-report/content-report.module';
@@ -96,7 +96,7 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     DouyinModule,
     XiaohongshuModule,
     SearchRecommendationModule,
-    LarkModule,
+    WorkReportModule,
     ChatHistoryModule,
     // TelegramReportModule, // tạm tắt — xem comment ở import phía trên
     RolePermissionsModule,
