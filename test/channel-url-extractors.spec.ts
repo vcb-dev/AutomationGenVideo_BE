@@ -102,6 +102,17 @@ describe('Channel URL Extractors & Scraper Controllers', () => {
       expect(extractThreadsUsername('zuck')).toBe('zuck');
     });
 
+    it('từ chối URL bài viết Threads (/post/ hoặc /t/)', () => {
+      expect(extractThreadsUsername('https://www.threads.net/@zuck/post/DFxyz123')).toBeNull();
+      expect(extractThreadsUsername('https://www.threads.net/t/C_xyz123')).toBeNull();
+    });
+
+    it('từ chối path hệ thống Threads cố định', () => {
+      expect(extractThreadsUsername('https://www.threads.net/login')).toBeNull();
+      expect(extractThreadsUsername('https://www.threads.net/search')).toBeNull();
+      expect(extractThreadsUsername('t')).toBeNull();
+    });
+
     it('từ chối URL hoặc username có ký tự đặc biệt không hợp lệ', () => {
       expect(extractThreadsUsername('https://random.com/something')).toBeNull();
       expect(extractThreadsUsername('user!@#$')).toBeNull();

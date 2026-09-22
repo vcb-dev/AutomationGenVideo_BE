@@ -88,11 +88,22 @@ export function extractThreadsUsername(raw: string): string | null {
   const trimmed = (raw || '').trim();
   if (!trimmed) return null;
 
-  // 1. URL threads.net/@username hoặc threads.net/username
-  const urlMatch = trimmed.match(/threads\.(?:net|com)\/@?([A-Za-z0-9_.]+)/i);
+  // 1. Từ chối rõ ràng link bài viết Threads (/post/ hoặc /t/)
+  if (/(?:threads\.(?:net|com)\/)(?:@[^/]+\/post\/|t\/)/i.test(trimmed)) {
+    return null;
+  }
+
+  // 2. URL threads.net/@username hoặc threads.net/username (kết thúc bởi /, ? hoặc cuối chuỗi)
+  const urlMatch = trimmed.match(/threads\.(?:net|com)\/@?([A-Za-z0-9_.]+)(?:[/?#]|$)/i);
   const username = (urlMatch ? urlMatch[1] : trimmed.replace(/^@/, '')).trim().toLowerCase();
 
-  // 2. Username Threads: chỉ chữ cái thường, số, dấu gạch dưới, dấu chấm, độ dài 1-30 ký tự
+  // 3. Từ chối các path cố định của hệ thống Threads (không phải username người dùng)
+  const RESERVED = new Set(['t', 'post', 'login', 'settings', 'search', 'terms', 'privacy', 'explore', 'activity']);
+  if (RESERVED.has(username)) {
+    return null;
+  }
+
+  // 4. Username Threads: chỉ chữ cái thường, số, dấu gạch dưới, dấu chấm, độ dài 1-30 ký tự
   if (/^[a-z0-9_.]{1,30}$/.test(username)) {
     return username;
   }
