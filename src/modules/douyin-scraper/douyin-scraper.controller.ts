@@ -4,6 +4,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractDouyinSecUserId } from '../../common/utils/channel-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { DouyinScraperService } from './douyin-scraper.service';
 import { DouyinScraperReadService } from './douyin-scraper-read.service';
@@ -124,11 +125,17 @@ export class DouyinScraperController {
     // Link rút gọn (v.douyin.com) không chứa sec_user_id — resolve về URL thật trước.
     const raw = await resolveShortLink(input);
 
-    // Cho phép nhập nguyên URL profile (douyin.com/user/<sec_user_id>) hoặc sec_user_id trần.
-    // sec_user_id chính là path segment sau /user/ trên URL thật (FE cũng dựng link
-    // "xem trên Douyin" y hệt kiểu này) — không cần resolve gì thêm.
-    const urlMatch = raw.match(/douyin\.com\/user\/([\w-]+)/i);
-    const secUserId = urlMatch ? urlMatch[1] : raw;
+    // Cho phép nhập link web, link share mobile (iesdouyin.com), query param (?sec_uid=), hoặc sec_user_id trần.
+    const secUserId = extractDouyinSecUserId(raw);
+    if (!secUserId) {
+      throw new HttpException(
+        {
+          error:
+            'Không lấy được tài khoản Douyin (sec_user_id). Hãy dán link TRANG CÁ NHÂN (douyin.com/user/... hoặc link chia sẻ từ app), không phải link video.',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     // num_of_posts được kẹp trong [1, 1000] ở normalizeTargetCount — không tin thẳng client.
     return this.service.scrapeProfile(secUserId, body?.is_owned, targetCount);
