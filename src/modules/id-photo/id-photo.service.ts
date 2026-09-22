@@ -24,6 +24,7 @@ import { vietnamDateString } from '../../utils/date.utils';
 import { UsersService } from '../users/users.service';
 import { CreateIdPhotoDto } from './dto/create-id-photo.dto';
 import { UpdateIdPhotoDto } from './dto/update-id-photo.dto';
+import { IdPhotoOutfitType } from './dto/merge-outfit.dto';
 import { IdPhotoHistoryQueryDto } from './dto/id-photo-history-query.dto';
 import { computeCropLayout } from './id-photo-crop.util';
 
@@ -44,6 +45,9 @@ interface IdPhotoTempEntry {
   rawFileName: string;
   processedBuffer?: Buffer;
   processedMimeType?: string;
+  /** outfitType THẬT đã dùng ở lượt gọi AI gần nhất — create() đọc lại đúng giá trị này để lưu
+   * vào DB, không suy đoán lại từ nơi khác (xem mergeOutfit/create bên dưới). */
+  outfitType?: IdPhotoOutfitType;
   createdAt: number;
 }
 
@@ -142,15 +146,17 @@ export class IdPhotoService {
   // đúng quy ước "BE chỉ orchestrate" đã dùng cho content-transform (callContentTransformAiService).
   // ═══════════════════════════════════════════════════════════════
 
-  async mergeOutfit(uploadId: string) {
+  async mergeOutfit(uploadId: string, outfitType: IdPhotoOutfitType = 'office') {
     const entry = this.getTempEntryOrThrow(uploadId);
 
-    const processed = await this.callMergeOutfitAi(entry.rawBuffer, entry.rawMimeType, 'mergeOutfit');
+    const processed = await this.callMergeOutfitAi(entry.rawBuffer, entry.rawMimeType, 'mergeOutfit', outfitType);
 
     // Lưu đè vào cùng entry (giữ nguyên rawBuffer) — gia hạn createdAt để người dùng còn thời
     // gian bấm "Tạo" sau khi xem preview đã ghép áo mà không lo hết hạn giữa chừng.
     entry.processedBuffer = processed.buffer;
     entry.processedMimeType = processed.mimeType;
+    // Ghi lại ĐÚNG outfitType đã dùng ở lượt gọi AI này — create() đọc lại từ đây để lưu vào DB.
+    entry.outfitType = outfitType;
     entry.createdAt = Date.now();
 
     return {
@@ -175,6 +181,7 @@ export class IdPhotoService {
     rawBuffer: Buffer,
     rawMimeType: string,
     callerTag: string,
+    outfitType: IdPhotoOutfitType = 'office',
   ): Promise<{ buffer: Buffer; mimeType: string }> {
     const url = `${this.aiServiceUrl}/api/ai/id-photo/merge-outfit/`;
     try {
@@ -184,6 +191,7 @@ export class IdPhotoService {
           {
             image_base64: rawBuffer.toString('base64'),
             mime_type: rawMimeType,
+            outfit_type: outfitType,
           },
           { timeout: this.MERGE_OUTFIT_TIMEOUT_MS },
         ),
@@ -231,6 +239,10 @@ export class IdPhotoService {
           // [ĐÃ NGỪNG DÙNG] `employee_title_prefix` không còn được nhận/ghi — cột để mặc định
           // null cho bản ghi mới, dữ liệu tiền tố cũ vẫn nằm nguyên trong DB.
           position: dto.position,
+          // outfitType đọc lại từ entry (ghi ở mergeOutfit) — không lấy từ dto vì create() không
+          // nhận field này; entry luôn có giá trị khi tới đây vì create() bắt buộc phải qua
+          // merge-outfit trước (chặn ở check processedBuffer ngay trên).
+          outfit_type: entry.outfitType ?? 'office',
           raw_image_data: this.toDataUri(entry.rawBuffer, entry.rawMimeType),
           processed_image_data: this.toDataUri(entry.processedBuffer, entry.processedMimeType),
           status: IdPhotoStatus.SUCCESS,
@@ -373,7 +385,14 @@ export class IdPhotoService {
     }
 
     const { buffer: rawBuffer, mimeType: rawMimeType } = this.parseDataUri(history.raw_image_data);
-    const processed = await this.callMergeOutfitAi(rawBuffer, rawMimeType, 'remergeOutfit');
+    // Ghép lại ĐÚNG loại đồng phục đã lưu — không lùi về mặc định "office", nếu không bản ghi
+    // "workshop" bấm remerge sẽ âm thầm đổi lại thành "office".
+    const processed = await this.callMergeOutfitAi(
+      rawBuffer,
+      rawMimeType,
+      'remergeOutfit',
+      history.outfit_type as IdPhotoOutfitType,
+    );
     const processedImageData = this.toDataUri(processed.buffer, processed.mimeType);
 
     // Dựng thử PDF với ảnh MỚI trước khi ghi đè — ảnh cũ (dù xấu) vẫn còn dùng được nếu ảnh

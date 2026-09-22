@@ -80,7 +80,7 @@ export class IdPhotoController {
   @Post('merge-outfit')
   @ApiOperation({ summary: 'Bước 2 — gọi AI service (Gemini) ghép áo polo đen theo prompt đã chốt' })
   async mergeOutfit(@Body() dto: MergeOutfitDto) {
-    return this.idPhotoService.mergeOutfit(dto.uploadId);
+    return this.idPhotoService.mergeOutfit(dto.uploadId, dto.outfitType);
   }
 
   @Post('create')
