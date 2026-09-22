@@ -4436,6 +4436,14 @@ model IdPhotoHistory {
   /// tự ánh xạ sang màu khung Trắng/Vàng/Xanh/Đỏ/Đen, đổi mapping không cần migration DB.
   position IdPhotoPosition
 
+  /// Loại đồng phục đã dùng khi ghép áo — "office" (áo vest cổ tim, mặc định) hoặc "workshop"
+  /// (áo polo đen có logo công ty). Default "office" nên toàn bộ bản ghi cũ (tạo trước khi có
+  /// tính năng này) tự động mang giá trị này, không cần backfill. Lưu ĐÚNG loại đã dùng thật ở
+  /// bước merge-outfit (không suy ra từ nơi khác) để remerge-outfit ghép lại đúng loại cũ — xem
+  /// IdPhotoService#remergeOutfit. Dùng String (không phải enum Prisma) để khớp 1-1 với giá trị
+  /// gửi thẳng qua field `outfit_type` trong contract với AI service (xem id_photo_views.py).
+  outfit_type String @default("office")
+
   /// Ảnh gốc user upload, lưu base64 data URI (data:image/...;base64,...) — module này tự
   /// chứa, không phụ thuộc storage ngoài (Drive/S3) như các module upload khác trong dự án.
   raw_image_data String @db.Text
