@@ -1,7 +1,8 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
 import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
+import { InstagramOwnedAccountsService } from '../instagram-owned-accounts/instagram-owned-accounts.service';
 import {
   InstagramAiClientService,
   ParsedInstagramFullProfile,
@@ -37,6 +38,7 @@ export class InstagramScraperService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClient: InstagramAiClientService,
+    @Optional() private readonly ownedAccountsService?: InstagramOwnedAccountsService,
   ) {}
 
   // Khớp upsert_profile_from_user_info cũ — ghi đè toàn bộ field không điều kiện.
@@ -222,6 +224,25 @@ export class InstagramScraperService {
         is_scraping: true,
         profile_id: Number(profile.id),
       };
+    }
+
+    // Nếu là kênh nội bộ và có tài khoản OAuth kết nối, ưu tiên đồng bộ thẳng qua Meta Graph API chính chủ
+    if (isOwned || profile.is_owned) {
+      if (this.ownedAccountsService) {
+        try {
+          const ownedResult = await this.ownedAccountsService.syncSingleProfileByUsername(username);
+          if (ownedResult?.success) {
+            return {
+              status: 'ok',
+              message: ownedResult.message,
+              already_exists: true,
+              profile_id: Number(profile.id),
+            };
+          }
+        } catch (e: any) {
+          this.logger.warn(`[IGScraper] Thử đồng bộ qua Graph API không thành công, fallback TikHub: ${e.message}`);
+        }
+      }
     }
 
     const needsDeltaScrape = !wasCreated && profile.is_initial_scraped;

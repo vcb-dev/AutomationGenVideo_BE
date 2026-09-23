@@ -51,10 +51,146 @@ function isTransientError(msg?: string): boolean {
 export class ThreadsOwnedAccountsService {
   private readonly logger = new Logger(ThreadsOwnedAccountsService.name);
 
+  private isSyncing = false;
+  private syncProgress = { current: 0, total: 0 };
+  private lastSyncResult: {
+    accounts: number;
+    createdProfiles: number;
+    updatedProfiles: number;
+    syncedPosts: number;
+    failed: number;
+  } | null = null;
+  private syncStartedAt: Date | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
   ) {}
+
+  isSyncInProgress(): boolean {
+    return this.isSyncing;
+  }
+
+  getSyncStatus() {
+    return {
+      is_syncing: this.isSyncing,
+      progress: this.syncProgress,
+      started_at: this.syncStartedAt,
+      last_result: this.lastSyncResult,
+    };
+  }
+
+  /**
+   * Kích hoạt đồng bộ các kênh Threads dưới dạng bất đồng bộ (Background Job).
+   * Trả về ngay 200 OK để Nginx reverse proxy không bị timeout 502.
+   */
+  async triggerAsyncSyncAll(): Promise<{
+    status: 'processing' | 'already_running';
+    message: string;
+    accounts: number;
+    createdProfiles: number;
+    updatedProfiles: number;
+    syncedPosts: number;
+    failed: number;
+  }> {
+    if (this.isSyncing) {
+      return {
+        status: 'already_running',
+        message: 'Tiến trình đồng bộ kênh Threads đang chạy trong nền, vui lòng đợi...',
+        accounts: this.syncProgress.total,
+        createdProfiles: 0,
+        updatedProfiles: 0,
+        syncedPosts: 0,
+        failed: 0,
+      };
+    }
+
+    const count = await this.prisma.socialAccount.count({
+      where: { platform: SocialPlatform.THREADS, is_active: true },
+    });
+
+    this.isSyncing = true;
+    this.syncStartedAt = new Date();
+    this.syncProgress = { current: 0, total: count };
+
+    this.syncAllConnectedAccounts()
+      .then((result) => {
+        this.lastSyncResult = result;
+      })
+      .catch((err) => {
+        this.logger.error(`[ThreadsSync] Lỗi chạy ngầm đồng bộ Threads: ${err.message}`);
+      })
+      .finally(() => {
+        this.isSyncing = false;
+      });
+
+    return {
+      status: 'processing',
+      message: `Đã bắt đầu đồng bộ ${count} kênh Threads trong nền...`,
+      accounts: count,
+      createdProfiles: 0,
+      updatedProfiles: 0,
+      syncedPosts: 0,
+      failed: 0,
+    };
+  }
+
+  /**
+   * Đồng bộ lẻ một kênh Threads qua Threads Graph API bằng token chính chủ.
+   */
+  async syncSingleProfileByUsername(username: string): Promise<{
+    success: boolean;
+    message: string;
+    profile_id: number;
+    synced_posts: number;
+  } | null> {
+    const clean = username.replace(/^@/, '').trim();
+    if (!clean) return null;
+
+    const account = await this.prisma.socialAccount.findFirst({
+      where: {
+        platform: SocialPlatform.THREADS,
+        is_active: true,
+        OR: [
+          { username: { equals: clean, mode: 'insensitive' } },
+          { name: { equals: clean, mode: 'insensitive' } },
+        ],
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    if (!account) return null;
+
+    let token = '';
+    try {
+      token = this.crypto.decrypt(account.access_token_enc);
+    } catch (e: any) {
+      this.logger.error(`[ThreadsSync] Decrypt token failed for @${clean}: ${e.message}`);
+      return null;
+    }
+
+    const profileData = await this.fetchUserProfile(token);
+    if (!profileData) return null;
+
+    const profile = await this.upsertProfile(profileData);
+    const postCount = await this.syncProfilePosts(profile.id, token);
+
+    await this.prisma.scraperThreadsProfile.update({
+      where: { id: profile.id },
+      data: {
+        last_scraped_at: new Date(),
+        scraping_status: 'idle',
+        scrape_error: null,
+      },
+    });
+
+    return {
+      success: true,
+      message: `Đã đồng bộ kênh Threads @${clean} qua Graph API (${postCount} bài viết)`,
+      profile_id: Number(profile.id),
+      synced_posts: postCount,
+    };
+  }
 
   /**
    * Đồng bộ toàn bộ tài khoản Threads đã kết nối OAuth trong SocialAccount.
@@ -66,80 +202,91 @@ export class ThreadsOwnedAccountsService {
     syncedPosts: number;
     failed: number;
   }> {
-    const socialAccounts = await this.prisma.socialAccount.findMany({
-      where: { platform: SocialPlatform.THREADS, is_active: true },
-      orderBy: { created_at: 'asc' },
-    });
+    this.isSyncing = true;
+    this.syncStartedAt = new Date();
+    try {
+      const socialAccounts = await this.prisma.socialAccount.findMany({
+        where: { platform: SocialPlatform.THREADS, is_active: true },
+        orderBy: { created_at: 'asc' },
+      });
 
-    let createdProfiles = 0;
-    let updatedProfiles = 0;
-    let syncedPosts = 0;
-    let failed = 0;
+      this.syncProgress = { current: 0, total: socialAccounts.length };
 
-    for (const sa of socialAccounts) {
-      try {
-        let token = '';
+      let createdProfiles = 0;
+      let updatedProfiles = 0;
+      let syncedPosts = 0;
+      let failed = 0;
+
+      for (const sa of socialAccounts) {
+        this.syncProgress.current++;
         try {
-          token = this.crypto.decrypt(sa.access_token_enc);
-        } catch (e: any) {
-          this.logger.error(`[ThreadsSync] Decrypt token failed for account ${sa.id}: ${e.message}`);
-          failed++;
-          continue;
-        }
+          let token = '';
+          try {
+            token = this.crypto.decrypt(sa.access_token_enc);
+          } catch (e: any) {
+            this.logger.error(`[ThreadsSync] Decrypt token failed for account ${sa.id}: ${e.message}`);
+            failed++;
+            continue;
+          }
 
-        const profileData = await this.fetchUserProfile(token);
-        if (!profileData) {
-          failed++;
-          continue;
-        }
+          const profileData = await this.fetchUserProfile(token);
+          if (!profileData) {
+            failed++;
+            continue;
+          }
 
-        const profile = await this.upsertProfile(profileData);
-        if (profile.created) {
-          createdProfiles++;
-        } else {
-          updatedProfiles++;
-        }
+          const profile = await this.upsertProfile(profileData);
+          if (profile.created) {
+            createdProfiles++;
+          } else {
+            updatedProfiles++;
+          }
 
-        const postCount = await this.syncProfilePosts(profile.id, token);
-        syncedPosts += postCount;
+          const postCount = await this.syncProfilePosts(profile.id, token);
+          syncedPosts += postCount;
 
-        await this.prisma.scraperThreadsProfile.update({
-          where: { id: profile.id },
-          data: {
-            last_scraped_at: new Date(),
-            scraping_status: 'idle',
-            scrape_error: null,
-          },
-        });
-      } catch (err: any) {
-        failed++;
-        this.logger.error(`❌ [ThreadsSync] Lỗi đồng bộ tài khoản ${sa.username || sa.name}: ${err.message}`);
-        if (sa.username) {
-          const isTransient = isTransientError(err.message);
-          await this.prisma.scraperThreadsProfile.updateMany({
-            where: { username: sa.username },
+          await this.prisma.scraperThreadsProfile.update({
+            where: { id: profile.id },
             data: {
               last_scraped_at: new Date(),
-              scraping_status: isTransient ? 'idle' : 'failed',
-              scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
+              scraping_status: 'idle',
+              scrape_error: null,
             },
-          }).catch(() => {});
+          });
+        } catch (err: any) {
+          failed++;
+          this.logger.error(`❌ [ThreadsSync] Lỗi đồng bộ tài khoản ${sa.username || sa.name}: ${err.message}`);
+          if (sa.username) {
+            const isTransient = isTransientError(err.message);
+            await this.prisma.scraperThreadsProfile.updateMany({
+              where: { username: sa.username },
+              data: {
+                last_scraped_at: new Date(),
+                scraping_status: isTransient ? 'idle' : 'failed',
+                scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
+              },
+            }).catch(() => {});
+          }
         }
       }
+
+      this.logger.log(
+        `✅ [ThreadsSync] Hoàn tất: ${socialAccounts.length} tài khoản (+${createdProfiles} mới, ~${updatedProfiles} cập nhật), ` +
+          `${syncedPosts} bài viết${failed ? `, ${failed} lỗi` : ''}`,
+      );
+
+      const result = {
+        accounts: socialAccounts.length,
+        createdProfiles,
+        updatedProfiles,
+        syncedPosts,
+        failed,
+      };
+      this.lastSyncResult = result;
+      return result;
+    } finally {
+      this.isSyncing = false;
     }
-
-    this.logger.log(
-      `✅ [ThreadsSync] Hoàn tất: ${socialAccounts.length} tài khoản (+${createdProfiles} mới, ~${updatedProfiles} cập nhật), ` +
-        `${syncedPosts} bài viết${failed ? `, ${failed} lỗi` : ''}`,
-    );
-
-    return {
-      accounts: socialAccounts.length,
-      createdProfiles,
-      updatedProfiles,
-      syncedPosts,
-      failed,
-    };
   }
 
   /**
