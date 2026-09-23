@@ -191,6 +191,9 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       tasks: { total: 0 },
       members: [],
       kpi: null,
+      // Bảng điều khiển task nay kèm số đơn Sapo; nhánh "không lead team nào" phải trả 0 chứ không
+      // bỏ trống, để FE không phải phân biệt undefined với 0.
+      total_orders: 0,
       video_by_line: [],
       product_by_category: [],
       content_by_classification: [],

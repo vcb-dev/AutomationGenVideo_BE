@@ -23,7 +23,11 @@ export function isLeaderRole(roles: string[] | undefined | null): boolean {
 /**
  * Điều kiện lọc danh sách tài khoản mạng xã hội theo người gọi.
  *
- * ADMIN/MANAGER thấy toàn bộ; LEADER và MEMBER chỉ thấy tài khoản do chính mình liên kết.
+ * - ADMIN/MANAGER: thấy toàn bộ.
+ * - LEADER: thấy tài khoản của chính mình VÀ của các thành viên trong (các) team mình lãnh đạo.
+ *   Caller phải tự truyền `teammateIds` (xem getTeamMemberIdsForLeader) — hàm này cố tình giữ
+ *   thuần tuý, không chạm DB, để còn test được bằng bảng giá trị.
+ * - MEMBER: chỉ thấy tài khoản do chính mình liên kết.
  *
  * `is_shared` CỐ TÌNH không tham gia: nó là cờ cho phép người khác ĐĂNG BÀI lên tài khoản,
  * không phải cờ hiển thị. Trộn hai khái niệm này chính là thứ khiến 287/287 tài khoản của
@@ -33,7 +37,15 @@ export function isLeaderRole(roles: string[] | undefined | null): boolean {
 export function buildAccountVisibilityWhere(
   userId: string,
   callerRoles: string[] | undefined | null,
-): { is_active: true; user_id?: string } {
+  teammateIds?: string[] | null,
+): { is_active: true; user_id?: string | { in: string[] } } {
   if (isAdminRole(callerRoles)) return { is_active: true };
+
+  if (isLeaderRole(callerRoles) && teammateIds && teammateIds.length > 0) {
+    // Luôn kèm chính leader: họ có thể chưa nằm trong TeamMember của team mình lãnh đạo.
+    const visibleIds = Array.from(new Set([userId, ...teammateIds]));
+    return { is_active: true, user_id: { in: visibleIds } };
+  }
+
   return { is_active: true, user_id: userId };
 }

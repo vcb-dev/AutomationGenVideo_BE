@@ -1,5 +1,5 @@
 import { WeeklyReportService, FullWeekVideoDetail } from '../weekly-report.service';
-import { LarkSendError } from '../../lark-sync/lark-notify.service';
+import { LarkSendError } from '../../work-report/lark-notify.service';
 import { DEFAULT_VIEW_THRESHOLD } from '../select-full-week-videos';
 
 const ABOVE_THRESHOLD = 1_200_000;

@@ -2527,6 +2527,13 @@ export class AiIntegrationService {
           data.audio_file_name = m ? m[1] : null;
         }
       }
+
+      // Giữ thông tin file phụ đề SRT nếu AI service trả về
+      if (data?.success && data.srt_filename) {
+        data.srt_file_name = data.srt_filename;
+        data.srt_url = `${this.voiceAiServiceUrl.replace(/\/$/, '')}/api/voice/tts/file/${data.srt_filename}`;
+      }
+
       // Ghi log tiêu dùng cho trang Tổng quan AI — usage_characters là số ký tự
       // MiniMax thực tính phí (đơn vị "điểm âm thanh" của gói). Lỗi ghi log không
       // được làm hỏng response TTS đã thành công.
@@ -2544,13 +2551,34 @@ export class AiIntegrationService {
         } catch (logErr: any) {
           this.logger.warn(`Failed to log TTS usage for user ${userId}: ${logErr.message}`);
         }
+        let voiceName: string | null = null;
+        try {
+          const v = await (this.prisma as any)?.voice?.findUnique({ where: { voice_id: voiceId }, select: { name: true } });
+          if (v?.name) voiceName = v.name;
+        } catch { /* ignore */ }
+
+        const crypto = require('crypto');
+        const textHash = crypto.createHash('md5').update(text.trim().toLowerCase()).digest('hex');
+        const audioFileId = data?.audio_file_id || null;
+        const audioFileName = data?.audio_file_name || (data?.audio_url ? /(tts_[0-9a-f]{32}\.mp3)$/i.exec(data.audio_url)?.[1] : null);
+        const srtFileName = data?.srt_filename || data?.srt_file_name || null;
+        const srtContent = data?.srt_content || null;
+
+        let outputUrl = data?.audio_url || null;
+        if (audioFileId) {
+          outputUrl = `/api/ai/voice/tts/audio/${audioFileId}`;
+        } else if (audioFileName) {
+          outputUrl = `/api/ai/voice/tts/stream/${audioFileName}`;
+        }
+
         await this.logVoiceAction({
           user_id: userId,
           action_type: 'TTS',
           status: 'SUCCESS',
           voice_id: voiceId,
-          input_text: text.slice(0, 500),
-          output_url: data?.audio_url || null,
+          voice_name: voiceName,
+          input_text: text,
+          output_url: outputUrl,
           characters: text.length,
           details: {
             speed,
@@ -2558,7 +2586,12 @@ export class AiIntegrationService {
             volume,
             language,
             emotion,
-            audio_file_id: data?.audio_file_id,
+            audio_file_id: audioFileId,
+            audio_file_name: audioFileName,
+            srt_filename: srtFileName,
+            srt_content: srtContent,
+            text_hash: textHash,
+            has_srt: Boolean(srtContent || srtFileName),
           },
         });
       }
@@ -2670,9 +2703,10 @@ export class AiIntegrationService {
    * cả khi DEBUG=False (link /media/... chỉ sống khi DEBUG=True).
    */
   async streamTtsAudioFromAi(filename: string, res: any, download = false, downloadName?: string, rangeHeader?: string): Promise<void> {
-    if (!/^tts_[0-9a-f]{32}\.mp3$/i.test(filename || '')) {
+    if (!/^tts_[0-9a-f]{32}\.(mp3|srt)$/i.test(filename || '')) {
       throw new HttpException('Invalid TTS filename', HttpStatus.BAD_REQUEST);
     }
+    const isSrt = /\.srt$/i.test(filename || '');
     let response: any;
     try {
       response = await this.httpService.axiosRef.get(
@@ -2686,18 +2720,19 @@ export class AiIntegrationService {
       );
     } catch (error: any) {
       throw new HttpException(
-        error.response?.status === 404 ? 'Audio file not found' : (error.message || 'Không kết nối được tới AI service.'),
+        error.response?.status === 404 ? 'Audio or subtitle file not found' : (error.message || 'Không kết nối được tới AI service.'),
         error.response?.status || HttpStatus.BAD_GATEWAY,
       );
     }
-    // Forward nguyên trạng thái 200/206 + Content-Range của AI — <audio> của trình
-    // duyệt cần Accept-Ranges/206 để đọc được duration mp3 streamed, thiếu thì player
-    // kẹt ở 0:00/0:00 (cùng lỗi từng vá cho nhánh Drive, xem streamTtsAudio()).
+    // Forward nguyên trạng thái 200/206 + Content-Range của AI
     res.status(response.status);
-    res.setHeader('Content-Type', response.headers['content-type'] || 'audio/mpeg');
-    res.setHeader('Accept-Ranges', 'bytes');
-    const contentRange = response.headers['content-range'];
-    if (contentRange) res.setHeader('Content-Range', contentRange);
+    const defaultContentType = isSrt ? 'application/x-subrip; charset=utf-8' : 'audio/mpeg';
+    res.setHeader('Content-Type', response.headers['content-type'] || defaultContentType);
+    if (!isSrt) {
+      res.setHeader('Accept-Ranges', 'bytes');
+      const contentRange = response.headers['content-range'];
+      if (contentRange) res.setHeader('Content-Range', contentRange);
+    }
     const contentLength = response.headers['content-length'];
     if (contentLength) res.setHeader('Content-Length', contentLength);
     // Tên file tải về: cùng logic sanitize với streamTtsAudio (chống header injection,
@@ -2705,7 +2740,13 @@ export class AiIntegrationService {
     let outName = filename;
     if (download && downloadName) {
       const cleaned = downloadName.replace(/[\r\n\/\\:*?"<>|]+/g, ' ').trim().slice(0, 150);
-      if (cleaned) outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+      if (cleaned) {
+        if (isSrt) {
+          outName = /\.srt$/i.test(cleaned) ? cleaned : `${cleaned}.srt`;
+        } else {
+          outName = /\.mp3$/i.test(cleaned) ? cleaned : `${cleaned}.mp3`;
+        }
+      }
     }
     const asciiName = outName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
     const utf8Name = encodeURIComponent(outName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
@@ -4057,9 +4098,11 @@ export class AiIntegrationService {
     ]);
 
     const totalPages = Math.ceil(total / limit);
+    const normalizedItems = (items || []).map((item) => this.normalizeVoiceHistoryItem(item));
+
     return {
       success: true,
-      data: items,
+      data: normalizedItems,
       pagination: {
         page,
         limit,
@@ -4067,5 +4110,120 @@ export class AiIntegrationService {
         totalPages,
       },
     };
+  }
+
+  /**
+   * Chuẩn hóa link audio play/download và subtitle SRT cho bản ghi VoiceActionHistory
+   */
+  normalizeVoiceHistoryItem(item: any): any {
+    if (!item) return item;
+    const details = (typeof item.details === 'object' && item.details !== null) ? item.details : {};
+    const voiceName = (item.voice_name || item.voice_id || 'voice').replace(/[\/\\:*?"<>|]+/g, ' ').trim();
+    const downloadMp3Name = `${voiceName}.mp3`;
+    const downloadSrtName = `${voiceName}.srt`;
+
+    let audioPlayUrl: string | null = null;
+    let audioDownloadUrl: string | null = null;
+    let srtDownloadUrl: string | null = null;
+    const srtContent: string | null = details.srt_content || null;
+
+    // 1. Resolve Audio URLs
+    if (details.audio_file_id) {
+      audioPlayUrl = `/api/ai/voice/tts/audio/${details.audio_file_id}`;
+      audioDownloadUrl = `/api/ai/voice/tts/audio/${details.audio_file_id}?download=1&filename=${encodeURIComponent(downloadMp3Name)}`;
+    } else if (details.audio_file_name) {
+      audioPlayUrl = `/api/ai/voice/tts/stream/${details.audio_file_name}`;
+      audioDownloadUrl = `/api/ai/voice/tts/stream/${details.audio_file_name}?download=1&filename=${encodeURIComponent(downloadMp3Name)}`;
+    } else if (item.output_url) {
+      const driveMatch = /[?&]id=([a-zA-Z0-9_-]{20,})/i.exec(item.output_url) || /\/d\/([a-zA-Z0-9_-]{20,})/i.exec(item.output_url);
+      const localMatch = /(tts_[0-9a-f]{32}\.mp3)/i.exec(item.output_url);
+      if (driveMatch) {
+        const fileId = driveMatch[1];
+        audioPlayUrl = `/api/ai/voice/tts/audio/${fileId}`;
+        audioDownloadUrl = `/api/ai/voice/tts/audio/${fileId}?download=1&filename=${encodeURIComponent(downloadMp3Name)}`;
+      } else if (localMatch) {
+        const fileName = localMatch[1];
+        audioPlayUrl = `/api/ai/voice/tts/stream/${fileName}`;
+        audioDownloadUrl = `/api/ai/voice/tts/stream/${fileName}?download=1&filename=${encodeURIComponent(downloadMp3Name)}`;
+      } else {
+        audioPlayUrl = item.output_url;
+        audioDownloadUrl = item.output_url;
+      }
+    }
+
+    // 2. Resolve Subtitle SRT URLs
+    if (details.srt_filename) {
+      srtDownloadUrl = `/api/ai/voice/tts/stream/${details.srt_filename}?download=1&filename=${encodeURIComponent(downloadSrtName)}`;
+    } else if (details.audio_file_name) {
+      const srtName = details.audio_file_name.replace(/\.mp3$/i, '.srt');
+      srtDownloadUrl = `/api/ai/voice/tts/stream/${srtName}?download=1&filename=${encodeURIComponent(downloadSrtName)}`;
+    } else if (item.output_url) {
+      const localMatch = /(tts_[0-9a-f]{32})\.mp3/i.exec(item.output_url);
+      if (localMatch) {
+        srtDownloadUrl = `/api/ai/voice/tts/stream/${localMatch[1]}.srt?download=1&filename=${encodeURIComponent(downloadSrtName)}`;
+      }
+    }
+
+    return {
+      ...item,
+      audio_play_url: audioPlayUrl,
+      audio_download_url: audioDownloadUrl,
+      srt_download_url: srtDownloadUrl,
+      srt_content: srtContent,
+      has_srt: Boolean(srtContent || srtDownloadUrl || details.has_srt),
+    };
+  }
+
+  /**
+   * Kiểm tra xem user_id đã từng tạo voice với kịch bản (text) giống nhau trước đó chưa
+   */
+  async checkDuplicateVoice(userId: string, text: string, voiceId?: string): Promise<{
+    is_duplicate: boolean;
+    existing_item?: any;
+  }> {
+    if (!userId || !text?.trim()) {
+      return { is_duplicate: false };
+    }
+
+    const trimmedText = text.trim();
+    const crypto = require('crypto');
+    const textHash = crypto.createHash('md5').update(trimmedText.toLowerCase()).digest('hex');
+
+    // Tìm trong bảng VoiceActionHistory của user các bản ghi TTS thành công gần nhất
+    const records = await this.prisma.voiceActionHistory.findMany({
+      where: {
+        user_id: userId,
+        action_type: 'TTS',
+        status: 'SUCCESS',
+      },
+      orderBy: { created_at: 'desc' },
+      take: 100,
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            full_name: true,
+          },
+        },
+      },
+    });
+
+    // So khớp bản ghi theo hash hoặc text
+    const matched = records.find((r: any) => {
+      const details = (typeof r.details === 'object' && r.details !== null) ? r.details : {};
+      if (details.text_hash === textHash) return true;
+      if (r.input_text && r.input_text.trim().toLowerCase() === trimmedText.toLowerCase()) return true;
+      return false;
+    });
+
+    if (matched) {
+      return {
+        is_duplicate: true,
+        existing_item: this.normalizeVoiceHistoryItem(matched),
+      };
+    }
+
+    return { is_duplicate: false };
   }
 }

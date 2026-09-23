@@ -1,10 +1,10 @@
 
 
-import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, UseGuards, Request, Header, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param, Res, Body, UploadedFiles, UseInterceptors, UseGuards, Request, Header, Logger, HttpCode, HttpStatus } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
-import { LarkService } from './lark.service';
+import { WorkReportService } from './work-report.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -13,16 +13,16 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { UserRole } from '@prisma/client';
 
-@ApiTags('Lark Report')
+@ApiTags('Work Report')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('lark')
+@Controller(['work-report', 'lark'])
 @SkipThrottle({ long: true, short: true })
-export class LarkController {
-    private readonly logger = new Logger(LarkController.name);
+export class WorkReportController {
+    private readonly logger = new Logger(WorkReportController.name);
 
     constructor(
-        private readonly larkService: LarkService,
+        private readonly larkService: WorkReportService,
         private readonly prisma: PrismaService,
     ) { }
 
@@ -78,15 +78,18 @@ export class LarkController {
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
         @Query('team') team?: string,
-        @Query('requesterEmail') requesterEmail?: string,
-        @Query('timeType') timeType?: string
+        @Query('timeType') timeType?: string,
+        @Request() req?: any,
     ) {
         const filters = {};
         if (date) filters['date'] = date;
         if (startDate) filters['startDate'] = startDate;
         if (endDate) filters['endDate'] = endDate;
         if (team) filters['team'] = team;
-        if (requesterEmail) filters['requesterEmail'] = requesterEmail.toLowerCase().trim();
+        // requesterEmail quyết định vai trò/team dùng để mở rộng phạm vi dữ liệu → chỉ lấy từ JWT.
+        // Query param cũ (client tự khai) đã bị bỏ: gửi email của admin là mượn được quyền admin.
+        const callerEmail = String(req?.user?.email ?? '').toLowerCase().trim();
+        if (callerEmail) filters['requesterEmail'] = callerEmail;
         if (timeType) filters['timeType'] = timeType;
 
         const result = await this.larkService.getUserActivityReports(filters);
@@ -130,6 +133,7 @@ export class LarkController {
     }
 
     @Post('clear-activity-cache')
+    @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Clear the user activity cache explicitly after submission' })
     clearActivityCache() {
         this.larkService.invalidateActivityCache();
@@ -141,18 +145,26 @@ export class LarkController {
     async getUserReportDetails(
         @Query('email') email: string,
         @Query('date') date: string,
+        @Request() req: any,
     ) {
-        return this.larkService.getUserReportDetails(email, date);
+        // `email` là NGƯỜI ĐƯỢC XEM, lấy từ query. Người ĐANG XEM phải lấy từ JWT — trước đây
+        // không đối chiếu hai bên, nên đổi email trên URL là đọc được báo cáo của đồng nghiệp.
+        return this.larkService.getUserReportDetails(email, date, req.user);
     }
 
     @Get('personal-history')
     @Header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120')
     @ApiOperation({ summary: 'Get historical KPI data for a specific user' })
     async getPersonalHistory(
-        @Query('email') email: string,
-        @Query('name') name?: string
+        @Request() req: any,
+        @Query('name') name?: string,
     ) {
-        return this.larkService.getPersonalHistory(email?.toLowerCase().trim(), name);
+        // Danh tính người xem lấy từ JWT, KHÔNG nhận qua query: vai trò/team suy ra từ email này
+        // quyết định phạm vi dữ liệu, nên để client tự khai là tự cho phép mạo danh.
+        return this.larkService.getPersonalHistory(
+            String(req.user?.email ?? '').toLowerCase().trim(),
+            name,
+        );
     }
 
     @Get('media/:mediaId')
@@ -321,3 +333,6 @@ export class LarkController {
         return { message: 'Files uploaded successfully', fileTokens };
     }
 }
+
+/** Alias tương thích ngược */
+export { WorkReportController as LarkController };

@@ -1,4 +1,4 @@
-import { LarkService } from '../lark.service';
+import { WorkReportService as LarkService } from '../src/modules/work-report/work-report.service';
 
 describe('LarkService User Activity KPIs', () => {
   let service: LarkService;

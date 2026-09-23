@@ -10,7 +10,10 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { SapoIntegrationService } from './sapo-integration.service';
 import { vietnamDateString } from '../../utils/date.utils';
 
@@ -77,5 +80,66 @@ export class SapoIntegrationController {
     const name = req?.user?.full_name || 'Sapo Admin Sync';
 
     return this.sapoService.syncDailyRevenueToDatabase(targetDate, team, email, name);
+  }
+
+  /**
+   * CHỈ ADMIN. Endpoint này trả về kênh TikTok trích từ đơn hàng của TOÀN CÔNG TY, không phải
+   * kênh của riêng người gọi — mở cho mọi người là lộ danh sách kênh của người khác, và ai nhập
+   * cũng thành chủ sở hữu những kênh đó (syncTiktokChannels gán owner_id = người gọi).
+   * Nhân sự thường tự thêm kênh của mình qua modal "Thêm thủ công".
+   */
+  @Get('tiktok-channels')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Quét và trích xuất danh sách kênh TikTok từ các đơn hàng Sapo gần đây (chỉ Admin)',
+  })
+  async getTiktokChannels() {
+    return this.sapoService.discoverTiktokChannels(250);
+  }
+
+  /**
+   * KHÔNG siết role: đây cũng là đường mà nhân sự thường dùng để tự thêm kênh TikTok của mình
+   * (modal "Thêm thủ công" gửi đúng một kênh vào đây). Kênh tạo ra luôn thuộc về người gọi.
+   */
+  @Post('sync-tiktok-channels')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Thêm kênh TikTok vào danh mục kênh của hệ thống (kênh thuộc về người gọi)',
+  })
+  async syncTiktokChannels(
+    @Body()
+    body: {
+      channels: Array<{
+        name: string;
+        channelId?: string;
+        link_channel?: string | null;
+        username?: string | null;
+        type?: string;
+        source?: string;
+      }>;
+    },
+    @Request() req: any,
+  ) {
+    return this.sapoService.syncTiktokChannels(body.channels || [], req.user);
+  }
+
+  @Get('orders-count')
+  @ApiOperation({ summary: 'Lấy tổng số đơn hàng Sapo theo ngày hoặc khoảng ngày' })
+  @ApiQuery({ name: 'date_from', required: false })
+  @ApiQuery({ name: 'date_to', required: false })
+  @ApiQuery({ name: 'startDate', required: false })
+  @ApiQuery({ name: 'endDate', required: false })
+  @ApiQuery({ name: 'team', required: false })
+  async getOrdersCount(
+    @Query('date_from') dateFrom?: string,
+    @Query('date_to') dateTo?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('team') team?: string,
+  ) {
+    const from = dateFrom || startDate || '';
+    const to = dateTo || endDate || from;
+    return this.sapoService.getOrderStats(from, to, team);
   }
 }

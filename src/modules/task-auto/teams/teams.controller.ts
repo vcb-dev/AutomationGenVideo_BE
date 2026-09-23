@@ -51,6 +51,17 @@ export class TaskAutoTeamsController {
     return this.teams.findOne(id);
   }
 
+  @Get("teams/:id/payroll-sync")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN")
+  @ApiOperation({
+    summary:
+      "Team detail for external payroll sync (full member fields incl. employee_id/manager_id/employee_status, includes members who left)",
+  })
+  getTeamForPayrollSync(@Param("id") id: string) {
+    return this.teams.findOneForPayrollSync(id);
+  }
+
   @Post("teams")
   @UseGuards(RolesGuard)
   @Roles("ADMIN", "MANAGER")

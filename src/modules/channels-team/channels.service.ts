@@ -209,7 +209,10 @@ export class ChannelsService {
   async findOne(id: string, user: { roles: UserRole[]; team: string | null }) {
     const channel = await this.findChannelOrThrow(id);
 
-    if (channel.channel_team?.name !== user.team) {
+    if (
+      !this.isAdminOrManager(user.roles) &&
+      channel.channel_team?.name !== user.team
+    ) {
       throw new ForbiddenException("You do not have access to this channel");
     }
 

@@ -2,12 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CryptoService } from '../social-publishing/crypto/crypto.service';
 import {
   SapoOrder,
   SapoOrdersResponse,
   SapoRevenueEntry,
   SapoRevenuePreviewResponse,
+  DiscoveredTiktokChannel,
 } from './sapo-integration.types';
 
 @Injectable()
@@ -27,6 +30,7 @@ export class SapoIntegrationService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly crypto: CryptoService,
   ) {
     this.storeAlias = (
       this.configService.get<string>('SAPO_STORE') ||
@@ -75,11 +79,13 @@ export class SapoIntegrationService {
     return headers;
   }
 
+  private readonly ordersStatsCache = new Map<string, { data: { totalOrders: number; byPlatform: Record<string, number>; byTeam: Record<string, number> }; expiry: number }>();
+
   /**
-   * Gọi Sapo API để lấy danh sách đơn hàng trong một ngày (theo giờ Việt Nam).
-   * Hỗ trợ phân trang để lấy toàn bộ đơn hàng trong ngày.
+   * Gọi Sapo API để lấy danh sách đơn hàng trong một ngày hoặc khoảng ngày (theo giờ Việt Nam).
+   * Hỗ trợ phân trang để lấy toàn bộ đơn hàng trong khoảng thời gian.
    */
-  async fetchOrders(dateStr: string): Promise<SapoOrder[]> {
+  async fetchOrdersForDateRange(dateFromStr: string, dateToStr?: string): Promise<SapoOrder[]> {
     if (!this.isConfigured()) {
       this.logger.warn(
         `[Sapo] Chưa cấu hình SAPO_STORE_ALIAS hoặc SAPO_ACCESS_TOKEN. Vui lòng cấu hình trong file .env`,
@@ -87,13 +93,15 @@ export class SapoIntegrationService {
       return [];
     }
 
-    const minTime = `${dateStr}T00:00:00+07:00`;
-    const maxTime = `${dateStr}T23:59:59+07:00`;
+    const start = (dateFromStr || '').slice(0, 10);
+    const end = (dateToStr || dateFromStr || '').slice(0, 10);
+    const minTime = `${start}T00:00:00+07:00`;
+    const maxTime = `${end}T23:59:59+07:00`;
     const baseUrl = this.getBaseUrl();
     const allOrders: SapoOrder[] = [];
     const limit = 250;
     let page = 1;
-    const maxPages = 20; // Giới hạn tối đa 5000 đơn/ngày
+    const maxPages = 50;
 
     while (page <= maxPages) {
       try {
@@ -137,14 +145,83 @@ export class SapoIntegrationService {
         page++;
       } catch (err: any) {
         this.logger.error(
-          `[Sapo] Lỗi khi gọi Sapo orders API (trang ${page}): ${err?.response?.data?.message || err?.message}`,
+          `[Sapo] Lỗi khi gọi Sapo orders API (${start} -> ${end}, trang ${page}): ${err?.response?.data?.message || err?.message}`,
         );
         break;
       }
     }
 
-    this.logger.log(`[Sapo] Đã tải ${allOrders.length} đơn hàng ngày ${dateStr} từ Sapo.`);
+    this.logger.log(`[Sapo] Đã tải ${allOrders.length} đơn hàng (${start} -> ${end}) từ Sapo.`);
     return allOrders;
+  }
+
+  /**
+   * Gọi Sapo API để lấy danh sách đơn hàng trong một ngày (theo giờ Việt Nam).
+   */
+  async fetchOrders(dateStr: string): Promise<SapoOrder[]> {
+    return this.fetchOrdersForDateRange(dateStr, dateStr);
+  }
+
+  /**
+   * Tính toán thống kê tổng số đơn hàng Sapo hợp lệ (loại bỏ huỷ) theo khoảng ngày và bộ lọc team.
+   * Có cache 2 phút để tối ưu tải dashboard.
+   */
+  async getOrderStats(
+    dateFromStr: string,
+    dateToStr?: string,
+    teamFilter?: string,
+  ): Promise<{
+    totalOrders: number;
+    byPlatform: Record<string, number>;
+    byTeam: Record<string, number>;
+  }> {
+    const start = (dateFromStr || '').slice(0, 10);
+    const end = (dateToStr || dateFromStr || '').slice(0, 10);
+    const normTeam = (teamFilter || '').trim().toLowerCase();
+    const cacheKey = `${start}:${end}:${normTeam || 'all'}`;
+
+    const cached = this.ordersStatsCache.get(cacheKey);
+    if (cached && cached.expiry > Date.now()) {
+      return cached.data;
+    }
+
+    const orders = await this.fetchOrdersForDateRange(start, end);
+
+    let totalOrders = 0;
+    const byPlatform: Record<string, number> = {
+      fb: 0,
+      ig: 0,
+      tiktok: 0,
+      yt: 0,
+      thread: 0,
+      zalo: 0,
+      other: 0,
+    };
+    const byTeam: Record<string, number> = {};
+
+    for (const order of orders) {
+      if (order.status === 'cancelled') continue;
+
+      const detected = this.detectPlatformAndChannel(order);
+      const plat = detected.platform || 'other';
+
+      if (normTeam && normTeam !== 'all') {
+        const orderTeam = (detected.team || '').trim().toLowerCase();
+        if (!orderTeam || (!orderTeam.includes(normTeam) && !normTeam.includes(orderTeam))) {
+          continue;
+        }
+      }
+
+      totalOrders++;
+      byPlatform[plat] = (byPlatform[plat] || 0) + 1;
+
+      const tName = detected.team || 'Chưa phân team';
+      byTeam[tName] = (byTeam[tName] || 0) + 1;
+    }
+
+    const result = { totalOrders, byPlatform, byTeam };
+    this.ordersStatsCache.set(cacheKey, { data: result, expiry: Date.now() + 120_000 });
+    return result;
   }
 
   /**
@@ -847,6 +924,328 @@ export class SapoIntegrationService {
       success: true,
       message: `Đã đồng bộ ${createdRecords.length} dòng doanh thu Sapo (Tổng: ${Number(preview.totalRevenue).toLocaleString('vi-VN')} VNĐ) vào hệ thống.`,
       recordIds: createdRecords,
+    };
+  }
+
+  /** Resolve team_id từ tên team */
+  private async resolveTeamId(teamName?: string | null): Promise<string | null> {
+    if (!teamName) return null;
+    const team = await this.prisma.team.findFirst({
+      where: { name: { equals: teamName, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    return team?.id ?? null;
+  }
+
+  /**
+   * Quét và trích xuất danh sách kênh TikTok từ các đơn hàng Sapo gần đây.
+   * Bao gồm cả link kênh (referring_site), username, tên kênh và ID.
+   */
+  async discoverTiktokChannels(limit: number = 250): Promise<DiscoveredTiktokChannel[]> {
+    if (!this.isConfigured()) {
+      return [];
+    }
+
+    let orders: SapoOrder[] = [];
+    try {
+      const baseUrl = this.getBaseUrl();
+      const res = await firstValueFrom(
+        this.httpService.get<SapoOrdersResponse>(`${baseUrl}/orders.json`, {
+          headers: this.getHeaders(),
+          params: { limit: Math.min(limit, 250) },
+          timeout: 15000,
+        }),
+      );
+      orders = res.data?.orders || [];
+    } catch (err: any) {
+      this.logger.error(`[Sapo] Lỗi khi quét đơn hàng Sapo tìm kênh TikTok: ${err?.message}`);
+      return [];
+    }
+
+    // Map theo groupKey để gộp nhiều đơn cùng kênh
+    const channelMap = new Map<string, {
+      name: string;
+      channelId: string;
+      link_channel: string | null;
+      username: string | null;
+      type: 'TikTok Business' | 'TikTok Shop';
+      orderCount: number;
+      latestOrderDate: string;
+    }>();
+
+    for (const order of orders) {
+      const rawSource = (order.source_name || order.channel || '').toLowerCase();
+      const channelDef = (order as any)?.channel_definition || {};
+      const subName = (channelDef.sub_name || '').toLowerCase();
+      const alias = (channelDef.alias || '').toLowerCase();
+      const rawTags = (order.tags || '').toLowerCase();
+      const refSite = String((order as any)?.referring_site || '').trim();
+
+      const isTiktok =
+        rawSource === 'tiktok-for-business' ||
+        rawSource === 'tiktokshop' ||
+        rawSource === 'tiktok-personal' ||
+        rawSource.includes('tiktok') ||
+        subName.includes('tiktok') ||
+        alias.includes('tiktok') ||
+        rawTags.includes('tiktok_business_') ||
+        rawTags.includes('tiktok_') ||
+        Boolean(refSite && refSite.includes('tiktok.com'));
+
+      if (!isTiktok) continue;
+
+      const type: 'TikTok Business' | 'TikTok Shop' =
+        rawSource === 'tiktok-for-business' ||
+        subName === 'tiktok for business' ||
+        rawTags.includes('tiktok_business_')
+          ? 'TikTok Business'
+          : 'TikTok Shop';
+
+      let link_channel: string | null = null;
+      let username: string | null = null;
+
+      if (refSite && refSite.includes('tiktok.com')) {
+        link_channel = refSite;
+        const m = refSite.match(/tiktok\.com\/@([a-zA-Z0-9_.-]+)/i);
+        if (m) {
+          username = '@' + m[1];
+        }
+      }
+
+      let channelName = '';
+      let channelId = (order as any)?.channel_definition?.branch_external_id || '';
+
+      const tagsList = (order.tags || '').split(',').map((t: string) => t.trim());
+      for (const t of tagsList) {
+        if (t.toLowerCase().startsWith('tiktok_business_') && !t.toLowerCase().startsWith('tiktok_business_id_')) {
+          channelName = t.replace(/^tiktok_business_/i, '').trim();
+        }
+        if (t.toLowerCase().startsWith('tiktok_business_id_')) {
+          channelId = t.replace(/^tiktok_business_id_/i, '').trim();
+        }
+        if (!channelName && t.toLowerCase().startsWith('tiktok_') && !t.toLowerCase().startsWith('tiktok_id_')) {
+          channelName = t.replace(/^tiktok_/i, '').trim();
+        }
+        if (!channelId && t.toLowerCase().startsWith('tiktok_id_')) {
+          channelId = t.replace(/^tiktok_id_/i, '').trim();
+        }
+      }
+
+      if (!channelName) {
+        channelName = (order as any)?.channel_definition?.branch_name || '';
+      }
+      if (!channelName && username) {
+        channelName = username;
+      }
+      if (!channelName) {
+        channelName = type === 'TikTok Business' ? 'TikTok Business' : 'TikTok Shop';
+      }
+
+      const cleanKey = this.normalizeExact(channelName) || this.normalizeExact(username || channelId);
+      if (!cleanKey) continue;
+
+      const orderCreated = order.created_on || order.created_at || new Date().toISOString();
+      const existing = channelMap.get(cleanKey);
+
+      if (!existing) {
+        channelMap.set(cleanKey, {
+          name: channelName,
+          channelId: channelId || '',
+          link_channel,
+          username,
+          type,
+          orderCount: 1,
+          latestOrderDate: orderCreated,
+        });
+      } else {
+        existing.orderCount += 1;
+        if (!existing.link_channel && link_channel) {
+          existing.link_channel = link_channel;
+        }
+        if (!existing.username && username) {
+          existing.username = username;
+        }
+        if (!existing.channelId && channelId) {
+          existing.channelId = channelId;
+        }
+        if (orderCreated > existing.latestOrderDate) {
+          existing.latestOrderDate = orderCreated;
+        }
+      }
+    }
+
+    // Lấy danh sách kênh hiện có trong DB để đánh dấu isImported
+    const [existingChannels, existingSocials] = await Promise.all([
+      this.prisma.channel.findMany({
+        where: { platform: 'tiktok' },
+        select: { name: true, channel_id: true, link_channel: true },
+      }),
+      this.prisma.socialAccount.findMany({
+        where: { platform: 'TIKTOK' },
+        select: { name: true, platform_id: true, username: true },
+      }),
+    ]);
+
+    const result: DiscoveredTiktokChannel[] = [];
+
+    for (const item of channelMap.values()) {
+      const normName = this.normalizeExact(item.name);
+      const cleanUser = (item.username || '').replace(/^@/, '').toLowerCase();
+      const cleanId = (item.channelId || '').trim();
+
+      const isImported =
+        existingChannels.some((c) => {
+          if (c.name && this.normalizeExact(c.name) === normName) return true;
+          if (cleanId && c.channel_id === cleanId) return true;
+          if (item.link_channel && c.link_channel === item.link_channel) return true;
+          return false;
+        }) ||
+        existingSocials.some((sa) => {
+          if (sa.name && this.normalizeExact(sa.name) === normName) return true;
+          if (cleanId && sa.platform_id === cleanId) return true;
+          if (cleanUser && sa.username?.toLowerCase() === cleanUser) return true;
+          return false;
+        });
+
+      result.push({
+        name: item.name,
+        channelId: item.channelId,
+        link_channel: item.link_channel,
+        username: item.username,
+        type: item.type,
+        orderCount: item.orderCount,
+        latestOrderDate: item.latestOrderDate,
+        isImported,
+      });
+    }
+
+    return result.sort((a, b) => b.orderCount - a.orderCount);
+  }
+
+  /**
+   * Đồng bộ các kênh TikTok được chọn vào DB (Channel & SocialAccount).
+   */
+  async syncTiktokChannels(
+    channelsToSync: Array<{
+      name: string;
+      channelId?: string;
+      link_channel?: string | null;
+      username?: string | null;
+      /** Chỉ luồng đồng bộ Sapo mới có: 'TikTok Business' | 'TikTok Shop'. Thêm tay để trống. */
+      type?: string;
+      /** 'manual' khi nhân sự tự thêm kênh của mình; mặc định là nhập từ đơn hàng Sapo. */
+      source?: string;
+    }>,
+    user: { id: string; team?: string | null; full_name?: string; roles?: any[] },
+  ): Promise<{ success: boolean; count: number; importedChannels: string[] }> {
+    const teamId = await this.resolveTeamId(user.team);
+    let count = 0;
+    const importedChannels: string[] = [];
+
+    for (const item of channelsToSync) {
+      if (!item.name || !item.name.trim()) continue;
+
+      const normName = item.name.trim();
+      const cleanLink =
+        item.link_channel?.trim() ||
+        (item.username
+          ? `https://www.tiktok.com/${item.username.startsWith('@') ? item.username : '@' + item.username}`
+          : null);
+      const cleanUser = item.username?.trim().replace(/^@/, '') || null;
+      const cleanId = item.channelId?.trim() || cleanUser || normName;
+
+      // 1. Lưu vào bảng Channel (dành cho Kênh nhóm & Báo cáo Traffic/Doanh thu)
+      const existingChannel = await this.prisma.channel.findFirst({
+        where: {
+          platform: 'tiktok',
+          OR: [
+            { name: { equals: normName, mode: 'insensitive' } },
+            { channel_id: cleanId },
+            ...(cleanLink ? [{ link_channel: cleanLink }] : []),
+          ],
+        },
+      });
+
+      if (!existingChannel) {
+        await this.prisma.channel.create({
+          data: {
+            id: `tiktok_sapo_${randomUUID()}`,
+            name: normName,
+            platform: 'tiktok',
+            channel_id: cleanId,
+            link_channel: cleanLink,
+            status: 'đang hoạt động',
+            owner_id: user.id,
+            team_id: teamId ?? undefined,
+            owner: user.full_name || undefined,
+            team_traffic: user.team || undefined,
+          },
+        });
+        count++;
+        importedChannels.push(normName);
+      } else {
+        if (!existingChannel.link_channel && cleanLink) {
+          await this.prisma.channel.update({
+            where: { id: existingChannel.id },
+            data: { link_channel: cleanLink },
+          });
+        }
+      }
+
+      // 2. Lưu vào bảng SocialAccount (để hiển thị trong /dashboard/social/channels)
+      const existingSocial = await this.prisma.socialAccount.findFirst({
+        where: {
+          platform: 'TIKTOK',
+          OR: [
+            { platform_id: cleanId },
+            { name: { equals: normName, mode: 'insensitive' } },
+            ...(cleanUser ? [{ username: cleanUser }] : []),
+          ],
+        },
+      });
+
+      const tokenEnc = this.crypto.encrypt(`sapo_sync:${cleanId}`);
+
+      if (!existingSocial) {
+        await this.prisma.socialAccount.create({
+          data: {
+            user_id: user.id,
+            platform: 'TIKTOK',
+            platform_id: cleanId,
+            name: normName,
+            username: cleanUser,
+            access_token_enc: tokenEnc,
+            is_active: true,
+            extra_data: {
+              link_channel: cleanLink,
+              // Không ép về 'TikTok Business' khi thiếu: kênh thêm tay không phân loại
+              // Business/Shop, ghi bừa vào đây là bịa dữ liệu cho báo cáo đọc phải.
+              ...(item.type ? { type: item.type } : {}),
+              source: item.source === 'manual' ? 'manual' : 'sapo_orders',
+              synced_at: new Date().toISOString(),
+            },
+          },
+        });
+      } else {
+        const extra = (existingSocial.extra_data as any) || {};
+        if (cleanLink && !extra.link_channel) {
+          await this.prisma.socialAccount.update({
+            where: { id: existingSocial.id },
+            data: {
+              extra_data: {
+                ...extra,
+                link_channel: cleanLink,
+              },
+            },
+          });
+        }
+      }
+    }
+
+    return {
+      success: true,
+      count,
+      importedChannels,
     };
   }
 }

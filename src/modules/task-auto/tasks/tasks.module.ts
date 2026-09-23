@@ -14,6 +14,7 @@ import { TaskVideoMatchService } from './task-video-match.service'
 import { TaskVideoMatchCronService } from './task-video-match.cron'
 import { TaskAutoContentWinPushService } from './content-win-auto-push.service'
 import { LarkWebhookNotifyService } from './lark-webhook-notify.service'
+import { SapoIntegrationModule } from '../../sapo-integration/sapo-integration.module'
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { LarkWebhookNotifyService } from './lark-webhook-notify.service'
     VideoModule,
     FacebookOwnedPagesModule,
     InstagramOwnedAccountsModule,
+    SapoIntegrationModule,
     // timeout riêng cho LarkWebhookNotifyService — bắn thông báo không chờ user, nhưng không
     // set timeout thì 1 webhook URL treo (DNS/TLS không phản hồi) sẽ giữ request/socket vô thời hạn.
     HttpModule.register({ timeout: 10000 }),
