@@ -223,6 +223,10 @@ export class DouyinScraperService {
   }
 
   async scrapeProfile(secUserId: string, isOwned?: boolean, targetCount = DEFAULT_TARGET_COUNT): Promise<any> {
+    if (!secUserId || secUserId.length > 255) {
+      throw new HttpException({ error: 'sec_user_id không hợp lệ hoặc quá dài' }, HttpStatus.BAD_REQUEST);
+    }
+
     let profile = await this.prisma.scraperDouyinProfile.findUnique({ where: { sec_user_id: secUserId } });
     const wasCreated = !profile;
     if (!profile) {
@@ -251,10 +255,18 @@ export class DouyinScraperService {
 
     // Profile mới → cào đồng bộ lô đầu (await) để trả dữ liệu ngay, phần còn lại chạy nền
     const firstBatch = Math.min(20, targetCount);
-    const result = await this.scrapeProfileVideos(profile.id, firstBatch);
+    let result: { created: number; updated: number; videos_returned: number };
+    try {
+      result = await this.scrapeProfileVideos(profile.id, firstBatch);
+    } catch (err: any) {
+      await this.prisma.scraperDouyinProfile.delete({ where: { id: profile.id } }).catch(() => {});
+      const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Không thể cào dữ liệu';
+      throw new HttpException({ error: `Lỗi khi cào dữ liệu từ Douyin: ${msg}` }, HttpStatus.BAD_GATEWAY);
+    }
+
     if (result.videos_returned === 0) {
       await this.prisma.scraperDouyinProfile.delete({ where: { id: profile.id } }).catch(() => {});
-      throw new HttpException({ error: 'Không tìm thấy video cho sec_user_id này' }, HttpStatus.NOT_FOUND);
+      throw new HttpException({ error: 'Kênh Douyin này hiện chưa có video công khai hoặc không thể lấy được video' }, HttpStatus.NOT_FOUND);
     }
 
     // Dispatch cào tiếp tới tổng targetCount video (fire-and-forget)

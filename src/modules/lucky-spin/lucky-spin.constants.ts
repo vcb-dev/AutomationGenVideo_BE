@@ -32,10 +32,10 @@ export const CONTROL_TTL_MS = 3 * 60 * 1000;
 export const HISTORY_POLL_LIMIT = 100;
 
 /**
- * Thời gian bánh xe chuyển động. Phải khớp với SPIN_DURATION_MS bên FE
+ * Thời gian bánh xe chuyển động (8 giây). Phải khớp với SPIN_DURATION_MS bên FE
  * (src/lib/lucky-spin/spin-rotation.ts) để màn hình người xem đồng bộ với màn hình điều khiển.
  */
-export const SPIN_DURATION_MS = 30000;
+export const SPIN_DURATION_MS = 8000;
 
 
 

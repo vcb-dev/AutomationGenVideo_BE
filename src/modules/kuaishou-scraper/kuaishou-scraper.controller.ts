@@ -4,6 +4,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractKuaishouEid } from '../../common/utils/channel-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { KuaishouScraperService } from './kuaishou-scraper.service';
 import { KuaishouScraperReadService } from './kuaishou-scraper-read.service';
@@ -127,8 +128,16 @@ export class KuaishouScraperController {
     // Cho phép nhập nguyên URL profile (kuaishou.com/profile/xxxx) hoặc eid trần.
     // Lưu ý: đây LUÔN là eid (chuỗi), không phải numeric user_id — fetch_one_user_v2
     // (bước đầu bên AI) chỉ nhận eid; numeric user_id được BE tự resolve sau.
-    const urlMatch = raw.match(/kuaishou\.com\/profile\/([\w-]+)/i);
-    const eid = urlMatch ? urlMatch[1] : raw;
+    const eid = extractKuaishouEid(raw);
+    if (!eid) {
+      throw new HttpException(
+        {
+          error:
+            'Không lấy được eid Kuaishou. Vui lòng nhập link profile (vd: kuaishou.com/profile/...) hoặc eid người dùng',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     return this.service.scrapeProfile(eid, targetCount);
   }

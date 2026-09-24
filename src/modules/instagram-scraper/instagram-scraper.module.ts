@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
+import { InstagramOwnedAccountsModule } from '../instagram-owned-accounts/instagram-owned-accounts.module';
 import { InstagramScraperController } from './instagram-scraper.controller';
 import { InstagramScraperService } from './instagram-scraper.service';
 import { InstagramScraperReadService } from './instagram-scraper-read.service';
@@ -12,6 +13,7 @@ import { InstagramScraperCronService } from './instagram-scraper-cron.service';
 @Module({
   imports: [
     PrismaModule,
+    InstagramOwnedAccountsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

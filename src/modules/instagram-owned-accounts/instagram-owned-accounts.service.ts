@@ -118,110 +118,251 @@ function isTransientError(msg?: string): boolean {
 export class InstagramOwnedAccountsService {
   private readonly logger = new Logger(InstagramOwnedAccountsService.name);
 
+  private isSyncing = false;
+  private syncProgress = { current: 0, total: 0 };
+  private lastSyncResult: InstagramSyncResult | null = null;
+  private syncStartedAt: Date | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
   ) {}
 
+  isSyncInProgress(): boolean {
+    return this.isSyncing;
+  }
+
+  getSyncStatus() {
+    return {
+      is_syncing: this.isSyncing,
+      progress: this.syncProgress,
+      started_at: this.syncStartedAt,
+      last_result: this.lastSyncResult,
+    };
+  }
+
   /**
-   * Đồng bộ toàn bộ tài khoản Instagram đã kết nối OAuth trong SocialAccount.
-   *
-   * Một kênh có thể được nhiều người cùng kết nối (unique theo (user_id, platform,
-   * platform_id)), nên phải gộp theo Instagram User ID trước, không thì cùng 1 kênh bị gọi API
-   * và ghi đè nhiều lần trong một lượt.
-   *
-   * `orderBy: created_at DESC` — khi 1 kênh có nhiều dòng active song song (reconnect bằng
-   * user_id khác), dòng MỚI TẠO nhất thắng. Đo 27/08/2026: reconnect để cấp quyền
-   * `instagram_manage_insights` tạo dòng mới; ưu tiên dòng cũ (ASC) thì vẫn dùng token thiếu quyền.
+   * Kích hoạt đồng bộ toàn bộ tài khoản kết nối dưới dạng bất đồng bộ (Background Job).
+   * Trả về ngay 200 OK để Nginx reverse proxy không bao giờ bị timeout 502 Bad Gateway.
    */
-  async syncAllConnectedAccounts(): Promise<InstagramSyncResult> {
-    const socialAccounts = await this.prisma.socialAccount.findMany({
+  async triggerAsyncSyncAll(): Promise<{
+    status: 'processing' | 'already_running';
+    message: string;
+    accounts: number;
+    createdProfiles: number;
+    updatedProfiles: number;
+    syncedMedia: number;
+    failed: number;
+  }> {
+    if (this.isSyncing) {
+      return {
+        status: 'already_running',
+        message: 'Tiến trình đồng bộ kênh Instagram đang chạy trong nền, vui lòng đợi...',
+        accounts: this.syncProgress.total,
+        createdProfiles: 0,
+        updatedProfiles: 0,
+        syncedMedia: 0,
+        failed: 0,
+      };
+    }
+
+    const count = await this.prisma.socialAccount.count({
       where: { platform: SocialPlatform.INSTAGRAM, is_active: true },
+    });
+
+    this.isSyncing = true;
+    this.syncStartedAt = new Date();
+    this.syncProgress = { current: 0, total: count };
+
+    // Fire-and-forget: chạy ngầm không block HTTP connection
+    this.syncAllConnectedAccounts()
+      .then((result) => {
+        this.lastSyncResult = result;
+      })
+      .catch((err) => {
+        this.logger.error(`[IGSync] Lỗi chạy ngầm đồng bộ Instagram: ${err.message}`);
+      })
+      .finally(() => {
+        this.isSyncing = false;
+      });
+
+    return {
+      status: 'processing',
+      message: `Đã bắt đầu đồng bộ ${count} kênh Instagram trong nền...`,
+      accounts: count,
+      createdProfiles: 0,
+      updatedProfiles: 0,
+      syncedMedia: 0,
+      failed: 0,
+    };
+  }
+
+  /**
+   * Đồng bộ lẻ một kênh Instagram qua Meta Graph API bằng token chính chủ.
+   * Dùng khi người dùng bấm "Cập nhật" trên thẻ kênh nội bộ, tránh gọi TikHub cào lén.
+   */
+  async syncSingleProfileByUsername(username: string): Promise<{
+    success: boolean;
+    message: string;
+    profile_id: number;
+    synced_media: number;
+  } | null> {
+    const clean = username.replace(/^@/, '').trim();
+    if (!clean) return null;
+
+    const account = await this.prisma.socialAccount.findFirst({
+      where: {
+        platform: SocialPlatform.INSTAGRAM,
+        is_active: true,
+        OR: [
+          { username: { equals: clean, mode: 'insensitive' } },
+          { name: { equals: clean, mode: 'insensitive' } },
+        ],
+      },
       orderBy: { created_at: 'desc' },
     });
 
-    const byInstagramUser = new Map<string, (typeof socialAccounts)[number]>();
-    for (const account of socialAccounts) {
-      const extra = account.extra_data as Record<string, unknown> | null;
-      const igUserId = resolveInstagramUserId(extra, account.platform_id);
-      if (!igUserId) {
-        this.logger.warn(`[IGSync] Bỏ qua ${account.username || account.name}: không có Instagram User ID`);
-        continue;
-      }
-      if (!byInstagramUser.has(igUserId)) byInstagramUser.set(igUserId, account);
+    if (!account) return null;
+
+    const extra = account.extra_data as Record<string, unknown> | null;
+    const igUserId = resolveInstagramUserId(extra, account.platform_id);
+    if (!igUserId) return null;
+
+    let token = '';
+    try {
+      token = this.crypto.decrypt(account.access_token_enc);
+    } catch (e: any) {
+      this.logger.error(`[IGSync] Giải mã token thất bại cho @${clean}: ${e.message}`);
+      return null;
     }
 
-    let createdProfiles = 0;
-    let updatedProfiles = 0;
-    let syncedMedia = 0;
-    let failed = 0;
+    const base = resolveApiBase(extra?.type as string | undefined);
+    const profileData = await this.fetchUserProfile(base, igUserId, token);
+    if (!profileData) return null;
 
-    for (const [igUserId, account] of byInstagramUser) {
-      try {
-        let token = '';
-        try {
-          token = this.crypto.decrypt(account.access_token_enc);
-        } catch (e: any) {
-          this.logger.error(`[IGSync] Giải mã token hỏng cho tài khoản ${account.id}: ${e.message}`);
-          failed++;
-          continue;
-        }
+    const profile = await this.upsertProfile(profileData);
+    const syncedMedia = await this.syncProfileMedia(profile.id, base, igUserId, token);
 
-        const extra = account.extra_data as Record<string, unknown> | null;
-        const base = resolveApiBase(extra?.type as string | undefined);
-
-        const profileData = await this.fetchUserProfile(base, igUserId, token);
-        if (!profileData) {
-          failed++;
-          continue;
-        }
-
-        const profile = await this.upsertProfile(profileData);
-        if (profile.created) createdProfiles++;
-        else updatedProfiles++;
-
-        syncedMedia += await this.syncProfileMedia(profile.id, base, igUserId, token);
-
-        await this.prisma.scraperInstagramProfile.update({
-          where: { id: profile.id },
-          data: {
-            last_scraped_at: new Date(),
-            scraping_status: 'idle',
-            scrape_error: null,
-            is_initial_scraped: true,
-          },
-        });
-      } catch (err: any) {
-        failed++;
-        this.logger.error(`❌ [IGSync] Lỗi đồng bộ ${account.username || account.name}: ${err.message}`);
-        if (account.username) {
-          const isTransient = isTransientError(err.message);
-          await this.prisma.scraperInstagramProfile
-            .updateMany({
-              where: { username: account.username },
-              data: {
-                last_scraped_at: new Date(),
-                scraping_status: isTransient ? 'idle' : 'failed',
-                scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
-              },
-            })
-            .catch(() => {});
-        }
-      }
-    }
-
-    this.logger.log(
-      `✅ [IGSync] Hoàn tất: ${byInstagramUser.size} kênh từ ${socialAccounts.length} tài khoản kết nối ` +
-        `(+${createdProfiles} mới, ~${updatedProfiles} cập nhật), ${syncedMedia} bài${failed ? `, ${failed} lỗi` : ''}`,
-    );
+    await this.prisma.scraperInstagramProfile.update({
+      where: { id: profile.id },
+      data: {
+        last_scraped_at: new Date(),
+        scraping_status: 'idle',
+        scrape_error: null,
+        is_initial_scraped: true,
+      },
+    });
 
     return {
-      accounts: byInstagramUser.size,
-      createdProfiles,
-      updatedProfiles,
-      syncedMedia,
-      failed,
+      success: true,
+      message: `Đã cập nhật kênh nội bộ @${clean} qua Meta Graph API (${syncedMedia} reels)`,
+      profile_id: Number(profile.id),
+      synced_media: syncedMedia,
     };
+  }
+
+  /**
+   * Đồng bộ toàn bộ tài khoản Instagram đã kết nối OAuth trong SocialAccount.
+   */
+  async syncAllConnectedAccounts(): Promise<InstagramSyncResult> {
+    this.isSyncing = true;
+    this.syncStartedAt = new Date();
+    try {
+      const socialAccounts = await this.prisma.socialAccount.findMany({
+        where: { platform: SocialPlatform.INSTAGRAM, is_active: true },
+        orderBy: { created_at: 'desc' },
+      });
+
+      const byInstagramUser = new Map<string, (typeof socialAccounts)[number]>();
+      for (const account of socialAccounts) {
+        const extra = account.extra_data as Record<string, unknown> | null;
+        const igUserId = resolveInstagramUserId(extra, account.platform_id);
+        if (!igUserId) {
+          this.logger.warn(`[IGSync] Bỏ qua ${account.username || account.name}: không có Instagram User ID`);
+          continue;
+        }
+        if (!byInstagramUser.has(igUserId)) byInstagramUser.set(igUserId, account);
+      }
+
+      this.syncProgress = { current: 0, total: byInstagramUser.size };
+
+      let createdProfiles = 0;
+      let updatedProfiles = 0;
+      let syncedMedia = 0;
+      let failed = 0;
+
+      for (const [igUserId, account] of byInstagramUser) {
+        this.syncProgress.current++;
+        try {
+          let token = '';
+          try {
+            token = this.crypto.decrypt(account.access_token_enc);
+          } catch (e: any) {
+            this.logger.error(`[IGSync] Giải mã token hỏng cho tài khoản ${account.id}: ${e.message}`);
+            failed++;
+            continue;
+          }
+
+          const extra = account.extra_data as Record<string, unknown> | null;
+          const base = resolveApiBase(extra?.type as string | undefined);
+
+          const profileData = await this.fetchUserProfile(base, igUserId, token);
+          if (!profileData) {
+            failed++;
+            continue;
+          }
+
+          const profile = await this.upsertProfile(profileData);
+          if (profile.created) createdProfiles++;
+          else updatedProfiles++;
+
+          syncedMedia += await this.syncProfileMedia(profile.id, base, igUserId, token);
+
+          await this.prisma.scraperInstagramProfile.update({
+            where: { id: profile.id },
+            data: {
+              last_scraped_at: new Date(),
+              scraping_status: 'idle',
+              scrape_error: null,
+              is_initial_scraped: true,
+            },
+          });
+        } catch (err: any) {
+          failed++;
+          this.logger.error(`❌ [IGSync] Lỗi đồng bộ ${account.username || account.name}: ${err.message}`);
+          if (account.username) {
+            const isTransient = isTransientError(err.message);
+            await this.prisma.scraperInstagramProfile
+              .updateMany({
+                where: { username: account.username },
+                data: {
+                  last_scraped_at: new Date(),
+                  scraping_status: isTransient ? 'idle' : 'failed',
+                  scrape_error: isTransient ? null : (err.message || '').slice(0, 500),
+                },
+              })
+              .catch(() => {});
+          }
+        }
+      }
+
+      this.logger.log(
+        `✅ [IGSync] Hoàn tất: ${byInstagramUser.size} kênh từ ${socialAccounts.length} tài khoản kết nối ` +
+          `(+${createdProfiles} mới, ~${updatedProfiles} cập nhật), ${syncedMedia} bài${failed ? `, ${failed} lỗi` : ''}`,
+      );
+
+      const result: InstagramSyncResult = {
+        accounts: byInstagramUser.size,
+        createdProfiles,
+        updatedProfiles,
+        syncedMedia,
+        failed,
+      };
+      this.lastSyncResult = result;
+      return result;
+    } finally {
+      this.isSyncing = false;
+    }
   }
 
   /** Danh sách kênh Instagram đang được tính là nội bộ. */
