@@ -23,6 +23,7 @@ import { TaskAutoVideoService } from "../video/video.service";
 import { VideoScriptService } from "./video-script.service";
 import { ContentApprovalService } from "./content-approval.service";
 import { TaskVideoMatchService } from "./task-video-match.service";
+import { TaskExportService } from "./task-export.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -49,6 +50,7 @@ export class TaskAutoTasksController {
     private videoScript: VideoScriptService,
     private contentApproval: ContentApprovalService,
     private videoMatch: TaskVideoMatchService,
+    private taskExport: TaskExportService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -76,6 +78,29 @@ export class TaskAutoTasksController {
       }),
     ]);
     return { total, submittedTotal, contentApprovalTotal };
+  }
+
+  // Cũng phải đứng trước "tasks/:id" như header-counts, nếu không "export" sẽ bị :id nuốt.
+  @Get("tasks/export")
+  @ApiOperation({
+    summary:
+      "Xuất Excel danh sách task ĐÃ HOÀN THÀNH (APPROVED) theo đúng bộ lọc đang chọn trên trang " +
+      "Nhiệm vụ — mỗi người thực hiện 1 sheet, kèm bảng KPI tháng (đạt / mục tiêu). Ô 'Trạng thái' " +
+      "bị bỏ qua (luôn xuất task đã duyệt); tối đa 10.000 dòng/lần.",
+  })
+  async exportTasks(@Query() q: QueryTaskDto, @Res() res: Response, @Request() req: any) {
+    const { buffer, filename } = await this.taskExport.exportApprovedTasks(q, req.user);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    // filename* (RFC 5987) cho tên có dấu; filename ASCII giữ cho client cũ.
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+    res.setHeader("Content-Length", String(buffer.length));
+    res.end(buffer);
   }
 
   @Get("tasks/:id")

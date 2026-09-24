@@ -337,7 +337,11 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], undefined, undefined, '2025-11');
 
-    const expectedMonthRange = { gte: new Date(2025, 10, 1), lt: new Date(2025, 11, 1) };
+    // Mốc tháng VN: 00:00 +07 = 17:00Z hôm trước (CI chạy UTC).
+    const expectedMonthRange = {
+      gte: new Date('2025-10-31T17:00:00.000Z'),
+      lt: new Date('2025-11-30T17:00:00.000Z'),
+    };
 
     expect(prisma.task.count).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -705,8 +709,12 @@ describe('TaskAutoTasksService — content_by_classification (qua getDashboard)'
       trafficReport: { findMany: jest.fn(async () => []) },
       revenueReport: { groupBy: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => []) },
-      editorDailyKpi: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { findMany: jest.fn(async () => []), aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
       productLine: { findMany: jest.fn(async () => []) },
+      // computeEditorKpiActuals()
+      product: { findMany: jest.fn(async () => []) },
+      editorProduct: { findMany: jest.fn(async () => []) },
+      teamProduct: { findMany: jest.fn(async () => []) },
       contentCreatorKpi: { findMany: jest.fn(async () => []) },
       editorApproval: { findMany: jest.fn(async () => []) },
       contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
@@ -834,7 +842,15 @@ describe('TaskAutoTasksService — content_by_classification (qua getDashboard)'
       teamContent: { findMany: jest.fn(async () => []) },
       editorKpi: { findMany: jest.fn(async () => []) },
       editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      // getPersonalDashboard tra email để khớp TrafficReport
+      user: { findUnique: jest.fn(async () => ({ email: 'me@x.com' })) },
+      trafficReport: { findMany: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => []) },
+      // computeEditorKpiActuals()
+      productLine: { findMany: jest.fn(async () => []) },
+      product: { findMany: jest.fn(async () => []) },
+      editorProduct: { findMany: jest.fn(async () => []) },
+      teamProduct: { findMany: jest.fn(async () => []) },
     };
     const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
 
@@ -934,6 +950,139 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
 });
 
 /**
+ * Mỗi lần nộp báo cáo tạo nhiều dòng cùng 1 ngày (1 dòng / nền tảng × kênh) nên phải gộp theo
+ * (người, ngày) và KHÔNG cộng qua nhiều ngày — traffic là điểm cuối kỳ.
+ */
+describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng nền tảng', () => {
+  function build(trafficRows: any[], opts: { self?: any; teamsLed?: any[] } = {}) {
+    const prisma: any = {
+      trafficReport: { findMany: jest.fn(async () => trafficRows) },
+      user: { findUnique: jest.fn(async () => opts.self ?? null) },
+      team: { findMany: jest.fn(async () => opts.teamsLed ?? []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('gộp các dòng CÙNG (người, ngày) thành 1 dòng tách theo nền tảng, không cộng qua nhiều ngày', async () => {
+    const { service } = build([
+      // Một lần nộp ngày 31/8: 3 dòng, mỗi dòng 1 nền tảng × 1 kênh (2 kênh Facebook).
+      { date: new Date('2026-08-31T05:00:00Z'), email: 'A@x.com', name: 'A', team: 'Team A', traffic_fb: 100n, channel_fb: 'Page 1', total_traffic: 100n },
+      { date: new Date('2026-08-31T05:00:00Z'), email: 'a@x.com', name: 'A', team: 'Team A', traffic_fb: 50n, channel_fb: 'Page 2', total_traffic: 50n },
+      { date: new Date('2026-08-31T05:00:00Z'), email: 'a@x.com', name: 'A', team: 'Team A', traffic_yt: 30n, channel_yt: 'Kênh YT', total_traffic: 30n },
+      // Ngày khác của cùng người → PHẢI là dòng riêng, không dồn vào ngày 31/8.
+      { date: new Date('2026-08-01T05:00:00Z'), email: 'a@x.com', name: 'A', team: 'Team A', traffic_tiktok: 7n, channel_tiktok: 'TikTok', total_traffic: 7n },
+    ]);
+
+    const res: any = await service.getTrafficReportsForRole('admin-1', ['ADMIN'], '2026-08-01', '2026-08-31');
+
+    expect(res.range).toEqual({ from: '2026-08-01', to: '2026-08-31' });
+    expect(res.rows).toHaveLength(2);
+
+    const [latest, oldest] = res.rows; // sắp xếp ngày giảm dần
+    expect(latest).toMatchObject({
+      date: '2026-08-31',
+      email: 'a@x.com', // email chuẩn hoá thường → 'A@x.com' và 'a@x.com' là cùng một người
+      name: 'A',
+      team: 'Team A',
+      fb: 150,
+      yt: 30,
+      ig: 0,
+      tiktok: 0,
+      thread: 0,
+      zalo: 0,
+      total: 180,
+    });
+    expect(latest.details).toEqual([
+      { platform: 'fb', channel: 'Page 1', value: 100 },
+      { platform: 'fb', channel: 'Page 2', value: 50 },
+      { platform: 'yt', channel: 'Kênh YT', value: 30 },
+    ]);
+    expect(oldest).toMatchObject({ date: '2026-08-01', tiktok: 7, total: 7 });
+
+    // BigInt lọt ra ngoài sẽ làm JSON.stringify của Nest ném "Do not know how to serialize a BigInt".
+    expect(() => JSON.stringify(res)).not.toThrow();
+  });
+
+  it('nới truy vấn ±1 ngày nhưng vẫn cắt theo NGÀY GIỜ VN — báo cáo ngoài khoảng bị loại', async () => {
+    const { service, prisma } = build([
+      { date: new Date('2026-08-31T05:00:00Z'), email: 'a@x.com', name: 'A', traffic_fb: 10n, total_traffic: 10n },
+      // 1/9 giờ VN — lọt vào truy vấn do nới ±1 ngày, nhưng ngoài khoảng 1/8–31/8 nên phải bị loại.
+      { date: new Date('2026-09-01T05:00:00Z'), email: 'a@x.com', name: 'A', traffic_fb: 999n, total_traffic: 999n },
+    ]);
+
+    const res: any = await service.getTrafficReportsForRole('admin-1', ['ADMIN'], '2026-08-01', '2026-08-31');
+
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0]).toMatchObject({ date: '2026-08-31', fb: 10 });
+
+    const where = prisma.trafficReport.findMany.mock.calls[0][0].where;
+    expect(where.date.gte).toEqual(new Date(new Date(2026, 7, 1).getTime() - 86_400_000));
+    expect(where.date.lt).toEqual(new Date(new Date(2026, 8, 1).getTime() + 86_400_000));
+    expect(where.email).toBeUndefined(); // ADMIN không bị khoá theo email
+  });
+
+  it('không truyền date_from/date_to → mặc định tháng hiện tại THEO GIỜ VN, không quét cả bảng', async () => {
+    // 2026-08-31T18:00Z = 01:00 ngày 1/9 giờ VN → phải ra tháng 9, không phải tháng 8.
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T18:00:00.000Z'));
+    try {
+      const { service } = build([]);
+
+      const res: any = await service.getTrafficReportsForRole('admin-1', ['ADMIN']);
+
+      expect(res.range).toEqual({ from: '2026-09-01', to: '2026-09-30' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('LEADER → chỉ thành viên (các) team mình lead + chính mình', async () => {
+    const { service, prisma } = build([], {
+      self: { email: 'Leader@x.com' },
+      teamsLed: [
+        { members: [{ user: { email: 'M1@x.com' } }, { user: { email: 'm2@x.com' } }] },
+        { members: [{ user: { email: 'm3@x.com' } }] },
+      ],
+    });
+
+    await service.getTrafficReportsForRole('leader-1', ['LEADER'], '2026-08-01', '2026-08-31');
+
+    const where = prisma.trafficReport.findMany.mock.calls[0][0].where;
+    expect(where.email.in.sort()).toEqual(['leader@x.com', 'm1@x.com', 'm2@x.com', 'm3@x.com']);
+    expect(prisma.team.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { leader_id: 'leader-1' } }),
+    );
+  });
+
+  it('MEMBER hỏi email người khác → rỗng và KHÔNG truy vấn traffic của người đó', async () => {
+    const { service, prisma } = build([], { self: { email: 'me@x.com' } });
+
+    const res: any = await service.getTrafficReportsForRole(
+      'u-1', ['MEMBER'], '2026-08-01', '2026-08-31', 'nguoikhac@x.com',
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(prisma.trafficReport.findMany).not.toHaveBeenCalled();
+    expect(prisma.team.findMany).not.toHaveBeenCalled(); // không phải leader → khỏi tra team
+  });
+
+  it('MEMBER không truyền email → tự khoá về chính mình; ADMIN lọc được email/team cụ thể', async () => {
+    const asMember = build([], { self: { email: 'me@x.com' } });
+    await asMember.service.getTrafficReportsForRole('u-1', ['MEMBER'], '2026-08-01', '2026-08-31');
+    expect(asMember.prisma.trafficReport.findMany.mock.calls[0][0].where.email.in).toEqual(['me@x.com']);
+
+    const asAdmin = build([]);
+    await asAdmin.service.getTrafficReportsForRole(
+      'admin-1', ['ADMIN'], '2026-08-01', '2026-08-31', ' Nguoi@x.com ', 'Team A',
+    );
+    const where = asAdmin.prisma.trafficReport.findMany.mock.calls[0][0].where;
+    expect(where.email.in).toEqual(['nguoi@x.com']);
+    expect(where.team).toEqual({ equals: 'Team A', mode: 'insensitive' });
+    expect(asAdmin.prisma.user.findUnique).not.toHaveBeenCalled(); // ADMIN khỏi tra email của chính mình
+  });
+});
+
+/**
  * video_by_line.target — biểu đồ "Video theo tuyến nội dung" ở trang Tổng quan (leader + editor) nay
  * kèm mục tiêu KPI theo tuyến để FE hiển thị dạng đã-duyệt / mục-tiêu (vd 10/30). Nguồn target =
  * EditorKpiAllocation.quantity (type CONTENT_LINE) của tháng đang xem: editor lấy của chính mình,
@@ -1014,13 +1163,16 @@ describe('TaskAutoTasksService — video_by_line kèm target theo tuyến nội 
             user_id: 'u1',
             month: '2026-08',
             total_target: 25,
-            video_win: 0, video_fail: 0, kpi_extra: 0, content_new: 0,
-            content_collected: 0, content_win_cover: 0, product_planned: 0, product_win_collect: 0,
+            kpi_extra: 0, content_new: 0,
+            content_paast_analyzed: 0, content_win_cover: 0, product_gmv: 0, product_traffic: 0,
             allocations: [alloc('A1', 5), alloc('A2', 20)],
           },
         ]),
       },
       editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      // getPersonalDashboard tra email để khớp TrafficReport
+      user: { findUnique: jest.fn(async () => ({ email: 'me@x.com' })) },
+      trafficReport: { findMany: jest.fn(async () => []) },
       contentLine: { findMany: jest.fn(async () => contentLines) },
     };
     const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
@@ -1031,6 +1183,156 @@ describe('TaskAutoTasksService — video_by_line kèm target theo tuyến nội 
       { line: 'A1', count: 0, target: 5 },
       { line: 'A2', count: 7, target: 20 },
       { line: 'A3', count: 0, target: 0 },
+    ]);
+  });
+
+  it('editor — traffic_month lấy tổng của ngày báo cáo gần nhất, không cộng dồn cả kỳ', async () => {
+    let trafficArgs: any = null;
+    const prisma: any = {
+      task: {
+        groupBy: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+        findMany: jest.fn(async () => []),
+      },
+      content: { findMany: jest.fn(async () => []) },
+      editorContent: { findMany: jest.fn(async () => []) },
+      teamContent: { findMany: jest.fn(async () => []) },
+      productLine: { findMany: jest.fn(async () => []) },
+      product: { findMany: jest.fn(async () => []) },
+      editorProduct: { findMany: jest.fn(async () => []) },
+      teamProduct: { findMany: jest.fn(async () => []) },
+      editorKpi: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      contentLine: { findMany: jest.fn(async () => contentLines) },
+      user: { findUnique: jest.fn(async () => ({ email: 'Me@X.com' })) },
+      trafficReport: {
+        findMany: jest.fn(async (args: any) => {
+          trafficArgs = args;
+          return [
+            // ngày cũ — KHÔNG được cộng vào
+            { email: 'me@x.com', date: new Date(2026, 8, 10), total_traffic: 999n },
+            // ngày gần nhất: 2 nền tảng, cộng lại = 1500
+            { email: 'me@x.com', date: new Date(2026, 8, 20), total_traffic: 1000n },
+            { email: 'me@x.com', date: new Date(2026, 8, 20), total_traffic: 500n },
+          ];
+        }),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('u1', ['EDITOR']);
+
+    expect(result.traffic_month).toBe(1500);
+    // khớp theo email không phân biệt hoa-thường (bảng báo cáo tay, người dùng tự gõ)
+    expect(trafficArgs.where.email).toEqual({ equals: 'me@x.com', mode: 'insensitive' });
+  });
+
+  it('editor — chưa có báo cáo traffic nào → traffic_month = 0, không lỗi', async () => {
+    const prisma: any = {
+      task: { groupBy: jest.fn(async () => []), count: jest.fn(async () => 0), findMany: jest.fn(async () => []) },
+      content: { findMany: jest.fn(async () => []) },
+      editorContent: { findMany: jest.fn(async () => []) },
+      teamContent: { findMany: jest.fn(async () => []) },
+      productLine: { findMany: jest.fn(async () => []) },
+      product: { findMany: jest.fn(async () => []) },
+      editorProduct: { findMany: jest.fn(async () => []) },
+      teamProduct: { findMany: jest.fn(async () => []) },
+      editorKpi: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      contentLine: { findMany: jest.fn(async () => contentLines) },
+      user: { findUnique: jest.fn(async () => ({ email: null })) },
+      trafficReport: { findMany: jest.fn(async () => []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('u1', ['EDITOR']);
+
+    expect(result.traffic_month).toBe(0);
+    // user không có email thì khỏi query TrafficReport
+    expect(prisma.trafficReport.findMany).not.toHaveBeenCalled();
+  });
+
+  it('editor — số thực đạt KPI cá nhân đếm từ task trong tháng, gộp mọi team', async () => {
+    let actualTaskArgs: any = null;
+    const task = (over: any = {}) => ({
+      assignee_id: 'u1',
+      team_id: 't-1',
+      status: 'APPROVED',
+      published_links: [],
+      content_id: null,
+      editor_content_id: null,
+      team_content_id: null,
+      product_line_id: null,
+      product_id: null,
+      editor_product_id: null,
+      team_product_id: null,
+      ...over,
+    });
+    const prisma: any = {
+      task: {
+        groupBy: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+        findMany: jest.fn(async (args: any) => {
+          if (!args?.where?.AND) return [];
+          actualTaskArgs = args.where;
+          return [
+            task({ content_id: 'c-paast' }),
+            task({ content_id: 'c-paast' }),
+            // task của TEAM KHÁC vẫn tính, vì dashboard cá nhân không khoá theo team
+            task({ team_id: 't-2', content_id: 'c-paast' }),
+            task({ content_id: 'c-new', published_links: [{ platform: 'FACEBOOK', url: 'u', stats: { status: 'success', views: 20000 } }] }),
+          ];
+        }),
+      },
+      content: {
+        findMany: jest.fn(async () => [
+          { id: 'c-paast', classification: { name: 'Phân tích theo PAAST' } },
+          { id: 'c-new', classification: { name: 'Mới' } },
+        ]),
+      },
+      editorContent: { findMany: jest.fn(async () => []) },
+      teamContent: { findMany: jest.fn(async () => []) },
+      productLine: { findMany: jest.fn(async () => []) },
+      product: { findMany: jest.fn(async () => []) },
+      editorProduct: { findMany: jest.fn(async () => []) },
+      teamProduct: { findMany: jest.fn(async () => []) },
+      editorKpi: {
+        findMany: jest.fn(async () => [
+          {
+            user_id: 'u1',
+            month: '2026-08',
+            total_target: 25,
+            kpi_extra: 0, content_new: 5,
+            content_paast_analyzed: 20, content_win_cover: 2,
+            product_gmv: 0, product_traffic: 0, product_profit: 0, product_collect_test_win: 0,
+            allocations: [],
+          },
+        ]),
+      },
+      editorDailyKpi: { aggregate: jest.fn(async () => ({ _sum: { target: null } })) },
+      // getPersonalDashboard tra email để khớp TrafficReport
+      user: { findUnique: jest.fn(async () => ({ email: 'me@x.com' })) },
+      trafficReport: { findMany: jest.fn(async () => []) },
+      contentLine: { findMany: jest.fn(async () => contentLines) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result: any = await service.getDashboard('u1', ['EDITOR']);
+
+    expect(result.kpi.content_paast_analyzed).toBe(20);
+    expect(result.kpi.content_paast_analyzed_actual).toBe(3);
+    expect(result.kpi.content_new_actual).toBe(1);
+    expect(result.kpi.content_win_cover_actual).toBe(1);
+    expect(result.kpi.total_actual).toBe(4);
+
+    // Chỉ đếm task của chính mình, bỏ CANCELLED, deadline trong tháng (null → created_at)
+    expect(actualTaskArgs.AND[0]).toEqual({
+      assignee_id: { in: ['u1'] },
+      status: { not: 'CANCELLED' },
+    });
+    expect(actualTaskArgs.AND[1].OR).toEqual([
+      { deadline: { gte: expect.any(Date), lt: expect.any(Date) } },
+      { deadline: null, created_at: { gte: expect.any(Date), lt: expect.any(Date) } },
     ]);
   });
 });

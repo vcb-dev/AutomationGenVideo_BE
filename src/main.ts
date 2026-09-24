@@ -124,6 +124,8 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOriginOption,
     credentials: true,
+    // FE khác origin: không expose thì JS không đọc được tên file trong Content-Disposition.
+    exposedHeaders: ["Content-Disposition"],
   });
 
   // Swagger documentation

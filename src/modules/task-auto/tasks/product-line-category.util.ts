@@ -24,6 +24,10 @@ export function resolveTaskProductLineId(
   );
 }
 
+/** Dòng sản phẩm mặc định cho sản phẩm OMS lưu vào kho cá nhân. Tra theo tên vì không có cờ nào
+ * đánh dấu dòng GMV. */
+export const DEFAULT_OMS_PRODUCT_LINE_NAME = "GMV";
+
 export function productLineCategoryLabel(line: {
   name: string | null;
   video_category: string | null;

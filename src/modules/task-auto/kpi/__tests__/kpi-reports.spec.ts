@@ -183,7 +183,7 @@ describe('TaskAutoKpiService.getContentCreatorKpiReport', () => {
  * creator/editor): "content được gắn task trong kỳ" → win/fail/pending; win khi có ít nhất 1 link
  * bài đăng bất kỳ (Facebook/YouTube/Instagram) đạt > 10.000 view.
  * Kết quả gộp thành 1 danh sách theo user_id (by_member), dedupe theo task_id nếu 1 người vừa là
- * content creator vừa là editor CỦA CÙNG 1 task. Không đụng EditorKpi.video_win/fail (nhập tay).
+ * content creator vừa là editor CỦA CÙNG 1 task. Không đụng chỉ tiêu KPI nhập tay của editor.
  */
 describe('TaskAutoKpiService.getContentWinFailStats', () => {
   function build(opts: {

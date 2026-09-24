@@ -37,7 +37,7 @@ export type EditorCapacity = {
   userId: string;
   remainingDaily: number;
   remainingMonthly: number;
-  productPlanned: number;
+  productGmv: number;
   contentTypeWeights: WeightedAllocation[];
   productTypeWeights: WeightedAllocation[];
   // Quota còn lại trong tháng theo từng content/product line (quantity - đã giao),

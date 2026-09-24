@@ -48,3 +48,36 @@ export function vietnamDateString(d: Date = new Date()): string {
     .setZone("Asia/Ho_Chi_Minh")
     .toFormat("yyyy-MM-dd");
 }
+
+// ── Mốc tháng/ngày theo GIỜ VN ───────────────────────────────────────────────
+// Server chạy UTC nên `new Date(y, m - 1, 1)` lệch 7 tiếng so với mốc VN. Mọi nơi tính "tháng KPI"
+// hay "hôm nay" phải đi qua các hàm dưới.
+
+/** Tháng lịch VN của một thời điểm, dạng "YYYY-MM". */
+export function vietnamMonthString(d: Date = new Date()): string {
+  return DateTime.fromJSDate(d)
+    .setZone("Asia/Ho_Chi_Minh")
+    .toFormat("yyyy-MM");
+}
+
+/** "YYYY-MM" → [đầu tháng, đầu tháng sau) theo giờ VN; chuỗi sai định dạng → null. */
+export function vietnamMonthRange(
+  month: string,
+): { gte: Date; lt: Date } | null {
+  const start = DateTime.fromFormat(month, "yyyy-MM", {
+    zone: "Asia/Ho_Chi_Minh",
+  });
+  if (!start.isValid) return null;
+  return {
+    gte: start.startOf("month").toJSDate(),
+    lt: start.startOf("month").plus({ months: 1 }).toJSDate(),
+  };
+}
+
+/** [00:00 hôm nay, 00:00 ngày mai) theo giờ VN. */
+export function vietnamDayRange(d: Date = new Date()): { gte: Date; lt: Date } {
+  const start = DateTime.fromJSDate(d)
+    .setZone("Asia/Ho_Chi_Minh")
+    .startOf("day");
+  return { gte: start.toJSDate(), lt: start.plus({ days: 1 }).toJSDate() };
+}

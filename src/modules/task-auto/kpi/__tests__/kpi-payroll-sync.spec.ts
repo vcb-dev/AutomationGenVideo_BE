@@ -17,8 +17,10 @@ import { JwtOrApiKeyGuard } from "../../../api-keys/guards/jwt-or-api-key.guard"
 const TEAM_ID = "team-1";
 const MONTH = "2026-09";
 
+// Fixture viết theo tên cột cũ (khớp metric_code payroll); tên cột mới được suy ra để dùng được
+// cho cả input của mapper lẫn row prisma.
 function editorKpi(over: Partial<Record<string, any>> = {}) {
-  return {
+  const row = {
     user_id: "editor-1",
     total_target: 0,
     video_win: 0,
@@ -29,9 +31,16 @@ function editorKpi(over: Partial<Record<string, any>> = {}) {
     product_planned: 0,
     product_win_collect: 0,
     product_profit: 0,
+    product_collect_test_win: 0,
     user: { id: over.user_id ?? "editor-1", employee_id: "K2_07" },
     allocations: [],
     ...over,
+  };
+  return {
+    ...row,
+    content_paast_analyzed: over.content_paast_analyzed ?? row.content_collected,
+    product_gmv: over.product_gmv ?? row.product_planned,
+    product_traffic: over.product_traffic ?? row.product_win_collect,
   };
 }
 
@@ -58,6 +67,9 @@ interface PrismaOpts {
   creatorTasks?: any[];
   editorTasks?: any[];
   approvedTasks?: any[];
+  contents?: any[];
+  editorContents?: any[];
+  teamContents?: any[];
   contentLines?: any[];
   productLines?: any[];
   products?: any[];
@@ -65,9 +77,17 @@ interface PrismaOpts {
   teamProducts?: any[];
 }
 
+// Một task đã duyệt trong tháng — dùng chung cho buildEditorReportActuals (tuyến nội dung) và
+// computeEditorKpiActuals (số video/content/sản phẩm), nên phải đủ field của cả hai.
 function approvedTask(over: Partial<Record<string, any>> = {}) {
   return {
     assignee_id: "editor-1",
+    team_id: TEAM_ID,
+    status: "APPROVED",
+    published_links: [],
+    content_id: null,
+    editor_content_id: null,
+    team_content_id: null,
     content_line_id: null,
     product_line_id: null,
     product_id: null,
@@ -93,10 +113,15 @@ function buildPrisma(opts: PrismaOpts = {}) {
       ),
     },
     user: { findMany: jest.fn(async () => opts.users ?? []), update: write },
-    teamContent: { groupBy: jest.fn(async (_args?: any) => opts.collectedGroups ?? []) },
+    teamContent: {
+      groupBy: jest.fn(async (_args?: any) => opts.collectedGroups ?? []),
+      findMany: jest.fn(async () => opts.teamContents ?? []),
+    },
     contentTranslation: { groupBy: jest.fn(async (_args?: any) => opts.translationGroups ?? []) },
     task: {
       findMany: jest.fn(async (args: any) => {
+        // computeEditorKpiActuals(): where = { AND: [{assignee_id, status}, deadlineWindow] }
+        if (args?.where?.AND) return opts.approvedTasks ?? [];
         if (args?.where?.team_id && args?.where?.assignee_id) return opts.approvedTasks ?? [];
         if (args?.where?.assignee_id) return opts.editorTasks ?? [];
         return opts.creatorTasks ?? [];
@@ -104,6 +129,8 @@ function buildPrisma(opts: PrismaOpts = {}) {
       update: write,
       updateMany: write,
     },
+    content: { findMany: jest.fn(async () => opts.contents ?? []) },
+    editorContent: { findMany: jest.fn(async () => opts.editorContents ?? []) },
     contentLine: { findMany: jest.fn(async () => opts.contentLines ?? []) },
     productLine: { findMany: jest.fn(async () => opts.productLines ?? []) },
     product: { findMany: jest.fn(async () => opts.products ?? []) },
@@ -156,9 +183,13 @@ describe("kpi-payroll-sync mapper — Editor (mục 6.1)", () => {
     product_gmv: null,
     product_traffic: null,
     product_profit: null,
+    product_collect_test_win: null,
+    content_new: null,
+    content_collected: null,
+    content_win_cover: null,
   };
 
-  it("MỌI cột editor_kpis vào cột target; actual chỉ đến từ báo cáo", () => {
+  it("MỌI cột editor_kpis vào cột target; actual chỉ đến từ báo cáo (không lấy lại cột target)", () => {
     const contributions = mapEditorKpi(
       editorKpi({
         total_target: 40,
@@ -170,8 +201,20 @@ describe("kpi-payroll-sync mapper — Editor (mục 6.1)", () => {
         product_planned: 9,
         product_win_collect: 4,
         product_profit: 3,
+        product_collect_test_win: 6,
       }),
-      { videos_approved: 35, win: 11, fail: 24, product_gmv: 8, product_traffic: 6, product_profit: 2 },
+      {
+        videos_approved: 35,
+        win: 11,
+        fail: 24,
+        product_gmv: 8,
+        product_traffic: 6,
+        product_profit: 2,
+        product_collect_test_win: 1,
+        content_new: 4,
+        content_collected: 3,
+        content_win_cover: 1,
+      },
     );
 
     expect(
@@ -180,12 +223,13 @@ describe("kpi-payroll-sync mapper — Editor (mục 6.1)", () => {
       ["VIDEO_PRODUCTION", "TOTAL_VIDEO", 40, 35],
       ["VIDEO_PRODUCTION", "VIDEO_WIN", 12, 11],
       ["VIDEO_PRODUCTION", "VIDEO_FAIL", 23, 24],
-      ["CONTENT", "CONTENT_NEW", 5, null],
-      ["CONTENT", "CONTENT_COLLECTED", 7, null],
-      ["CONTENT", "CONTENT_WIN_COVER", 2, null],
+      ["CONTENT", "CONTENT_NEW", 5, 4],
+      ["CONTENT", "CONTENT_COLLECTED", 7, 3],
+      ["CONTENT", "CONTENT_WIN_COVER", 2, 1],
       ["PRODUCT", "PRODUCT_PLANNED", 9, 8],
       ["PRODUCT", "PRODUCT_COLLECTED", 4, 6],
       ["PRODUCT", "PRODUCT_PROFIT", 3, 2],
+      ["PRODUCT", "PRODUCT_COLLECT_TEST_WIN", 6, 1],
     ]);
   });
 
@@ -395,7 +439,7 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
     expect(res).toMatchObject({
-      contract_version: "1.0",
+      contract_version: "1.2",
       month: MONTH,
       team: { id: TEAM_ID, name: "Team K2" },
       records: [],
@@ -468,17 +512,19 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
         { id: "pl-profit", name: "Profit", video_category: null },
       ],
       approvedTasks: [
-        approvedTask({ content_line_id: "cl-a1", product_line_id: "pl-gmv" }),
-        approvedTask({ content_line_id: "cl-a1", product_line_id: "pl-gmv" }),
-        approvedTask({ content_line_id: "cl-a3", product_line_id: "pl-profit" }),
+        approvedTask({ content_line_id: "cl-a1", product_id: "p-gmv-1", published_links: fbLink(20000) }),
+        approvedTask({ content_line_id: "cl-a1", product_id: "p-gmv-2", published_links: fbLink(500) }),
+        approvedTask({ content_line_id: "cl-a3", product_id: "p-profit-1" }),
         approvedTask({ content_line_id: "cl-x", team_product_id: "tp-1" }),
-        approvedTask({ content_line_id: null }),
+        approvedTask({ content_line_id: null, content_id: "c-new" }),
+      ],
+      contents: [{ id: "c-new", classification: { name: "Mới" } }],
+      products: [
+        { id: "p-gmv-1", product_line_id: "pl-gmv" },
+        { id: "p-gmv-2", product_line_id: "pl-gmv" },
+        { id: "p-profit-1", product_line_id: "pl-profit" },
       ],
       teamProducts: [{ id: "tp-1", product_line_id: "pl-traffic" }],
-      editorTasks: [
-        { id: "t1", assignee_id: "editor-1", published_links: fbLink(20000), content: null, team_content: null, editor_content: null },
-        { id: "t2", assignee_id: "editor-1", published_links: fbLink(500), content: null, team_content: null, editor_content: null },
-      ],
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
@@ -517,12 +563,11 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       actual: 1,
     });
 
-    for (const metric of ["CONTENT_NEW", "CONTENT_COLLECTED", "CONTENT_WIN_COVER"]) {
-      expect(recordFor(res.records, "CONTENT", metric)).toMatchObject({ actual: null });
-    }
-    expect(res.warnings.map((w) => w.code)).toEqual(
-      expect.arrayContaining(["UNKNOWN_CONTENT_LINE_CODE", "NO_ACTUAL_SOURCE"]),
-    );
+    expect(recordFor(res.records, "CONTENT", "CONTENT_NEW")).toMatchObject({ target: 5, actual: 1 });
+    expect(recordFor(res.records, "CONTENT", "CONTENT_COLLECTED")).toMatchObject({ target: 7, actual: 0 });
+    expect(recordFor(res.records, "CONTENT", "CONTENT_WIN_COVER")).toMatchObject({ target: 2, actual: 1 });
+    expect(res.warnings.map((w) => w.code)).toContain("UNKNOWN_CONTENT_LINE_CODE");
+    expect(res.warnings.some((w) => w.code === "NO_ACTUAL_SOURCE")).toBe(false);
 
     const approvedArgs = prisma.task.findMany.mock.calls.find(
       (c: any) => c[0]?.where?.team_id && c[0]?.where?.assignee_id,
@@ -538,7 +583,8 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     const { service } = buildService({
       editorKpis: [editorKpi({ user_id: "editor-1", product_planned: 5 })],
       productLines: [{ id: "pl-x", name: "Hàng tồn", video_category: null }],
-      approvedTasks: [approvedTask({ product_line_id: "pl-x" })],
+      approvedTasks: [approvedTask({ product_id: "p-x" })],
+      products: [{ id: "p-x", product_line_id: "pl-x" }],
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
@@ -559,12 +605,90 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     const { service } = buildService({
       editorKpis: [editorKpi({ user_id: "editor-1", product_profit: 2 })],
       productLines: [{ id: "pl-1", name: "Dòng cao cấp", video_category: "Profit" }],
-      approvedTasks: [approvedTask({ product_line_id: "pl-1" })],
+      approvedTasks: [approvedTask({ product_id: "p-1" })],
+      products: [{ id: "p-1", product_line_id: "pl-1" }],
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
     expect(recordFor(res.records, "PRODUCT", "PRODUCT_PROFIT")).toMatchObject({ actual: 1 });
     expect(res.warnings.some((w) => w.code === "UNKNOWN_PRODUCT_LINE_CATEGORY")).toBe(false);
+  });
+
+  it("PRODUCT_*: đếm SỐ SẢN PHẨM riêng biệt, không phải số video", async () => {
+    const { service } = buildService({
+      editorKpis: [editorKpi({ user_id: "editor-1", product_planned: 10 })],
+      productLines: [{ id: "pl-gmv", name: "GMV", video_category: null }],
+      approvedTasks: [
+        approvedTask({ product_id: "p-1" }),
+        approvedTask({ product_id: "p-1" }), // cùng sản phẩm, 2 video → vẫn 1
+        approvedTask({ product_id: "p-2" }),
+        // chỉ có dòng sản phẩm, không gắn sản phẩm cụ thể → không tính vào số sản phẩm
+        approvedTask({ product_line_id: "pl-gmv" }),
+      ],
+      products: [
+        { id: "p-1", product_line_id: "pl-gmv" },
+        { id: "p-2", product_line_id: "pl-gmv" },
+      ],
+    });
+    const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
+
+    expect(recordFor(res.records, "PRODUCT", "PRODUCT_PLANNED")).toMatchObject({
+      target: 10,
+      actual: 2,
+    });
+    // 4 task đã duyệt → TOTAL_VIDEO vẫn đếm theo video, không bị gộp như sản phẩm
+    expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO")).toMatchObject({ actual: 4 });
+  });
+
+  it("PRODUCT_COLLECT_TEST_WIN: sản phẩm dòng \"Sưu tầm\" có video đạt win", async () => {
+    const { service } = buildService({
+      editorKpis: [editorKpi({ user_id: "editor-1", product_collect_test_win: 4 })],
+      productLines: [
+        { id: "pl-collect", name: "Sưu tầm", video_category: null },
+        { id: "pl-gmv", name: "GMV", video_category: null },
+      ],
+      approvedTasks: [
+        approvedTask({ product_id: "p-collect", published_links: fbLink(20000) }),
+        // cùng dòng Sưu tầm nhưng video chưa win → không tính
+        approvedTask({ product_id: "p-collect-2", published_links: fbLink(500) }),
+        // win nhưng dòng GMV → chỉ vào PRODUCT_PLANNED
+        approvedTask({ product_id: "p-gmv", published_links: fbLink(30000) }),
+      ],
+      products: [
+        { id: "p-collect", product_line_id: "pl-collect" },
+        { id: "p-collect-2", product_line_id: "pl-collect" },
+        { id: "p-gmv", product_line_id: "pl-gmv" },
+      ],
+    });
+    const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
+
+    expect(recordFor(res.records, "PRODUCT", "PRODUCT_COLLECT_TEST_WIN")).toMatchObject({
+      target: 4,
+      actual: 1,
+    });
+    expect(recordFor(res.records, "PRODUCT", "PRODUCT_PLANNED")).toMatchObject({ actual: 1 });
+    // Dòng "Sưu tầm" không quy về GMV/Traffic/Profit nên vẫn cảnh báo cho người vận hành
+    expect(res.warnings.some((w) => w.code === "UNKNOWN_PRODUCT_LINE_CATEGORY")).toBe(true);
+  });
+
+  it("CONTENT_NEW / CONTENT_COLLECTED tính cả task CHƯA duyệt, theo phân loại content", async () => {
+    const { service } = buildService({
+      editorKpis: [editorKpi({ user_id: "editor-1", content_new: 3, content_collected: 2 })],
+      approvedTasks: [
+        approvedTask({ content_id: "c-new" }),
+        approvedTask({ status: "SUBMITTED", editor_content_id: "ec-new" }),
+        approvedTask({ status: "IN_PROGRESS", team_content_id: "tc-paast" }),
+      ],
+      contents: [{ id: "c-new", classification: { name: "Mới" } }],
+      editorContents: [{ id: "ec-new", classification: { name: "mới" } }],
+      teamContents: [{ id: "tc-paast", classification: { name: "Phân tích theo PAAST" } }],
+    });
+    const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
+
+    expect(recordFor(res.records, "CONTENT", "CONTENT_NEW")).toMatchObject({ target: 3, actual: 2 });
+    expect(recordFor(res.records, "CONTENT", "CONTENT_COLLECTED")).toMatchObject({ target: 2, actual: 1 });
+    // chỉ 1/3 task đã duyệt → số video không ăn theo task chưa duyệt
+    expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO")).toMatchObject({ actual: 1 });
   });
 
   it("giá trị 0 giữ nguyên là 0, không bị đổi thành null", async () => {
@@ -583,28 +707,30 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     });
     expect(recordFor(res.records, "CONTENT", "CONTENT_WIN_COVER")).toMatchObject({
       target: 0,
-      actual: null,
+      actual: 0,
     });
   });
 
-  it("editor ở nhiều team: cảnh báo UNSCOPED_EDITOR_ACTUAL cho win/fail chưa khoá theo team", async () => {
+  it("editor ở nhiều team: KHÔNG còn warning UNSCOPED_EDITOR_ACTUAL, win/fail chỉ tính task của team này", async () => {
     const { service } = buildService({
-      editorKpis: [editorKpi({ user_id: "editor-1", total_target: 5 })],
+      editorKpis: [editorKpi({ user_id: "editor-1", total_target: 5, video_win: 3 })],
       memberships: [
         { user_id: "editor-1", team_id: TEAM_ID },
         { user_id: "editor-1", team_id: "team-2" },
       ],
+      approvedTasks: [
+        approvedTask({ published_links: fbLink(20000) }),
+        // task cùng editor nhưng thuộc team khác → không được cộng vào KPI của team này
+        approvedTask({ team_id: "team-2", published_links: fbLink(30000) }),
+      ],
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
-    expect(res.warnings.filter((w) => w.code === "UNSCOPED_EDITOR_ACTUAL")).toEqual([
-      {
-        code: "UNSCOPED_EDITOR_ACTUAL",
-        user_id: "editor-1",
-        message:
-          "User thuộc nhiều team; actual VIDEO_WIN/VIDEO_FAIL chưa quy được chính xác cho một team",
-      },
-    ]);
+    expect(res.warnings.some((w) => w.code === "UNSCOPED_EDITOR_ACTUAL")).toBe(false);
+    expect(recordFor(res.records, "VIDEO_PRODUCTION", "VIDEO_WIN")).toMatchObject({
+      target: 3,
+      actual: 1,
+    });
   });
 
   it("không có editor nào thì không phát warning NO_ACTUAL_SOURCE thừa", async () => {
@@ -726,9 +852,10 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
+    // 0 vì user này không có task PAAST nào
     expect(recordFor(res.records, "CONTENT", "CONTENT_COLLECTED", uid)).toMatchObject({
       target: 7,
-      actual: null,
+      actual: 0,
     });
     expect(
       recordFor(res.records, "AGV_CONTENT_CREATOR_MONTHLY", "CONTENT_COLLECTED", uid),
@@ -752,7 +879,9 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
 
     const keys = first.records.map((r) => `${r.user_id}|${r.group_code}|${r.metric_code}`);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys).toEqual([...keys].sort());
+    // So bằng localeCompare như mergeContributions() — không dùng sort() mặc định (so code point),
+    // hai cách xếp "PRODUCT_COLLECTED" và "PRODUCT_COLLECT_TEST_WIN" khác nhau.
+    expect(keys).toEqual([...keys].sort((a, b) => a.localeCompare(b)));
     expect(second.records).toEqual(first.records);
   });
 
@@ -805,9 +934,10 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     expect(prisma.contentCreatorKpi.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.teamContent.groupBy).toHaveBeenCalledTimes(1);
     expect(prisma.contentTranslation.groupBy).toHaveBeenCalledTimes(1);
+    // 50 editor + 25 creator mà số query vẫn là hằng số (không nhân theo số nhân sự).
     expect(prisma.task.findMany).toHaveBeenCalledTimes(4);
     expect(prisma.contentLine.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.productLine.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.productLine.findMany).toHaveBeenCalledTimes(2);
     expect(prisma.teamMember.findMany).toHaveBeenCalledTimes(2);
   });
 });
@@ -824,7 +954,7 @@ describe("TaskAutoKpiController.getTeamKpiPayrollSync — route & auth", () => {
   }
 
   it("chuyển team id + month xuống service và trả nguyên snapshot", async () => {
-    const snapshot = { contract_version: "1.0", records: [], warnings: [] };
+    const snapshot = { contract_version: "1.2", records: [], warnings: [] };
     const kpi = { getTeamKpiPayrollSync: jest.fn(async () => snapshot) };
     const controller = new TaskAutoKpiController(kpi as any);
 

@@ -26,8 +26,28 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     editorKpis?: any[];
     teamFirst?: any;
     teamMemberFirst?: any;
+    /** Task (đã lọc tháng/assignee ở tầng service) dùng để tính số thực đạt mọi chỉ tiêu. */
+    actualTasks?: any[];
+    /** Bảng tra cứu kèm theo: phân loại content của 3 kho, dòng sản phẩm của 3 kho, nhãn dòng. */
+    contents?: any[];
+    editorContents?: any[];
+    teamContents?: any[];
+    products?: any[];
+    editorProducts?: any[];
+    teamProducts?: any[];
+    productLines?: any[];
   } = {}) {
     const prisma: any = {
+      task: {
+        findMany: jest.fn(async () => opts.actualTasks ?? []),
+      },
+      content: { findMany: jest.fn(async () => opts.contents ?? []) },
+      editorContent: { findMany: jest.fn(async () => opts.editorContents ?? []) },
+      teamContent: { findMany: jest.fn(async () => opts.teamContents ?? []) },
+      product: { findMany: jest.fn(async () => opts.products ?? []) },
+      editorProduct: { findMany: jest.fn(async () => opts.editorProducts ?? []) },
+      teamProduct: { findMany: jest.fn(async () => opts.teamProducts ?? []) },
+      productLine: { findMany: jest.fn(async () => opts.productLines ?? []) },
       team: {
         findMany: jest.fn(async () => opts.leaderTeams ?? []),
         findFirst: jest.fn(async () => opts.teamFirst ?? null),
@@ -161,6 +181,274 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     });
   });
 
+  /**
+   * Content (mới / PAAST) đếm mọi task chưa CANCELLED; video / content win / sản phẩm chỉ task
+   * APPROVED (sản phẩm đếm DISTINCT).
+   */
+  describe('getEditorKpis — số thực đạt từng chỉ tiêu', () => {
+    const winLinks = [{ platform: 'facebook', url: 'u', stats: { status: 'success', views: 20000 } }];
+    const failLinks = [{ platform: 'facebook', url: 'u', stats: { status: 'success', views: 10 } }];
+    const productLines = [
+      { id: 'pl-gmv', name: 'GMV', video_category: null },
+      { id: 'pl-traffic', name: 'Traffic', video_category: null },
+      { id: 'pl-profit', name: 'Profit', video_category: 'PROFIT' },
+      { id: 'pl-collect', name: 'Sưu tầm', video_category: null },
+    ];
+    const task = (over: any = {}) => ({
+      assignee_id: 'u1',
+      team_id: 'team-a',
+      status: 'APPROVED',
+      published_links: [],
+      content_id: null,
+      editor_content_id: null,
+      team_content_id: null,
+      product_line_id: null,
+      product_id: null,
+      editor_product_id: null,
+      team_product_id: null,
+      ...over,
+    });
+
+    it('gắn số thực đạt theo đúng (user, team) của từng dòng KPI', async () => {
+      const { service, prisma } = build({
+        editorKpis: [
+          { user_id: 'u1', team_id: 'team-a', month: '2026-09', content_paast_analyzed: 20 },
+          { user_id: 'u2', team_id: 'team-a', month: '2026-09', content_paast_analyzed: 10 },
+        ],
+        actualTasks: [
+          task({ content_id: 'c-paast' }),
+          task({ content_id: 'c-paast' }),
+          // u2 chỉ có task ở team-b, còn dòng KPI của u2 thuộc team-a
+          task({ assignee_id: 'u2', team_id: 'team-b', content_id: 'c-paast' }),
+        ],
+        contents: [{ id: 'c-paast', classification: { name: 'Phân tích theo PAAST' } }],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].paast_analyzed_actual).toBe(2);
+      expect(rows[0].total_actual).toBe(2);
+      // u2 không được "mượn" số của team khác
+      expect(rows[1].paast_analyzed_actual).toBe(0);
+      expect(rows[1].total_actual).toBe(0);
+
+      // Lọc đúng trục: task của các editor trong danh sách, bỏ CANCELLED, deadline trong tháng KPI
+      const where = prisma.task.findMany.mock.calls[0][0].where;
+      expect(where.AND[0]).toEqual({
+        assignee_id: { in: ['u1', 'u2'] },
+        status: { not: 'CANCELLED' },
+      });
+      // Mốc tháng VN: 00:00 +07 = 17:00Z hôm trước (CI chạy UTC).
+      const monthWindow = {
+        gte: new Date('2026-08-31T17:00:00.000Z'),
+        lt: new Date('2026-09-30T17:00:00.000Z'),
+      };
+      expect(where.AND[1]).toEqual({
+        OR: [
+          { deadline: monthWindow },
+          { deadline: null, created_at: monthWindow },
+        ],
+      });
+    });
+
+    it('dòng KPI legacy (team_id null) gộp task của mọi team', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: null, month: '2026-09' }],
+        actualTasks: [
+          task({ team_id: 'team-a' }),
+          task({ team_id: 'team-b' }),
+          task({ team_id: 'team-b' }),
+        ],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].total_actual).toBe(3);
+    });
+
+    it('tiến độ theo tuyến nội dung: đếm task APPROVED theo content_line_id, cùng tập task với tổng video', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
+        actualTasks: [
+          task({ content_line_id: 'cl-a1' }),
+          task({ content_line_id: 'cl-a1' }),
+          task({ content_line_id: 'cl-a2' }),
+          task({ content_line_id: null }), // chưa gắn tuyến → chỉ vào tổng
+          task({ content_line_id: 'cl-a2', status: 'SUBMITTED' }), // chưa duyệt → không tính
+          task({ content_line_id: 'cl-a1', team_id: 'team-b' }), // team khác → không tính
+        ],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].content_line_actuals).toEqual({ 'cl-a1': 2, 'cl-a2': 1 });
+      expect(rows[0].total_actual).toBe(4);
+    });
+
+    it('content mới / PAAST đếm cả task chưa duyệt, không phân biệt hoa thường tên phân loại', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
+        actualTasks: [
+          task({ content_id: 'c-new' }),
+          task({ status: 'SUBMITTED', editor_content_id: 'ec-new-lowercase' }),
+          task({ status: 'IN_PROGRESS', team_content_id: 'tc-paast' }),
+        ],
+        contents: [{ id: 'c-new', classification: { name: 'Mới' } }],
+        editorContents: [{ id: 'ec-new-lowercase', classification: { name: 'mới' } }],
+        teamContents: [{ id: 'tc-paast', classification: { name: 'Phân tích theo PAAST' } }],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].content_new_actual).toBe(2);
+      expect(rows[0].paast_analyzed_actual).toBe(1);
+      // Chỉ 1 task APPROVED trong 3 → "tổng video" không ăn theo task chưa duyệt
+      expect(rows[0].total_actual).toBe(1);
+    });
+
+    it('content win chỉ tính task APPROVED có link bài đăng vượt ngưỡng view', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
+        actualTasks: [
+          task({ published_links: winLinks }),
+          task({ published_links: failLinks }),
+          task({ published_links: [] }),
+          task({ status: 'SUBMITTED', published_links: winLinks }),
+        ],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].content_win_cover_actual).toBe(1);
+    });
+
+    it('sản phẩm đếm DISTINCT theo dòng GMV/Traffic/Profit, 1 SP nhiều video vẫn là 1', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
+        actualTasks: [
+          task({ product_id: 'p-1' }),
+          task({ product_id: 'p-1' }), // cùng sản phẩm → vẫn 1
+          task({ product_id: 'p-2' }),
+          task({ editor_product_id: 'ep-1' }),
+          task({ team_product_id: 'tp-1' }),
+          // task chưa duyệt không được tính vào sản phẩm đã làm video
+          task({ status: 'SUBMITTED', product_id: 'p-3' }),
+          // task chỉ có dòng sản phẩm, không gắn SP cụ thể → không tính
+          task({ product_line_id: 'pl-gmv' }),
+        ],
+        products: [
+          { id: 'p-1', product_line_id: 'pl-gmv' },
+          { id: 'p-2', product_line_id: 'pl-gmv' },
+          { id: 'p-3', product_line_id: 'pl-gmv' },
+        ],
+        editorProducts: [{ id: 'ep-1', product_line_id: 'pl-traffic' }],
+        teamProducts: [{ id: 'tp-1', product_line_id: 'pl-profit' }],
+        productLines,
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].product_gmv_actual).toBe(2);
+      expect(rows[0].product_traffic_actual).toBe(1);
+      expect(rows[0].product_profit_actual).toBe(1);
+      expect(rows[0].total_actual).toBe(6);
+    });
+
+    it('sản phẩm sưu tầm và test win: chỉ SP dòng "Sưu tầm" có video win, đếm DISTINCT', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09', product_collect_test_win: 5 }],
+        actualTasks: [
+          task({ product_id: 'p-collect-1', published_links: winLinks }),
+          task({ product_id: 'p-collect-1', published_links: winLinks }), // cùng SP → vẫn 1
+          task({ product_id: 'p-collect-2', published_links: winLinks }),
+          // dòng Sưu tầm nhưng video chưa win → không tính
+          task({ product_id: 'p-collect-3', published_links: failLinks }),
+          // win nhưng thuộc dòng GMV → chỉ vào product_gmv_actual
+          task({ product_id: 'p-gmv', published_links: winLinks }),
+          // dòng Sưu tầm, win, nhưng task chưa duyệt → không tính
+          task({ status: 'SUBMITTED', product_id: 'p-collect-4', published_links: winLinks }),
+        ],
+        products: [
+          { id: 'p-collect-1', product_line_id: 'pl-collect' },
+          { id: 'p-collect-2', product_line_id: 'pl-collect' },
+          { id: 'p-collect-3', product_line_id: 'pl-collect' },
+          { id: 'p-collect-4', product_line_id: 'pl-collect' },
+          { id: 'p-gmv', product_line_id: 'pl-gmv' },
+        ],
+        productLines,
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].product_collect_test_win_actual).toBe(2);
+      expect(rows[0].product_gmv_actual).toBe(1);
+      expect(rows[0].content_win_cover_actual).toBe(4);
+    });
+
+    it('dòng "Sưu tầm" có set thêm video_category → SP đếm vào CẢ dòng doanh thu đó và chỉ tiêu sưu tầm', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
+        actualTasks: [task({ product_id: 'p-1', published_links: winLinks })],
+        products: [{ id: 'p-1', product_line_id: 'pl-collect-gmv' }],
+        productLines: [{ id: 'pl-collect-gmv', name: 'Sưu tầm', video_category: 'GMV' }],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0].product_collect_test_win_actual).toBe(1);
+      expect(rows[0].product_gmv_actual).toBe(1);
+    });
+
+    it('chưa có task nào → mọi số thực đạt về 0, không lỗi', async () => {
+      const { service } = build({
+        editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09', content_paast_analyzed: 20 }],
+        actualTasks: [],
+      });
+
+      const rows: any[] = await service.getEditorKpis('2026-09', undefined, {
+        id: 'admin-1',
+        roles: ['ADMIN'],
+      });
+
+      expect(rows[0]).toEqual(
+        expect.objectContaining({
+          total_actual: 0,
+          content_new_actual: 0,
+          paast_analyzed_actual: 0,
+          content_win_cover_actual: 0,
+          product_gmv_actual: 0,
+          product_traffic_actual: 0,
+          product_profit_actual: 0,
+          product_collect_test_win_actual: 0,
+        }),
+      );
+    });
+  });
+
   describe('Write / Upsert Permission (upsertEditorKpi)', () => {
     it('Leader cannot upsert KPI for a team they do not lead', async () => {
       const { service } = build({
@@ -203,6 +491,29 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
+    it('Leader can upsert KPI for themselves even without a team_members row', async () => {
+      const { service, prisma } = build({
+        teamFirst: { id: 'team-1', leader_id: 'leader-1' },
+        teamMemberFirst: null,
+      });
+
+      // Phân bổ lệch cố ý: dừng ở bước validate phía sau, chứng tỏ đã qua bước kiểm tra quyền.
+      await expect(
+        service.upsertEditorKpi(
+          {
+            user_id: 'leader-1',
+            team_id: 'team-1',
+            month: '2026-08',
+            total_target: 20,
+            allocations: [{ type: 'CONTENT_LINE', content_line_id: 'cl-1', quantity: 10 }],
+          } as any,
+          'leader-1',
+          ['LEADER'],
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.teamMember.findFirst).not.toHaveBeenCalled();
+    });
+
     it('Fails validation if allocation sum does not match total_target', async () => {
       const { service } = build({
         teamFirst: { id: 'team-1', leader_id: 'leader-1' },
@@ -227,9 +538,9 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
 
   /**
    * `product_profit` (migration 20260820_add_editor_kpi_product_profit) — hoàn thiện bộ 3 chỉ số
-   * sản phẩm của EditorKpi: product_planned = SP GMV, product_win_collect = SP Traffic,
-   * product_profit = SP Profit. Field không tham gia validate allocations (khác product_planned),
-   * chỉ cần đảm bảo được ghi đúng xuống DB kèm fallback 0 khi FE không gửi (như 2 field product cũ).
+   * sản phẩm của EditorKpi: product_gmv / product_traffic / product_profit. Field không tham gia
+   * validate allocations (khác product_gmv), chỉ cần đảm bảo được ghi đúng xuống DB kèm fallback 0
+   * khi FE không gửi.
    */
   describe('upsertEditorKpi — product_profit', () => {
     function buildProductProfit() {
@@ -254,8 +565,8 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
           team_id: 'team-1',
           month: '2026-08',
           total_target: 0,
-          product_planned: 0,
-          product_win_collect: 0,
+          product_gmv: 0,
+          product_traffic: 0,
           allocations: [],
         } as any,
         'admin-1',
@@ -275,8 +586,8 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
           team_id: 'team-1',
           month: '2026-08',
           total_target: 0,
-          product_planned: 10,
-          product_win_collect: 4,
+          product_gmv: 10,
+          product_traffic: 4,
           product_profit: 6,
           allocations: [],
         } as any,
@@ -285,8 +596,8 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
       );
 
       const createArgs = prisma.editorKpi.create.mock.calls[0][0];
-      expect(createArgs.data.product_planned).toBe(10);
-      expect(createArgs.data.product_win_collect).toBe(4);
+      expect(createArgs.data.product_gmv).toBe(10);
+      expect(createArgs.data.product_traffic).toBe(4);
       expect(createArgs.data.product_profit).toBe(6);
     });
   });

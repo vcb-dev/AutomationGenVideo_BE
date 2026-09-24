@@ -1,4 +1,9 @@
-export const KPI_PAYROLL_SYNC_CONTRACT_VERSION = "1.0";
+/**
+ * 1.2: VIDEO_WIN/VIDEO_FAIL tính theo task APPROVED có deadline trong tháng, khoá theo team (thay vì
+ *      theo ngày duyệt) — bỏ warning UNSCOPED_EDITOR_ACTUAL.
+ * 1.1: CONTENT_* có actual, thêm PRODUCT_COLLECT_TEST_WIN, PRODUCT_* đếm số sản phẩm riêng biệt.
+ */
+export const KPI_PAYROLL_SYNC_CONTRACT_VERSION = "1.2";
 
 export const KPI_GROUP = {
   VIDEO_PRODUCTION: "VIDEO_PRODUCTION",
@@ -12,6 +17,7 @@ export type KpiPayrollSyncWarningCode =
   | "UNKNOWN_CONTENT_LINE_CODE"
   | "DUPLICATE_METRIC"
   | "UNSCOPED_CREATOR_ACTUAL"
+  /** @deprecated từ 1.2, không còn phát. */
   | "UNSCOPED_EDITOR_ACTUAL"
   | "NO_ACTUAL_SOURCE"
   | "UNKNOWN_PRODUCT_LINE_CATEGORY";
@@ -59,6 +65,7 @@ export interface EditorKpiInput {
   product_planned: number;
   product_win_collect: number;
   product_profit: number;
+  product_collect_test_win: number;
   allocations?: Array<{
     type: string;
     quantity: number;
@@ -88,22 +95,27 @@ export interface EditorActualInput {
   videos_approved: number | null;
   win: number | null;
   fail: number | null;
+  /** Số sản phẩm riêng biệt, không phải số video. */
   product_gmv: number | null;
   product_traffic: number | null;
   product_profit: number | null;
+  product_collect_test_win: number | null;
+  content_new: number | null;
+  /** Số content PAAST (metric_code vẫn là CONTENT_COLLECTED). */
+  content_collected: number | null;
+  content_win_cover: number | null;
 }
 
-export const METRICS_WITHOUT_ACTUAL_SOURCE = [
-  "CONTENT_NEW",
-  "CONTENT_COLLECTED",
-  "CONTENT_WIN_COVER",
-] as const;
+/** Metric chưa có nguồn actual → warning NO_ACTUAL_SOURCE. Hiện rỗng. */
+export const METRICS_WITHOUT_ACTUAL_SOURCE: readonly string[] = [];
 
 export const PRODUCT_CATEGORY_TO_METRIC: Record<string, string> = {
   GMV: "PRODUCT_PLANNED",
   TRAFFIC: "PRODUCT_COLLECTED",
   PROFIT: "PRODUCT_PROFIT",
 };
+
+export const PRODUCT_COLLECT_TEST_WIN_METRIC = "PRODUCT_COLLECT_TEST_WIN";
 
 export function mapEditorKpi(
   kpi: EditorKpiInput,
@@ -120,12 +132,19 @@ export function mapEditorKpi(
     at(KPI_GROUP.VIDEO_PRODUCTION, "TOTAL_VIDEO", kpi.total_target, actual.videos_approved),
     at(KPI_GROUP.VIDEO_PRODUCTION, "VIDEO_WIN", kpi.video_win, actual.win),
     at(KPI_GROUP.VIDEO_PRODUCTION, "VIDEO_FAIL", kpi.video_fail, actual.fail),
-    at(KPI_GROUP.CONTENT, "CONTENT_NEW", kpi.content_new, null),
-    at(KPI_GROUP.CONTENT, "CONTENT_COLLECTED", kpi.content_collected, null),
-    at(KPI_GROUP.CONTENT, "CONTENT_WIN_COVER", kpi.content_win_cover, null),
+    at(KPI_GROUP.CONTENT, "CONTENT_NEW", kpi.content_new, actual.content_new),
+    // metric_code của hợp đồng 1.0 — giữ nguyên dù cột DB đã đổi thành content_paast_analyzed.
+    at(KPI_GROUP.CONTENT, "CONTENT_COLLECTED", kpi.content_collected, actual.content_collected),
+    at(KPI_GROUP.CONTENT, "CONTENT_WIN_COVER", kpi.content_win_cover, actual.content_win_cover),
     at(KPI_GROUP.PRODUCT, "PRODUCT_PLANNED", kpi.product_planned, actual.product_gmv),
     at(KPI_GROUP.PRODUCT, "PRODUCT_COLLECTED", kpi.product_win_collect, actual.product_traffic),
     at(KPI_GROUP.PRODUCT, "PRODUCT_PROFIT", kpi.product_profit, actual.product_profit),
+    at(
+      KPI_GROUP.PRODUCT,
+      PRODUCT_COLLECT_TEST_WIN_METRIC,
+      kpi.product_collect_test_win,
+      actual.product_collect_test_win,
+    ),
   ];
 }
 
