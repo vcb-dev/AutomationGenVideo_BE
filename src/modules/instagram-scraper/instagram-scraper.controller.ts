@@ -44,12 +44,22 @@ export class InstagramScraperController {
       mode?: 'count' | 'days';
       count?: number;
       days?: number;
+      is_owned?: boolean;
     },
   ) {
     this.service.periodicRefresh(body).catch((err: any) => {
       this.logger.error(`[IG-SYNC-ALL] Lỗi đồng bộ: ${err.message}`);
     });
-    const scopeLabel = body?.scope === 'bookmarked' ? 'kênh đã lưu' : body?.scope === 'all' ? 'tất cả kênh' : 'kênh chú ý';
+    const isOwned = body?.is_owned === true;
+    const channelType = isOwned ? 'kênh nội bộ' : 'kênh';
+    const scopeLabel =
+      body?.scope === 'bookmarked'
+        ? 'kênh đã lưu'
+        : body?.scope === 'all'
+        ? `tất cả ${channelType}`
+        : isOwned
+        ? `tất cả ${channelType}`
+        : 'kênh chú ý';
     const detailLabel = body?.mode === 'days' ? `${body.days || 7} ngày gần nhất` : `${body?.count || 20} video mới nhất`;
     return {
       status: 'ok',

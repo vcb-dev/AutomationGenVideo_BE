@@ -98,7 +98,7 @@ export class YoutubeScraperController {
     const channelUrlMatch = raw.match(/youtube\.com\/channel\/(UC[\w-]+)/i);
     const handleUrlMatch = raw.match(/youtube\.com\/@([\w.-]+)/i);
     const legacyUrlMatch = raw.match(/youtube\.com\/(?:c|user)\/([\w.-]+)/i);
-    const bareHandleMatch = raw.match(/^@([\w.-]+)$/);
+    const bareHandleMatch = raw.match(/^@*([\w.-]+)$/);
 
     let candidate: string;
     if (channelUrlMatch) {
@@ -108,10 +108,11 @@ export class YoutubeScraperController {
     } else if (legacyUrlMatch) {
       candidate = legacyUrlMatch[1];
     } else {
-      // Bare UC.../username trần, hoặc URL video (watch?v=) — service tự resolve.
+      // Bare UC.../username trần, hoặc URL video (watch?v=, shorts/...) — service tự resolve.
       candidate = raw;
     }
 
+    this.logger.log(`[YT-SCRAPE] Nhận yêu cầu: "${input}" -> candidate="${candidate}"`);
     return this.service.scrapeChannel(candidate, body?.is_owned, targetCount);
   }
 

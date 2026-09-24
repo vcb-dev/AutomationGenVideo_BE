@@ -74,4 +74,17 @@ export class DouyinAiClientService {
     );
     return data;
   }
+
+  async resolveVideoAuthor(awemeId: string): Promise<string | null> {
+    try {
+      const { data } = await axios.post(
+        `${this.aiServiceUrl}/api/scraper/douyin/fetch/resolve-video-author/`,
+        { aweme_id: awemeId },
+        { headers: this.authHeaders(), timeout: 30_000 },
+      );
+      return data?.sec_uid || null;
+    } catch {
+      return null;
+    }
+  }
 }

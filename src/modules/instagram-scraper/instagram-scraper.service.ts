@@ -75,14 +75,22 @@ export class InstagramScraperService {
   }
 
   private async upsertReel(profileId: bigint, r: ParsedInstagramReel): Promise<{ created: boolean }> {
-    const existing = await this.prisma.scraperInstagramReel.findUnique({ where: { post_id: r.post_id } });
-    const data = {
+    const existing = await this.prisma.scraperInstagramReel.findFirst({
+      where: {
+        OR: [
+          { post_id: r.post_id },
+          ...(r.shortcode ? [{ shortcode: r.shortcode }] : []),
+        ],
+      },
+    });
+
+    const data: any = {
       profile_id: profileId,
-      shortcode: r.shortcode,
+      shortcode: r.shortcode || existing?.shortcode || r.post_id,
       url: r.url,
       description: r.description,
       hashtags: r.hashtags,
-      thumbnail_url: r.thumbnail_url,
+      thumbnail_url: r.thumbnail_url || existing?.thumbnail_url,
       duration_seconds: r.duration_seconds,
       is_paid_partnership: r.is_paid_partnership,
       play_count: BigInt(r.play_count || 0),
@@ -92,11 +100,38 @@ export class InstagramScraperService {
     };
 
     if (existing) {
-      await this.prisma.scraperInstagramReel.update({ where: { post_id: r.post_id }, data });
+      await this.prisma.scraperInstagramReel.update({
+        where: { id: existing.id },
+        data,
+      });
       return { created: false };
     }
-    await this.prisma.scraperInstagramReel.create({ data: { ...data, post_id: r.post_id } });
-    return { created: true };
+
+    try {
+      await this.prisma.scraperInstagramReel.create({
+        data: { ...data, post_id: r.post_id },
+      });
+      return { created: true };
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        const raceExisting = await this.prisma.scraperInstagramReel.findFirst({
+          where: {
+            OR: [
+              { post_id: r.post_id },
+              ...(r.shortcode ? [{ shortcode: r.shortcode }] : []),
+            ],
+          },
+        });
+        if (raceExisting) {
+          await this.prisma.scraperInstagramReel.update({
+            where: { id: raceExisting.id },
+            data,
+          });
+          return { created: false };
+        }
+      }
+      throw err;
+    }
   }
 
   // Task đầy đủ — quản lý scraping_status lifecycle (processing → completed/idle/failed).
@@ -122,6 +157,18 @@ export class InstagramScraperService {
       );
 
       if (reels.length === 0) {
+        // Nếu là kênh nội bộ và có tài khoản OAuth, ưu tiên fallback sang Graph API
+        if (profile.is_owned && this.ownedAccountsService) {
+          try {
+            const ownedResult = await this.ownedAccountsService.syncSingleProfileByUsername(profile.username);
+            if (ownedResult?.success) {
+              return { created: ownedResult.synced_media, updated: 0, items_returned: ownedResult.synced_media };
+            }
+          } catch (e: any) {
+            this.logger.warn(`[IGScraper] Graph API fallback thất bại cho @${profile.username}: ${e.message}`);
+          }
+        }
+
         await this.prisma.scraperInstagramProfile.update({
           where: { id: profileId },
           data: {
@@ -178,6 +225,19 @@ export class InstagramScraperService {
       this.logger.log(`[IG-PROFILE] @${profile.username}: +${created} mới, ~${updated} cập nhật`);
       return { created, updated, items_returned: reels.length };
     } catch (err: any) {
+      // Nếu là kênh nội bộ và có tài khoản OAuth, ưu tiên fallback sang Graph API khi TikHub lỗi
+      if (profile.is_owned && this.ownedAccountsService) {
+        try {
+          const ownedResult = await this.ownedAccountsService.syncSingleProfileByUsername(profile.username);
+          if (ownedResult?.success) {
+            this.logger.log(`[IG-PROFILE] @${profile.username}: Fallback Meta Graph API thành công (+${ownedResult.synced_media} reels)`);
+            return { created: ownedResult.synced_media, updated: 0, items_returned: ownedResult.synced_media };
+          }
+        } catch (e: any) {
+          this.logger.warn(`[IG-PROFILE] Graph API fallback thất bại cho @${profile.username}: ${e.message}`);
+        }
+      }
+
       await this.prisma.scraperInstagramProfile.update({
         where: { id: profileId },
         data: { scraping_status: 'failed', scrape_error: (err.message || '').slice(0, 500) },
@@ -377,15 +437,25 @@ export class InstagramScraperService {
     mode?: 'count' | 'days';
     count?: number;
     days?: number;
+    is_owned?: boolean;
   }): Promise<{ total: number; done: number; failed: number }> {
     await this.resetStaleLocks();
 
-    const scope = options?.scope || 'tracked';
-    const where: any = { scraping_status: { not: 'processing' }, is_owned: false };
-    if (scope === 'tracked') {
-      where.is_tracked = true;
-    } else if (scope === 'bookmarked') {
-      where.is_bookmarked = true;
+    const isOwned = options?.is_owned === true;
+    const scope = options?.scope || (isOwned ? 'all' : 'tracked');
+    const where: any = { scraping_status: { not: 'processing' }, is_owned: isOwned };
+    if (!isOwned) {
+      if (scope === 'tracked') {
+        where.is_tracked = true;
+      } else if (scope === 'bookmarked') {
+        where.is_bookmarked = true;
+      }
+    } else {
+      if (scope === 'tracked') {
+        where.is_tracked = true;
+      } else if (scope === 'bookmarked') {
+        where.is_bookmarked = true;
+      }
     }
 
     const profiles = await this.prisma.scraperInstagramProfile.findMany({
@@ -394,11 +464,11 @@ export class InstagramScraperService {
     });
 
     if (profiles.length === 0) {
-      this.logger.log(`[IG-PERIODIC] Không có profile (${scope}) nào cần cào định kỳ.`);
+      this.logger.log(`[IG-PERIODIC] Không có profile ${isOwned ? 'nội bộ ' : ''}(${scope}) nào cần cào định kỳ.`);
       return { total: 0, done: 0, failed: 0 };
     }
 
-    this.logger.log(`═══ [IG-PERIODIC] Cào reels mới cho ${profiles.length} profile(s) (scope: ${scope}, mode: ${options?.mode || 'default'}) ═══`);
+    this.logger.log(`═══ [IG-PERIODIC] Cào reels mới cho ${profiles.length} profile(s) ${isOwned ? 'nội bộ ' : ''}(scope: ${scope}, mode: ${options?.mode || 'default'}) ═══`);
     let done = 0;
     let failed = 0;
 
@@ -413,10 +483,19 @@ export class InstagramScraperService {
         } else {
           count = profile.is_initial_scraped ? 10 : 30;
         }
-        await this.scrapeProfileReels(profile.id, count, {
-          mode: options?.mode,
-          days: options?.days,
-        });
+        try {
+          await this.scrapeProfileReels(profile.id, count, {
+            mode: options?.mode,
+            days: options?.days,
+          });
+        } catch (scrapeErr: any) {
+          if (profile.is_owned && this.ownedAccountsService) {
+            const fallbackRes = await this.ownedAccountsService.syncSingleProfileByUsername(profile.username);
+            if (!fallbackRes?.success) throw scrapeErr;
+          } else {
+            throw scrapeErr;
+          }
+        }
         done++;
       } catch (err: any) {
         failed++;

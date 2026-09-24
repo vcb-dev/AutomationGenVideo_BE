@@ -25,13 +25,18 @@ export function isShortLink(raw: string): boolean {
   return SHORT_LINK_HOSTS.some((host) => lower.includes(host));
 }
 
+export function extractUrl(text: string): string {
+  const match = (text || '').match(/https?:\/\/[^\s"'<>]+/i);
+  return match ? match[0] : (text || '').trim();
+}
+
 /**
  * Trả về URL đầy đủ sau khi follow redirect. Nếu input không phải link rút gọn
  * đã biết, hoặc resolve thất bại (mạng lỗi / link chết), trả lại nguyên input để
  * caller xử lý tiếp như cũ (báo lỗi rõ ràng ở tầng validate).
  */
 export async function resolveShortLink(raw: string): Promise<string> {
-  const input = raw.trim();
+  const input = extractUrl(raw);
   if (!isShortLink(input)) return input;
 
   const url = /^https?:\/\//i.test(input) ? input : `https://${input}`;
