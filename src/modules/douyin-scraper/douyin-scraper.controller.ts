@@ -29,7 +29,7 @@ export class DouyinScraperController {
   constructor(
     private readonly service: DouyinScraperService,
     private readonly readService: DouyinScraperReadService,
-    private readonly aiClient: DouyinAiClientService,
+    private readonly aiClient?: DouyinAiClientService,
   ) {}
 
   @Post(['profiles/sync-all', 'periodic-refresh'])
@@ -149,7 +149,7 @@ export class DouyinScraperController {
         const videoMatch = resolved.match(/(?:video|note)\/(\d+)/i) || resolved.match(/modal_id=(\d+)/i);
         if (videoMatch) {
           const awemeId = videoMatch[1];
-          const authorSecUid = await this.aiClient.resolveVideoAuthor(awemeId);
+          const authorSecUid = await this.aiClient?.resolveVideoAuthor(awemeId);
           if (authorSecUid && /^MS4wLjAB[\w-]+$/i.test(authorSecUid)) {
             secUserId = authorSecUid;
           }

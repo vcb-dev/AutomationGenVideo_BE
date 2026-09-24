@@ -14,7 +14,7 @@ import { DouyinScraperController } from '../douyin-scraper.controller';
 describe('DouyinScraperController.search — câu báo kết quả', () => {
   function build(ketQua: { created: number; updated: number }) {
     const service: any = { searchKeyword: jest.fn().mockResolvedValue(ketQua) };
-    const controller = new DouyinScraperController(service, {} as any);
+    const controller = new DouyinScraperController(service, {} as any, {} as any);
     return { controller, service };
   }
 
