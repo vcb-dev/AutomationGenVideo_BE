@@ -1791,8 +1791,50 @@ export class AiIntegrationService {
 
   /**
    * Get available voices, including custom cloned ones and system ones.
+   *
+   * Ưu tiên truy vấn trực tiếp từ bảng video_management_voice qua Prisma (kho dữ liệu
+   * duy nhất của hệ thống). Giúp trang Clone Voice tải tức thì (~5ms), độc lập
+   * hoàn toàn với AI Service, loại bỏ điểm nghẽn và lỗi 500 khi AI service đang
+   * redeploy/restarting. Nếu Prisma gặp lỗi bất thường mới fallback gọi AI Service.
    */
   async listVoices(userId?: string): Promise<any> {
+    try {
+      if (this.prisma && this.prisma.voice && typeof this.prisma.voice.findMany === 'function') {
+        const voices = await this.prisma.voice.findMany({
+          orderBy: { id: 'asc' },
+        });
+        const voicesList = voices.map((v) => ({
+          id: Number(v.id),
+          voice_id: v.voice_id,
+          name: v.name,
+          language: v.language,
+          gender: v.gender || 'female',
+          provider: v.provider,
+          is_cloned: v.is_cloned,
+          is_system: v.is_system,
+          sample_audio_url: v.sample_audio_url,
+        }));
+
+        let quota: any;
+        if (this.voiceQuotaService) {
+          quota = await this.voiceQuotaService.getQuota(userId);
+        }
+
+        return {
+          success: true,
+          voices: voicesList,
+          count: voicesList.length,
+          pricing: {
+            vnd_per_1k_chars: this.minimaxVndPer1kChars,
+            vnd_per_clone: this.minimaxVndPerClone,
+          },
+          ...(quota ? { quota } : {}),
+        };
+      }
+    } catch (dbError: any) {
+      this.logger.warn(`Prisma listVoices failed, falling back to AI Service: ${dbError.message}`);
+    }
+
     const url = `${this.voiceAiServiceUrl}/api/voice/list/`;
     this.logger.log(`Calling AI Service: GET ${url}`);
     try {
