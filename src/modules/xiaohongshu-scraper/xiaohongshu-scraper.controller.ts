@@ -4,6 +4,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractXiaohongshuUserId } from '../../common/utils/channel-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { XiaohongshuScraperService } from './xiaohongshu-scraper.service';
 import { XiaohongshuScraperReadService } from './xiaohongshu-scraper-read.service';
@@ -137,9 +138,16 @@ export class XiaohongshuScraperController {
     // Link rút gọn (xhslink.com) không chứa user_id — resolve về URL thật trước.
     const raw = await resolveShortLink(input);
 
-    // Cho phép nhập nguyên URL profile (xiaohongshu.com/user/profile/<hex_id>) hoặc user_id trần.
-    const urlMatch = raw.match(/xiaohongshu\.com\/user\/profile\/([0-9a-f]+)/i);
-    const userId = urlMatch ? urlMatch[1] : raw;
+    const userId = extractXiaohongshuUserId(raw);
+    if (!userId) {
+      throw new HttpException(
+        {
+          error:
+            'Không lấy được ID tài khoản XiaoHongShu. Vui lòng nhập link profile (vd: xiaohongshu.com/user/profile/...) hoặc user_id 24 ký tự',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     return this.service.scrapeProfile(userId, body?.is_owned, undefined, targetCount);
   }

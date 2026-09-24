@@ -63,6 +63,7 @@ export class FacebookOwnedPagesService {
       });
 
       if (existing) {
+        const isOldErrorTransient = existing.scrape_error ? this.isTransientError(existing.scrape_error) : false;
         await this.prisma.video_management_managedfacebookpage.update({
           where: { page_id: p.page_id },
           data: {
@@ -74,6 +75,7 @@ export class FacebookOwnedPagesService {
             likes_count: BigInt(p.likes_count || 0),
             page_access_token: p.page_access_token_encrypted,
             is_active: true,
+            scrape_error: isOldErrorTransient ? null : existing.scrape_error,
             raw_data: p.raw_data ?? {},
             updated_at: now,
           },
@@ -121,6 +123,27 @@ export class FacebookOwnedPagesService {
     }
   }
 
+  /**
+   * Dọn sạch scrape_error của các kênh mà lỗi chỉ là sự cố mạng tạm thời (DNS, timeout, 502, urllib3...)
+   */
+  async clearTransientScrapeErrors(): Promise<number> {
+    const pages = await this.prisma.video_management_managedfacebookpage.findMany({
+      where: { scrape_error: { not: null } },
+      select: { id: true, scrape_error: true },
+    });
+    const transientIds = pages
+      .filter((p) => p.scrape_error && this.isTransientError(p.scrape_error))
+      .map((p) => p.id);
+    if (transientIds.length > 0) {
+      await this.prisma.video_management_managedfacebookpage.updateMany({
+        where: { id: { in: transientIds } },
+        data: { scrape_error: null, updated_at: new Date() },
+      });
+      this.logger.log(`[FacebookPages] Đã xoá scrape_error tạm thời cho ${transientIds.length} page.`);
+    }
+    return transientIds.length;
+  }
+
   private async lockPage(id: bigint): Promise<void> {
     await this.prisma.video_management_managedfacebookpage.update({
       where: { id },
@@ -128,20 +151,29 @@ export class FacebookOwnedPagesService {
     });
   }
 
-  private isTransientError(msg?: string): boolean {
+  public isTransientError(msg?: string): boolean {
     if (!msg) return false;
     const lower = msg.toLowerCase();
     return (
       lower.includes('status code 502') ||
       lower.includes('status code 503') ||
       lower.includes('status code 504') ||
+      lower.includes('status code 429') ||
+      lower.includes('too many requests') ||
       lower.includes('econnrefused') ||
       lower.includes('etimedout') ||
       lower.includes('timedout') ||
       lower.includes('timeout') ||
       lower.includes('econnreset') ||
       lower.includes('enotfound') ||
-      lower.includes('network error')
+      lower.includes('network error') ||
+      lower.includes('nameresolutionerror') ||
+      lower.includes('connectionpool') ||
+      lower.includes('max retries exceeded') ||
+      lower.includes('temporary failure in name resolution') ||
+      lower.includes('getaddrinfo') ||
+      lower.includes('socket hang up') ||
+      lower.includes('aborted')
     );
   }
 

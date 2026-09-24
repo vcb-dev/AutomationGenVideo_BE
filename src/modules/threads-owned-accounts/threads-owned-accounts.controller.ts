@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards, HttpException, HttpStatus } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -15,13 +15,32 @@ export class ThreadsOwnedAccountsController {
     return this.threadsService.getOwnedProfiles();
   }
 
-  // Cùng lý do với Instagram nội bộ: đồng bộ tốn quota Graph API, đánh dấu kênh nội bộ đổi dữ
-  // liệu dùng chung cho cả công ty — cả hai đều là thao tác quản lý, không phải thao tác xem.
+  // Cùng lý do với Instagram nội bộ: đồng bộ tốn quota Graph API.
+  // Chạy dạng bất đồng bộ (non-blocking) để tránh timeout 502 Bad Gateway từ Nginx.
   @Post('sync')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async syncAll() {
-    return this.threadsService.syncAllConnectedAccounts();
+    return this.threadsService.triggerAsyncSyncAll();
+  }
+
+  @Get('sync/status')
+  async getSyncStatus() {
+    return this.threadsService.getSyncStatus();
+  }
+
+  @Post('sync-profile/:username')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async syncSingleProfile(@Param('username') username: string) {
+    const res = await this.threadsService.syncSingleProfileByUsername(username);
+    if (!res) {
+      throw new HttpException(
+        { error: 'Không tìm thấy tài khoản kết nối cho username này' },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return res;
   }
 
   @Post('toggle-owned')
