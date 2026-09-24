@@ -320,10 +320,16 @@ export class ThreadsOwnedAccountsService {
         quotes: result.quotes,
       };
     } catch (err: any) {
+      if (err.response?.data?.error?.code === 10 && !this.hasWarnedInsightsPermission) {
+        this.hasWarnedInsightsPermission = true;
+        this.logger.warn(`[ThreadsSync] Token thiếu quyền 'threads_manage_insights' từ Meta App: ${err.response?.data?.error?.message}. Các chỉ số views/likes/replies sẽ tạm thời bằng 0.`);
+      }
       // Một số bài không có insight (hoặc token thiếu quyền) - trả null để fallback
       return null;
     }
   }
+
+  private hasWarnedInsightsPermission = false;
 
   private extractHashtags(text: string): string[] {
     if (!text) return [];

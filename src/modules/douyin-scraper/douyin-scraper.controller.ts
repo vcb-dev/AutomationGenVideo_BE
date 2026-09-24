@@ -7,6 +7,7 @@ import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { DouyinScraperService } from './douyin-scraper.service';
 import { DouyinScraperReadService } from './douyin-scraper-read.service';
+import { DouyinAiClientService } from './douyin-ai-client.service';
 
 function assertCanManageChannels(req: any): void {
   const roles: string[] = req.user?.roles ?? [];
@@ -28,6 +29,7 @@ export class DouyinScraperController {
   constructor(
     private readonly service: DouyinScraperService,
     private readonly readService: DouyinScraperReadService,
+    private readonly aiClient: DouyinAiClientService,
   ) {}
 
   @Post(['profiles/sync-all', 'periodic-refresh'])
@@ -116,19 +118,85 @@ export class DouyinScraperController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async profileScrape(@Body() body: { sec_user_id?: string; is_owned?: boolean; num_of_posts?: number }) {
-    const input = (body?.sec_user_id || '').trim();
-    if (!input) throw new HttpException({ error: 'sec_user_id is required' }, HttpStatus.BAD_REQUEST);
+    const rawInput = (body?.sec_user_id || '').trim();
+    if (!rawInput) throw new HttpException({ error: 'sec_user_id is required' }, HttpStatus.BAD_REQUEST);
 
     const targetCount = normalizeTargetCount(body?.num_of_posts);
 
-    // Link rút gọn (v.douyin.com) không chứa sec_user_id — resolve về URL thật trước.
-    const raw = await resolveShortLink(input);
+    // 1. Trích xuất URL nếu user dán đoạn text chia sẻ từ app Douyin (có lẫn chữ tiếng Trung)
+    const urlMatch = rawInput.match(/https?:\/\/[^\s"'<>]+/i);
+    const cleaned = urlMatch ? urlMatch[0] : rawInput;
 
-    // Cho phép nhập nguyên URL profile (douyin.com/user/<sec_user_id>) hoặc sec_user_id trần.
-    // sec_user_id chính là path segment sau /user/ trên URL thật (FE cũng dựng link
-    // "xem trên Douyin" y hệt kiểu này) — không cần resolve gì thêm.
-    const urlMatch = raw.match(/douyin\.com\/user\/([\w-]+)/i);
-    const secUserId = urlMatch ? urlMatch[1] : raw;
+    let secUserId: string | null = null;
+
+    // 2. Nếu đã là sec_user_id trần (bắt đầu bằng MS4wLjAB)
+    if (/^MS4wLjAB[\w-]+$/i.test(cleaned)) {
+      secUserId = cleaned;
+    } else {
+      // 3. Resolve short link nếu là link rút gọn (v.douyin.com...)
+      const resolved = await resolveShortLink(cleaned);
+
+      // 4. Bóc từ URL profile: douyin.com/user/<sec_user_id>
+      const profileMatch =
+        resolved.match(/(?:douyin\.com\/user\/|sec_uid=)(MS4wLjAB[\w-]+)/i) ||
+        resolved.match(/douyin\.com\/user\/([\w-]+)/i);
+      if (profileMatch) {
+        secUserId = profileMatch[1];
+      }
+
+      // 5. Nếu user dán link video (douyin.com/video/<aweme_id> hoặc iesdouyin.com/share/video/<aweme_id>)
+      if (!secUserId) {
+        const videoMatch = resolved.match(/(?:video|note)\/(\d+)/i) || resolved.match(/modal_id=(\d+)/i);
+        if (videoMatch) {
+          const awemeId = videoMatch[1];
+          const authorSecUid = await this.aiClient.resolveVideoAuthor(awemeId);
+          if (authorSecUid && /^MS4wLjAB[\w-]+$/i.test(authorSecUid)) {
+            secUserId = authorSecUid;
+          }
+        }
+      }
+
+      // 6. Tìm MS4wLjAB ở bất cứ vị trí nào trong URL (query param hoặc path)
+      if (!secUserId) {
+        const anySecUidMatch = resolved.match(/(MS4wLjAB[\w-]+)/i);
+        if (anySecUidMatch) {
+          secUserId = anySecUidMatch[1];
+        }
+      }
+
+      // 7. Nếu link trỏ về trang chủ douyin.com (thường do link rút gọn v.douyin.com đã hết hạn hoặc bị xoá)
+      if (!secUserId) {
+        const isHomepage = /^https?:\/\/(?:www\.)?douyin\.com\/?(?:\?.*)?$/i.test(resolved);
+        if (isHomepage || cleaned.includes('v.douyin.com')) {
+          throw new HttpException(
+            {
+              error:
+                'Link Douyin này không tồn tại, đã hết hạn hoặc chỉ trỏ về trang chủ. Vui lòng dán link trang cá nhân (douyin.com/user/...) hoặc link video còn hoạt động.',
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        throw new HttpException(
+          {
+            error:
+              'Không tìm thấy định danh kênh Douyin (sec_user_id) hợp lệ từ link đã nhập. Vui lòng kiểm tra lại URL.',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+
+    // 8. Đảm bảo secUserId hợp lệ và an toàn trước khi lưu vào DB (tránh lỗi varchar(255))
+    if (!secUserId || secUserId.length > 200 || !/^MS4wLjAB[\w-]+$/i.test(secUserId)) {
+      throw new HttpException(
+        {
+          error:
+            'Định danh kênh Douyin không hợp lệ. sec_user_id phải bắt đầu bằng MS4wLjAB...',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     // num_of_posts được kẹp trong [1, 1000] ở normalizeTargetCount — không tin thẳng client.
     return this.service.scrapeProfile(secUserId, body?.is_owned, targetCount);

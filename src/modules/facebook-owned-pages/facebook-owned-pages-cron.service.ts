@@ -36,6 +36,11 @@ export class FacebookOwnedPagesCronService implements OnApplicationBootstrap {
   }
 
   async onApplicationBootstrap(): Promise<void> {
+    // Dọn sạch các lỗi mạng tạm thời nếu có từ trước
+    this.service.clearTransientScrapeErrors().catch((err) => {
+      this.logger.warn(`[BOOTSTRAP] Lỗi dọn transient scrape_error: ${err.message}`);
+    });
+
     const pageCount = await this.prisma.video_management_managedfacebookpage.count();
 
     if (pageCount === 0) {
