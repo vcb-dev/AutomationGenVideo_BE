@@ -49,6 +49,7 @@ import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.
 import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
 import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
 import { ThreadsOwnedAccountsModule } from './modules/threads-owned-accounts/threads-owned-accounts.module';
+import { ThreadsScraperModule } from './modules/threads-scraper/threads-scraper.module';
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
 import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.module';
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
@@ -116,6 +117,7 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     InstagramOwnedAccountsModule,
     InstagramScraperModule,
     ThreadsOwnedAccountsModule,
+    ThreadsScraperModule,
     XiaohongshuScraperModule,
     FacebookExternalScraperModule,
     YoutubeScraperModule,
