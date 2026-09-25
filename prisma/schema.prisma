@@ -121,8 +121,12 @@ model User {
   paast_analyses                   PaastAnalysisHistory[]         @relation("PaastAnalysisOf")
   id_photos_created                IdPhotoHistory[]               @relation("IdPhotoCreatedBy")
   id_photo_batches_created         IdPhotoBatchJob[]              @relation("IdPhotoBatchCreatedBy")
-  api_keys_created                  ApiKey[]                      @relation("ApiKeyCreatedBy")
-  api_key_principal                ApiKey?                       @relation("ApiKeyServiceUser")
+  api_keys_created                 ApiKey[]                       @relation("ApiKeyCreatedBy")
+  api_key_principal                ApiKey?                        @relation("ApiKeyServiceUser")
+  performance_goals                PerformanceGoal[]              @relation("PerformanceGoalOf")
+  performance_goals_set            PerformanceGoal[]              @relation("PerformanceGoalSetBy")
+  performance_goal_changes         PerformanceGoalHistory[]       @relation("PerformanceGoalHistoryActor")
+  performance_kpi_groups_created   PerformanceKpiGroup[]          @relation("PerformanceKpiGroupCreatedBy")
 
   @@index([email])
   @@index([roles])
@@ -1849,11 +1853,11 @@ model ScraperDouyinProfile {
   last_scraped_at    DateTime?                     @db.Timestamptz(6)
   scraping_status    String                        @default("idle") @db.VarChar(20)
   scrape_error       String?                       @db.Text
-  channel_type        String                        @default("product") @db.VarChar(20)
-  product_lines       String[]                      @default([])
-  created_at          DateTime                      @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime                      @updatedAt @db.Timestamptz(6)
-  metrics_history     ScraperDouyinProfileMetrics[]
+  channel_type       String                        @default("product") @db.VarChar(20)
+  product_lines      String[]                      @default([])
+  created_at         DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime                      @updatedAt @db.Timestamptz(6)
+  metrics_history    ScraperDouyinProfileMetrics[]
 
   @@index([uid])
   @@index([username])
@@ -2061,29 +2065,29 @@ model ScraperInstagramProfileMetrics {
 // ═══════════════════════════════════════════════════════════
 
 model ScraperThreadsProfile {
-  id               BigInt              @id @default(autoincrement())
-  threads_user_id  String?             @unique @db.VarChar(100)
-  username         String              @unique @db.VarChar(255)
-  name             String?             @default("") @db.VarChar(500)
-  url              String              @default("") @db.VarChar(1000)
-  avatar_url       String?             @db.Text
-  avatar_drive_url String              @default("") @db.Text
-  biography        String?             @default("") @db.Text
-  followers_count  BigInt              @default(0)
-  is_verified      Boolean             @default(false)
-  is_tracked       Boolean             @default(false)
-  is_bookmarked    Boolean             @default(false)
+  id               BigInt               @id @default(autoincrement())
+  threads_user_id  String?              @unique @db.VarChar(100)
+  username         String               @unique @db.VarChar(255)
+  name             String?              @default("") @db.VarChar(500)
+  url              String               @default("") @db.VarChar(1000)
+  avatar_url       String?              @db.Text
+  avatar_drive_url String               @default("") @db.Text
+  biography        String?              @default("") @db.Text
+  followers_count  BigInt               @default(0)
+  is_verified      Boolean              @default(false)
+  is_tracked       Boolean              @default(false)
+  is_bookmarked    Boolean              @default(false)
   /// CẢNH BÁO: mặc định true, ngược với instagram/tiktok/youtube (đều default false). Nghĩa là
   /// mọi profile Threads cào về đều TỰ ĐỘNG được tính là kênh nội bộ của công ty và lọt vào
   /// trang Tổng quan kênh nội bộ. Hiện chỉ có 1 profile nên chưa gây sai số; cào thêm kênh đối
   /// thủ Threads là số liệu công ty lệch ngay. Đổi mặc định thì phải kèm migration và bật tay
   /// lại cho các profile hiện có.
-  is_owned         Boolean             @default(true)
-  last_scraped_at  DateTime?           @db.Timestamptz(6)
-  scraping_status  String              @default("idle") @db.VarChar(20)
-  scrape_error     String?             @db.Text
-  created_at       DateTime            @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime            @updatedAt @db.Timestamptz(6)
+  is_owned         Boolean              @default(true)
+  last_scraped_at  DateTime?            @db.Timestamptz(6)
+  scraping_status  String               @default("idle") @db.VarChar(20)
+  scrape_error     String?              @db.Text
+  created_at       DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime             @updatedAt @db.Timestamptz(6)
   posts            ScraperThreadsPost[]
 
   @@index([username])
@@ -2572,6 +2576,28 @@ enum KpiAllocationType {
   PRODUCT_LINE
 }
 
+enum PerformanceGoalType {
+  KPI
+  OKR
+}
+
+enum PerformanceGoalMetricType {
+  NUMBER
+  PERCENT
+  BOOLEAN
+}
+
+enum PerformanceGoalDirection {
+  AT_LEAST
+  AT_MOST
+}
+
+enum PerformanceGoalStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 enum AssignmentOutcome {
   COMPLETED
   OVERDUE
@@ -2608,18 +2634,18 @@ enum ContentOrigin {
 }
 
 model Team {
-  id         String    @id @default(uuid()) @db.Uuid
-  name       String    @unique
-  leader_id  String?   @db.Uuid
-  brand_type BrandType @default(TRANG_SUC)
-  market     String    @default("VIETNAM")
+  id                  String    @id @default(uuid()) @db.Uuid
+  name                String    @unique
+  leader_id           String?   @db.Uuid
+  brand_type          BrandType @default(TRANG_SUC)
+  market              String    @default("VIETNAM")
   /// PRODUCTION = team sản xuất video (mặc định), CONTENT = team chuyên sưu tầm/dịch content
-  team_kind  TeamKind  @default(PRODUCTION)
-  is_active  Boolean   @default(true)
-  lark_webhook_url String?
+  team_kind           TeamKind  @default(PRODUCTION)
+  is_active           Boolean   @default(true)
+  lark_webhook_url    String?
   lark_webhook_secret String?
-  created_at DateTime  @default(now())
-  updated_at DateTime  @updatedAt
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
 
   leader                     User?                    @relation("TeamLeaderOf", fields: [leader_id], references: [id])
   members                    TeamMember[]
@@ -2635,6 +2661,8 @@ model Team {
   channels                   Channel[]                @relation("ChannelTeam")
   ordered_sources            Source[]                 @relation("SourceOrderedTeam")
   push_requests              TeamPushRequest[]
+  performance_goals          PerformanceGoal[]
+  performance_kpi_groups     PerformanceKpiGroup[]
 
   // Content Report relations
   content_videos      ContentVideo[]
@@ -3052,23 +3080,24 @@ model TeamKpiAllocation {
 }
 
 model EditorKpi {
-  id                  String  @id @default(uuid()) @db.Uuid
-  user_id             String  @db.Uuid
-  team_id             String? @db.Uuid // null = legacy row trước khi thêm multi-team
-  month               String
+  id                       String  @id @default(uuid()) @db.Uuid
+  user_id                  String  @db.Uuid
+  team_id                  String? @db.Uuid // null = legacy row trước khi thêm multi-team
+  month                    String
   // ── Video production (Số video sản xuất đạt tiêu chuẩn) ──
-  total_target        Int     @default(0) // = Tổng video sản xuất (drives auto-assign)
-  video_win           Int     @default(0) // Số video win (≥10k views)
-  video_fail          Int     @default(0) // Số video fail
+  total_target             Int     @default(0) // = Tổng video sản xuất (drives auto-assign)
+  video_win                Int     @default(0) // Số video win (≥10k views)
+  video_fail               Int     @default(0) // Số video fail
   // ── Content ──
-  kpi_extra           Int     @default(0) // Tổng KPI sáng tạo (chỉ thông báo)
-  content_new         Int     @default(0) // Số content mới được làm
-  content_collected   Int     @default(0) // Số content sưu tầm về kho team để test
-  content_win_cover   Int     @default(0) // Số content win cover lại bởi team
+  kpi_extra                Int     @default(0) // Tổng KPI sáng tạo (chỉ thông báo)
+  content_new              Int     @default(0) // Số content mới được làm
+  content_paast_analyzed   Int     @default(0)
+  content_win_cover        Int     @default(0) // Số content win cover lại bởi team
   // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
-  product_planned     Int     @default(0) // Số SP đẩy video theo kế hoạch
-  product_win_collect Int     @default(0) // Số SP sưu tầm và test video win
-  product_profit      Int     @default(0) // Số SP Profit
+  product_gmv              Int     @default(0)
+  product_traffic          Int     @default(0)
+  product_profit           Int     @default(0) // Số SP Profit
+  product_collect_test_win Int     @default(0)
 
   set_by_id  String   @db.Uuid
   created_at DateTime @default(now())
@@ -3154,6 +3183,86 @@ model ContentCreatorKpi {
   @@index([month])
   @@index([team_id])
   @@map("content_creator_kpis")
+}
+
+model PerformanceGoal {
+  id                 String                    @id @default(uuid()) @db.Uuid
+  user_id            String                    @db.Uuid
+  team_id            String                    @db.Uuid
+  month              String
+  type               PerformanceGoalType
+  title              String
+  description        String?
+  metric_type        PerformanceGoalMetricType @default(NUMBER)
+  unit               String?
+  direction          PerformanceGoalDirection  @default(AT_LEAST)
+  target_value       Decimal                   @db.Decimal(18, 4)
+  actual_system      Decimal?                  @db.Decimal(18, 4)
+  actual_manual      Decimal?                  @db.Decimal(18, 4)
+  pass_threshold_pct Decimal                   @default(80) @db.Decimal(5, 2)
+  status             PerformanceGoalStatus     @default(PUBLISHED)
+  revision           Int                       @default(1)
+  set_by_id          String                    @db.Uuid
+  kpi_group_id       String?                   @db.Uuid
+  archived_at        DateTime?
+  created_at         DateTime                  @default(now())
+  updated_at         DateTime                  @updatedAt
+
+  user      User                     @relation("PerformanceGoalOf", fields: [user_id], references: [id], onDelete: Cascade)
+  team      Team                     @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  set_by    User                     @relation("PerformanceGoalSetBy", fields: [set_by_id], references: [id])
+  kpi_group PerformanceKpiGroup?     @relation(fields: [kpi_group_id], references: [id], onDelete: Restrict)
+  histories PerformanceGoalHistory[]
+
+  @@index([team_id, month, status])
+  @@index([user_id, month, status])
+  @@index([kpi_group_id, month, status])
+  @@index([updated_at])
+  @@map("performance_goals")
+}
+
+model PerformanceKpiGroup {
+  id            String    @id @default(uuid()) @db.Uuid
+  team_id       String?   @db.Uuid
+  code          String    @unique
+  name          String
+  description   String?
+  color         String    @default("SLATE")
+  icon          String    @default("TARGET")
+  sort_order    Int       @default(100)
+  is_system     Boolean   @default(false)
+  is_active     Boolean   @default(true)
+  created_by_id String?   @db.Uuid
+  archived_at   DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  team       Team?             @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  created_by User?             @relation("PerformanceKpiGroupCreatedBy", fields: [created_by_id], references: [id], onDelete: SetNull)
+  goals      PerformanceGoal[]
+
+  @@index([team_id, is_active, sort_order])
+  @@map("performance_kpi_groups")
+}
+
+model PerformanceGoalHistory {
+  id            String   @id @default(uuid()) @db.Uuid
+  goal_id       String   @db.Uuid
+  revision      Int
+  action        String
+  change_reason String?
+  previous_data Json?
+  next_data     Json
+  changed_by_id String?  @db.Uuid
+  created_at    DateTime @default(now())
+
+  goal       PerformanceGoal @relation(fields: [goal_id], references: [id], onDelete: Cascade)
+  changed_by User?           @relation("PerformanceGoalHistoryActor", fields: [changed_by_id], references: [id], onDelete: SetNull)
+
+  @@unique([goal_id, revision])
+  @@index([changed_by_id])
+  @@index([created_at])
+  @@map("performance_goal_histories")
 }
 
 /// KPI ngày cho content creator (số content/ngày) — mirror EditorDailyKpi 1:1. Độc lập với
@@ -4422,9 +4531,9 @@ model IdPhotoHistory {
 
   // Nhập tay trên form tạo ảnh thẻ — không tra cứu từ bảng users vì nhân viên được lên thẻ
   // không nhất thiết có tài khoản trong hệ thống này.
-  employee_name String
-  employee_team String
-  employee_id   String
+  employee_name         String
+  employee_team         String
+  employee_id           String
   /// [ĐÃ NGỪNG DÙNG từ 2026-09-09] Trước đây là tiền tố chức danh in trước tên trên thẻ
   /// (vd "HĐ." → "HĐ. BẢO VIỆT"). Nghiệp vụ đã bỏ hẳn field này ở CẢ luồng đơn lẻ lẫn hàng
   /// loạt: API không còn nhận/trả, FE không còn form nhập, PDF chỉ in tên thường.
@@ -4446,14 +4555,14 @@ model IdPhotoHistory {
 
   /// Ảnh gốc user upload, lưu base64 data URI (data:image/...;base64,...) — module này tự
   /// chứa, không phụ thuộc storage ngoài (Drive/S3) như các module upload khác trong dự án.
-  raw_image_data String @db.Text
+  raw_image_data       String  @db.Text
   /// Ảnh sau khi AI service (Gemini) ghép áo polo đen — null tới khi bước merge-outfit xong.
   processed_image_data String? @db.Text
 
   status        IdPhotoStatus @default(PENDING)
   error_message String?
   /// Đường dẫn tải file PDF đã xuất (khung màu theo `position`) — null tới khi export-pdf xong.
-  pdf_url String?
+  pdf_url       String?
 
   /// "Điều chỉnh vị trí ảnh trong khung tròn" (kéo thả + zoom) — cả 3 cột NULLABLE, mặc định
   /// NULL = dùng vị trí gốc như trước khi có tính năng này (không breaking với ảnh cũ). Toạ độ
@@ -4522,17 +4631,17 @@ enum IdPhotoBatchStatus {
 /// KHÔNG lưu trực tiếp tên màu vào DB để đổi màu khung không cần migration).
 enum IdPhotoPosition {
   NEW_STAFF_1_3M // Nhân viên mới 1-3 tháng
-  STAFF_OVER_3M  // Nhân viên trên 3 tháng
+  STAFF_OVER_3M // Nhân viên trên 3 tháng
   LEADER
   MANAGER
   BOD
 }
 
 enum IdPhotoStatus {
-  PENDING    // Bản ghi vừa tạo, chưa xử lý gì thêm
+  PENDING // Bản ghi vừa tạo, chưa xử lý gì thêm
   PROCESSING // Đang lưu ảnh vào bản ghi (dự phòng cho luồng xử lý bất đồng bộ sau này)
-  SUCCESS    // Tạo thành công, có đủ raw_image_data + processed_image_data
-  FAILED     // Lỗi trong lúc tạo bản ghi — xem error_message
+  SUCCESS // Tạo thành công, có đủ raw_image_data + processed_image_data
+  FAILED // Lỗi trong lúc tạo bản ghi — xem error_message
 }
 
 // ─────────────────────────────────────────────

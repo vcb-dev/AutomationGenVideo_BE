@@ -23,12 +23,24 @@ import {
   ReviewTaskDto,
   UpdatePublishedLinksDto,
 } from "./dto/task.dto";
-import { dailyKpiDate, vietnamDateString } from "../../../utils/date.utils";
+import {
+  dailyKpiDate,
+  vietnamDateString,
+  vietnamDayRange,
+  vietnamMonthRange,
+  vietnamMonthString,
+} from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
 import { LarkWebhookNotifyService } from "./lark-webhook-notify.service";
 import { deadlineWindow } from "./deadline-window.util";
 import {
+  computeEditorKpiActuals,
+  editorKpiActualKey,
+  emptyEditorKpiActuals,
+} from "../kpi/editor-kpi-actuals.util";
+import {
+  DEFAULT_OMS_PRODUCT_LINE_NAME,
   productLineCategoryLabel,
   resolveTaskProductLineId,
 } from "./product-line-category.util";
@@ -166,7 +178,10 @@ export class TaskAutoTasksService {
       );
     }
 
-    const team = await this.prisma.team.findUnique({ where: { id: teamId }, select: { brand_type: true } });
+    const [team, defaultProductLineId] = await Promise.all([
+      this.prisma.team.findUnique({ where: { id: teamId }, select: { brand_type: true } }),
+      this.getDefaultOmsProductLineId(),
+    ]);
 
     const created = await this.prisma.editorProduct.create({
       data: {
@@ -180,11 +195,26 @@ export class TaskAutoTasksService {
         image_url: variant.image_url ?? product.image_url,
         image_urls: product.images.map((i) => i.url),
         price: variant.price,
+        product_line_id: defaultProductLineId,
         is_active: true,
       },
       select: { id: true },
     });
     return created.id;
+  }
+
+  private async getDefaultOmsProductLineId(): Promise<string | null> {
+    const line = await this.prisma.productLine.findFirst({
+      where: { name: { equals: DEFAULT_OMS_PRODUCT_LINE_NAME, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (!line) {
+      this.logger.warn(
+        `Không tìm thấy dòng sản phẩm "${DEFAULT_OMS_PRODUCT_LINE_NAME}" — sản phẩm OMS lưu vào kho cá nhân sẽ không có dòng sản phẩm`,
+      );
+      return null;
+    }
+    return line.id;
   }
 
   // Bản include đầy đủ — dùng cho findOne (detail panel) và các mutation
@@ -674,6 +704,27 @@ export class TaskAutoTasksService {
   };
 
   async findAll(q: QueryTaskDto) {
+    const where = this.buildTaskListWhere(q);
+
+    const page = q.page ?? 1;
+    const limit = q.limit ?? 20;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.task.findMany({
+        where,
+        include: this.taskListInclude,
+        orderBy: [{ [q.sort ?? "created_at"]: "desc" }],
+        skip,
+        take: limit,
+      }),
+      this.prisma.task.count({ where }),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  buildTaskListWhere(q: QueryTaskDto) {
     const where: any = {};
     const and: any[] = [];
     // Trạng thái coi như "xong việc" — task ở đây không tính trễ hạn dù deadline đã qua.
@@ -726,24 +777,15 @@ export class TaskAutoTasksService {
     if (q.search) {
       where.content = { title: { contains: q.search, mode: "insensitive" } };
     }
+    if (q.reviewed_from || q.reviewed_to) {
+      const bounds: { gte?: Date; lte?: Date } = {};
+      if (q.reviewed_from) bounds.gte = new Date(`${q.reviewed_from}T00:00:00+07:00`);
+      if (q.reviewed_to) bounds.lte = new Date(`${q.reviewed_to}T23:59:59.999+07:00`);
+      where.reviewed_at = bounds;
+    }
     if (and.length) where.AND = and;
 
-    const page = q.page ?? 1;
-    const limit = q.limit ?? 20;
-    const skip = (page - 1) * limit;
-
-    const [data, total] = await Promise.all([
-      this.prisma.task.findMany({
-        where,
-        include: this.taskListInclude,
-        orderBy: [{ [q.sort ?? "created_at"]: "desc" }],
-        skip,
-        take: limit,
-      }),
-      this.prisma.task.count({ where }),
-    ]);
-
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return where;
   }
 
   // Khoảng ngày lọc theo hạn chót; task chưa có hạn chót thì tính theo ngày tạo thay thế — tách
@@ -1429,9 +1471,9 @@ export class TaskAutoTasksService {
   })
   async refreshMonthlyPublishedLinkStats() {
     try {
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const { gte: monthStart, lt: monthEnd } = vietnamMonthRange(
+        vietnamMonthString(),
+      )!;
 
       const tasks = await this.prisma.task.findMany({
         where: { created_at: { gte: monthStart, lt: monthEnd } },
@@ -1735,7 +1777,7 @@ export class TaskAutoTasksService {
     pinTrafficMonth = false,
   ) {
     const now = new Date();
-    const realCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const realCurrentMonth = vietnamMonthString(now);
     // Tháng dùng để tra KPI target (EditorKpi chỉ lưu target theo tháng, không có khái niệm target
     // cho một khoảng ngày tuỳ ý) và làm nhãn "KPI Team — Tháng X": ưu tiên `month` truyền tay (trang
     // /dashboard/leader riêng), kế đến tháng chứa ngày bắt đầu của bộ lọc ngày (trang Task Auto truyền
@@ -1744,11 +1786,9 @@ export class TaskAutoTasksService {
       month && /^\d{4}-\d{2}$/.test(month)
         ? month
         : range
-          ? `${range.gte.getFullYear()}-${String(range.gte.getMonth() + 1).padStart(2, "0")}`
+          ? vietnamMonthString(range.gte)
           : realCurrentMonth;
-    const [selYear, selMonthNum] = currentMonth.split("-").map(Number);
-    const monthStart = new Date(selYear, selMonthNum - 1, 1);
-    const monthEnd = new Date(selYear, selMonthNum, 1);
+    const { gte: monthStart, lt: monthEnd } = vietnamMonthRange(currentMonth)!;
     // Khoảng thời gian dùng để tính SỐ THỰC TẾ trong kỳ (video đã duyệt, traffic, doanh thu, content
     // mới/cũ, sản phẩm...) — ưu tiên bộ lọc ngày (`range`) do trang Task Auto truyền xuống; không có
     // thì mặc định cả tháng đang xem, nhất quán với getGlobalDashboard.
@@ -1756,8 +1796,7 @@ export class TaskAutoTasksService {
     // "KPI ngày" mặc định tính theo NGÀY THỰC TẾ (hôm nay). Ngoại lệ: tab "Thống kê theo ngày" chọn
     // đúng 1 ngày (range gói gọn 24h) → mọi chỉ số "ngày" (KPI ngày, task giao/duyệt trong ngày) quy
     // về chính ngày đó để xem lại lịch sử; chọn nhiều ngày thì FE tự ẩn cụm KPI ngày.
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
     const isSingleDay =
       !!range && range.lt.getTime() - range.gte.getTime() === 86_400_000;
     const dayStart = isSingleDay ? range!.gte : todayStart;
@@ -2043,9 +2082,8 @@ export class TaskAutoTasksService {
         kpi_target: isContentCreator
           ? contentCreatorStats.targetByUser[m.user_id] ?? 0
           : kpi?.total_target ?? 0,
-        kpi_video_win: kpi?.video_win ?? 0,
         kpi_content_new: kpi?.content_new ?? 0,
-        kpi_product_planned: kpi?.product_planned ?? 0,
+        kpi_product_gmv: kpi?.product_gmv ?? 0,
         /** KPI ngày: content creator lấy từ ContentCreatorDailyKpi (không có fallback theo task vì
          * content creator không được giao task theo nghĩa video); editor ưu tiên số set tay
          * (EditorDailyKpi), chưa set → fallback số task có deadline hôm nay (hoặc tạo hôm nay nếu
@@ -2071,13 +2109,12 @@ export class TaskAutoTasksService {
     });
 
     const kpiTotal = editorKpis.reduce((s, k) => s + k.total_target, 0);
-    const kpiVideoWin = editorKpis.reduce((s, k) => s + (k.video_win ?? 0), 0);
     const kpiContentNew = editorKpis.reduce(
       (s, k) => s + (k.content_new ?? 0),
       0,
     );
-    const kpiProductPlanned = editorKpis.reduce(
-      (s, k) => s + (k.product_planned ?? 0),
+    const kpiProductGmv = editorKpis.reduce(
+      (s, k) => s + (k.product_gmv ?? 0),
       0,
     );
 
@@ -2121,9 +2158,8 @@ export class TaskAutoTasksService {
         month: currentMonth,
         total_target: kpiTotal,
         completed: monthlyTeamApproved,
-        video_win: kpiVideoWin,
         content_new: kpiContentNew,
-        product_planned: kpiProductPlanned,
+        product_gmv: kpiProductGmv,
       },
       /** Số video (task APPROVED, deadline trong kỳ) của cả team theo tuyến A1-A5, kèm `target` = tổng
        * mục tiêu KPI theo tuyến của mọi thành viên (0 = chưa phân bổ). */
@@ -2295,6 +2331,162 @@ export class TaskAutoTasksService {
       totals[email] = (totals[email] ?? 0) + Number(r.total_traffic ?? 0n);
     }
     return totals;
+  }
+
+  private static readonly TRAFFIC_PLATFORMS = [
+    "fb",
+    "ig",
+    "tiktok",
+    "yt",
+    "thread",
+    "zalo",
+  ] as const;
+
+  private ymdLocal(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  async getTrafficReportsForRole(
+    userId: string,
+    roles: string[],
+    dateFrom?: string,
+    dateTo?: string,
+    email?: string,
+    team?: string,
+  ) {
+    const now = new Date();
+    const parsed = this.parseDateRange(dateFrom, dateTo);
+    const range = parsed ?? vietnamMonthRange(vietnamMonthString(now))!;
+    const toYmd = parsed ? (d: Date) => this.ymdLocal(d) : vietnamDateString;
+    const from = toYmd(range.gte);
+    const to = toYmd(new Date(range.lt.getTime() - 1));
+
+    const isAdminOrManager =
+      roles.includes("ADMIN") || roles.includes("MANAGER");
+    const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
+
+    let allowedEmails: string[] | null = null;
+    if (!isAdminOrManager) {
+      const self = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      const emails = new Set<string>();
+      const selfEmail = self?.email?.toLowerCase().trim();
+      if (selfEmail) emails.add(selfEmail);
+      if (isLeaderOnly) {
+        const teamsLed = await this.prisma.team.findMany({
+          where: { leader_id: userId },
+          select: { members: { select: { user: { select: { email: true } } } } },
+        });
+        for (const t of teamsLed)
+          for (const m of t.members) {
+            const e = m.user?.email?.toLowerCase().trim();
+            if (e) emails.add(e);
+          }
+      }
+      allowedEmails = Array.from(emails);
+    }
+
+    const wantedEmail = email?.toLowerCase().trim() || undefined;
+    const outOfScope =
+      !!wantedEmail && !!allowedEmails && !allowedEmails.includes(wantedEmail);
+    const emailFilter = wantedEmail ? [wantedEmail] : allowedEmails;
+    if (outOfScope || (emailFilter && emailFilter.length === 0))
+      return { range: { from, to }, rows: [] };
+
+    const rows = await this.prisma.trafficReport.findMany({
+      where: {
+        date: {
+          gte: new Date(range.gte.getTime() - 86_400_000),
+          lt: new Date(range.lt.getTime() + 86_400_000),
+        },
+        ...(emailFilter
+          ? { email: { in: emailFilter, mode: "insensitive" as any } }
+          : {}),
+        ...(team ? { team: { equals: team, mode: "insensitive" as any } } : {}),
+      },
+      select: {
+        date: true,
+        email: true,
+        name: true,
+        team: true,
+        total_traffic: true,
+        traffic_fb: true,
+        traffic_ig: true,
+        traffic_tiktok: true,
+        traffic_yt: true,
+        traffic_thread: true,
+        traffic_zalo: true,
+        channel_fb: true,
+        channel_ig: true,
+        channel_tiktok: true,
+        channel_yt: true,
+        channel_thread: true,
+        channel_zalo: true,
+      },
+    });
+
+    type TrafficRow = {
+      date: string;
+      email: string | null;
+      name: string | null;
+      team: string | null;
+      fb: number;
+      ig: number;
+      tiktok: number;
+      yt: number;
+      thread: number;
+      zalo: number;
+      total: number;
+      details: { platform: string; channel: string | null; value: number }[];
+    };
+
+    const byKey = new Map<string, TrafficRow>();
+    for (const r of rows) {
+      if (!r.date) continue;
+      const day = vietnamDateString(r.date);
+      if (day < from || day > to) continue;
+      const rowEmail = r.email?.toLowerCase().trim() || null;
+      const key = `${rowEmail ?? `name:${(r.name ?? "").trim().toLowerCase()}`}|${day}`;
+      const acc =
+        byKey.get(key) ??
+        ({
+          date: day,
+          email: rowEmail,
+          name: r.name ?? null,
+          team: r.team ?? null,
+          fb: 0,
+          ig: 0,
+          tiktok: 0,
+          yt: 0,
+          thread: 0,
+          zalo: 0,
+          total: 0,
+          details: [],
+        } as TrafficRow);
+
+      for (const p of TaskAutoTasksService.TRAFFIC_PLATFORMS) {
+        const value = Number((r as any)[`traffic_${p}`] ?? 0n);
+        if (!value) continue;
+        acc[p] += value;
+        acc.details.push({
+          platform: p,
+          channel: (r as any)[`channel_${p}`] ?? null,
+          value,
+        });
+      }
+      acc.total += Number(r.total_traffic ?? 0n);
+      if (!acc.team && r.team) acc.team = r.team;
+      byKey.set(key, acc);
+    }
+
+    const result = Array.from(byKey.values()).sort(
+      (a, b) =>
+        b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? ""),
+    );
+
+    return { range: { from, to }, rows: result };
   }
 
   /**
@@ -2603,14 +2795,10 @@ export class TaskAutoTasksService {
     pinTrafficMonth = false,
   ) {
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
 
     const explicitRange = this.parseDateRange(dateFrom, dateTo);
-    const range = explicitRange ?? {
-      gte: new Date(now.getFullYear(), now.getMonth(), 1),
-      lt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
-    };
+    const range = explicitRange ?? vietnamMonthRange(vietnamMonthString(now))!;
     const monthsTouched = this.monthsBetween(range.gte, new Date(range.lt.getTime() - 1));
     // Tab "Theo ngày" chọn đúng 1 ngày (24h) → cụm "KPI ngày"/task giao-duyệt trong ngày quy về
     // chính ngày đó; nhiều ngày thì FE tự ẩn. Traffic/doanh thu giữ theo THÁNG khi pinTrafficMonth.
@@ -2938,19 +3126,19 @@ export class TaskAutoTasksService {
     range: { gte: Date; lt: Date } | null,
   ) {
     const now = new Date();
-    const todayStart = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    );
-    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
+    const currentMonth = vietnamMonthString(now);
+    const { gte: monthStart, lt: monthEnd } = vietnamMonthRange(currentMonth)!;
     // Bộ lọc ngày của trang (nếu có) — dùng cho video_by_line. KPI tháng (myKpiRows/monthlyApproved)
     // vẫn neo theo THÁNG THỰC TẾ vì KPI target chỉ có khái niệm theo tháng trọn vẹn; chỉ đổi trục đếm
     // "đã hoàn thành" từ reviewed_at (ngày duyệt) sang deadline trong tháng, cho khớp getLeaderDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const myEmail = (me?.email ?? "").toLowerCase().trim();
 
     const [
       tasksByStatus,
@@ -2961,6 +3149,8 @@ export class TaskAutoTasksService {
       myDailyKpiAgg,
       videoByLine,
       contentByClassification,
+      myActualMap,
+      myTrafficRows,
     ] = await Promise.all([
         this.prisma.task.groupBy({
           by: ["status"],
@@ -3027,7 +3217,27 @@ export class TaskAutoTasksService {
           status: { notIn: ["CANCELLED"] },
           ...this.deadlineWindow(periodRange),
         }),
+        computeEditorKpiActuals(this.prisma, [
+          { month: currentMonth, user_id: userId, team_id: null },
+        ]),
+        myEmail
+          ? this.prisma.trafficReport.findMany({
+              where: {
+                email: { equals: myEmail, mode: "insensitive" as any },
+                date: periodRange,
+              },
+              select: { email: true, date: true, total_traffic: true },
+            })
+          : Promise.resolve(
+              [] as { email: string | null; date: Date | null; total_traffic: bigint | null }[],
+            ),
       ]);
+
+    const myTrafficMonth = this.sumTrafficOnLatestDate(myTrafficRows)[myEmail] ?? 0;
+
+    const myActuals =
+      myActualMap.get(editorKpiActualKey(currentMonth, userId, null)) ??
+      emptyEditorKpiActuals();
 
     const taskMap = Object.fromEntries(
       tasksByStatus.map((r) => [r.status.toLowerCase(), r._count.id]),
@@ -3064,14 +3274,14 @@ export class TaskAutoTasksService {
         ? {
             month: currentMonth,
             total_target: sum("total_target"),
-            video_win: sum("video_win"),
-            video_fail: sum("video_fail"),
             kpi_extra: sum("kpi_extra"),
             content_new: sum("content_new"),
-            content_collected: sum("content_collected"),
+            content_paast_analyzed: sum("content_paast_analyzed"),
             content_win_cover: sum("content_win_cover"),
-            product_planned: sum("product_planned"),
-            product_win_collect: sum("product_win_collect"),
+            product_gmv: sum("product_gmv"),
+            product_traffic: sum("product_traffic"),
+            product_profit: sum("product_profit"),
+            product_collect_test_win: sum("product_collect_test_win"),
             content_allocations: mergeAllocations("CONTENT_LINE"),
             product_allocations: mergeAllocations("PRODUCT_LINE"),
           }
@@ -3104,19 +3314,29 @@ export class TaskAutoTasksService {
       video_by_line: videoByLineWithTarget,
       /** Số task có deadline trong kỳ của chính mình, gộp theo phân loại content (ContentClassification). */
       content_by_classification: contentByClassification,
+      traffic_month: myTrafficMonth,
       kpi: myKpi
         ? {
             month: myKpi.month,
             completed,
             total_target: myKpi.total_target,
-            video_win: myKpi.video_win,
-            video_fail: myKpi.video_fail,
             kpi_extra: myKpi.kpi_extra,
             content_new: myKpi.content_new,
-            content_collected: myKpi.content_collected,
+            content_paast_analyzed: myKpi.content_paast_analyzed,
             content_win_cover: myKpi.content_win_cover,
-            product_planned: myKpi.product_planned,
-            product_win_collect: myKpi.product_win_collect,
+            product_gmv: myKpi.product_gmv,
+            product_traffic: myKpi.product_traffic,
+            product_profit: myKpi.product_profit,
+            product_collect_test_win: myKpi.product_collect_test_win,
+            content_paast_analyzed_actual: myActuals.paast_analyzed_actual,
+            total_actual: myActuals.total_actual,
+            content_new_actual: myActuals.content_new_actual,
+            content_win_cover_actual: myActuals.content_win_cover_actual,
+            product_gmv_actual: myActuals.product_gmv_actual,
+            product_traffic_actual: myActuals.product_traffic_actual,
+            product_profit_actual: myActuals.product_profit_actual,
+            product_collect_test_win_actual:
+              myActuals.product_collect_test_win_actual,
             content_allocations: myKpi.content_allocations,
             product_allocations: myKpi.product_allocations,
           }

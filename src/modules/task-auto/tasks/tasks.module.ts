@@ -15,6 +15,7 @@ import { TaskVideoMatchCronService } from './task-video-match.cron'
 import { TaskAutoContentWinPushService } from './content-win-auto-push.service'
 import { LarkWebhookNotifyService } from './lark-webhook-notify.service'
 import { SapoIntegrationModule } from '../../sapo-integration/sapo-integration.module'
+import { TaskExportService } from './task-export.service'
 
 @Module({
   imports: [
@@ -28,7 +29,7 @@ import { SapoIntegrationModule } from '../../sapo-integration/sapo-integration.m
     HttpModule.register({ timeout: 10000 }),
   ],
   controllers: [TaskAutoTasksController],
-  providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService, TaskPublishedLinkStatsService, YoutubeVideoStatsService, TaskVideoMatchService, TaskVideoMatchCronService, TaskAutoContentWinPushService, LarkWebhookNotifyService],
+  providers: [TaskAutoTasksService, VideoScriptService, ContentApprovalService, TaskPublishedLinkStatsService, YoutubeVideoStatsService, TaskVideoMatchService, TaskVideoMatchCronService, TaskAutoContentWinPushService, LarkWebhookNotifyService, TaskExportService],
   exports: [TaskAutoTasksService, LarkWebhookNotifyService],
 })
 export class TasksModule {}

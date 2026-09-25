@@ -395,6 +395,28 @@ export class TaskAutoTeamsController {
     return this.teams.getMemberSourceStats(teamId, month);
   }
 
+  @Get("traffic-reports")
+  @ApiOperation({
+    summary:
+      "Traffic do nhân sự tự báo cáo, tách theo từng nền tảng (fb/ig/tiktok/yt/thread/zalo) và theo từng ngày. Không truyền date_from/date_to → mặc định tháng hiện tại. Phạm vi theo role: ADMIN/MANAGER toàn hệ thống (lọc thêm email/team), LEADER theo (các) team đang lead, còn lại chỉ chính mình.",
+  })
+  getTrafficReports(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+    @Query("email") email?: string,
+    @Query("team") team?: string,
+  ) {
+    return this.tasks.getTrafficReportsForRole(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+      email,
+      team,
+    );
+  }
+
   @Get("dashboard")
   @ApiOperation({
     summary:

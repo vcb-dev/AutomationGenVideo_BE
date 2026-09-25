@@ -328,7 +328,7 @@ export class TaskAutoAssignService {
       // Push quota: rải đều product_planned (SP riêng biệt) theo các ngày còn lại
       // của tháng, giống cơ chế deriveDailyTarget của total_target.
       const pushDailyTarget = deriveDailyTarget(
-        editor.productPlanned,
+        editor.productGmv,
         history.pushedProductIdsBeforeToday.size,
         now,
       );
@@ -555,7 +555,7 @@ export class TaskAutoAssignService {
         const notice = buildEmptyWarehouseNotice({
           editorId: editor.userId,
           remainingDaily: editor.remainingDaily,
-          productPlanned: editor.productPlanned,
+          productGmv: editor.productGmv,
           pushedProductIds: history.pushedProductIds,
           pushProducts,
           contentQuota: quotaFor(editor.remainingDaily).contentQuota,
@@ -572,7 +572,7 @@ export class TaskAutoAssignService {
       this.logger.log(
         `Team ${teamId} editor ${editor.userId}: ` +
           `push=${pushSelected.length}/${pushNeed} extra=${extraSelected.length} creative=${creativeSelected.length} ` +
-          `pushedMonth=${history.pushedProductIds.size}/${editor.productPlanned} ` +
+          `pushedMonth=${history.pushedProductIds.size}/${editor.productGmv} ` +
           `daily=${editor.remainingDaily} monthly_rem=${editor.remainingMonthly}`,
       );
 

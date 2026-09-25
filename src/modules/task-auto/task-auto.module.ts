@@ -8,6 +8,7 @@ import { UploadModule } from './upload/upload.module'
 import { SettingsModule } from './settings/settings.module'
 import { TaskAutoAssignModule } from "./task-auto-assign/task-auto-assign.module";
 import { NotificationsModule } from './notifications/notifications.module'
+import { PerformanceGoalsModule } from './performance-goals/performance-goals.module'
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NotificationsModule } from './notifications/notifications.module'
     SettingsModule,
     TaskAutoAssignModule,
     NotificationsModule,
+    PerformanceGoalsModule,
   ],
   exports: [TaskAutoAssignModule],
 })
