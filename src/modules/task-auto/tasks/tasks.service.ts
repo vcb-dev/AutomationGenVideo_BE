@@ -152,9 +152,7 @@ export class TaskAutoTasksService {
    * Task chọn sản phẩm trực tiếp từ kho tổng (OMS) không có Product local nào để trỏ vào —
    * hệ thống tự tìm-hoặc-tạo (upsert theo oms_variant_id) 1 EditorProduct cho editor được giao,
    * rồi Task trỏ editor_product_id vào đó thay vì product_id. Field nghiệp vụ (material/
-   * classification/priority/cooldown...) để trống, editor/leader tự điền sau ở kho cá nhân —
-   * riêng dòng sản phẩm mặc định là GMV. Sản phẩm đã materialize thì dùng lại nguyên trạng, không
-   * ghi đè dòng sản phẩm editor có thể đã đổi.
+   * classification/priority/cooldown...) để trống, editor/leader tự điền sau ở kho cá nhân.
    */
   private async findOrCreateEditorProductFromOms(
     userId: string,
@@ -205,7 +203,6 @@ export class TaskAutoTasksService {
     return created.id;
   }
 
-  /** Không tự tạo ProductLine nếu thiếu (master data dùng chung với phân bổ KPI) — chỉ cảnh báo. */
   private async getDefaultOmsProductLineId(): Promise<string | null> {
     const line = await this.prisma.productLine.findFirst({
       where: { name: { equals: DEFAULT_OMS_PRODUCT_LINE_NAME, mode: "insensitive" } },
@@ -727,7 +724,6 @@ export class TaskAutoTasksService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  /** Dùng chung với task-export.service.ts để file xuất khớp danh sách trên màn hình. */
   buildTaskListWhere(q: QueryTaskDto) {
     const where: any = {};
     const and: any[] = [];
@@ -781,7 +777,6 @@ export class TaskAutoTasksService {
     if (q.search) {
       where.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    // Độc lập với deadline_from/to: truyền cùng lúc thì AND với nhau.
     if (q.reviewed_from || q.reviewed_to) {
       const bounds: { gte?: Date; lte?: Date } = {};
       if (q.reviewed_from) bounds.gte = new Date(`${q.reviewed_from}T00:00:00+07:00`);
@@ -1476,7 +1471,6 @@ export class TaskAutoTasksService {
   })
   async refreshMonthlyPublishedLinkStats() {
     try {
-      // Mốc tháng theo giờ VN, không theo giờ local của server (Docker chạy UTC).
       const { gte: monthStart, lt: monthEnd } = vietnamMonthRange(
         vietnamMonthString(),
       )!;
@@ -2339,7 +2333,6 @@ export class TaskAutoTasksService {
     return totals;
   }
 
-  /** Khớp các cột `traffic_*` của bảng traffic_reports. */
   private static readonly TRAFFIC_PLATFORMS = [
     "fb",
     "ig",
@@ -2349,18 +2342,10 @@ export class TaskAutoTasksService {
     "zalo",
   ] as const;
 
-  /** "YYYY-MM-DD" theo giờ local của server. */
   private ymdLocal(d: Date): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
-  /**
-   * Traffic tay tách theo nền tảng, gộp theo (người, ngày). Trả theo ngày chứ không gộp cả kỳ vì
-   * traffic là "điểm cuối kỳ" (xem sumTrafficOnLatestDate) — bên gọi tự chọn ngày.
-   *
-   * Phạm vi theo role như getDashboard(): ADMIN/MANAGER toàn hệ thống, LEADER các team đang lead +
-   * chính mình, còn lại chỉ chính mình.
-   */
   async getTrafficReportsForRole(
     userId: string,
     roles: string[],
@@ -2372,7 +2357,6 @@ export class TaskAutoTasksService {
     const now = new Date();
     const parsed = this.parseDateRange(dateFrom, dateTo);
     const range = parsed ?? vietnamMonthRange(vietnamMonthString(now))!;
-    // parseDateRange dựng mốc theo giờ local server, mốc tháng mặc định theo giờ VN → đọc lại đúng hệ.
     const toYmd = parsed ? (d: Date) => this.ymdLocal(d) : vietnamDateString;
     const from = toYmd(range.gte);
     const to = toYmd(new Date(range.lt.getTime() - 1));
@@ -2381,7 +2365,6 @@ export class TaskAutoTasksService {
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
 
-    // Danh sách email được phép xem; null = không giới hạn (ADMIN/MANAGER).
     let allowedEmails: string[] | null = null;
     if (!isAdminOrManager) {
       const self = await this.prisma.user.findUnique({
@@ -2392,7 +2375,6 @@ export class TaskAutoTasksService {
       const selfEmail = self?.email?.toLowerCase().trim();
       if (selfEmail) emails.add(selfEmail);
       if (isLeaderOnly) {
-        // 1 người có thể lead nhiều team.
         const teamsLed = await this.prisma.team.findMany({
           where: { leader_id: userId },
           select: { members: { select: { user: { select: { email: true } } } } },
@@ -2407,15 +2389,12 @@ export class TaskAutoTasksService {
     }
 
     const wantedEmail = email?.toLowerCase().trim() || undefined;
-    // Email ngoài phạm vi → rỗng thay vì 403, không lộ email đó có tồn tại hay không.
     const outOfScope =
       !!wantedEmail && !!allowedEmails && !allowedEmails.includes(wantedEmail);
     const emailFilter = wantedEmail ? [wantedEmail] : allowedEmails;
     if (outOfScope || (emailFilter && emailFilter.length === 0))
       return { range: { from, to }, rows: [] };
 
-    // Nới ±1 ngày rồi lọc lại theo ngày VN bên dưới: `date` là thời điểm nộp, server chạy UTC sẽ
-    // cắt oan báo cáo nộp sáng sớm giờ VN ở 2 đầu khoảng.
     const rows = await this.prisma.trafficReport.findMany({
       where: {
         date: {
@@ -2469,7 +2448,6 @@ export class TaskAutoTasksService {
       const day = vietnamDateString(r.date);
       if (day < from || day > to) continue;
       const rowEmail = r.email?.toLowerCase().trim() || null;
-      // Bản ghi cũ đồng bộ từ Lark có thể thiếu email → rơi về tên.
       const key = `${rowEmail ?? `name:${(r.name ?? "").trim().toLowerCase()}`}|${day}`;
       const acc =
         byKey.get(key) ??
@@ -3156,7 +3134,6 @@ export class TaskAutoTasksService {
     // "đã hoàn thành" từ reviewed_at (ngày duyệt) sang deadline trong tháng, cho khớp getLeaderDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
 
-    // TrafficReport không có user_id, khớp theo email.
     const me = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
@@ -3240,12 +3217,9 @@ export class TaskAutoTasksService {
           status: { notIn: ["CANCELLED"] },
           ...this.deadlineWindow(periodRange),
         }),
-        // Neo theo tháng thực tế (không theo bộ lọc ngày) cho cùng trục với target tháng;
-        // team_id null = gộp mọi team.
         computeEditorKpiActuals(this.prisma, [
           { month: currentMonth, user_id: userId, team_id: null },
         ]),
-        // Không SUM ở query: traffic là "điểm cuối kỳ", quy về ngày báo cáo gần nhất bên dưới.
         myEmail
           ? this.prisma.trafficReport.findMany({
               where: {
@@ -3340,7 +3314,6 @@ export class TaskAutoTasksService {
       video_by_line: videoByLineWithTarget,
       /** Số task có deadline trong kỳ của chính mình, gộp theo phân loại content (ContentClassification). */
       content_by_classification: contentByClassification,
-      /** Traffic tự báo cáo trong kỳ, quy về ngày báo cáo gần nhất. */
       traffic_month: myTrafficMonth,
       kpi: myKpi
         ? {
@@ -3355,7 +3328,6 @@ export class TaskAutoTasksService {
             product_traffic: myKpi.product_traffic,
             product_profit: myKpi.product_profit,
             product_collect_test_win: myKpi.product_collect_test_win,
-            /** Cộng dồn mọi team vì dashboard cá nhân không khoá theo team. */
             content_paast_analyzed_actual: myActuals.paast_analyzed_actual,
             total_actual: myActuals.total_actual,
             content_new_actual: myActuals.content_new_actual,

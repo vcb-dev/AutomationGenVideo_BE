@@ -7,10 +7,6 @@ export interface GoalProgress {
   passed: boolean;
 }
 
-/**
- * Tiến độ hiển thị giữ nguyên phần vượt 100%; riêng giá trị đi vào trung bình tổng được cap 100%
- * để một mục vượt xa kế hoạch không bù cho nhiều mục chưa đạt.
- */
 export function calculateGoalProgress(input: {
   target: number;
   actualSystem?: number | null;

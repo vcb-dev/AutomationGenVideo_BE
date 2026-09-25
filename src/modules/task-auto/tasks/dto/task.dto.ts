@@ -81,9 +81,8 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_from?: string // format: 2025-06-17
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string   // format: 2025-06-17
 
-  // Lọc theo ngày duyệt (reviewed_at) — tab "Video đã nộp" và xuất Excel.
-  @ApiPropertyOptional() @IsString() @IsOptional() reviewed_from?: string // format: 2025-06-17
-  @ApiPropertyOptional() @IsString() @IsOptional() reviewed_to?: string   // format: 2025-06-17
+  @ApiPropertyOptional() @IsString() @IsOptional() reviewed_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() reviewed_to?: string
 
   // Cột "Quá hạn" ảo (Kanban): task đang xử lý (chưa duyệt/huỷ) có deadline đã qua.
   // Khi bật, bỏ qua deadline_from/to/date/month và cả `status` — xem tasks.service.ts findAll.

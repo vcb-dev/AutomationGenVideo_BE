@@ -100,7 +100,7 @@ export class UpsertEditorKpiDto {
   @Min(0)
   content_win_cover: number;
 
-  // ── Product ──
+  // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
   @ApiProperty(intField())
   @Type(() => Number)
   @IsInt()
@@ -116,7 +116,6 @@ export class UpsertEditorKpiDto {
   @IsInt()
   @Min(0)
   product_profit: number;
-  /** Optional để client cũ không bị 400 — service fallback 0. */
   @ApiPropertyOptional(intField())
   @IsOptional()
   @Type(() => Number)

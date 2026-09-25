@@ -1,6 +1,5 @@
 import * as ExcelJS from 'exceljs';
 
-// computeEditorKpiActuals() đã có test riêng ở module kpi — ở đây chỉ kiểm tra gọi đúng dòng KPI.
 jest.mock('../../kpi/editor-kpi-actuals.util', () => ({
   ...jest.requireActual('../../kpi/editor-kpi-actuals.util'),
   computeEditorKpiActuals: jest.fn(async () => new Map()),
@@ -16,23 +15,16 @@ import { TaskAutoTasksService } from '../tasks.service';
 
 const computeActuals = computeEditorKpiActuals as jest.Mock;
 
-/**
- * Điểm dễ vỡ: (1) file theo đúng bộ lọc trên màn hình, luôn ép APPROVED và bỏ cờ "quá hạn"; (2) mỗi
- * người 1 sheet; (3) bảng KPI cùng số với tab KPI và không lộ KPI ngoài phạm vi người xuất.
- */
 describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thành theo bộ lọc', () => {
   beforeEach(() => computeActuals.mockReset().mockResolvedValue(new Map()));
 
   function build(taskRows: any[], kpis: any[] = [], goals: any[] = []) {
     const prisma: any = {
       task: { findMany: jest.fn(async () => taskRows) },
-      // describeFilters() tra tên team/người thực hiện để ghi vào khối tiêu đề — mặc định không có gì.
       team: { findMany: jest.fn(async () => []) },
       user: { findUnique: jest.fn(async () => null) },
       editorKpi: { findMany: jest.fn(async () => kpis) },
-      // KPI thêm & OKR (performance_goals) cùng khoá người/team/tháng.
       performanceGoal: { findMany: jest.fn(async () => goals) },
-      // Tên các tuyến có video nhưng không nằm trong phân bổ KPI.
       contentLine: { findMany: jest.fn(async () => []) },
     };
     const tasks = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
@@ -100,13 +92,11 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     return wb;
   }
   const values = (ws: ExcelJS.Worksheet, n: number) => (ws.getRow(n).values as any[]).slice(1);
-  /** Số dòng đầu tiên thoả điều kiện, 0 nếu không có. */
   function findRow(ws: ExcelJS.Worksheet, match: (v: any[]) => boolean): number {
     for (let n = 1; n <= ws.rowCount; n++) if (match(values(ws, n))) return n;
     return 0;
   }
   const taskHeaderRow = (ws: ExcelJS.Worksheet) => findRow(ws, (v) => v[0] === 'STT' && v[1] === 'Tiêu đề');
-  /** Các dòng task của sheet (sau dòng header bảng task). */
   function taskRows(ws: ExcelJS.Worksheet): any[][] {
     const header = taskHeaderRow(ws);
     const out: any[][] = [];
@@ -120,7 +110,7 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     const { service, prisma } = build([]);
 
     await service.exportApprovedTasks({
-      status: 'SUBMITTED' as any, // ô Trạng thái trên màn hình KHÔNG được lái file xuất ra
+      status: 'SUBMITTED' as any,
       overdue: 'true',
       exclude_overdue: 'true',
       team_id: 'team-1',
@@ -135,7 +125,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     expect(where.team_id).toBe('team-1');
     expect(where.assignee_id).toBe('user-1');
     expect(where.content).toEqual({ title: { contains: 'nhẫn', mode: 'insensitive' } });
-    // Còn cờ overdue thì AND sẽ có {status: {notIn: [APPROVED, CANCELLED]}} → mâu thuẫn, file rỗng.
     expect(JSON.stringify(where.AND)).not.toContain('notIn');
     expect(where.AND).toEqual([
       {
@@ -178,7 +167,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
   it('bảng task chỉ còn 6 cột cơ bản: tiêu đề, tuyến nội dung, dòng sản phẩm, phân loại content, link bài đăng', async () => {
     const { service } = build([
       taskRow(),
-      // Task chưa gắn dòng sản phẩm → lấy theo dòng của sản phẩm (như resolveTaskProductLineId).
       taskRow({
         id: 't-2',
         product_line: null,
@@ -217,9 +205,7 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       'STT', 'Tiêu đề', 'Tuyến nội dung', 'Dòng sản phẩm', 'Phân loại content', 'Link bài đăng',
     ]);
     expect(model.autoFilterRef).toBe(`A${header}:F${header + 2}`);
-    // Tên Table phải duy nhất trong cả workbook — trùng là Excel báo file lỗi.
     expect((wb.worksheets[1].getTables() as any[])[0].name).not.toBe(tables[0].name);
-    // Đã có filter của Table thì KHÔNG được có thêm auto-filter cấp sheet (Excel đòi sửa file).
     expect(ws.autoFilter).toBeUndefined();
   });
 
@@ -279,13 +265,11 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
 
     expect(kpiRowOf(ws, 'Tổng video sản xuất')).toEqual([1, 'Tổng video sản xuất', 20, 20, 1, 'Đạt']);
     expect(kpiRowOf(ws, 'Content mới làm được')).toEqual([2, 'Content mới làm được', 5, 2, 0.4, 'Chưa đạt — còn thiếu 3']);
-    // Mục tiêu 0 → không có tỷ lệ, không phán "chưa đạt" — nhưng vẫn hiện số thực đạt.
     const gmv = kpiRowOf(ws, 'Số sản phẩm GMV');
     expect(gmv[2]).toBe(0);
     expect(gmv[3]).toBe(3);
     expect(gmv[4]).toBeUndefined();
     expect(gmv[5]).toBe('Chưa đặt mục tiêu');
-    // Bảng KPI nằm TRÊN bảng task.
     expect(findRow(ws, (v) => v[1] === 'Tổng video sản xuất')).toBeLessThan(taskHeaderRow(ws));
   });
 
@@ -306,7 +290,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       new Map([
         [
           editorKpiActualKey('2026-09', 'u-a', 'team-1'),
-          // 12 + 1 + 1 video có tuyến, 1 video chưa gắn tuyến.
           { ...emptyEditorKpiActuals(), total_actual: 15, content_line_actuals: { 'cl-a1': 12, 'cl-a2': 1, 'cl-a3': 1 } },
         ],
       ]),
@@ -318,7 +301,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
 
     expect(prisma.editorKpi.findMany.mock.calls[0][0].include.allocations.where).toEqual({ type: 'CONTENT_LINE' });
     const total = findRow(ws, (v) => v[1] === 'Tổng video sản xuất');
-    // Ngay dưới dòng tổng, sắp theo tên tuyến; các dòng con cộng lại = số thực đạt của dòng tổng.
     expect([1, 2, 3, 4].map((i) => values(ws, total + i))).toEqual([
       ['1.1', 'Tuyến A1', 12, 12, 1, 'Đạt'],
       ['1.2', 'Tuyến A2', 8, 1, 0.125, 'Chưa đạt — còn thiếu 7'],
@@ -326,7 +308,7 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       ['1.4', 'Chưa gắn tuyến nội dung', '—', 1, undefined, 'Task chưa chọn tuyến nội dung'],
     ]);
     expect(String(values(ws, total + 5)[0])).toBe('Content');
-    expect(kpiRowOf(ws, 'Content mới làm được')[0]).toBe(2); // đánh số chỉ tiêu chính không bị xô lệch
+    expect(kpiRowOf(ws, 'Content mới làm được')[0]).toBe(2);
   });
 
   it('tháng chưa đặt KPI → vẫn có bảng với số thực đạt, cột mục tiêu để "—"', async () => {
@@ -339,7 +321,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       await load((await service.exportApprovedTasks({ deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any)).buffer)
     ).worksheets[0];
 
-    // Không lọc team → số thực đạt gộp mọi team (bucket team_id null, như dòng KPI legacy).
     expect(computeActuals.mock.calls[0][1]).toEqual([{ month: '2026-09', user_id: 'u-a', team_id: null }]);
     expect(String(ws.getRow(findRow(ws, (v) => String(v[0]).startsWith('Tháng 09/2026'))).getCell(1).value))
       .toContain('Chưa có KPI tháng này');
@@ -351,7 +332,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     await ranged.service.exportApprovedTasks({ reviewed_from: '2026-08-15', reviewed_to: '2026-09-10' } as any);
     expect(kpiWhere(ranged.prisma).AND[0].month).toEqual({ in: ['2026-09', '2026-08'] });
 
-    // Trục tháng của task = deadline, chưa đặt hạn → ngày tạo (đúng trục tab KPI xếp task vào tháng).
     const open = build([
       taskRow({ id: 't-sep' }),
       taskRow({ id: 't-jul', deadline: null, created_at: new Date('2026-07-20T03:00:00Z') }),
@@ -369,8 +349,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     expect(computeActuals.mock.calls[0][1]).toEqual([{ month: '2026-09', user_id: 'u-a', team_id: 'team-1' }]);
   });
 
-  // Endpoint export không có guard theo role — file KHÔNG được là đường vòng để xem mục tiêu KPI mà
-  // tab KPI (getEditorKpis) đang chặn.
   it('phạm vi KPI theo quyền: admin/manager xem hết, leader chỉ team mình lead, member chỉ KPI của mình', async () => {
     const q = { deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any;
 
@@ -415,37 +393,29 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       await load((await service.exportApprovedTasks({ deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any)).buffer)
     ).worksheets[0];
 
-    // Cùng khoá + cùng phạm vi quyền với KPI cố định, bỏ đầu mục đã lưu trữ.
     const goalWhere = prisma.performanceGoal.findMany.mock.calls[0][0].where;
     expect(goalWhere.AND).toEqual([...kpiWhere(prisma).AND, { status: { not: 'ARCHIVED' } }]);
 
     const banner = (text: string) => findRow(ws, (v) => String(v[0]).startsWith(text));
-    // Nhóm xếp theo thứ tự nhóm KPI (Content 20 → nhóm tự tạo 100), OKR luôn ở cuối.
     expect(banner('KPI thêm · Content')).toBeGreaterThan(findRow(ws, (v) => v[1] === 'Số sản phẩm sưu tầm và test win'));
     expect(banner('KPI thêm · Chất lượng & kỷ luật')).toBeGreaterThan(banner('KPI thêm · Content'));
     expect(banner('OKR')).toBeGreaterThan(banner('KPI thêm · Chất lượng & kỷ luật'));
-    // Tiến độ chung mỗi phần: trung bình không trọng số, mỗi mục cap 100%.
     expect(String(values(ws, banner('KPI thêm · Content'))[0])).toContain('Tiến độ chung 65%  ·  đạt 1/2');
     expect(String(values(ws, banner('OKR'))[0])).toContain('Tiến độ chung 50%  ·  đạt 1/2');
 
-    // Số thứ tự nối tiếp 8 chỉ tiêu cố định; 8/10 = 80% → đạt (KHÁC chỉ tiêu cố định cần 100%).
     const concept = findRow(ws, (v) => v[1] === 'Phát triển concept mới');
     expect(values(ws, concept)).toEqual([9, 'Phát triển concept mới', 10, 8, 0.8, 'Đạt']);
-    // Đơn vị hiện ngay sau số nhưng ô vẫn là số.
     expect(ws.getRow(concept).getCell(3).numFmt).toBe('#,##0" concept"');
 
-    // Có mô tả → xuống dòng trong cùng ô; "còn thiếu" tính tới ngưỡng 80%, không tới 100%.
     const script = values(ws, concept + 1);
     expect(script[1].richText.map((r: any) => r.text)).toEqual(['Viết kịch bản dài', '\nKịch bản trên 3 phút']);
     expect(script.slice(2)).toEqual([10, 5, 0.5, 'Chưa đạt — còn thiếu 3 để đạt 80%']);
 
-    // Càng thấp càng tốt: tỷ lệ = mục tiêu / thực đạt. Đơn vị "%" ghi kèm tên, không vào numFmt.
     const lowerLabel = 'Tỷ lệ video bị trả lại (%) (càng thấp càng tốt)';
     expect(kpiRowOf(ws, lowerLabel)).toEqual([11, lowerLabel, 4, 10, 0.4, 'Chưa đạt — cần giảm xuống ≤ 5%']);
     expect(ws.getRow(findRow(ws, (v) => v[1] === lowerLabel)).getCell(3).numFmt).toBe('#,##0');
 
     expect(kpiRowOf(ws, 'Ra mắt kênh TikTok mới')).toEqual([12, 'Ra mắt kênh TikTok mới', 1, 1, 1, 'Đạt']);
-    // Chưa nhập thực đạt → không phán đạt/chưa đạt.
     const pending = kpiRowOf(ws, 'Đào tạo 2 editor mới');
     expect(pending[3]).toBe('—');
     expect(pending[4]).toBeUndefined();
@@ -482,7 +452,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       await load((await service.exportApprovedTasks({ deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any)).buffer)
     ).worksheets[0];
 
-    // Số thực đạt KPI cố định của bảng mới tính theo đúng team của đầu mục.
     expect(computeActuals.mock.calls[0][1]).toContainEqual({ month: '2026-09', user_id: 'u-a', team_id: 'team-2' });
     const headers = [];
     for (let n = 1; n <= ws.rowCount; n++) if (String(values(ws, n)[0]).startsWith('Tháng 09/2026')) headers.push(String(values(ws, n)[0]));
@@ -491,7 +460,6 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     expect(headers[1]).toContain('Nhóm: Team K2');
     expect(headers[1]).toContain('Người đặt: Leader C');
     expect(headers[1]).toContain('Chưa đặt KPI cố định');
-    // Đầu mục nằm dưới bảng Team K2, không lẫn vào bảng Team K1.
     expect(findRow(ws, (v) => v[1] === 'Phát triển concept mới')).toBeGreaterThan(
       findRow(ws, (v) => String(v[0]).includes('Nhóm: Team K2')),
     );

@@ -19,7 +19,6 @@ import { QueryTaskDto } from "./dto/task.dto";
 
 const EXPORT_MAX_ROWS = 10_000;
 const EXPORT_CHUNK = 1_000;
-/** Chỉ in các tháng gần nhất — xuất "toàn bộ thời gian" thì bảng KPI dài hơn cả danh sách task. */
 const MAX_KPI_MONTHS = 6;
 
 const INDIGO = "FF4F46E5";
@@ -33,7 +32,6 @@ const GRID = "FFCBD5E1";
 const GREEN = "FF047857";
 const AMBER = "FFB45309";
 const LINK = "FF2563EB";
-/** Theo `performance_kpi_groups.color`. */
 const GOAL_GROUP_FILL: Record<string, string> = {
   ORANGE: "FFFB923C",
   GREEN: "FF22C55E",
@@ -46,7 +44,6 @@ const GOAL_GROUP_FILL: Record<string, string> = {
 const OKR_FILL = "FF7C3AED";
 const GOAL_DESCRIPTION_MAX = 300;
 
-/** Arial thay Calibri: máy không cài Office (Numbers, Quick Look) không có Calibri. */
 const FONT_NAME = "Arial";
 const FONT_SIZE = { title: 20, subtitle: 12, note: 11, section: 15, block: 13, body: 12 } as const;
 const font = (size: number, extra: Partial<ExcelJS.Font> = {}): Partial<ExcelJS.Font> => ({
@@ -55,11 +52,9 @@ const font = (size: number, extra: Partial<ExcelJS.Font> = {}): Partial<ExcelJS.
   ...extra,
 });
 
-/** Hệ số ước lượng cho fitRowHeight (Arial 12). */
 const CHARS_PER_WIDTH = 0.9;
 const UPPERCASE_WEIGHT = 1.4;
 const LINE_HEIGHT = 16;
-/** Chiều cao tối thiểu của dòng dữ liệu (pt). */
 const ROW_HEIGHT = 24;
 
 export interface ExportRequester {
@@ -73,7 +68,6 @@ interface ExportColumn {
   align?: "left" | "center" | "right";
 }
 
-/** Bảng KPI dùng chung lưới cột này (cùng sheet) nên cột 2 và 6 phải rộng cho cả hai bảng. */
 const EXPORT_COLUMNS: ExportColumn[] = [
   { header: "STT", width: 8, align: "center" },
   { header: "Tiêu đề", width: 58 },
@@ -100,7 +94,6 @@ interface KpiMetric {
   actual: keyof EditorKpiActuals;
 }
 
-/** Nhãn và màu khớp EditorKpiDetailModal.tsx ở FE. */
 const KPI_SECTIONS: { title: string; fill: string; childFill?: string; rows: KpiMetric[] }[] = [
   {
     title: "Số video sản xuất đạt tiêu chuẩn",
@@ -129,12 +122,10 @@ const KPI_SECTIONS: { title: string; fill: string; childFill?: string; rows: Kpi
   },
 ];
 
-/** Bảng KPI của 1 người trong 1 tháng (và 1 team, nếu KPI đặt theo team). */
 interface KpiBlock {
   month: string;
   teamName: string | null;
   setBy: string | null;
-  /** null = chưa có KPI hoặc ngoài phạm vi người xuất được xem. */
   targets: Record<KpiTargetKey, number> | null;
   actuals: EditorKpiActuals;
   contentLines: ContentLineProgress[];
@@ -142,7 +133,6 @@ interface KpiBlock {
   okrs: GoalRow[];
 }
 
-/** 1 dòng performance_goals. Đạt khi tiến độ ≥ ngưỡng, khác chỉ tiêu cố định (≥ 100%). */
 interface GoalRow {
   title: string;
   description: string | null;
@@ -150,11 +140,8 @@ interface GoalRow {
   lowerIsBetter: boolean;
   draft: boolean;
   target: number;
-  /** null = chưa nhập số thực đạt. */
   actual: number | null;
-  /** Tiến độ đã quy theo chiều đánh giá (1 = 100%); null = chưa phán được. */
   progress: number | null;
-  /** Cap 100%, chưa nhập = 0 (như PerformanceGoalsService). */
   progressForOverall: number;
   passed: boolean;
   thresholdPct: number;
@@ -169,10 +156,8 @@ interface GoalGroup {
 
 interface ContentLineProgress {
   label: string;
-  /** Số video phân bổ cho tuyến trong KPI; null = tuyến có làm nhưng KPI không phân bổ. */
   target: number | null;
   actual: number;
-  /** Dòng gom task chưa gắn tuyến. */
   unassigned?: boolean;
 }
 
@@ -185,13 +170,6 @@ interface UserGroup {
   tasks: any[];
 }
 
-/**
- * Xuất Excel task đã hoàn thành (APPROVED), mỗi người thực hiện 1 sheet: bảng KPI tháng rồi danh
- * sách task.
- *
- * Bộ lọc dùng chung `buildTaskListWhere()` với màn hình, trừ: luôn ép `status = APPROVED`, và bỏ
- * `overdue`/`exclude_overdue` (task đã duyệt không bao giờ quá hạn, để nguyên sẽ ra file rỗng).
- */
 @Injectable()
 export class TaskExportService {
   constructor(
@@ -243,7 +221,6 @@ export class TaskExportService {
       const chunk = await this.prisma.task.findMany({
         where,
         include: this.exportInclude,
-        // Việc đã xong thì mốc người dùng tìm theo là NGÀY DUYỆT, không phải ngày tạo như Kanban.
         orderBy: [{ reviewed_at: "desc" }, { created_at: "desc" }],
         skip,
         take: EXPORT_CHUNK,
@@ -283,7 +260,6 @@ export class TaskExportService {
     return d ? DateTime.fromJSDate(d).setZone("Asia/Ho_Chi_Minh").toFormat("dd/MM/yyyy") : "";
   }
 
-  /** Ghi bộ lọc vào file vì người nhận qua chat không thấy màn hình lúc xuất. */
   private async describeFilters(q: QueryTaskDto): Promise<string> {
     const parts: string[] = [];
 
@@ -316,12 +292,6 @@ export class TaskExportService {
     return parts.join("  ·  ");
   }
 
-  // ── KPI ────────────────────────────────────────────────────────────────────
-
-  /**
-   * Các tháng khoảng lọc phủ tới; phía không giới hạn lấy theo task của chính người đó (deadline,
-   * chưa có hạn → ngày tạo, như tab KPI). Trả về mới → cũ.
-   */
   private kpiMonthsFor(group: UserGroup, q: QueryTaskDto): string[] {
     const toMonth = (v?: string) => (v && /^\d{4}-\d{2}/.test(v) ? v.slice(0, 7) : undefined);
     const [from, to] =
@@ -350,10 +320,6 @@ export class TaskExportService {
     return months;
   }
 
-  /**
-   * Cùng luật với `getEditorKpis()`. Export không có guard theo role nên phải tự khoanh, tránh lộ
-   * KPI của người khác qua file.
-   */
   private async kpiScopeWhere(requester?: ExportRequester): Promise<any> {
     const roles = requester?.roles ?? [];
     if (!requester?.id || roles.includes("ADMIN") || roles.includes("MANAGER")) return {};
@@ -367,10 +333,6 @@ export class TaskExportService {
     return { user_id: requester.id };
   }
 
-  /**
-   * Số thực đạt dùng chung `computeEditorKpiActuals()` với tab KPI nên khớp màn hình. Team chỉ có
-   * KPI thêm/OKR mà chưa đặt KPI cố định vẫn ra 1 bảng riêng, nếu không các đầu mục đó mất khỏi file.
-   */
   private async loadKpiBlocks(
     groups: UserGroup[],
     q: QueryTaskDto,
@@ -417,8 +379,6 @@ export class TaskExportService {
       }),
     ]);
 
-    // Mỗi bảng = 1 (người, tháng, team). Tháng trống vẫn có 1 bảng chỉ số thực đạt: theo team đang
-    // lọc nếu lọc đúng 1 team, còn lại gộp mọi team.
     const placeholderTeamId = typeof teamFilter === "string" ? teamFilter : null;
     type Plan = {
       month: string;
@@ -464,7 +424,6 @@ export class TaskExportService {
     const actualsOf = (month: string, userId: string, teamId: string | null) =>
       actualMap.get(editorKpiActualKey(month, userId, teamId)) ?? emptyEditorKpiActuals();
 
-    // Tên tuyến có task nhưng KPI không phân bổ (phân bổ đã kèm sẵn tên).
     const lineIds = new Set<string>();
     for (const a of actualMap.values()) Object.keys(a.content_line_actuals ?? {}).forEach((id) => lineIds.add(id));
     const lineNames = new Map<string, string>(
@@ -546,7 +505,6 @@ export class TaskExportService {
     };
   }
 
-  /** Có thêm dòng "chưa gắn tuyến" để các dòng con cộng lại bằng "Tổng video sản xuất". */
   private contentLineProgress(
     allocations: { content_line_id: string | null; quantity: number; content_line: { name: string } | null }[],
     actuals: EditorKpiActuals,
@@ -579,9 +537,6 @@ export class TaskExportService {
     return sorted;
   }
 
-  // ── Cột dữ liệu task ───────────────────────────────────────────────────────
-
-  // Thứ tự ưu tiên khớp resolveContentTitle ở FE (TasksTable.tsx).
   private resolveTitle(t: any): string {
     const g = t.content?.source_team_content;
     const candidates = [
@@ -595,7 +550,6 @@ export class TaskExportService {
     return candidates.find((c) => c?.title)?.title ?? candidates.find((c) => c?.code)?.code ?? "";
   }
 
-  /** Cùng thứ tự tra với aggregateEditorKpiActuals() để số dòng khớp số thực đạt KPI. */
   private resolveClassification(t: any): string {
     return (
       t.content?.classification?.name ??
@@ -605,7 +559,6 @@ export class TaskExportService {
     );
   }
 
-  /** Như resolveTaskProductLineId(). */
   private resolveProductLine(t: any): string {
     return (
       t.product_line?.name ??
@@ -631,9 +584,6 @@ export class TaskExportService {
     return `task-da-hoan-thanh${range}_${DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyyMMdd-HHmm")}.xlsx`;
   }
 
-  // ── Workbook ───────────────────────────────────────────────────────────────
-
-  /** Excel: ≤31 ký tự, không chứa \ / ? * [ ] :, không trùng (không phân biệt hoa-thường). */
   private sheetName(raw: string, used: Set<string>): string {
     const base =
       raw.replace(/[\\/?*[\]:]/g, " ").replace(/^'+|'+$/g, "").replace(/\s+/g, " ").trim().slice(0, 31) ||
@@ -664,7 +614,6 @@ export class TaskExportService {
     return ws;
   }
 
-  /** Tự tính vì Google Sheets, Numbers, Quick Look không tự giãn dòng có chữ xuống dòng. */
   private fitRowHeight(texts: (string | null | undefined)[], min = ROW_HEIGHT): number {
     let lines = 1;
     texts.forEach((text, i) => {
@@ -682,7 +631,6 @@ export class TaskExportService {
     return Math.max(min, lines * LINE_HEIGHT + 8);
   }
 
-  /** Dòng chữ gộp hết bề ngang bảng (tiêu đề, phụ đề, nhãn nhóm...). */
   private addBanner(
     ws: ExcelJS.Worksheet,
     text: string,
@@ -842,7 +790,6 @@ export class TaskExportService {
     });
   }
 
-  /** Đạt khi ≥ ngưỡng nên "còn thiếu" tính tới ngưỡng, không tới 100% như chỉ tiêu cố định. */
   private writeGoalRow(ws: ExcelJS.Worksheet, stt: number, g: GoalRow) {
     const fmt = (n: number) => {
       const text = n.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
@@ -859,7 +806,6 @@ export class TaskExportService {
               ? `Chưa đạt — cần giảm xuống ≤ ${fmt((g.target * 100) / g.thresholdPct)}`
               : `Chưa đạt — còn thiếu ${fmt((g.target * g.thresholdPct) / 100 - g.actual)} để đạt ${g.thresholdPct}%`;
 
-    // Đơn vị có "%" không đưa vào numFmt được (xem goalNumFmt) → ghi kèm tên chỉ tiêu.
     const unitInFmt = !!g.unit && !g.unit.includes("%");
     const title = [
       g.title,
@@ -890,14 +836,12 @@ export class TaskExportService {
     if (g.actual !== null) row.getCell(4).numFmt = this.goalNumFmt(g.actual, unitInFmt ? g.unit : null);
   }
 
-  /** Không dùng cho đơn vị có "%": dù nằm trong ngoặc kép, Numbers/Quick Look vẫn nhân số lên 100. */
   private goalNumFmt(value: number, unit: string | null): string {
     const base = Number.isInteger(value) ? "#,##0" : "#,##0.##";
     const suffix = unit?.replace(/"/g, "").trim();
     return suffix ? `${base}" ${suffix}"` : base;
   }
 
-  /** `tone` = màu tỷ lệ + đánh giá; null → đánh giá chữ nghiêng xám. */
   private addKpiRow(
     ws: ExcelJS.Worksheet,
     cells: [number | string, ExcelJS.CellValue, number | string, number | string, number | null, string],
@@ -923,7 +867,6 @@ export class TaskExportService {
     return row;
   }
 
-  /** KHÔNG đặt thêm ws.autoFilter: sheet đã có auto-filter của Table, thêm cái thứ 2 Excel báo file lỗi. */
   private writeTaskTable(ws: ExcelJS.Worksheet, tasks: any[], tableIndex: number) {
     const headerRow = ws.rowCount + 1;
     const urlsByRow = tasks.map((t) => this.publishedUrls(t));
@@ -937,7 +880,6 @@ export class TaskExportService {
     ]);
 
     ws.addTable({
-      // Tên Table phải duy nhất trong cả workbook và không được trông như địa chỉ ô (vd "TB1").
       name: `DanhSachTask_${tableIndex}`,
       ref: `A${headerRow}`,
       headerRow: true,
@@ -960,10 +902,8 @@ export class TaskExportService {
 
     values.forEach((v, i) => {
       const row = ws.getRow(headerRow + 1 + i);
-      // Không tô nền: dòng kẻ xen màu do Table lo.
       this.styleCells(row, { align: (col) => EXPORT_COLUMNS[col - 1].align ?? "left" });
       row.height = this.fitRowHeight(v.map((x) => (x === null ? null : String(x))));
-      // 1 ô chỉ gắn được 1 hyperlink nên nhiều link thì để chữ thường.
       const urls = urlsByRow[i];
       if (urls.length === 1 && /^https?:\/\//i.test(urls[0])) {
         const c = row.getCell(LAST_COL);
@@ -973,7 +913,6 @@ export class TaskExportService {
     });
   }
 
-  /** Không đóng băng dòng: header task nằm dưới bảng KPI, đóng băng sẽ ghim cả bảng KPI. */
   private async buildWorkbook(
     groups: UserGroup[],
     kpiBlocks: Map<string, KpiBlock[]>,

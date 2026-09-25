@@ -17,8 +17,6 @@ import { JwtOrApiKeyGuard } from "../../../api-keys/guards/jwt-or-api-key.guard"
 const TEAM_ID = "team-1";
 const MONTH = "2026-09";
 
-// Fixture viết theo tên cột cũ (khớp metric_code payroll); tên cột mới được suy ra để dùng được
-// cho cả input của mapper lẫn row prisma.
 function editorKpi(over: Partial<Record<string, any>> = {}) {
   const row = {
     user_id: "editor-1",
@@ -77,8 +75,6 @@ interface PrismaOpts {
   teamProducts?: any[];
 }
 
-// Một task đã duyệt trong tháng — dùng chung cho buildEditorReportActuals (tuyến nội dung) và
-// computeEditorKpiActuals (số video/content/sản phẩm), nên phải đủ field của cả hai.
 function approvedTask(over: Partial<Record<string, any>> = {}) {
   return {
     assignee_id: "editor-1",
@@ -120,7 +116,6 @@ function buildPrisma(opts: PrismaOpts = {}) {
     contentTranslation: { groupBy: jest.fn(async (_args?: any) => opts.translationGroups ?? []) },
     task: {
       findMany: jest.fn(async (args: any) => {
-        // computeEditorKpiActuals(): where = { AND: [{assignee_id, status}, deadlineWindow] }
         if (args?.where?.AND) return opts.approvedTasks ?? [];
         if (args?.where?.team_id && args?.where?.assignee_id) return opts.approvedTasks ?? [];
         if (args?.where?.assignee_id) return opts.editorTasks ?? [];
@@ -620,9 +615,8 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       productLines: [{ id: "pl-gmv", name: "GMV", video_category: null }],
       approvedTasks: [
         approvedTask({ product_id: "p-1" }),
-        approvedTask({ product_id: "p-1" }), // cùng sản phẩm, 2 video → vẫn 1
+        approvedTask({ product_id: "p-1" }),
         approvedTask({ product_id: "p-2" }),
-        // chỉ có dòng sản phẩm, không gắn sản phẩm cụ thể → không tính vào số sản phẩm
         approvedTask({ product_line_id: "pl-gmv" }),
       ],
       products: [
@@ -636,7 +630,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       target: 10,
       actual: 2,
     });
-    // 4 task đã duyệt → TOTAL_VIDEO vẫn đếm theo video, không bị gộp như sản phẩm
     expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO")).toMatchObject({ actual: 4 });
   });
 
@@ -649,9 +642,7 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       ],
       approvedTasks: [
         approvedTask({ product_id: "p-collect", published_links: fbLink(20000) }),
-        // cùng dòng Sưu tầm nhưng video chưa win → không tính
         approvedTask({ product_id: "p-collect-2", published_links: fbLink(500) }),
-        // win nhưng dòng GMV → chỉ vào PRODUCT_PLANNED
         approvedTask({ product_id: "p-gmv", published_links: fbLink(30000) }),
       ],
       products: [
@@ -667,7 +658,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       actual: 1,
     });
     expect(recordFor(res.records, "PRODUCT", "PRODUCT_PLANNED")).toMatchObject({ actual: 1 });
-    // Dòng "Sưu tầm" không quy về GMV/Traffic/Profit nên vẫn cảnh báo cho người vận hành
     expect(res.warnings.some((w) => w.code === "UNKNOWN_PRODUCT_LINE_CATEGORY")).toBe(true);
   });
 
@@ -687,7 +677,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
 
     expect(recordFor(res.records, "CONTENT", "CONTENT_NEW")).toMatchObject({ target: 3, actual: 2 });
     expect(recordFor(res.records, "CONTENT", "CONTENT_COLLECTED")).toMatchObject({ target: 2, actual: 1 });
-    // chỉ 1/3 task đã duyệt → số video không ăn theo task chưa duyệt
     expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO")).toMatchObject({ actual: 1 });
   });
 
@@ -720,7 +709,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
       ],
       approvedTasks: [
         approvedTask({ published_links: fbLink(20000) }),
-        // task cùng editor nhưng thuộc team khác → không được cộng vào KPI của team này
         approvedTask({ team_id: "team-2", published_links: fbLink(30000) }),
       ],
     });
@@ -852,7 +840,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     });
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
-    // 0 vì user này không có task PAAST nào
     expect(recordFor(res.records, "CONTENT", "CONTENT_COLLECTED", uid)).toMatchObject({
       target: 7,
       actual: 0,
@@ -879,8 +866,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
 
     const keys = first.records.map((r) => `${r.user_id}|${r.group_code}|${r.metric_code}`);
     expect(new Set(keys).size).toBe(keys.length);
-    // So bằng localeCompare như mergeContributions() — không dùng sort() mặc định (so code point),
-    // hai cách xếp "PRODUCT_COLLECTED" và "PRODUCT_COLLECT_TEST_WIN" khác nhau.
     expect(keys).toEqual([...keys].sort((a, b) => a.localeCompare(b)));
     expect(second.records).toEqual(first.records);
   });
@@ -934,7 +919,6 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     expect(prisma.contentCreatorKpi.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.teamContent.groupBy).toHaveBeenCalledTimes(1);
     expect(prisma.contentTranslation.groupBy).toHaveBeenCalledTimes(1);
-    // 50 editor + 25 creator mà số query vẫn là hằng số (không nhân theo số nhân sự).
     expect(prisma.task.findMany).toHaveBeenCalledTimes(4);
     expect(prisma.contentLine.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.productLine.findMany).toHaveBeenCalledTimes(2);

@@ -153,7 +153,6 @@ describe('TaskAutoTasksService.create — chọn sản phẩm từ OMS', () => {
   function build(opts: {
     existingEditorProduct?: any
     skuTaken?: any
-    /** null = hệ thống chưa có dòng sản phẩm "GMV". */
     gmvProductLine?: any
   } = {}) {
     const prisma: any = {

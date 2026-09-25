@@ -26,9 +26,7 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     editorKpis?: any[];
     teamFirst?: any;
     teamMemberFirst?: any;
-    /** Task (đã lọc tháng/assignee ở tầng service) dùng để tính số thực đạt mọi chỉ tiêu. */
     actualTasks?: any[];
-    /** Bảng tra cứu kèm theo: phân loại content của 3 kho, dòng sản phẩm của 3 kho, nhãn dòng. */
     contents?: any[];
     editorContents?: any[];
     teamContents?: any[];
@@ -181,10 +179,6 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
     });
   });
 
-  /**
-   * Content (mới / PAAST) đếm mọi task chưa CANCELLED; video / content win / sản phẩm chỉ task
-   * APPROVED (sản phẩm đếm DISTINCT).
-   */
   describe('getEditorKpis — số thực đạt từng chỉ tiêu', () => {
     const winLinks = [{ platform: 'facebook', url: 'u', stats: { status: 'success', views: 20000 } }];
     const failLinks = [{ platform: 'facebook', url: 'u', stats: { status: 'success', views: 10 } }];
@@ -218,7 +212,6 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
         actualTasks: [
           task({ content_id: 'c-paast' }),
           task({ content_id: 'c-paast' }),
-          // u2 chỉ có task ở team-b, còn dòng KPI của u2 thuộc team-a
           task({ assignee_id: 'u2', team_id: 'team-b', content_id: 'c-paast' }),
         ],
         contents: [{ id: 'c-paast', classification: { name: 'Phân tích theo PAAST' } }],
@@ -231,17 +224,14 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
 
       expect(rows[0].paast_analyzed_actual).toBe(2);
       expect(rows[0].total_actual).toBe(2);
-      // u2 không được "mượn" số của team khác
       expect(rows[1].paast_analyzed_actual).toBe(0);
       expect(rows[1].total_actual).toBe(0);
 
-      // Lọc đúng trục: task của các editor trong danh sách, bỏ CANCELLED, deadline trong tháng KPI
       const where = prisma.task.findMany.mock.calls[0][0].where;
       expect(where.AND[0]).toEqual({
         assignee_id: { in: ['u1', 'u2'] },
         status: { not: 'CANCELLED' },
       });
-      // Mốc tháng VN: 00:00 +07 = 17:00Z hôm trước (CI chạy UTC).
       const monthWindow = {
         gte: new Date('2026-08-31T17:00:00.000Z'),
         lt: new Date('2026-09-30T17:00:00.000Z'),
@@ -279,9 +269,9 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
           task({ content_line_id: 'cl-a1' }),
           task({ content_line_id: 'cl-a1' }),
           task({ content_line_id: 'cl-a2' }),
-          task({ content_line_id: null }), // chưa gắn tuyến → chỉ vào tổng
-          task({ content_line_id: 'cl-a2', status: 'SUBMITTED' }), // chưa duyệt → không tính
-          task({ content_line_id: 'cl-a1', team_id: 'team-b' }), // team khác → không tính
+          task({ content_line_id: null }),
+          task({ content_line_id: 'cl-a2', status: 'SUBMITTED' }),
+          task({ content_line_id: 'cl-a1', team_id: 'team-b' }),
         ],
       });
 
@@ -314,7 +304,6 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
 
       expect(rows[0].content_new_actual).toBe(2);
       expect(rows[0].paast_analyzed_actual).toBe(1);
-      // Chỉ 1 task APPROVED trong 3 → "tổng video" không ăn theo task chưa duyệt
       expect(rows[0].total_actual).toBe(1);
     });
 
@@ -342,13 +331,11 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
         editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09' }],
         actualTasks: [
           task({ product_id: 'p-1' }),
-          task({ product_id: 'p-1' }), // cùng sản phẩm → vẫn 1
+          task({ product_id: 'p-1' }),
           task({ product_id: 'p-2' }),
           task({ editor_product_id: 'ep-1' }),
           task({ team_product_id: 'tp-1' }),
-          // task chưa duyệt không được tính vào sản phẩm đã làm video
           task({ status: 'SUBMITTED', product_id: 'p-3' }),
-          // task chỉ có dòng sản phẩm, không gắn SP cụ thể → không tính
           task({ product_line_id: 'pl-gmv' }),
         ],
         products: [
@@ -377,13 +364,10 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
         editorKpis: [{ user_id: 'u1', team_id: 'team-a', month: '2026-09', product_collect_test_win: 5 }],
         actualTasks: [
           task({ product_id: 'p-collect-1', published_links: winLinks }),
-          task({ product_id: 'p-collect-1', published_links: winLinks }), // cùng SP → vẫn 1
+          task({ product_id: 'p-collect-1', published_links: winLinks }),
           task({ product_id: 'p-collect-2', published_links: winLinks }),
-          // dòng Sưu tầm nhưng video chưa win → không tính
           task({ product_id: 'p-collect-3', published_links: failLinks }),
-          // win nhưng thuộc dòng GMV → chỉ vào product_gmv_actual
           task({ product_id: 'p-gmv', published_links: winLinks }),
-          // dòng Sưu tầm, win, nhưng task chưa duyệt → không tính
           task({ status: 'SUBMITTED', product_id: 'p-collect-4', published_links: winLinks }),
         ],
         products: [
@@ -497,7 +481,6 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
         teamMemberFirst: null,
       });
 
-      // Phân bổ lệch cố ý: dừng ở bước validate phía sau, chứng tỏ đã qua bước kiểm tra quyền.
       await expect(
         service.upsertEditorKpi(
           {
@@ -538,9 +521,9 @@ describe('TaskAutoKpiService — Editor KPI Permission & Filtering', () => {
 
   /**
    * `product_profit` (migration 20260820_add_editor_kpi_product_profit) — hoàn thiện bộ 3 chỉ số
-   * sản phẩm của EditorKpi: product_gmv / product_traffic / product_profit. Field không tham gia
-   * validate allocations (khác product_gmv), chỉ cần đảm bảo được ghi đúng xuống DB kèm fallback 0
-   * khi FE không gửi.
+   * sản phẩm của EditorKpi: product_planned = SP GMV, product_win_collect = SP Traffic,
+   * product_profit = SP Profit. Field không tham gia validate allocations (khác product_planned),
+   * chỉ cần đảm bảo được ghi đúng xuống DB kèm fallback 0 khi FE không gửi (như 2 field product cũ).
    */
   describe('upsertEditorKpi — product_profit', () => {
     function buildProductProfit() {

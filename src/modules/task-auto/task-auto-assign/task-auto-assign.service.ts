@@ -325,7 +325,7 @@ export class TaskAutoAssignService {
       const history: EditorAssignmentHistory =
         historyMap.get(editor.userId) ?? emptyEditorAssignmentHistory();
 
-      // Push quota: rải đều product_gmv (SP riêng biệt) theo các ngày còn lại
+      // Push quota: rải đều product_planned (SP riêng biệt) theo các ngày còn lại
       // của tháng, giống cơ chế deriveDailyTarget của total_target.
       const pushDailyTarget = deriveDailyTarget(
         editor.productGmv,

@@ -3091,13 +3091,13 @@ model EditorKpi {
   // ── Content ──
   kpi_extra                Int     @default(0) // Tổng KPI sáng tạo (chỉ thông báo)
   content_new              Int     @default(0) // Số content mới được làm
-  content_paast_analyzed   Int     @default(0) // Số content phân tích theo PAAST
+  content_paast_analyzed   Int     @default(0)
   content_win_cover        Int     @default(0) // Số content win cover lại bởi team
-  // ── Product ──
-  product_gmv              Int     @default(0) // Số sản phẩm GMV (drives push quota của auto-assign)
-  product_traffic          Int     @default(0) // Số sản phẩm Traffic
-  product_profit           Int     @default(0) // Số sản phẩm Profit
-  product_collect_test_win Int     @default(0) // Số sản phẩm sưu tầm và test win
+  // ── Product ── (product_planned = SP GMV, product_win_collect = SP Traffic, product_profit = SP Profit)
+  product_gmv              Int     @default(0)
+  product_traffic          Int     @default(0)
+  product_profit           Int     @default(0) // Số SP Profit
+  product_collect_test_win Int     @default(0)
 
   set_by_id  String   @db.Uuid
   created_at DateTime @default(now())
@@ -3122,7 +3122,7 @@ model EditorKpiAllocation {
   type            KpiAllocationType
   content_line_id String?
   product_line_id String?
-  quantity        Int // Số video cụ thể (không phải %) — tổng theo type phải khớp total_target / product_gmv
+  quantity        Int // Số video cụ thể (không phải %) — tổng theo type phải khớp total_target / product_planned
 
   editor_kpi   EditorKpi    @relation(fields: [editor_kpi_id], references: [id], onDelete: Cascade)
   content_line ContentLine? @relation(fields: [content_line_id], references: [id])
@@ -3185,8 +3185,6 @@ model ContentCreatorKpi {
   @@map("content_creator_kpis")
 }
 
-/// KPI/OKR linh hoạt được giao cho từng nhân sự theo team và tháng. Các bảng KPI cố định phía trên
-/// vẫn là nguồn cho auto-assign/báo cáo tự động; bảng này là lớp mở rộng, không thay đổi hành vi cũ.
 model PerformanceGoal {
   id                 String                    @id @default(uuid()) @db.Uuid
   user_id            String                    @db.Uuid
@@ -3199,15 +3197,12 @@ model PerformanceGoal {
   unit               String?
   direction          PerformanceGoalDirection  @default(AT_LEAST)
   target_value       Decimal                   @db.Decimal(18, 4)
-  /// Dành cho nguồn đo tự động trong tương lai. KPI/OKR custom hiện nhập tay nên mặc định null.
   actual_system      Decimal?                  @db.Decimal(18, 4)
-  /// Override/giá trị nhập tay. actual_final được tính khi đọc = actual_manual ?? actual_system.
   actual_manual      Decimal?                  @db.Decimal(18, 4)
   pass_threshold_pct Decimal                   @default(80) @db.Decimal(5, 2)
   status             PerformanceGoalStatus     @default(PUBLISHED)
   revision           Int                       @default(1)
   set_by_id          String                    @db.Uuid
-  /// Chỉ dùng cho type=KPI. OKR luôn để null để giữ thành một khu vực độc lập.
   kpi_group_id       String?                   @db.Uuid
   archived_at        DateTime?
   created_at         DateTime                  @default(now())
@@ -3226,8 +3221,6 @@ model PerformanceGoal {
   @@map("performance_goals")
 }
 
-/// Danh mục nhóm cho KPI linh hoạt. Ba nhóm hệ thống không thuộc riêng team nào;
-/// nhóm tự tạo được giới hạn trong một team để leader không ảnh hưởng team khác.
 model PerformanceKpiGroup {
   id            String    @id @default(uuid()) @db.Uuid
   team_id       String?   @db.Uuid
@@ -3252,7 +3245,6 @@ model PerformanceKpiGroup {
   @@map("performance_kpi_groups")
 }
 
-/// Nhật ký bất biến cho mọi lần sửa mục tiêu, số thực đạt, tiền thưởng hoặc trạng thái.
 model PerformanceGoalHistory {
   id            String   @id @default(uuid()) @db.Uuid
   goal_id       String   @db.Uuid

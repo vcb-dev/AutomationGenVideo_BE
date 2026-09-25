@@ -188,7 +188,6 @@ export class TaskAutoKpiService {
       orderBy: [{ month: "desc" }, { user: { full_name: "asc" } }],
     });
 
-    // editor_kpis chỉ lưu target; gắn kèm số thực đạt tính từ task.
     const actualMap = await computeEditorKpiActuals(this.prisma, rows);
     return rows.map((r) => ({
       ...r,
@@ -702,7 +701,7 @@ export class TaskAutoKpiService {
   }
 
   // ── Content Win/Fail Stats (tự tính: 1 link bài đăng FB/YouTube/IG > VIEW_WIN_THRESHOLD view) ──
-  // Tách biệt hoàn toàn content-report/ContentVideo.status (nhập tay).
+  // Tách biệt hoàn toàn EditorKpi.video_win/fail và content-report/ContentVideo.status (đều nhập tay).
   //
   // MỘT cơ chế cho MỌI thành viên, không phân biệt content creator/editor: "content được gắn
   // task trong kỳ" — creator: content họ thêm (added_by_id) dùng ở bất kỳ task nào; editor:
@@ -973,10 +972,6 @@ export class TaskAutoKpiService {
     return vietnamMonthRange(month) ?? vietnamMonthRange("1970-01")!;
   }
 
-  /**
-   * Phần payroll còn tính riêng: tuyến nội dung gom theo mã A1..A5 (computeEditorKpiActuals chỉ đếm
-   * theo content_line_id) + phát hiện dòng sản phẩm lạ để cảnh báo.
-   */
   private async buildEditorReportActuals(
     tasks: Array<{
       assignee_id: string | null;
@@ -1049,7 +1044,6 @@ export class TaskAutoKpiService {
       const route = task.content_line_id ? routeByLineId.get(task.content_line_id) : null;
       if (route) acc.routes[route] = (acc.routes[route] ?? 0) + 1;
 
-      // Dòng sản phẩm không quy được về GMV/Traffic/Profit → cảnh báo cho người vận hành.
       const lineId = resolveTaskProductLineId(task, lookup);
       const category = lineId ? categoryByLineId.get(lineId) : undefined;
       if (category && !PRODUCT_CATEGORY_TO_METRIC[category]) unmapped.add(category);
@@ -1153,7 +1147,6 @@ export class TaskAutoKpiService {
     ]);
 
     const editorActuals = await this.buildEditorReportActuals(approvedTasks);
-    // Cùng hàm với getEditorKpis() để payroll và màn KPI không lệch định nghĩa.
     const kpiActuals = await computeEditorKpiActuals(
       this.prisma,
       editorKpis.map((k) => ({ month, user_id: k.user_id, team_id: teamId })),
@@ -1172,7 +1165,6 @@ export class TaskAutoKpiService {
 
     for (const kpi of editorKpis) {
       const report = editorActuals.byUser.get(kpi.user_id);
-      // Cột DB đã đổi tên nhưng hợp đồng payroll giữ tên cũ → map lại ở đây.
       const payrollKpi = {
         ...kpi,
         content_collected: kpi.content_paast_analyzed,

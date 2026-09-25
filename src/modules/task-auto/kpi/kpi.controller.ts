@@ -152,7 +152,7 @@ export class TaskAutoKpiController {
   }
 
   // ── Content Win/Fail Stats (tự tính, 1 link bài đăng bất kỳ >10.000 view) ──
-  // Tách biệt hoàn toàn content-report (nhập tay) — xem kpi.service.ts.
+  // Tách biệt hoàn toàn EditorKpi.video_win/fail và content-report (đều nhập tay) — xem kpi.service.ts.
 
   @Get("kpi/content-win-fail")
   @ApiOperation({

@@ -80,7 +80,6 @@ export class TaskAutoTasksController {
     return { total, submittedTotal, contentApprovalTotal };
   }
 
-  // Cũng phải đứng trước "tasks/:id" như header-counts, nếu không "export" sẽ bị :id nuốt.
   @Get("tasks/export")
   @ApiOperation({
     summary:
@@ -94,7 +93,6 @@ export class TaskAutoTasksController {
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    // filename* (RFC 5987) cho tên có dấu; filename ASCII giữ cho client cũ.
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,

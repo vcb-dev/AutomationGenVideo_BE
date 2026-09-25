@@ -11,40 +11,27 @@ import {
   ProductLineLookup,
 } from "../tasks/product-line-category.util";
 
-/** Khoá tra cứu theo ContentClassification.name — đổi tên phân loại sẽ làm số thực đạt về 0. */
 export const CONTENT_NEW_CLASSIFICATION_NAME = "Mới";
 
-/** Nhãn productLineCategoryLabel() ứng với 3 chỉ tiêu sản phẩm. */
 const PRODUCT_CATEGORY_GMV = "GMV";
 const PRODUCT_CATEGORY_TRAFFIC = "TRAFFIC";
 const PRODUCT_CATEGORY_PROFIT = "PROFIT";
 
-/**
- * Khoá tra cứu của `product_collect_test_win` (seed ở migration 20260924120000). Khớp theo name HOẶC
- * video_category chứ không qua productLineCategoryLabel(), để vẫn nhận ra dòng "Sưu tầm" khi leader
- * gán thêm video_category cho nó.
- */
 export const PRODUCT_COLLECT_LINE_NAME = "Sưu tầm";
 
-/** DB đang có cả "Mới" và "mới" (2 bản ghi khác nhau) nên so khớp bỏ qua hoa-thường. */
 const norm = (v: string | null | undefined) => (v ?? "").trim().toLowerCase();
 
-/** Số thực đạt, đối xứng 1-1 với các cột target của EditorKpi. */
 export interface EditorKpiActuals {
   total_actual: number;
   content_new_actual: number;
   paast_analyzed_actual: number;
-  /** Cùng công thức với `video_win_actual`, khác chỉ tiêu đem ra so. */
   content_win_cover_actual: number;
-  /** "fail" = đã cào được view nhưng không vượt ngưỡng; chưa cào được view thì không tính. */
   video_win_actual: number;
   video_fail_actual: number;
-  /** Đếm sản phẩm riêng biệt, không đếm task. */
   product_gmv_actual: number;
   product_traffic_actual: number;
   product_profit_actual: number;
   product_collect_test_win_actual: number;
-  /** content_line_id → số task APPROVED. */
   content_line_actuals: Record<string, number>;
 }
 
@@ -78,14 +65,11 @@ export interface EditorKpiActualTask {
 }
 
 export interface EditorKpiActualLookup {
-  /** id content → tên phân loại, tách theo 3 kho content. */
   classificationByContentId: Map<string, string | null>;
   classificationByEditorContentId: Map<string, string | null>;
   classificationByTeamContentId: Map<string, string | null>;
   productLine: ProductLineLookup;
-  /** product_line_id → nhãn dòng (GMV/TRAFFIC/PROFIT...). */
   categoryByLineId: Map<string, string>;
-  /** Các product_line_id được coi là dòng "Sưu tầm" (theo name hoặc video_category). */
   collectLineIds: Set<string>;
 }
 
@@ -111,18 +95,11 @@ const newBucket = (): Bucket => ({
   byContentLine: new Map(),
 });
 
-/** Khoá bucket trong tháng: mỗi (editor, team) một bucket, cộng thêm bucket "ALL" gộp mọi team cho
- * dòng KPI legacy (team_id null, có trước multi-team). */
 export const editorKpiActualBucketKey = (
   userId: string,
   teamId: string | null,
 ): string => `${userId}|${teamId ?? "ALL"}`;
 
-/**
- * Gộp task của 1 tháng (đã lọc sẵn: bỏ CANCELLED, theo deadlineWindow()) thành số thực đạt cho từng
- * (editor, team). Chỉ tiêu content tính mọi task còn lại, không đợi duyệt video; chỉ tiêu video /
- * win / sản phẩm chỉ tính task APPROVED.
- */
 export function aggregateEditorKpiActuals(
   tasks: EditorKpiActualTask[],
   lookup: EditorKpiActualLookup,
@@ -167,7 +144,6 @@ export function aggregateEditorKpiActuals(
       : "pending";
     const isWin = winFail === "win";
 
-    // Task gắn tối đa 1 trong 3 kho sản phẩm, như getProductVideoStats().
     const productKey =
       task.product_id ?? task.editor_product_id ?? task.team_product_id ?? null;
     const lineId = resolveTaskProductLineId(task, lookup.productLine);
@@ -219,7 +195,6 @@ export function aggregateEditorKpiActuals(
 
 export { productLineCategoryLabel };
 
-/** Khai báo hẹp để gọi được từ mọi service mà không cần DI. */
 type PrismaLike = {
   task: { findMany: (args: any) => Promise<any[]> };
   content: { findMany: (args: any) => Promise<any[]> };
@@ -237,7 +212,6 @@ export const editorKpiActualKey = (
   teamId: string | null,
 ): string => `${month}|${editorKpiActualBucketKey(userId, teamId)}`;
 
-/** Gom truy vấn theo tháng (1 findMany/tháng) thay vì mỗi dòng KPI 1 query. */
 export async function computeEditorKpiActuals(
 prisma: PrismaLike,
 rows: { month: string; user_id: string; team_id: string | null }[],
@@ -293,7 +267,6 @@ rows: { month: string; user_id: string; team_id: string | null }[],
   return result;
 }
 
-/** Cùng chuỗi tra cứu với getContentByClassification() và getProductVideoStats(). */
 async function loadEditorKpiActualLookup(
 prisma: PrismaLike,
 tasks: EditorKpiActualTask[],
