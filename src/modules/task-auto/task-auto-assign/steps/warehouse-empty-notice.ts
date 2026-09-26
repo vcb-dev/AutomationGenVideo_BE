@@ -27,7 +27,7 @@ export type EmptyWarehouseNotice = {
 export function buildEmptyWarehouseNotice(args: {
   editorId: string;
   remainingDaily: number;
-  productPlanned: number;
+  productGmv: number;
   pushedProductIds: Set<string>;
   pushProducts: ProductPoolItem[];
   contentQuota: Map<string, number>;
@@ -36,7 +36,7 @@ export function buildEmptyWarehouseNotice(args: {
   const {
     editorId,
     remainingDaily,
-    productPlanned,
+    productGmv,
     pushedProductIds,
     pushProducts,
     contentQuota,
@@ -45,14 +45,14 @@ export function buildEmptyWarehouseNotice(args: {
   if (remainingDaily <= 0) return null;
 
   const pushedThisMonth = pushedProductIds.size;
-  const remaining = Math.max(0, productPlanned - pushedThisMonth);
+  const remaining = Math.max(0, productGmv - pushedThisMonth);
 
   // Chỉ liệt kê tên sản phẩm cụ thể khi kho SẢN PHẨM còn hàng (tức lý do rỗng là kho CONTENT) —
   // nếu kho sản phẩm cũng rỗng thì không có SKU cụ thể nào để nêu tên, chỉ báo số lượng còn thiếu.
   const productKpi =
     remaining > 0
       ? {
-          planned: productPlanned,
+          planned: productGmv,
           pushedThisMonth,
           remaining,
           ...(pushProducts.length > 0

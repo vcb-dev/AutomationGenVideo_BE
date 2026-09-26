@@ -24,6 +24,8 @@ export function resolveTaskProductLineId(
   );
 }
 
+export const DEFAULT_OMS_PRODUCT_LINE_NAME = "GMV";
+
 export function productLineCategoryLabel(line: {
   name: string | null;
   video_category: string | null;

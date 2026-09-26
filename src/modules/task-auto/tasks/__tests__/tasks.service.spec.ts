@@ -150,11 +150,20 @@ describe('TaskAutoTasksService.create — chọn sản phẩm từ OMS', () => {
   const sampleVariant = { id: 'var-1', sku: 'SKU-OMS-1', price: 90000, image_url: null }
   const sampleProduct = { id: 'prod-1', name: 'Vòng tay bạc', image_url: null, images: [] }
 
-  function build(opts: { existingEditorProduct?: any; skuTaken?: any } = {}) {
+  function build(opts: {
+    existingEditorProduct?: any
+    skuTaken?: any
+    gmvProductLine?: any
+  } = {}) {
     const prisma: any = {
       team: { findUnique: jest.fn(async () => ({ id: 'team-1', name: 'Team 1', brand_type: 'TRANG_SUC' })) },
       content: { findUnique: jest.fn(async () => ({ content_line_id: 'cl-1' })) },
       teamMember: { findFirst: jest.fn(async () => ({ team_id: 'team-1' })) },
+      productLine: {
+        findFirst: jest.fn(async () =>
+          opts.gmvProductLine === undefined ? { id: 'pl-gmv' } : opts.gmvProductLine,
+        ),
+      },
       editorProduct: {
         findFirst: jest.fn(async (args: any) => {
           if (args.where.oms_variant_id !== undefined) return opts.existingEditorProduct ?? null
@@ -191,6 +200,36 @@ describe('TaskAutoTasksService.create — chọn sản phẩm từ OMS', () => {
     expect(createArgs.data.editor_product_id).toBe('ep-new')
     expect(createArgs.data.oms_product_id).toBeNull()
     expect(createArgs.data.oms_variant_id).toBeNull()
+  })
+
+  it('sản phẩm lưu vào kho cá nhân được gán mặc định dòng sản phẩm GMV', async () => {
+    const { service, prisma } = build()
+
+    await service.create(
+      { team_id: 'team-1', content_id: 'content-1', assignee_id: 'member-1', oms_product_id: 'prod-1', oms_variant_id: 'var-1' } as any,
+      'leader-1',
+      ['LEADER'],
+    )
+
+    expect(prisma.productLine.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { name: { equals: 'GMV', mode: 'insensitive' } },
+      }),
+    )
+    expect(prisma.editorProduct.create.mock.calls[0][0].data.product_line_id).toBe('pl-gmv')
+  })
+
+  it('hệ thống chưa có dòng sản phẩm "GMV" → vẫn tạo sản phẩm + task, chỉ bỏ trống dòng sản phẩm', async () => {
+    const { service, prisma } = build({ gmvProductLine: null })
+
+    await service.create(
+      { team_id: 'team-1', content_id: 'content-1', assignee_id: 'member-1', oms_product_id: 'prod-1', oms_variant_id: 'var-1' } as any,
+      'leader-1',
+      ['LEADER'],
+    )
+
+    expect(prisma.editorProduct.create.mock.calls[0][0].data.product_line_id).toBeNull()
+    expect(prisma.task.create).toHaveBeenCalled()
   })
 
   it('chưa có assignee (task PENDING) → KHÔNG gọi OMS, tạm giữ oms_product_id/oms_variant_id trên Task', async () => {

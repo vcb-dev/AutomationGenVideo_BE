@@ -124,6 +124,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOriginOption,
     credentials: true,
+    exposedHeaders: ["Content-Disposition"],
   });
 
   // Swagger documentation

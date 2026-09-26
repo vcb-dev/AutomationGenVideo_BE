@@ -29,7 +29,7 @@ export async function loadEligibleEditors(
             where: { month, team_id: teamId }, // KPI theo đúng team đang assign
             select: {
               total_target: true,
-              product_planned: true,
+              product_gmv: true,
               allocations: {
                 select: {
                   type: true,
@@ -203,7 +203,7 @@ export async function loadEligibleEditors(
       userId: u.id,
       remainingDaily,
       remainingMonthly,
-      productPlanned: kpi.product_planned ?? 0,
+      productGmv: kpi.product_gmv ?? 0,
       contentTypeWeights,
       productTypeWeights,
       contentLineRemaining,

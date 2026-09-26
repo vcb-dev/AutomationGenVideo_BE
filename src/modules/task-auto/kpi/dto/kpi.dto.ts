@@ -77,16 +77,6 @@ export class UpsertEditorKpiDto {
   @IsInt()
   @Min(0)
   total_target: number; // Tổng video SX (auto-assign)
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  video_win: number;
-  @ApiProperty(intField())
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  video_fail: number;
 
   // ── Content ──
   @ApiProperty(intField())
@@ -103,7 +93,7 @@ export class UpsertEditorKpiDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  content_collected: number;
+  content_paast_analyzed: number;
   @ApiProperty(intField())
   @Type(() => Number)
   @IsInt()
@@ -115,17 +105,23 @@ export class UpsertEditorKpiDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  product_planned: number;
+  product_gmv: number;
   @ApiProperty(intField())
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  product_win_collect: number;
+  product_traffic: number;
   @ApiProperty(intField())
   @Type(() => Number)
   @IsInt()
   @Min(0)
   product_profit: number;
+  @ApiPropertyOptional(intField())
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  product_collect_test_win?: number;
 
   @ApiProperty({ type: [EditorKpiAllocationDto] })
   @IsArray()

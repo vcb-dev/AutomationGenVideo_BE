@@ -14,7 +14,10 @@ import {
   UpsertContentCreatorDailyKpiDto,
 } from "./dto/kpi.dto";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
-import { dailyKpiDate } from "../../../utils/date.utils";
+import {
+  dailyKpiDate,
+  vietnamMonthRange,
+} from "../../../utils/date.utils";
 import { Semaphore } from "../../../common/utils/semaphore";
 import {
   classifyPublishedLinksWinFail,
@@ -22,16 +25,19 @@ import {
   PublishedLinkWinFailStatus,
 } from "../tasks/published-link-win-fail.util";
 import { TaskAutoContentWinPushService } from "../tasks/content-win-auto-push.service";
+import { deadlineWindow } from "../tasks/deadline-window.util";
+import {
+  computeEditorKpiActuals,
+  editorKpiActualKey,
+  emptyEditorKpiActuals,
+} from "./editor-kpi-actuals.util";
+import { productLineCategoryLabel } from "../tasks/product-line-category.util";
 import {
   TaskPublishedLinkStatsService,
   isSupportedLinkStatsPlatform,
   isLinkStatsFresh,
 } from "../tasks/task-published-link-stats.service";
-import { deadlineWindow } from "../tasks/deadline-window.util";
-import {
-  productLineCategoryLabel,
-  resolveTaskProductLineId,
-} from "../tasks/product-line-category.util";
+import { resolveTaskProductLineId } from "../tasks/product-line-category.util";
 import {
   KPI_PAYROLL_SYNC_CONTRACT_VERSION,
   METRICS_WITHOUT_ACTUAL_SOURCE,
@@ -172,7 +178,7 @@ export class TaskAutoKpiService {
       effectiveUserId = currentUser.id;
     }
 
-    return this.prisma.editorKpi.findMany({
+    const rows = await this.prisma.editorKpi.findMany({
       where: {
         ...(month ? { month } : {}),
         ...(effectiveUserId ? { user_id: effectiveUserId } : {}),
@@ -181,6 +187,13 @@ export class TaskAutoKpiService {
       include: this.editorKpiInclude,
       orderBy: [{ month: "desc" }, { user: { full_name: "asc" } }],
     });
+
+    const actualMap = await computeEditorKpiActuals(this.prisma, rows);
+    return rows.map((r) => ({
+      ...r,
+      ...(actualMap.get(editorKpiActualKey(r.month, r.user_id, r.team_id)) ??
+        emptyEditorKpiActuals()),
+    }));
   }
 
   async upsertEditorKpi(
@@ -201,11 +214,13 @@ export class TaskAutoKpiService {
         throw new ForbiddenException(
           "Bạn không phải leader của team này",
         );
-      const isMember = await this.prisma.teamMember.findFirst({
-        where: { team_id: dto.team_id, user_id: dto.user_id },
-      });
-      if (!isMember)
-        throw new ForbiddenException("Người dùng không thuộc team của bạn");
+      if (myTeam.leader_id !== dto.user_id) {
+        const isMember = await this.prisma.teamMember.findFirst({
+          where: { team_id: dto.team_id, user_id: dto.user_id },
+        });
+        if (!isMember)
+          throw new ForbiddenException("Người dùng không thuộc team của bạn");
+      }
     }
 
     const contentQty = dto.allocations
@@ -218,21 +233,20 @@ export class TaskAutoKpiService {
       throw new BadRequestException(
         `Tổng số video theo tuyến nội dung phải bằng tổng video sản xuất (${dto.total_target}), hiện là ${contentQty}`,
       );
-    if (productQty > 0 && productQty !== dto.product_planned)
+    if (productQty > 0 && productQty !== dto.product_gmv)
       throw new BadRequestException(
-        `Tổng số video theo dòng sản phẩm phải bằng SP đẩy video theo kế hoạch (${dto.product_planned}), hiện là ${productQty}`,
+        `Tổng số video theo dòng sản phẩm phải bằng số sản phẩm GMV (${dto.product_gmv}), hiện là ${productQty}`,
       );
 
     const kpiData = {
       total_target: dto.total_target,
-      video_win: dto.video_win ?? 0,
-      video_fail: dto.video_fail ?? 0,
       kpi_extra: dto.kpi_extra ?? 0,
       content_new: dto.content_new ?? 0,
-      content_collected: dto.content_collected ?? 0,
+      content_paast_analyzed: dto.content_paast_analyzed ?? 0,
       content_win_cover: dto.content_win_cover ?? 0,
-      product_planned: dto.product_planned ?? 0,
-      product_win_collect: dto.product_win_collect ?? 0,
+      product_gmv: dto.product_gmv ?? 0,
+      product_traffic: dto.product_traffic ?? 0,
+      product_collect_test_win: dto.product_collect_test_win ?? 0,
       product_profit: dto.product_profit ?? 0,
       set_by_id: setById,
     };
@@ -955,10 +969,7 @@ export class TaskAutoKpiService {
   };
 
   private monthRangeVN(month: string): { gte: Date; lt: Date } {
-    const start = DateTime.fromFormat(month, "yyyy-MM", {
-      zone: "Asia/Ho_Chi_Minh",
-    }).startOf("month");
-    return { gte: start.toJSDate(), lt: start.plus({ months: 1 }).toJSDate() };
+    return vietnamMonthRange(month) ?? vietnamMonthRange("1970-01")!;
   }
 
   private async buildEditorReportActuals(
@@ -971,23 +982,12 @@ export class TaskAutoKpiService {
       team_product_id: string | null;
     }>,
   ): Promise<{
-    byUser: Map<
-      string,
-      {
-        videos_approved: number;
-        routes: Partial<Record<ContentRouteCode, number>>;
-        products: Record<string, number>;
-      }
-    >;
+    byUser: Map<string, { routes: Partial<Record<ContentRouteCode, number>> }>;
     unmappedProductCategories: string[];
   }> {
     const byUser = new Map<
       string,
-      {
-        videos_approved: number;
-        routes: Partial<Record<ContentRouteCode, number>>;
-        products: Record<string, number>;
-      }
+      { routes: Partial<Record<ContentRouteCode, number>> }
     >();
     const unmapped = new Set<string>();
     if (tasks.length === 0) return { byUser, unmappedProductCategories: [] };
@@ -1039,20 +1039,14 @@ export class TaskAutoKpiService {
     for (const task of tasks) {
       const uid = task.assignee_id;
       if (!uid) continue;
-      const acc =
-        byUser.get(uid) ?? { videos_approved: 0, routes: {}, products: {} };
-      acc.videos_approved += 1;
+      const acc = byUser.get(uid) ?? { routes: {} };
 
       const route = task.content_line_id ? routeByLineId.get(task.content_line_id) : null;
       if (route) acc.routes[route] = (acc.routes[route] ?? 0) + 1;
 
       const lineId = resolveTaskProductLineId(task, lookup);
       const category = lineId ? categoryByLineId.get(lineId) : undefined;
-      if (category) {
-        const metric = PRODUCT_CATEGORY_TO_METRIC[category];
-        if (metric) acc.products[metric] = (acc.products[metric] ?? 0) + 1;
-        else unmapped.add(category);
-      }
+      if (category && !PRODUCT_CATEGORY_TO_METRIC[category]) unmapped.add(category);
 
       byUser.set(uid, acc);
     }
@@ -1081,11 +1075,12 @@ export class TaskAutoKpiService {
           video_win: true,
           video_fail: true,
           content_new: true,
-          content_collected: true,
+          content_paast_analyzed: true,
           content_win_cover: true,
-          product_planned: true,
-          product_win_collect: true,
+          product_gmv: true,
+          product_traffic: true,
           product_profit: true,
+          product_collect_test_win: true,
           user: { select: { id: true, employee_id: true } },
           allocations: {
             select: {
@@ -1124,7 +1119,7 @@ export class TaskAutoKpiService {
 
     const editorIds = editorKpis.map((k) => k.user_id);
 
-    const [approvedTasks, editorWinFail, memberships] = await Promise.all([
+    const [approvedTasks, memberships] = await Promise.all([
       editorIds.length
         ? this.prisma.task.findMany({
             where: {
@@ -1143,7 +1138,6 @@ export class TaskAutoKpiService {
             },
           })
         : Promise.resolve([]),
-      editorIds.length ? this.mergeWinFailByMember(editorIds, [], range) : Promise.resolve([]),
       editorIds.length || creatorIds.length
         ? this.prisma.teamMember.findMany({
             where: { user_id: { in: [...new Set([...editorIds, ...creatorIds])] } },
@@ -1153,6 +1147,10 @@ export class TaskAutoKpiService {
     ]);
 
     const editorActuals = await this.buildEditorReportActuals(approvedTasks);
+    const kpiActuals = await computeEditorKpiActuals(
+      this.prisma,
+      editorKpis.map((k) => ({ month, user_id: k.user_id, team_id: teamId })),
+    );
 
     const teamsPerUser = new Map<string, Set<string>>();
     for (const m of memberships) {
@@ -1165,35 +1163,38 @@ export class TaskAutoKpiService {
     const warnings: KpiPayrollSyncWarning[] = [];
     const contributions: MetricContribution[] = [];
 
-    const editorWinFailByUser = new Map(editorWinFail.map((r) => [r.user_id, r]));
-
     for (const kpi of editorKpis) {
-      const wf = editorWinFailByUser.get(kpi.user_id);
       const report = editorActuals.byUser.get(kpi.user_id);
+      const payrollKpi = {
+        ...kpi,
+        content_collected: kpi.content_paast_analyzed,
+        product_planned: kpi.product_gmv,
+        product_win_collect: kpi.product_traffic,
+      };
+      const actuals =
+        kpiActuals.get(editorKpiActualKey(month, kpi.user_id, teamId)) ??
+        emptyEditorKpiActuals();
       contributions.push(
-        ...mapEditorKpi(kpi, {
-          videos_approved: report?.videos_approved ?? 0,
-          win: wf?.win ?? 0,
-          fail: wf?.fail ?? 0,
-          product_gmv: report?.products.PRODUCT_PLANNED ?? 0,
-          product_traffic: report?.products.PRODUCT_COLLECTED ?? 0,
-          product_profit: report?.products.PRODUCT_PROFIT ?? 0,
+        ...mapEditorKpi(payrollKpi, {
+          videos_approved: actuals.total_actual,
+          win: actuals.video_win_actual,
+          fail: actuals.video_fail_actual,
+          product_gmv: actuals.product_gmv_actual,
+          product_traffic: actuals.product_traffic_actual,
+          product_profit: actuals.product_profit_actual,
+          product_collect_test_win: actuals.product_collect_test_win_actual,
+          content_new: actuals.content_new_actual,
+          content_collected: actuals.paast_analyzed_actual,
+          content_win_cover: actuals.content_win_cover_actual,
         }),
       );
-      const routes = mapEditorContentRoutes(kpi, report?.routes ?? {});
+      const routes = mapEditorContentRoutes(payrollKpi, report?.routes ?? {});
       contributions.push(...routes.contributions);
       warnings.push(...routes.warnings);
 
-      if (inMultipleTeams(kpi.user_id))
-        warnings.push({
-          code: "UNSCOPED_EDITOR_ACTUAL",
-          user_id: kpi.user_id,
-          message:
-            "User thuộc nhiều team; actual VIDEO_WIN/VIDEO_FAIL chưa quy được chính xác cho một team",
-        });
     }
 
-    if (editorKpis.length > 0)
+    if (editorKpis.length > 0 && METRICS_WITHOUT_ACTUAL_SOURCE.length > 0)
       warnings.push({
         code: "NO_ACTUAL_SOURCE",
         message: `Chưa có nguồn báo cáo cho actual của: ${METRICS_WITHOUT_ACTUAL_SOURCE.join(
