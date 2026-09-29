@@ -55,6 +55,7 @@ import { SearchKeywordsModule } from './modules/search-keywords/search-keywords.
 import { ScraperProxyModule } from './modules/scraper-proxy/scraper-proxy.module';
 import { VideoLibraryModule } from './modules/video-library/video-library.module';
 import { IdPhotoModule } from './modules/id-photo/id-photo.module';
+import { ProductImageModule } from './modules/product-image/product-image.module';
 import { ApiKeysModule } from './modules/api-keys/api-keys.module';
 
 @Module({
@@ -128,6 +129,7 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     ScraperProxyModule,
     VideoLibraryModule,
     IdPhotoModule,
+    ProductImageModule,
     ApiKeysModule,
   ],
   controllers: [AppController],
