@@ -60,6 +60,35 @@ function isPaastScoreResult(raw: any): raw is ContentTransformScoreResult {
   return !!raw && typeof raw === 'object' && !!raw.layers && !!raw.layers.prefer;
 }
 
+/** Chi phí một lượt gọi TikHub/Gemini do AI service đo (usage_meter) — BE lưu vào api_usage_logs. */
+export interface ApiUsageEvent {
+  provider: 'tikhub' | 'gemini';
+  /** Endpoint TikHub hoặc tên model Gemini */
+  endpoint: string;
+  /** Dùng lại bộ đệm — không tốn lượt gọi */
+  cached: boolean;
+  status?: number | null;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+/** Kết quả POST /api/scraped-video/script-from-video/ của AI service. */
+export interface VideoScriptResult {
+  status: 'DONE' | 'ENGINE_DISABLED' | 'FAILED';
+  script_text?: string;
+  transcript?: string;
+  language?: string;
+  has_voice?: boolean;
+  source?: 'gemini_video' | 'gemini_text';
+  error?: string;
+  /** ENGINE_DISABLED: lý do tắt (vd thiếu VIDEO_TO_TEXT_GEMINI_API_KEY); rỗng khi cố ý tắt */
+  reason?: string;
+  download?: { ok: boolean; source?: 'free' | 'tikhub'; duration?: number; has_audio?: boolean; error?: string | null };
+  /** Chi phí TikHub/Gemini của lượt này (có cả khi thất bại) */
+  usage?: ApiUsageEvent[];
+}
+
 @Injectable()
 export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
@@ -2146,6 +2175,46 @@ export class AiIntegrationService {
   }
 
   /**
+   * Video → kịch bản (Bộ Sưu Tập): AI tải video (miễn phí trước, TikHub dự phòng) rồi Gemini
+   * viết kịch bản từ lời thoại + hình ảnh. Chạy nền sau khi duyệt nên cho timeout dài: tải
+   * Douyin qua trình duyệt ẩn ~10-50s, thêm lượt dự phòng TikHub và bước Gemini.
+   *
+   * KHÔNG ném lỗi: trả { status: 'DONE' | 'ENGINE_DISABLED' | 'FAILED', ... } để bên gọi quyết
+   * định quay về cách cũ. Endpoint AI yêu cầu IsAuthenticated → ký token nội bộ theo người duyệt.
+   */
+  async generateScriptFromVideo(
+    params: { videoUrl: string; platform?: string; videoId?: string; title?: string; description?: string },
+    user?: { id?: string; email?: string },
+  ): Promise<VideoScriptResult> {
+    const url = `${this.aiServiceUrl}/api/scraped-video/script-from-video/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(
+          url,
+          {
+            video_url: params.videoUrl,
+            platform: params.platform,
+            video_id: params.videoId,
+            title: params.title,
+            description: params.description,
+          },
+          { timeout: 1_200_000, headers: this.transcribeAiAuthHeaders(user) },
+        ),
+      );
+      return data as VideoScriptResult;
+    } catch (error: any) {
+      const body = error?.response?.data;
+      this.logger.error(`AI Service script-from-video error: ${error.message}`, body);
+      return {
+        status: 'FAILED',
+        error: body?.error || error.message || 'Không gọi được AI Service',
+        download: body?.download,
+        usage: body?.usage,
+      };
+    }
+  }
+
+  /**
    * Dịch từ khoá tìm kiếm (tiếng Việt/Anh) sang tiếng Trung giản thể — dùng cho các nền tảng
    * Trung Quốc (Douyin/Xiaohongshu/Kuaishou/Bilibili) vốn chỉ ra kết quả tốt với query tiếng Trung.
    *
@@ -2226,7 +2295,24 @@ export class AiIntegrationService {
       }
       return data.data as VideoDetailResult;
     } catch {
+      // Chi phí của lượt hỏng (nếu có) vẫn được chốt chung common/api-usage ghi qua header
       return null;
+    }
+  }
+
+  /**
+   * Số dư + chi tiêu hôm nay của tài khoản TikHub (toàn tài khoản, mọi tính năng dùng chung khoá).
+   * AI service gọi 2 endpoint tra tài khoản MIỄN PHÍ của TikHub và đệm 5 phút.
+   */
+  async getTikhubAccount(user?: { id?: string; email?: string }): Promise<any> {
+    const url = `${this.aiServiceUrl}/api/tikhub/account/`;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get(url, { timeout: 30_000, headers: this.transcribeAiAuthHeaders(user) }),
+      );
+      return data;
+    } catch (error: any) {
+      return { error: error?.response?.data?.error || error.message || 'Không lấy được thông tin tài khoản TikHub' };
     }
   }
 

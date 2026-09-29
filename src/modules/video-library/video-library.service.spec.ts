@@ -36,6 +36,8 @@ describe('VideoLibraryService.reviewProposal / addVideoDirectly — approveIntoL
         findUnique: jest.fn(),
         update: jest.fn(async ({ data }: any) => ({ id: 'p1', ...data })),
       },
+      team: { findMany: jest.fn(async () => []) },
+      videoLibraryTeam: { createMany: jest.fn(async () => ({ count: 0 })) },
       videoLibrary: {
         findUnique: jest.fn(async () => null), // mặc định: chưa tồn tại, luôn tạo mới
         create: jest.fn(async ({ data }: any) => {
@@ -51,11 +53,18 @@ describe('VideoLibraryService.reviewProposal / addVideoDirectly — approveIntoL
           approvedContentRows.push(row);
           return row;
         }),
+        update: jest.fn(async ({ where, data }: any) => {
+          const row = approvedContentRows.find((r) => r.id === where.id);
+          Object.assign(row, data);
+          return row;
+        }),
         delete: jest.fn(async () => ({})),
       },
     };
     const push: any = { sendToUser: jest.fn(async () => {}) };
     const aiIntegration: any = {
+      // Mặc định engine video→kịch bản đang tắt → đi cách cũ (analyzeScrapedVideo).
+      generateScriptFromVideo: jest.fn(async () => ({ status: 'ENGINE_DISABLED', download: { ok: false } })),
       analyzeScrapedVideo: jest.fn(async () => ({
         vietnamese_content: 'Nội dung tiếng Việt',
         script_outline: 'Hook - thân - CTA',
@@ -88,16 +97,18 @@ describe('VideoLibraryService.reviewProposal / addVideoDirectly — approveIntoL
     expect(videoLibraryRows[0].collection_type).toBe('SHARED');
   });
 
-  it('duyệt thành công → tạo VideoLibrary ngay, ApprovedContent sinh sau ở chạy nền', async () => {
+  it('duyệt thành công → tạo VideoLibrary + Content PROCESSING ngay, kịch bản điền sau ở chạy nền', async () => {
     const { service, approvedContentRows } = build();
     const result = await service.addVideoDirectly('leader1', 'Leader One', ['LEADER'], buildVideo() as any);
 
     expect(result.videoLibraryId).toBeDefined();
-    // Script sinh ở chạy nền nên lời gọi này không còn trả về id của content nữa.
-    expect(result.approvedContentId).toBeNull();
+    // Content tạo ngay ở PROCESSING (tab Content hiện "Đang tạo kịch bản…") nên có id luôn.
+    expect(result.approvedContentId).toBe('content-1');
 
     await service.waitForPendingScripts();
     expect(approvedContentRows).toHaveLength(1);
+    expect(approvedContentRows[0].script_status).toBe('DONE');
+    expect(approvedContentRows[0].script_source).toBe('LEGACY_TEXT');
     expect(approvedContentRows[0].script).toContain('Nội dung tiếng Việt');
     expect(approvedContentRows[0].source_video_id).toBe('v1');
   });
@@ -113,17 +124,18 @@ describe('VideoLibraryService.reviewProposal / addVideoDirectly — approveIntoL
     expect(result.videoLibraryId).toBe('existing-lib');
   });
 
-  it('AI lỗi → VideoLibrary vẫn được tạo, ApprovedContent không có (không rollback)', async () => {
+  it('AI lỗi → VideoLibrary vẫn được tạo, Content thành FAILED kèm lý do (không rollback)', async () => {
     const { service, aiIntegration, videoLibraryRows, approvedContentRows } = build();
     aiIntegration.analyzeScrapedVideo.mockRejectedValueOnce(new Error('DeepSeek timeout'));
 
-    const result = await service.addVideoDirectly('leader1', 'Leader One', ['LEADER'], buildVideo() as any);
+    await service.addVideoDirectly('leader1', 'Leader One', ['LEADER'], buildVideo() as any);
     // Lỗi ở chạy nền KHÔNG được ném ra ngoài (không ai await promise đó, ném là sập tiến trình).
     await expect(service.waitForPendingScripts()).resolves.toBeUndefined();
 
     expect(videoLibraryRows).toHaveLength(1);
-    expect(approvedContentRows).toHaveLength(0);
-    expect(result.approvedContentId).toBeNull();
+    expect(approvedContentRows).toHaveLength(1);
+    expect(approvedContentRows[0].script_status).toBe('FAILED');
+    expect(approvedContentRows[0].script_error).toContain('DeepSeek timeout');
   });
 
   it('KHÔNG bắt người bấm đợi AI sinh script xong mới trả lời', async () => {
@@ -142,11 +154,11 @@ describe('VideoLibraryService.reviewProposal / addVideoDirectly — approveIntoL
 
     expect(result.videoLibraryId).toBeDefined();
     expect(waited).toBeLessThan(1000);        // trả lời ngay, không đợi AI
-    expect(approvedContentRows).toHaveLength(0); // script chưa xong là đúng
+    expect(approvedContentRows[0].script_status).toBe('PROCESSING'); // script chưa xong là đúng
 
     releaseAi();
     await service.waitForPendingScripts();
-    expect(approvedContentRows).toHaveLength(1); // xong sau, ở chạy nền
+    expect(approvedContentRows[0].script_status).toBe('DONE'); // xong sau, ở chạy nền
   });
 });
 
@@ -158,16 +170,21 @@ describe('VideoLibraryService.reviewProposal — PENDING-guard + role-guard', ()
         findUnique: jest.fn(async () => proposal),
         update: jest.fn(async ({ data }: any) => ({ ...proposal, ...data })),
       },
+      team: { findMany: jest.fn(async () => []) },
+      videoLibraryTeam: { createMany: jest.fn(async () => ({ count: 0 })) },
       videoLibrary: {
         findUnique: jest.fn(async () => null),
         create: jest.fn(async ({ data }: any) => ({ id: 'lib1', ...data })),
       },
       approvedContent: {
         create: jest.fn(async ({ data }: any) => ({ id: 'content1', ...data })),
+        update: jest.fn(async ({ where, data }: any) => ({ id: where.id, ...data })),
       },
     };
     const push: any = { sendToUser: jest.fn(async () => {}) };
     const aiIntegration: any = {
+      // Mặc định engine video→kịch bản đang tắt → đi cách cũ (analyzeScrapedVideo).
+      generateScriptFromVideo: jest.fn(async () => ({ status: 'ENGINE_DISABLED', download: { ok: false } })),
       analyzeScrapedVideo: jest.fn(async () => ({ vietnamese_content: 'x', script_outline: 'y', hashtags: [] })),
       fetchVideoDetail: jest.fn(async () => null),
     };
@@ -227,6 +244,8 @@ describe('VideoLibraryService.reviewProposal — PENDING-guard + role-guard', ()
 describe('VideoLibraryService.deleteVideoLibrary — quyền xoá khớp FE canDeleteCurrent', () => {
   function build(row: any) {
     const prisma: any = {
+      team: { findMany: jest.fn(async () => []) },
+      videoLibraryTeam: { createMany: jest.fn(async () => ({ count: 0 })) },
       videoLibrary: {
         findUnique: jest.fn(async () => row),
         delete: jest.fn(async () => ({})),
@@ -236,10 +255,18 @@ describe('VideoLibraryService.deleteVideoLibrary — quyền xoá khớp FE canD
     return { service, prisma };
   }
 
-  it('LEADER xoá được video tab Team', async () => {
-    const { service, prisma } = build({ id: '1', collection_type: 'TEAM' });
-    await service.deleteVideoLibrary('1', ['LEADER']);
+  it('LEADER xoá được video tab Team của team mình', async () => {
+    const { service, prisma } = build({ id: '1', collection_type: 'TEAM', teams: [{ team_id: 't1' }] });
+    prisma.team.findMany.mockResolvedValue([{ id: 't1' }]);
+    await service.deleteVideoLibrary('1', ['LEADER'], 'leader1');
     expect(prisma.videoLibrary.delete).toHaveBeenCalled();
+  });
+
+  it('LEADER KHÔNG xoá được video tab Team của team khác', async () => {
+    const { service, prisma } = build({ id: '1', collection_type: 'TEAM', teams: [{ team_id: 't2' }] });
+    prisma.team.findMany.mockResolvedValue([{ id: 't1' }]);
+    await expect(service.deleteVideoLibrary('1', ['LEADER'], 'leader1')).rejects.toThrow(ForbiddenException);
+    expect(prisma.videoLibrary.delete).not.toHaveBeenCalled();
   });
 
   it('LEADER KHÔNG xoá được video tab Chung (SHARED)', async () => {
@@ -310,6 +337,8 @@ describe('VideoLibraryService — làm giàu dữ liệu video khi đề xuất'
           return row;
         }),
       },
+      team: { findMany: jest.fn(async () => []) },
+      videoLibraryTeam: { createMany: jest.fn(async () => ({ count: 0 })) },
       videoLibrary: {
         findFirst: jest.fn(async () => null),
         findUnique: jest.fn(async () => null),
@@ -323,6 +352,8 @@ describe('VideoLibraryService — làm giàu dữ liệu video khi đề xuất'
     };
     const push: any = { sendToUser: jest.fn(async () => {}) };
     const aiIntegration: any = {
+      // Mặc định engine video→kịch bản đang tắt → đi cách cũ (analyzeScrapedVideo).
+      generateScriptFromVideo: jest.fn(async () => ({ status: 'ENGINE_DISABLED', download: { ok: false } })),
       analyzeScrapedVideo: jest.fn(async () => ({
         vietnamese_content: 'x', script_outline: 'y', hashtags: [],
       })),
@@ -457,6 +488,8 @@ describe('VideoLibraryService — chặn đề xuất trùng', () => {
           return row;
         }),
       },
+      team: { findMany: jest.fn(async () => []) },
+      videoLibraryTeam: { createMany: jest.fn(async () => ({ count: 0 })) },
       videoLibrary: {
         findFirst: jest.fn(async () => opts.inLibrary ?? null),
         findUnique: jest.fn(async () => opts.existingDirect ?? null),
@@ -470,6 +503,8 @@ describe('VideoLibraryService — chặn đề xuất trùng', () => {
     };
     const push: any = { sendToUser: jest.fn(async () => {}) };
     const aiIntegration: any = {
+      // Mặc định engine video→kịch bản đang tắt → đi cách cũ (analyzeScrapedVideo).
+      generateScriptFromVideo: jest.fn(async () => ({ status: 'ENGINE_DISABLED', download: { ok: false } })),
       analyzeScrapedVideo: jest.fn(async () => ({ vietnamese_content: 'x', script_outline: 'y', hashtags: [] })),
       fetchVideoDetail: jest.fn(async () => ({
         platform: 'douyin', title: 'T', description: '', author_name: 'A', author_username: 'a',

@@ -1,7 +1,10 @@
-import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PushService } from '../../common/push/push.service';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
+import { COST_FEATURE_LABEL, COST_PAGE_LABEL } from '../../common/api-usage/api-usage-tracking';
+import { runWithUsageTag } from '../../common/api-usage/request-context';
+import { buildVoiceUsageDateRange } from '../ai-integration/voice-usage-range';
 import { ProposeVideoDto } from './video-library.dto';
 import { isShortLink, resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { extractVideoId, detectPlatformFromUrl } from '../../common/utils/video-url.util';
@@ -14,6 +17,28 @@ function canReview(roles: string[]): boolean {
   return roles.includes('ADMIN') || roles.includes('LEADER');
 }
 
+type TeamRef = { id: string; name: string };
+
+/** Một dòng Bộ Sưu Tập kèm danh sách team sở hữu (phẳng, FE không phải bóc relation). */
+function withTeams<T extends { teams?: Array<{ team: TeamRef }> }>(row: T): Omit<T, 'teams'> & { teams: TeamRef[] } {
+  const { teams, ...rest } = row;
+  return { ...rest, teams: (teams ?? []).map((t) => ({ id: t.team.id, name: t.team.name })) };
+}
+
+const TEAMS_INCLUDE = { teams: { include: { team: { select: { id: true, name: true } } } } } as const;
+
+/** Tỷ giá quy đổi chi phí sang VNĐ. Mặc định 26.000 — khớp tỷ giá ngầm của đơn giá MiniMax
+ *  đang dùng (2.600đ/1.000 ký tự = $100/1 triệu ký tự). Đổi bằng env USD_VND_RATE. */
+function usdVndRate(): number {
+  const rate = Number(process.env.USD_VND_RATE);
+  return Number.isFinite(rate) && rate > 0 ? rate : 26_000;
+}
+
+/** Ngày theo lịch Việt Nam (YYYY-MM-DD) của một mốc thời gian. */
+function vnDate(d: Date): string {
+  return new Date(d.getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 function wordCount(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
@@ -24,7 +49,7 @@ function wordCount(text: string): number {
 // đợi duyệt trước khi video vào VideoLibrary — member đề xuất, leader/admin duyệt
 // (hoặc tự thêm thẳng, coi như tự duyệt).
 @Injectable()
-export class VideoLibraryService {
+export class VideoLibraryService implements OnModuleInit {
   private readonly logger = new Logger(VideoLibraryService.name);
 
   constructor(
@@ -33,17 +58,135 @@ export class VideoLibraryService {
     private readonly aiIntegration: AiIntegrationService,
   ) {}
 
-  private async notifyUser(userId: string, type: string, title: string, body: string): Promise<void> {
+  private async notifyUser(userId: string, type: string, title: string, body: string, url?: string): Promise<void> {
     await this.prisma.notification.create({ data: { user_id: userId, type, title, body } }).catch(() => null);
-    this.push.sendToUser(userId, { title, body }).catch(() => {});
+    this.push.sendToUser(userId, { title, body, url }).catch(() => {});
+  }
+
+  /** Cửa sổ gộp thông báo đề xuất mới của cùng một người (dán 20 link → 1 thông báo, không phải 20). */
+  static readonly PROPOSAL_NOTIFY_WINDOW_MS = 10 * 60 * 1000;
+
+  /**
+   * Báo người duyệt khi member đề xuất: leader các team của member; member chưa có team nào
+   * (hoặc team chưa có leader) thì báo admin. Không bao giờ ném — đề xuất đã lưu xong rồi.
+   */
+  private async notifyReviewersOfProposal(memberId: string, videoTitle: string): Promise<void> {
+    try {
+      const teams = await this.prisma.team.findMany({
+        where: { is_active: true, members: { some: { user_id: memberId } } },
+        select: { leader_id: true },
+      });
+      let reviewerIds = [...new Set(teams.map((t) => t.leader_id).filter((id): id is string => !!id && id !== memberId))];
+      if (reviewerIds.length === 0) {
+        const admins = await this.prisma.user.findMany({
+          where: { is_active: true, roles: { has: 'ADMIN' as any } },
+          select: { id: true },
+        });
+        reviewerIds = admins.map((a) => a.id).filter((id) => id !== memberId);
+      }
+      if (reviewerIds.length === 0) return;
+
+      const member = await this.prisma.user.findUnique({ where: { id: memberId }, select: { full_name: true, email: true } });
+      const who = member?.full_name || member?.email || 'Thành viên';
+      const since = new Date(Date.now() - VideoLibraryService.PROPOSAL_NOTIFY_WINDOW_MS);
+      const url = '/dashboard/video-library?tab=pending';
+      for (const reviewerId of reviewerIds) {
+        const recent = await this.prisma.notification.findFirst({
+          where: {
+            user_id: reviewerId, type: 'VIDEO_PROPOSAL_NEW', is_read: false, created_at: { gte: since },
+            meta: { path: ['proposer_id'], equals: memberId },
+          },
+          orderBy: { created_at: 'desc' },
+        });
+        if (recent) {
+          // Gộp vào thông báo chưa đọc gần đây, KHÔNG đẩy push lần nữa (tránh rung máy 20 lần)
+          const count = Number((recent.meta as any)?.count ?? 1) + 1;
+          await this.prisma.notification.update({
+            where: { id: recent.id },
+            data: { title: `${who} đề xuất ${count} video mới`, body: `Mới nhất: "${videoTitle}" — vào tab Chờ duyệt để xem.`, meta: { proposer_id: memberId, count } },
+          });
+          continue;
+        }
+        const title = `${who} đề xuất video mới`;
+        const body = `"${videoTitle}" đang chờ duyệt.`;
+        await this.prisma.notification.create({
+          data: { user_id: reviewerId, type: 'VIDEO_PROPOSAL_NEW', title, body, meta: { proposer_id: memberId, count: 1 } },
+        });
+        this.push.sendToUser(reviewerId, { title, body, url }).catch(() => {});
+      }
+    } catch (err: any) {
+      this.logger.warn(`[VIDEO-LIBRARY] Khong bao duoc nguoi duyet: ${err?.message}`);
+    }
   }
 
   // ─── Video Library (Bộ Sưu Tập) ────────────────────────────────────────────
 
-  async listVideoLibrary(type: 'TEAM' | 'SHARED') {
-    return this.prisma.videoLibrary.findMany({
-      where: { collection_type: type },
+  /** Các team người dùng đang thuộc — là leader hoặc là thành viên (team còn hoạt động). */
+  async getUserTeamIds(userId: string): Promise<string[]> {
+    if (!userId) return [];
+    const teams = await this.prisma.team.findMany({
+      where: {
+        is_active: true,
+        OR: [{ leader_id: userId }, { members: { some: { user_id: userId } } }],
+      },
+      select: { id: true },
+    });
+    return teams.map((t) => t.id);
+  }
+
+  /**
+   * Tab Chung: ai cũng thấy TOÀN BỘ — video admin chọn lẫn video của mọi team, để cả công ty
+   *   cùng tham khảo.
+   * Tab Team:  ADMIN/MANAGER thấy video của mọi team (FE có bộ lọc theo team); còn lại chỉ
+   *   thấy video gắn với team mình thuộc.
+   */
+  async listVideoLibrary(type: 'TEAM' | 'SHARED', userId = '', roles: string[] = []) {
+    if (type === 'SHARED') {
+      const rows = await this.prisma.videoLibrary.findMany({
+        include: TEAMS_INCLUDE,
+        orderBy: { created_at: 'desc' },
+      });
+      // Cùng một video có thể nằm cả ở Team lẫn Chung (admin thêm lại video team đã có) —
+      // tab Chung chỉ hiện 1 thẻ: ưu tiên dòng Chung, gộp team của các dòng còn lại.
+      const byVideo = new Map<string, ReturnType<typeof withTeams<(typeof rows)[number]>>>();
+      for (const row of rows.map(withTeams)) {
+        const prev = byVideo.get(row.video_id);
+        if (!prev) {
+          byVideo.set(row.video_id, row);
+          continue;
+        }
+        const keep = prev.collection_type === 'SHARED' ? prev : row.collection_type === 'SHARED' ? row : prev;
+        const teams = [...prev.teams, ...row.teams].filter((t, i, all) => all.findIndex((x) => x.id === t.id) === i);
+        byVideo.set(row.video_id, { ...keep, teams });
+      }
+      return [...byVideo.values()];
+    }
+
+    if (isAdminOrManager(roles)) {
+      const rows = await this.prisma.videoLibrary.findMany({
+        where: { collection_type: 'TEAM' },
+        include: TEAMS_INCLUDE,
+        orderBy: { created_at: 'desc' },
+      });
+      return rows.map(withTeams);
+    }
+
+    const teamIds = await this.getUserTeamIds(userId);
+    if (teamIds.length === 0) return [];
+    const rows = await this.prisma.videoLibrary.findMany({
+      where: { collection_type: 'TEAM', teams: { some: { team_id: { in: teamIds } } } },
+      include: TEAMS_INCLUDE,
       orderBy: { created_at: 'desc' },
+    });
+    return rows.map(withTeams);
+  }
+
+  /** Gắn video vào các team (bỏ qua cặp đã có). */
+  private async linkTeams(videoLibraryId: string, teamIds: string[]): Promise<void> {
+    if (teamIds.length === 0) return;
+    await this.prisma.videoLibraryTeam.createMany({
+      data: teamIds.map((team_id) => ({ video_library_id: videoLibraryId, team_id })),
+      skipDuplicates: true,
     });
   }
 
@@ -52,13 +195,16 @@ export class VideoLibraryService {
     return rows.map((r) => r.video_id);
   }
 
-  async deleteVideoLibrary(id: string, roles: string[]): Promise<void> {
-    const row = await this.prisma.videoLibrary.findUnique({ where: { id } });
+  async deleteVideoLibrary(id: string, roles: string[], userId = ''): Promise<void> {
+    const row = await this.prisma.videoLibrary.findUnique({ where: { id }, include: { teams: { select: { team_id: true } } } });
     if (!row) throw new NotFoundException('Không tìm thấy video trong bộ sưu tập');
 
-    // Khớp đúng canDeleteCurrent đã code sẵn ở FE (video-library/page.tsx):
-    // ADMIN/MANAGER xoá được cả 2 tab; LEADER chỉ xoá được tab Team.
-    const allowed = isAdminOrManager(roles) || (row.collection_type === 'TEAM' && roles.includes('LEADER'));
+    // ADMIN/MANAGER xoá được mọi video; LEADER chỉ xoá được video tab Team của team mình.
+    let allowed = isAdminOrManager(roles);
+    if (!allowed && row.collection_type === 'TEAM' && roles.includes('LEADER')) {
+      const mine = new Set(await this.getUserTeamIds(userId));
+      allowed = row.teams.some((t) => mine.has(t.team_id));
+    }
     if (!allowed) throw new ForbiddenException('Không có quyền xoá video này');
 
     await this.prisma.videoLibrary.delete({ where: { id } });
@@ -66,8 +212,195 @@ export class VideoLibraryService {
 
   // ─── Approved Content ───────────────────────────────────────────────────────
 
+  /** Content kẹt PROCESSING lâu hơn ngần này coi như việc nền đã chết (server khởi động lại giữa chừng). */
+  static readonly STALE_PROCESSING_MS = 30 * 60 * 1000;
+
+  /**
+   * Việc sinh kịch bản chạy nền trong tiến trình — server khởi động lại giữa chừng thì việc đó
+   * mất, dòng Content kẹt mãi ở "Đang xử lý". Lúc khởi động chuyển các dòng kẹt quá lâu sang
+   * FAILED để người dùng thấy nút "Thử lại".
+   */
+  async onModuleInit(): Promise<void> {
+    const cutoff = new Date(Date.now() - VideoLibraryService.STALE_PROCESSING_MS);
+    const res = await this.prisma.approvedContent
+      .updateMany({
+        where: { script_status: 'PROCESSING', updated_at: { lt: cutoff } },
+        data: { script_status: 'FAILED', script_error: 'Bị gián đoạn khi server khởi động lại — bấm Thử lại.' },
+      })
+      .catch(() => ({ count: 0 }));
+    if (res.count) this.logger.warn(`[VIDEO-LIBRARY] ${res.count} content kẹt "đang xử lý" → FAILED`);
+  }
+
+  // ─── Chi phí TikHub / Gemini ────────────────────────────────────────────────
+
+  /**
+   * Thống kê chi phí TikHub + Gemini của menu Khám phá Video trong khoảng ngày (giờ VN).
+   * Lượt gọi từ trang ngoài menu (page = OTHER) không cộng vào tổng — chỉ báo riêng ở `outside`.
+   */
+  async getCostStats(dateFrom?: string, dateTo?: string) {
+    const range = buildVoiceUsageDateRange(dateFrom, dateTo);
+    const allRows = await this.prisma.apiUsageLog.findMany({
+      where: range ? { created_at: range } : {},
+      orderBy: { created_at: 'desc' },
+    });
+    const rows = allRows.filter((r) => r.page !== 'OTHER');
+    const outsideRows = allRows.filter((r) => r.page === 'OTHER');
+    const rate = usdVndRate();
+    const money = (usd: number) => ({ cost_usd: Math.round(usd * 1e6) / 1e6, cost_vnd: Math.round(usd * rate) });
+
+    let tikhubUsd = 0, geminiUsd = 0, tikhubPaid = 0, tikhubCached = 0, geminiCalls = 0, geminiIn = 0, geminiOut = 0;
+    const byPage = new Map<string, { calls: number; usd: number }>();
+    const byFeature = new Map<string, { calls: number; usd: number }>();
+    const byPlatform = new Map<string, { calls: number; usd: number }>();
+    const byDay = new Map<string, { tikhub_usd: number; gemini_usd: number }>();
+    const byUser = new Map<string, { calls: number; usd: number }>();
+    const byContent = new Map<string, number>();
+    const contentWithGemini = new Set<string>();
+
+    for (const r of rows) {
+      const usd = Number(r.cost_usd) || 0;
+      const billed = !r.cached;
+      const calls = r.calls ?? 1; // AI gộp các lượt giống nhau của một request thành một dòng
+      if (r.provider === 'GEMINI') {
+        geminiUsd += usd; geminiCalls += calls; geminiIn += r.input_tokens; geminiOut += r.output_tokens;
+        if (r.approved_content_id) contentWithGemini.add(r.approved_content_id);
+      } else {
+        tikhubUsd += usd;
+        if (billed && r.http_status === 200) tikhubPaid += calls;
+        if (r.cached) tikhubCached += calls;
+      }
+      const bump = (map: Map<string, { calls: number; usd: number }>, key: string) => {
+        const cur = map.get(key) ?? { calls: 0, usd: 0 };
+        if (billed) cur.calls += calls;
+        cur.usd += usd;
+        map.set(key, cur);
+      };
+      bump(byPage, r.page);
+      bump(byFeature, r.feature);
+      bump(byPlatform, r.platform || 'khác');
+      if (r.user_id) bump(byUser, r.user_id);
+      const day = byDay.get(vnDate(r.created_at)) ?? { tikhub_usd: 0, gemini_usd: 0 };
+      if (r.provider === 'GEMINI') day.gemini_usd += usd; else day.tikhub_usd += usd;
+      byDay.set(vnDate(r.created_at), day);
+      if (r.approved_content_id && r.feature !== 'PROPOSAL_DETAIL') {
+        byContent.set(r.approved_content_id, (byContent.get(r.approved_content_id) ?? 0) + usd);
+      }
+    }
+
+    const userIds = [...byUser.keys()];
+    const users = userIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, full_name: true, email: true } })
+      : [];
+    const nameOf = new Map(users.map((u) => [u.id, u.full_name || u.email]));
+    const scriptCosts = [...contentWithGemini].map((id) => byContent.get(id) ?? 0);
+    const avgScript = scriptCosts.length ? scriptCosts.reduce((a, b) => a + b, 0) / scriptCosts.length : 0;
+
+    return {
+      range: { date_from: dateFrom ?? null, date_to: dateTo ?? null },
+      pricing: {
+        usd_vnd_rate: rate,
+        tikhub_note: 'Giá niêm yết theo từng endpoint của TikHub (chưa trừ chiết khấu bậc thang).',
+        gemini_note: 'Ước tính theo số token thật × giá gói trả phí. Khoá đang ở gói miễn phí thì Google chưa thu tiền.',
+      },
+      totals: {
+        ...money(tikhubUsd + geminiUsd),
+        tikhub: { ...money(tikhubUsd), paid_calls: tikhubPaid, cached_calls: tikhubCached },
+        gemini: { ...money(geminiUsd), calls: geminiCalls, input_tokens: geminiIn, output_tokens: geminiOut },
+        scripts: contentWithGemini.size,
+        avg_script: money(avgScript),
+      },
+      by_page: [...byPage.entries()]
+        .map(([page, v]) => ({ page, label: COST_PAGE_LABEL[page] ?? page, calls: v.calls, ...money(v.usd) }))
+        .sort((a, b) => b.cost_usd - a.cost_usd),
+      /** Lượt gọi từ trang ngoài Khám phá Video — không cộng vào tổng ở trên */
+      outside: {
+        ...money(outsideRows.reduce((sum, r) => sum + (Number(r.cost_usd) || 0), 0)),
+        calls: outsideRows.reduce((sum, r) => sum + (r.cached ? 0 : r.calls ?? 1), 0),
+      },
+      by_feature: [...byFeature.entries()]
+        .map(([feature, v]) => ({ feature, label: COST_FEATURE_LABEL[feature] ?? feature, calls: v.calls, ...money(v.usd) }))
+        .sort((a, b) => b.cost_usd - a.cost_usd),
+      by_platform: [...byPlatform.entries()]
+        .map(([platform, v]) => ({ platform, calls: v.calls, ...money(v.usd) }))
+        .sort((a, b) => b.cost_usd - a.cost_usd),
+      by_day: [...byDay.entries()]
+        .map(([date, v]) => ({ date, tikhub_vnd: Math.round(v.tikhub_usd * rate), gemini_vnd: Math.round(v.gemini_usd * rate) }))
+        .sort((a, b) => a.date.localeCompare(b.date)),
+      by_user: [...byUser.entries()]
+        .map(([user_id, v]) => ({ user_id, name: nameOf.get(user_id) ?? user_id, calls: v.calls, ...money(v.usd) }))
+        .sort((a, b) => b.cost_usd - a.cost_usd)
+        .slice(0, 10),
+      recent: rows.slice(0, 30).map((r) => ({
+        id: r.id,
+        created_at: r.created_at,
+        provider: r.provider,
+        page: r.page,
+        page_label: COST_PAGE_LABEL[r.page] ?? r.page,
+        feature: r.feature,
+        feature_label: COST_FEATURE_LABEL[r.feature] ?? r.feature,
+        calls: r.calls ?? 1,
+        endpoint: r.endpoint,
+        platform: r.platform,
+        cached: r.cached,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        user_name: r.user_id ? nameOf.get(r.user_id) ?? null : null,
+        video_id: r.video_id,
+        ...money(Number(r.cost_usd) || 0),
+      })),
+    };
+  }
+
+  /** Số dư + chi tiêu hôm nay của tài khoản TikHub (toàn tài khoản). */
+  async getTikhubAccount(user: { id: string; email?: string }) {
+    const data = await this.aiIntegration.getTikhubAccount(user);
+    if (data?.error) return data;
+    const rate = usdVndRate();
+    return {
+      ...data,
+      usd_vnd_rate: rate,
+      balance_vnd: typeof data?.balance_usd === 'number' ? Math.round(data.balance_usd * rate) : null,
+      today_usage_vnd: typeof data?.today?.usage_usd === 'number' ? Math.round(data.today.usage_usd * rate) : null,
+    };
+  }
+
   async listApprovedContent() {
     return this.prisma.approvedContent.findMany({ orderBy: { created_at: 'desc' } });
+  }
+
+  /** Sinh lại kịch bản cho một content (nút "Thử lại" ở tab Content). */
+  async regenerateScript(id: string, user: { id: string; email?: string }, roles: string[]) {
+    if (!canReview(roles) && !isAdminOrManager(roles)) {
+      throw new ForbiddenException('Chỉ leader/manager/admin được sinh lại kịch bản');
+    }
+    const row = await this.prisma.approvedContent.findUnique({ where: { id } });
+    if (!row) throw new NotFoundException('Không tìm thấy content');
+    if (!row.source_video_url) throw new ConflictException('Content này không gắn với video nào để sinh lại.');
+    const stale = Date.now() - row.updated_at.getTime() > VideoLibraryService.STALE_PROCESSING_MS;
+    if (row.script_status === 'PROCESSING' && !stale) {
+      throw new ConflictException('Kịch bản đang được tạo, chờ xong rồi thử lại.');
+    }
+    const updated = await this.prisma.approvedContent.update({
+      where: { id },
+      data: { script_status: 'PROCESSING', script_error: null },
+    });
+    this.trackScriptJob(
+      this.generateScriptFor(
+        id,
+        {
+          video_id: row.source_video_id || '',
+          platform: row.source_platform || detectPlatformFromUrl(row.source_video_url) || '',
+          title: row.source_video_title,
+          description: row.source_video_desc,
+          video_url: row.source_video_url,
+          views_count: 0n,
+          likes_count: 0n,
+          comments_count: 0n,
+        },
+        user,
+      ),
+    );
+    return updated;
   }
 
   async deleteApprovedContent(id: string, roles: string[]): Promise<void> {
@@ -93,12 +426,16 @@ export class VideoLibraryService {
    * Fail-open: TikHub hỏng / nền tảng không hỗ trợ (Facebook) → giữ nguyên dto, đề xuất vẫn đi
    * tiếp. Thà thiếu số liệu còn hơn chặn người dùng.
    */
-  private async enrichFromPlatform(dto: ProposeVideoDto): Promise<ProposeVideoDto> {
-    const detail = await this.aiIntegration.fetchVideoDetail({
-      platform: dto.platform,
-      videoId: dto.video_id,
-      videoUrl: dto.video_url,
-    });
+  private async enrichFromPlatform(dto: ProposeVideoDto, userId?: string): Promise<ProposeVideoDto> {
+    // Chi phí TikHub của lượt này do chốt chung (common/api-usage) ghi — nhãn cho biết bước nào, của ai
+    const detail = await runWithUsageTag(
+      { page: 'COLLECTION', feature: 'PROPOSAL_DETAIL', userId, videoId: dto.video_id, platform: dto.platform },
+      () => this.aiIntegration.fetchVideoDetail({
+        platform: dto.platform,
+        videoId: dto.video_id,
+        videoUrl: dto.video_url,
+      }),
+    );
     if (!detail) {
       this.logger.log(
         `[propose] Khong lay duoc chi tiet ${dto.platform}/${dto.video_id} — giu du lieu extension gui len`,
@@ -177,7 +514,9 @@ export class VideoLibraryService {
     });
     if (inLibrary) {
       throw new ConflictException(
-        `Video này đã có trong Bộ Sưu Tập (${inLibrary.collection_type === 'SHARED' ? 'Chung' : 'Team'}).`,
+        inLibrary.collection_type === 'SHARED'
+          ? 'Video này đã có trong Bộ Sưu Tập (Chung).'
+          : 'Video này đã có trong Bộ Sưu Tập của một team — xem ở tab Chung.',
       );
     }
   }
@@ -185,7 +524,7 @@ export class VideoLibraryService {
   async proposeVideo(memberId: string, inputDto: ProposeVideoDto) {
     const rawDto = await this.resolveVideoRef(inputDto);
     await this.assertNotDuplicate(rawDto);
-    const dto = await this.enrichFromPlatform(rawDto);
+    const dto = await this.enrichFromPlatform(rawDto, memberId);
     const proposal = await this.prisma.scraperVideoProposal.create({
       data: {
         video_id: dto.video_id,
@@ -205,6 +544,7 @@ export class VideoLibraryService {
         requested_by_id: memberId,
       },
     });
+    await this.notifyReviewersOfProposal(memberId, proposal.title || proposal.video_url);
     return proposal;
   }
 
@@ -237,6 +577,10 @@ export class VideoLibraryService {
     if (!canReview(roles)) throw new ForbiddenException('Chỉ leader/admin được duyệt đề xuất');
 
     if (action === 'APPROVED') {
+      // Video gắn vào mọi team của NGƯỜI ĐỀ XUẤT; họ không thuộc team nào thì lấy team của
+      // leader duyệt, để video không bị "mồ côi" chỉ hiện ở tab Chung.
+      const proposerTeams = await this.getUserTeamIds(proposal.requested_by_id);
+      const teamIds = proposerTeams.length > 0 ? proposerTeams : await this.getUserTeamIds(reviewerId);
       await this.approveIntoLibrary(
         {
           video_id: proposal.video_id,
@@ -256,6 +600,7 @@ export class VideoLibraryService {
         reviewerId,
         reviewerName,
         roles,
+        teamIds,
       );
     }
 
@@ -271,6 +616,7 @@ export class VideoLibraryService {
       action === 'APPROVED'
         ? `Video "${proposal.title || proposal.video_url}" đã được duyệt vào bộ sưu tập.`
         : `Video "${proposal.title || proposal.video_url}" đã bị từ chối.${note ? ` Lý do: ${note}` : ''}`,
+      '/dashboard/video-library?tab=mine',
     ).catch(() => {});
 
     return updated;
@@ -288,14 +634,18 @@ export class VideoLibraryService {
       where: { video_id_collection_type: { video_id: rawDto.video_id, collection_type: collectionType } },
       select: { id: true },
     });
+    // Leader thêm → gắn vào mọi team của leader đó.
+    const teamIds = collectionType === 'TEAM' ? await this.getUserTeamIds(reviewerId) : [];
     if (existing) {
-      this.logger.log(`[direct-add] ${rawDto.platform}/${rawDto.video_id} da co trong ${collectionType}, bo qua`);
+      // Team khác đã có video này: chỉ gắn thêm team của leader này, vẫn không gọi TikHub.
+      await this.linkTeams(existing.id, teamIds);
+      this.logger.log(`[direct-add] ${rawDto.platform}/${rawDto.video_id} da co trong ${collectionType}, chi gan them team`);
       return { videoLibraryId: existing.id, approvedContentId: null };
     }
 
     // Leader/admin vào thẳng Bộ Sưu Tập nên càng phải có số liệu thật — không thì bộ sưu tập
     // đầy những dòng 0 lượt xem, 0 tim, không lọc/sắp xếp được.
-    const dto = await this.enrichFromPlatform(rawDto);
+    const dto = await this.enrichFromPlatform(rawDto, reviewerId);
     return this.approveIntoLibrary(
       {
         video_id: dto.video_id,
@@ -315,6 +665,7 @@ export class VideoLibraryService {
       reviewerId,
       reviewerName,
       roles,
+      teamIds,
     );
   }
 
@@ -342,9 +693,12 @@ export class VideoLibraryService {
     approverId: string,
     approverName: string,
     approverRoles: string[],
+    /** Team sở hữu video ở tab Team (bỏ qua khi video vào tab Chung). */
+    teamIds: string[] = [],
   ): Promise<{ videoLibraryId: string; approvedContentId: string | null }> {
-    // LEADER duyệt → tab Team, ADMIN duyệt → tab Chung (khớp quyền xoá đã có ở FE)
-    const collectionType = approverRoles.includes('ADMIN') ? 'SHARED' : 'TEAM';
+    // Có team sở hữu → kho Team của team đó (tab Chung vẫn hiện mọi video), kể cả khi ADMIN duyệt
+    // đề xuất của member. Không có team nào (admin tự thêm thẳng) → kho Chung.
+    const collectionType = teamIds.length > 0 || !approverRoles.includes('ADMIN') ? 'TEAM' : 'SHARED';
     const approverRole = (approverRoles.includes('ADMIN') ? 'ADMIN' : approverRoles.includes('LEADER') ? 'LEADER' : approverRoles[0] || 'MEMBER') as any;
 
     const existing = await this.prisma.videoLibrary.findUnique({
@@ -373,6 +727,7 @@ export class VideoLibraryService {
           notes: video.notes ?? null,
         },
       }));
+    if (collectionType === 'TEAM') await this.linkTeams(libraryRow.id, teamIds);
 
     // Sinh script CHẠY NỀN, không bắt người bấm ngồi đợi.
     //
@@ -380,11 +735,30 @@ export class VideoLibraryService {
     // cộng với bước lấy số liệu nền tảng thì leader bấm "Thêm vào BST" phải chờ ~15-19 giây
     // mới thấy phản hồi. Mà kết quả của nó vốn đã là "best effort" — lỗi AI không hề rollback
     // VideoLibrary (xem chú thích ở đầu hàm) — nên chẳng có lý do gì phải chặn.
-    this.trackScriptJob(this.generateScriptFor(video, approverId, approverName, approverRole));
+    //
+    // Tạo NGAY dòng Content ở trạng thái PROCESSING rồi mới chạy nền: tab Content hiện "Đang tạo
+    // kịch bản…" thay vì trống trơn, và lỗi thì dòng thành FAILED kèm lý do + nút "Thử lại"
+    // thay vì biến mất không dấu vết như trước.
+    const content = await this.prisma.approvedContent.create({
+      data: {
+        script: '',
+        script_status: 'PROCESSING',
+        content_type: 'SCRAPED_VIDEO',
+        content_type_display: 'Video sưu tầm',
+        word_count: 0,
+        source_video_id: video.video_id,
+        source_video_title: video.title,
+        source_video_desc: video.description,
+        source_video_url: video.video_url,
+        source_platform: video.platform,
+        approved_by_id: approverId,
+        approved_by_name: approverName,
+        approved_by_role: approverRole,
+      },
+    });
+    this.trackScriptJob(this.generateScriptFor(content.id, video, { id: approverId }));
 
-    // approvedContentId luôn null từ đây: content được tạo sau, ở chạy nền.
-    // Đã kiểm tra không nơi nào (FE lẫn BE) đọc giá trị này ngoài khai báo kiểu.
-    return { videoLibraryId: libraryRow.id, approvedContentId: null };
+    return { videoLibraryId: libraryRow.id, approvedContentId: content.id };
   }
 
   /**
@@ -405,13 +779,64 @@ export class VideoLibraryService {
     await Promise.all([...this.pendingScriptJobs]);
   }
 
+  /**
+   * Sinh kịch bản cho một dòng Content (đã tạo sẵn ở PROCESSING).
+   *
+   * 1. AI tải video + Gemini viết từ lời thoại và hình ảnh (script-from-video).
+   * 2. AI trả ENGINE_DISABLED (chưa bật Gemini) hoặc lỗi → quay về cách cũ: viết từ tiêu đề/mô tả.
+   * 3. Cả hai hỏng → FAILED kèm lý do để người dùng bấm "Thử lại".
+   *
+   * Không bao giờ ném ra ngoài: đây là promise chạy nền không ai await.
+   */
   private async generateScriptFor(
+    contentId: string,
     video: { video_id: string; platform: string; title: string; description: string; video_url: string;
              views_count: bigint; likes_count: bigint; comments_count: bigint },
-    approverId: string,
-    approverName: string,
-    approverRole: any,
+    approver: { id: string; email?: string },
   ): Promise<void> {
+    let voiceError = '';
+    let downloadSource: string | null = null;
+    try {
+      // Chi phí TikHub (tải dự phòng) + Gemini (viết) do chốt chung ghi, gắn content + người duyệt
+      const res = await runWithUsageTag(
+        { page: 'COLLECTION', feature: 'SCRIPT', userId: approver.id, videoId: video.video_id, platform: video.platform, contentId },
+        () => this.aiIntegration.generateScriptFromVideo(
+          {
+            videoUrl: video.video_url,
+            platform: video.platform,
+            videoId: video.video_id,
+            title: video.title,
+            description: video.description,
+          },
+          approver,
+        ),
+      );
+      downloadSource = res?.download?.ok ? res.download.source ?? null : null;
+      if (res?.status === 'DONE' && res.script_text) {
+        await this.prisma.approvedContent.update({
+          where: { id: contentId },
+          data: {
+            script: res.script_text,
+            word_count: wordCount(res.script_text),
+            script_status: 'DONE',
+            script_source: res.source === 'gemini_video' ? 'GEMINI_VIDEO' : 'GEMINI_TEXT',
+            transcript: res.transcript || null,
+            transcript_language: res.language || null,
+            has_voice: res.has_voice ?? null,
+            script_error: null,
+            download_source: downloadSource,
+          },
+        });
+        this.logger.log(`[VIDEO-LIBRARY] Kich ban tu video xong (${res.source}) cho "${video.title.slice(0, 40)}"`);
+        return;
+      }
+      // Cố ý tắt engine không phải lỗi; tắt vì thiếu khoá thì AI gửi `reason` — giữ lại để nếu cách
+      // cũ cũng hỏng, người dùng thấy đúng nguyên nhân thay vì chỉ thấy lỗi của cách cũ.
+      voiceError = res?.status === 'ENGINE_DISABLED' ? res?.reason || '' : res?.error || 'AI không trả kịch bản';
+    } catch (err: any) {
+      voiceError = err?.message || String(err);
+    }
+
     try {
       const result = await this.aiIntegration.analyzeScrapedVideo({
         platform: video.platform,
@@ -421,30 +846,31 @@ export class VideoLibraryService {
         likesCount: Number(video.likes_count),
         commentsCount: Number(video.comments_count),
       });
-
       const script = `${result.vietnamese_content}\n\n--- Phân tích ---\n${result.script_outline}`;
-      await this.prisma.approvedContent.create({
+      await this.prisma.approvedContent.update({
+        where: { id: contentId },
         data: {
           script,
-          content_type: 'SCRAPED_VIDEO',
-          content_type_display: 'Video sưu tầm',
           word_count: wordCount(script),
-          source_video_id: video.video_id,
-          source_video_title: video.title,
-          source_video_desc: video.description,
-          source_video_url: video.video_url,
-          approved_by_id: approverId,
-          approved_by_name: approverName,
-          approved_by_role: approverRole,
+          script_status: 'DONE',
+          script_source: 'LEGACY_TEXT',
+          script_error: voiceError || null,
+          download_source: downloadSource,
         },
       });
-      this.logger.log(`[VIDEO-LIBRARY] Da sinh xong script nen cho "${video.title.slice(0, 40)}"`);
+      this.logger.log(`[VIDEO-LIBRARY] Kich ban cach cu xong cho "${video.title.slice(0, 40)}"`);
     } catch (err: any) {
-      // Không ném ra ngoài: video đã vào bộ sưu tập rồi, thiếu script không được phép làm
-      // sập tiến trình vì đây là promise không ai await.
-      this.logger.error(
-        `[VIDEO-LIBRARY] Video "${video.title.slice(0, 40)}" da vao bo suu tap nhung sinh script loi: ${err.message}`,
-      );
+      const message = [voiceError, err?.message || String(err)].filter(Boolean).join(' | ');
+      this.logger.error(`[VIDEO-LIBRARY] Video "${video.title.slice(0, 40)}" sinh kich ban loi: ${message}`);
+      try {
+        await this.prisma.approvedContent.update({
+          where: { id: contentId },
+          data: { script_status: 'FAILED', script_error: message.slice(0, 2000), download_source: downloadSource },
+        });
+      } catch (updateErr: any) {
+        // Chặn tuyệt đối: lỗi thoát khỏi promise chạy nền là sập cả tiến trình.
+        this.logger.error(`[VIDEO-LIBRARY] Khong ghi duoc trang thai FAILED cho content ${contentId}: ${updateErr?.message}`);
+      }
     }
   }
 }

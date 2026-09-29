@@ -9,6 +9,7 @@ import { json, urlencoded } from 'express';
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { initSocialSyncCron } from './social-sync.scheduler';
+import { requestContextMiddleware } from './common/api-usage/request-context';
 
 // Fix BigInt serialization for JSON
 (BigInt.prototype as any).toJSON = function () {
@@ -21,6 +22,10 @@ async function bootstrap() {
       ? ['error', 'warn', 'log']
       : ['error', 'warn', 'log', 'debug'],
   });
+
+  // Đầu tiên: giữ ngữ cảnh request (người bấm, trang FE) cho chốt ghi chi phí TikHub/Gemini
+  // của mọi lượt gọi AI — xem common/api-usage.
+  app.use(requestContextMiddleware);
 
   // Express body-parser mặc định giới hạn 100kb — không đủ cho system_prompt dài (~30-60KB
   // thô, cộng thêm overhead escape ký tự đặc biệt khi encode JSON). Nâng lên 2mb để có dư
