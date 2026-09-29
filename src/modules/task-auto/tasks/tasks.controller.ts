@@ -10,20 +10,13 @@ import {
   Query,
   UseGuards,
   Request,
-  Res,
-  BadRequestException,
 } from "@nestjs/common";
-import { Response } from "express";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
+import { ContentApprovalService } from "../content-approval/content-approval.service";
 import { TaskAutoTasksService } from "./tasks.service";
-import { TaskAutoVideoService } from "../video/video.service";
-import { VideoScriptService } from "./video-script.service";
-import { ContentApprovalService } from "./content-approval.service";
-import { TaskVideoMatchService } from "./task-video-match.service";
-import { TaskExportService } from "./task-export.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -32,11 +25,6 @@ import {
   SubmitTaskDto,
   ReviewTaskDto,
   UpdatePublishedLinksDto,
-  GenerateVideoScriptDto,
-  UpdateVideoScriptDto,
-  TranslateVideoScriptDto,
-  ReviewContentApprovalDto,
-  QueryContentApprovalDto,
 } from "./dto/task.dto";
 
 @ApiTags("task-auto")
@@ -46,11 +34,7 @@ import {
 export class TaskAutoTasksController {
   constructor(
     private tasks: TaskAutoTasksService,
-    private video: TaskAutoVideoService,
-    private videoScript: VideoScriptService,
     private contentApproval: ContentApprovalService,
-    private videoMatch: TaskVideoMatchService,
-    private taskExport: TaskExportService,
   ) {}
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -80,27 +64,6 @@ export class TaskAutoTasksController {
     return { total, submittedTotal, contentApprovalTotal };
   }
 
-  @Get("tasks/export")
-  @ApiOperation({
-    summary:
-      "Xuất Excel danh sách task ĐÃ HOÀN THÀNH (APPROVED) theo đúng bộ lọc đang chọn trên trang " +
-      "Nhiệm vụ — mỗi người thực hiện 1 sheet, kèm bảng KPI tháng (đạt / mục tiêu). Ô 'Trạng thái' " +
-      "bị bỏ qua (luôn xuất task đã duyệt); tối đa 10.000 dòng/lần.",
-  })
-  async exportTasks(@Query() q: QueryTaskDto, @Res() res: Response, @Request() req: any) {
-    const { buffer, filename } = await this.taskExport.exportApprovedTasks(q, req.user);
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-    );
-    res.setHeader("Content-Length", String(buffer.length));
-    res.end(buffer);
-  }
-
   @Get("tasks/:id")
   @ApiOperation({ summary: "Get task detail" })
   getTask(@Param("id") id: string) {
@@ -114,21 +77,6 @@ export class TaskAutoTasksController {
   })
   createTask(@Body() dto: CreateTaskDto, @Request() req: any) {
     return this.tasks.create(dto, req.user.id, req.user.roles ?? []);
-  }
-
-  // Phải đứng trước "tasks/:id" — path 1 segment, nếu không route động :id nuốt mất.
-  @Post("tasks/match-videos")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER")
-  @ApiOperation({
-    summary:
-      "Chạy tay job khớp video kênh nội bộ (FB/IG) với task + gắn link bài đăng (thường chạy cron 07:45). Dùng để test/backfill.",
-  })
-  matchVideos(@Body() body: { since_days?: number; max_videos?: number }) {
-    return this.videoMatch.runDailyMatch({
-      sinceDays: body?.since_days,
-      maxVideos: body?.max_videos,
-    });
   }
 
   @Put("tasks/:id")
@@ -199,15 +147,6 @@ export class TaskAutoTasksController {
     );
   }
 
-  @Get("tasks/:id/video-matches")
-  @ApiOperation({
-    summary:
-      "Lịch sử job khớp video kênh nội bộ tự động cho task này (audit: link nào tự gắn, điểm số, vì sao bỏ)",
-  })
-  getVideoMatches(@Param("id") id: string) {
-    return this.videoMatch.listMatchesForTask(id);
-  }
-
   @Delete("tasks/:id")
   @ApiOperation({
     summary:
@@ -217,157 +156,4 @@ export class TaskAutoTasksController {
     return this.tasks.remove(id, req.user.id, req.user.roles ?? []);
   }
 
-  // ── Video ─────────────────────────────────────────────────────────────────
-
-  @Post("tasks/:id/promote-video")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "LEADER thủ công promote video tạm lên Drive" })
-  promoteTaskVideo(@Param("id") id: string) {
-    return this.video.uploadPendingToDrive(id);
-  }
-
-  @Delete("tasks/:id/pending-video")
-  @ApiOperation({
-    summary: "Xoá video tạm của task (editor upload lại hoặc LEADER dọn dẹp)",
-  })
-  deleteTaskVideo(@Param("id") id: string, @Request() req: any) {
-    return this.video.removeVideo(id, req.user.id, req.user.roles ?? []);
-  }
-
-  @Post("tasks/:id/upload-video/init")
-  @ApiOperation({ summary: "Khởi tạo phiên upload video tạm — trả về Google Drive resumable uploadUrl" })
-  initVideoUpload(
-    @Param("id") id: string,
-    @Body() body: { filename: string; mimetype: string; totalSize: number },
-    @Request() req: any,
-  ) {
-    return this.video.initChunkUpload(id, req.user.id, body, req.headers?.origin);
-  }
-
-  @Post("tasks/:id/upload-video/status")
-  @ApiOperation({ summary: "Truy vấn tiến độ resumable trên Google Drive (dùng để resume khi chunk lỗi)" })
-  videoUploadStatus(
-    @Body() body: { uploadId: string },
-    @Request() req: any,
-  ) {
-    if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.chunkUploadStatus(body.uploadId, req.user.id);
-  }
-
-  @Post("tasks/:id/upload-video/chunk")
-  @ApiOperation({ summary: "Đã bỏ — FE upload chunk trực tiếp lên Google Drive resumable uploadUrl" })
-  receiveVideoChunk() {
-    throw new BadRequestException(
-      "Endpoint này đã bỏ. FE upload chunk trực tiếp lên Google Drive resumable uploadUrl trả về từ /upload-video/init.",
-    );
-  }
-
-  @Post("tasks/:id/upload-video/finish")
-  @ApiOperation({ summary: "Hoàn tất upload: xác nhận Drive đã nhận đủ, đăng ký video tạm" })
-  finishVideoUpload(
-    @Param("id") id: string,
-    @Body() body: { uploadId: string; driveFileId?: string },
-    @Request() req: any,
-  ) {
-    if (!body.uploadId) throw new BadRequestException("Thiếu uploadId");
-    return this.video.finishChunkUpload(body.uploadId, req.user.id, id, body.driveFileId);
-  }
-
-  @Get("tasks/:id/pending-video")
-  @ApiOperation({ summary: "Stream video tạm để xem trước (hỗ trợ Range)" })
-  async streamPendingVideo(
-    @Param("id") id: string,
-    @Res() res: Response,
-  ) {
-    return this.video.streamVideo(id, res);
-  }
-
-  // ── AI Video Script ──────────────────────────────────────────────────────
-
-  @Get("tasks/:id/video-script")
-  @ApiOperation({ summary: "Lấy content AI đã sinh & cache cho task (nếu có)" })
-  async getVideoScript(@Param("id") id: string) {
-    const script = await this.videoScript.getCached(id);
-    return { script };
-  }
-
-  @Post("tasks/:id/video-script")
-  @ApiOperation({
-    summary:
-      "Sinh content AI (DeepSeek) cho task. Dùng lại cache nếu input không đổi và force=false, tránh tốn token.",
-  })
-  async generateVideoScript(
-    @Param("id") id: string,
-    @Body() dto: GenerateVideoScriptDto,
-  ) {
-    const { force, ...params } = dto;
-    return this.videoScript.generate(id, params, force ?? false);
-  }
-
-  @Patch("tasks/:id/video-script")
-  @ApiOperation({
-    summary:
-      "Sửa trực tiếp content/hashtags đã sinh (không gọi AI). Bản dịch cũ (nếu có) được giữ nguyên.",
-  })
-  async updateVideoScript(
-    @Param("id") id: string,
-    @Body() dto: UpdateVideoScriptDto,
-  ) {
-    const script = await this.videoScript.update(id, dto);
-    return { script };
-  }
-
-  @Post("tasks/:id/video-script/translate")
-  @ApiOperation({
-    summary:
-      "Dịch content/hashtags hiện tại. Tái dùng ngôn ngữ của bản dịch cũ nếu có; nếu chưa từng có " +
-      "bản dịch nào thì dùng `market` để AI tự xác định ngôn ngữ.",
-  })
-  async translateVideoScript(
-    @Param("id") id: string,
-    @Body() dto: TranslateVideoScriptDto,
-  ) {
-    const script = await this.videoScript.translate(id, dto.market);
-    return { script };
-  }
-
-  // ── Content Approval ─────────────────────────────────────────────────────
-
-  @Get("content-approvals")
-  @ApiOperation({
-    summary: "List content-approval requests (mặc định PENDING) — tab 'Content chờ duyệt'",
-  })
-  listContentApprovals(@Query() q: QueryContentApprovalDto) {
-    return this.contentApproval.list(q);
-  }
-
-  @Get("tasks/:id/content-approval")
-  @ApiOperation({
-    summary: "Lấy yêu cầu duyệt content gần nhất của task (nếu có)",
-  })
-  getContentApproval(@Param("id") id: string) {
-    return this.contentApproval.getCurrent(id);
-  }
-
-  @Post("tasks/:id/content-approval")
-  @ApiOperation({
-    summary:
-      "Editor (assignee) gửi yêu cầu duyệt content mới trước khi bắt đầu làm task",
-  })
-  requestContentApproval(@Param("id") id: string, @Request() req: any) {
-    return this.contentApproval.request(id, req.user.id);
-  }
-
-  @Post("content-approvals/:id/review")
-  @UseGuards(RolesGuard)
-  @Roles("ADMIN", "MANAGER", "LEADER")
-  @ApiOperation({ summary: "Duyệt hoặc từ chối yêu cầu duyệt content" })
-  reviewContentApproval(
-    @Param("id") id: string,
-    @Body() dto: ReviewContentApprovalDto,
-    @Request() req: any,
-  ) {
-    return this.contentApproval.review(id, dto, req.user.id);
-  }
 }

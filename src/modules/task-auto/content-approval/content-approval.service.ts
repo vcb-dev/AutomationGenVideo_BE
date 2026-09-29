@@ -8,9 +8,9 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
-import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/task.dto";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
-import { LarkWebhookNotifyService } from "./lark-webhook-notify.service";
+import { LarkWebhookNotifyService } from "../lark-notifications/lark-webhook-notify.service";
+import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/content-approval.dto";
 
 const approvalInclude = {
   requested_by: { select: { id: true, full_name: true, email: true } },

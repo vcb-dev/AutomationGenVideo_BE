@@ -1,4 +1,4 @@
-import { PublishedLinkStats } from "./task-published-link-stats.service";
+import { PublishedLinkStats } from "../../modules/task-auto/published-links/task-published-link-stats.service";
 
 // Ngưỡng view tính "win": 1 link bài đăng bất kỳ vượt ngưỡng là WIN (không cộng dồn). Chỉ số
 // tự tính, tách biệt EditorKpi.video_win/fail và content-report/ContentVideo.status (nhập tay).

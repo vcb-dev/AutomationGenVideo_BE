@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ContentApprovalService } from '../../content-approval/content-approval.service';
 import { TaskAutoTasksService } from '../tasks.service';
-import { ContentApprovalService } from '../content-approval.service';
 
 /**
  * Gói test cho TaskAutoTasksService — phần create()/update()/remove()/submit()/review()/
