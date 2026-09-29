@@ -1,12 +1,12 @@
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { VideoLibraryService } from './video-library.service';
+import { VideoLibraryService } from '../src/modules/video-library/video-library.service';
 
 /**
  * Hoàn thiện tính năng "Bộ Sưu Tập" — hàng đợi đề xuất (ScraperVideoProposal,
  * mirror TeamPushRequest) → duyệt → VideoLibrary + tự sinh ApprovedContent qua AI.
- * Business rule quan trọng nhất: LEADER duyệt → tab Team, ADMIN duyệt → tab
- * Chung (khớp quyền xoá đã code sẵn ở FE video-library/page.tsx); lỗi AI KHÔNG
- * rollback VideoLibrary vì ApprovedContent.script bắt buộc non-null.
+ * Duyệt → video vào kho Team của người đề xuất (admin tự thêm, không có team → tab Chung;
+ * chi tiết theo team xem test/video-library-team-scope.spec.ts); Content tạo ngay ở PROCESSING,
+ * lỗi AI KHÔNG rollback VideoLibrary mà Content thành FAILED kèm lý do.
  */
 function buildVideo(overrides: Partial<any> = {}) {
   return {
