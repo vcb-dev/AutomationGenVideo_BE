@@ -34,8 +34,9 @@ function makeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.
 function makeService(post: jest.Mock, env: Record<string, string | undefined> = { AI_SERVICE_URL: 'http://ai:8000/' }) {
   const configService: any = { get: jest.fn((key: string) => env[key]) };
   const jwtService: any = { sign: jest.fn(() => 'signed.jwt') };
-  const service = new ProductImageService({ post } as any, configService, jwtService);
-  return { service, jwtService };
+  const generations: any = { record: jest.fn().mockResolvedValue('gen-1') };
+  const service = new ProductImageService({ post } as any, configService, jwtService, generations);
+  return { service, jwtService, generations };
 }
 
 describe('Tạo ảnh sản phẩm — tách nền (ghép background)', () => {
@@ -106,7 +107,7 @@ describe('Tạo ảnh sản phẩm — tách nền (ghép background)', () => {
   });
 
   it('controller báo thiếu file khi không gửi ảnh', async () => {
-    const controller = new ProductImageController({ cutout: jest.fn() } as any);
+    const controller = new ProductImageController({ cutout: jest.fn() } as any, {} as any);
     await expect(controller.cutout(undefined, { user: USER })).rejects.toMatchObject({ status: 400 });
   });
 

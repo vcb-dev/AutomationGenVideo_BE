@@ -11,6 +11,20 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { firstValueFrom } from 'rxjs';
 import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
+import { ProductImageGenerationsService } from './product-image-generations.service';
+import {
+  AiUsage,
+  GENERATION_STATUS,
+  PRODUCT_IMAGE_MODE,
+  UNKNOWN_COST,
+  USD_VND_RATE_ENV,
+  aiUsageOf,
+  attachAiUsage,
+  costFromAiUsage,
+  freeCost,
+  tryParseUsdVndRate,
+  usageFromAxiosError,
+} from './product-image-cost.util';
 
 export interface ProductImageUser {
   id: string;
@@ -26,7 +40,8 @@ export interface ProductImageUser {
  *   ảnh SP mới cho Gemini thay SP.
  *
  * BE chỉ orchestrate như ảnh thẻ: nhận file từ FE rồi chuyển base64 sang AI service, không lưu
- * gì (chưa có lịch sử). Không gọi thẳng Gemini — luồng bắt buộc FE → BE → AI.
+ * ảnh. Mỗi lượt (thành công hay hỏng) được ghi vào product_image_generations kèm token/chi phí
+ * AI báo về — nguồn của tab Chi phí. Không gọi thẳng Gemini — luồng bắt buộc FE → BE → AI.
  */
 @Injectable()
 export class ProductImageService {
@@ -44,18 +59,29 @@ export class ProductImageService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
+    private readonly generations: ProductImageGenerationsService,
   ) {}
 
   async cutout(file: Express.Multer.File, user: ProductImageUser) {
-    const data = await this.callAi<{ cutout_image_base64: string; width: number; height: number }>(
-      'cutout/',
-      { image_base64: file.buffer.toString('base64'), mime_type: file.mimetype },
-      ProductImageService.CUTOUT_TIMEOUT_MS,
-      user,
-    );
-    if (!data.cutout_image_base64) {
-      throw new HttpException('AI service không trả về ảnh đã tách nền', HttpStatus.BAD_GATEWAY);
+    const startedAt = Date.now();
+    let data: { cutout_image_base64: string; width: number; height: number; model?: string };
+    try {
+      data = await this.callAi('cutout/', { image_base64: file.buffer.toString('base64'), mime_type: file.mimetype },
+        ProductImageService.CUTOUT_TIMEOUT_MS, user);
+      if (!data.cutout_image_base64) {
+        throw new HttpException('AI service không trả về ảnh đã tách nền', HttpStatus.BAD_GATEWAY);
+      }
+    } catch (err: any) {
+      await this.generations.record({
+        userId: user.id, mode: PRODUCT_IMAGE_MODE.CUTOUT, status: GENERATION_STATUS.FAILED,
+        ...freeCost(null), errorMessage: err?.message, durationMs: Date.now() - startedAt,
+      });
+      throw err;
     }
+    await this.generations.record({
+      userId: user.id, mode: PRODUCT_IMAGE_MODE.CUTOUT, status: GENERATION_STATUS.SUCCESS,
+      ...freeCost(data.model), durationMs: Date.now() - startedAt,
+    });
     return {
       imageData: `data:image/png;base64,${data.cutout_image_base64}`,
       width: data.width,
@@ -66,33 +92,60 @@ export class ProductImageService {
   async heldProduct(
     personImage: Express.Multer.File | undefined,
     productImage: Express.Multer.File | undefined,
-    note: string | undefined,
+    input: { note?: string; productName?: string },
     user: ProductImageUser,
   ) {
+    // Kiểm hết đầu vào TRƯỚC khi gọi AI — thiếu gì thì báo ngay, không tốn lượt Gemini nào.
     if (!personImage) {
       throw new BadRequestException('Thiếu ảnh chị Nhạm đang cầm sản phẩm (personImage)');
     }
     if (!productImage) {
       throw new BadRequestException('Thiếu ảnh sản phẩm mới (productImage)');
     }
-    const data = await this.callAi<{ image_base64: string; mime_type: string }>(
-      'held-product/',
-      {
+    const productName = input.productName?.trim();
+    if (!productName) {
+      throw new BadRequestException('Nhập tên sản phẩm — dùng để thống kê chi phí theo từng sản phẩm');
+    }
+
+    const startedAt = Date.now();
+    let data: { image_base64: string; mime_type: string; usage?: AiUsage };
+    try {
+      data = await this.callAi('held-product/', {
         person_image_base64: personImage.buffer.toString('base64'),
         person_mime_type: personImage.mimetype,
         product_image_base64: productImage.buffer.toString('base64'),
         product_mime_type: productImage.mimetype,
-        note: note?.trim() || undefined,
-      },
-      ProductImageService.HELD_PRODUCT_TIMEOUT_MS,
-      user,
-    );
-    if (!data.image_base64 || !data.mime_type) {
-      throw new HttpException('AI service không trả về ảnh đã tạo', HttpStatus.BAD_GATEWAY);
+        note: input.note?.trim() || undefined,
+      }, ProductImageService.HELD_PRODUCT_TIMEOUT_MS, user);
+      if (!data.image_base64 || !data.mime_type) {
+        throw attachAiUsage(new HttpException('AI service không trả về ảnh đã tạo', HttpStatus.BAD_GATEWAY), data.usage);
+      }
+    } catch (err: any) {
+      // Lượt hỏng vẫn có thể đã tốn tiền (Gemini chạy xong nhưng không trả ảnh) — ghi đủ để thống kê.
+      await this.generations.record({
+        userId: user.id, mode: PRODUCT_IMAGE_MODE.HELD_PRODUCT, status: GENERATION_STATUS.FAILED, productName,
+        ...costFromAiUsage(aiUsageOf(err), UNKNOWN_COST), errorMessage: err?.message, durationMs: Date.now() - startedAt,
+      });
+      throw err;
     }
+
+    const cost = costFromAiUsage(data.usage, UNKNOWN_COST);
+    const generationId = await this.generations.record({
+      userId: user.id, mode: PRODUCT_IMAGE_MODE.HELD_PRODUCT, status: GENERATION_STATUS.SUCCESS, productName,
+      ...cost, durationMs: Date.now() - startedAt,
+    });
+    // Thiếu tỷ giá không được làm hỏng lượt đã trả tiền — chỉ chưa quy ra VNĐ, kèm lý do.
+    const { rate, note: rateNote } = tryParseUsdVndRate(this.configService.get<string>(USD_VND_RATE_ENV));
     return {
       imageData: `data:${data.mime_type};base64,${data.image_base64}`,
       mimeType: data.mime_type,
+      /** null khi ghi nhật ký hỏng — FE ẩn nút "Đạt" của ảnh này. */
+      generationId,
+      cost: {
+        usd: cost.cost_usd,
+        vnd: cost.cost_usd !== null && rate !== null ? Math.round(cost.cost_usd * rate) : null,
+        note: cost.cost_note ?? (cost.cost_usd !== null && rate === null ? rateNote : null),
+      },
     };
   }
 
@@ -112,7 +165,10 @@ export class ProductImageService {
     try {
       aiServiceUrl = resolveAiServiceUrl(this.configService);
     } catch (err: any) {
-      throw new InternalServerErrorException(err.message);
+      throw attachAiUsage(new InternalServerErrorException(err.message), {
+        cost_usd: 0,
+        cost_note: 'Chưa gọi AI service (thiếu cấu hình) — không tính phí.',
+      });
     }
     const url = `${aiServiceUrl}/api/ai/product-image/${path}`;
     const token = this.jwtService.sign({ sub: user.id, email: user.email ?? undefined });
@@ -128,9 +184,9 @@ export class ProductImageService {
         }),
       );
       if (!response.data?.success) {
-        throw new HttpException(
-          response.data?.error_message || 'AI service báo lỗi không rõ lý do',
-          HttpStatus.BAD_GATEWAY,
+        throw attachAiUsage(
+          new HttpException(response.data?.error_message || 'AI service báo lỗi không rõ lý do', HttpStatus.BAD_GATEWAY),
+          response.data?.usage,
         );
       }
       this.logger.log(`[${path}] user=${user.id} xong sau ${Date.now() - startedAt}ms`);
@@ -141,7 +197,7 @@ export class ProductImageService {
         `[${path}] user=${user.id} lỗi sau ${Date.now() - startedAt}ms: ` +
           `${err?.message ?? `HTTP ${err?.response?.status}`}`,
       );
-      throw toAiHttpException(err, timeoutMs);
+      throw attachAiUsage(toAiHttpException(err, timeoutMs), usageFromAxiosError(err));
     }
   }
 }
