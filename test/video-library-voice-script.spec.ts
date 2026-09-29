@@ -130,25 +130,25 @@ describe('Kịch bản từ video — chạy nền sau khi duyệt', () => {
     const { service, aiIntegration, contentRows } = build();
     aiIntegration.generateScriptFromVideo.mockResolvedValue({
       status: 'ENGINE_DISABLED',
-      reason: 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice.',
+      reason: 'Chưa cấu hình GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice.',
       download: { ok: true, source: 'free' },
     });
     aiIntegration.analyzeScrapedVideo.mockRejectedValue(new Error('DEEPSEEK_API_KEY chưa được cấu hình'));
     await approveDirect(service);
     expect(contentRows[0].script_status).toBe('FAILED');
     expect(contentRows[0].script_error).toBe(
-      'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice. | DEEPSEEK_API_KEY chưa được cấu hình',
+      'Chưa cấu hình GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice. | DEEPSEEK_API_KEY chưa được cấu hình',
     );
   });
 
   it('Gemini tắt vì thiếu khoá nhưng cách cũ chạy → DONE, vẫn ghi lý do để tra cứu', async () => {
     const { service, aiIntegration, contentRows } = build();
     aiIntegration.generateScriptFromVideo.mockResolvedValue({
-      status: 'ENGINE_DISABLED', reason: 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY', download: { ok: true, source: 'free' },
+      status: 'ENGINE_DISABLED', reason: 'Chưa cấu hình GEMINI_API_KEY', download: { ok: true, source: 'free' },
     });
     await approveDirect(service);
     expect(contentRows[0]).toMatchObject({
-      script_status: 'DONE', script_source: 'LEGACY_TEXT', script_error: 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY',
+      script_status: 'DONE', script_source: 'LEGACY_TEXT', script_error: 'Chưa cấu hình GEMINI_API_KEY',
     });
   });
 

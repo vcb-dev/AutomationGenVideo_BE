@@ -82,7 +82,7 @@ export interface VideoScriptResult {
   has_voice?: boolean;
   source?: 'gemini_video' | 'gemini_text';
   error?: string;
-  /** ENGINE_DISABLED: lý do tắt (vd thiếu VIDEO_TO_TEXT_GEMINI_API_KEY); rỗng khi cố ý tắt */
+  /** ENGINE_DISABLED: lý do tắt (vd thiếu GEMINI_API_KEY); rỗng khi cố ý tắt */
   reason?: string;
   download?: { ok: boolean; source?: 'free' | 'tikhub'; duration?: number; has_audio?: boolean; error?: string | null };
   /** Chi phí TikHub/Gemini của lượt này (có cả khi thất bại) */
