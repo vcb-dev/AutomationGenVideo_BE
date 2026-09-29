@@ -85,8 +85,11 @@ describe('Bộ sưu tập gắn nhãn cho chốt ghi chi phí', () => {
   });
 });
 
+// Tỷ giá là biến bắt buộc (không có mặc định trong code) — mỗi test tự cấp, test riêng kiểm lúc thiếu.
+beforeEach(() => { process.env.USD_VND_RATE = '26000'; });
+afterEach(() => { delete process.env.USD_VND_RATE; });
+
 describe('Thống kê chi phí (getCostStats)', () => {
-  afterEach(() => { delete process.env.USD_VND_RATE; });
 
   function row(o: any) {
     return {
@@ -141,9 +144,12 @@ describe('Thống kê chi phí (getCostStats)', () => {
     expect(where.created_at.lte.toISOString()).toBe('2026-09-28T16:59:59.999Z');
   });
 
-  it('tỷ giá mặc định 26.000 khi chưa cấu hình', async () => {
+  it('thiếu hoặc sai USD_VND_RATE → báo lỗi nêu tên biến, không tự lấy tỷ giá nào', async () => {
     const { service } = build();
-    expect((await service.getCostStats()).pricing.usd_vnd_rate).toBe(26000);
+    for (const bad of [undefined, '', 'abc', '0', '-1']) {
+      if (bad === undefined) delete process.env.USD_VND_RATE; else process.env.USD_VND_RATE = bad;
+      await expect(service.getCostStats()).rejects.toThrow('Thiếu USD_VND_RATE');
+    }
   });
 });
 
@@ -152,6 +158,12 @@ describe('Tài khoản TikHub', () => {
     const { service } = build();
     const res: any = await service.getTikhubAccount({ id: LEADER });
     expect(res).toMatchObject({ key_name: 'VCB-DEV', balance_vnd: Math.round(10.3608 * 26000), today_usage_vnd: Math.round(0.404 * 26000) });
+  });
+
+  it('thiếu USD_VND_RATE → báo lỗi nêu tên biến', async () => {
+    const { service } = build();
+    delete process.env.USD_VND_RATE;
+    await expect(service.getTikhubAccount({ id: LEADER })).rejects.toThrow('Thiếu USD_VND_RATE');
   });
 
   it('AI lỗi → trả nguyên lỗi để trang hiện lý do', async () => {

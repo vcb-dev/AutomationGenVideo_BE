@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PushService } from '../../common/push/push.service';
 import { AiIntegrationService } from '../ai-integration/ai-integration.service';
@@ -27,11 +27,18 @@ function withTeams<T extends { teams?: Array<{ team: TeamRef }> }>(row: T): Omit
 
 const TEAMS_INCLUDE = { teams: { include: { team: { select: { id: true, name: true } } } } } as const;
 
-/** Tỷ giá quy đổi chi phí sang VNĐ. Mặc định 26.000 — khớp tỷ giá ngầm của đơn giá MiniMax
- *  đang dùng (2.600đ/1.000 ký tự = $100/1 triệu ký tự). Đổi bằng env USD_VND_RATE. */
+export const USD_VND_RATE_ENV = 'USD_VND_RATE';
+
+/** Tỷ giá quy đổi chi phí USD → VNĐ cho tab Chi phí — env USD_VND_RATE, BẮT BUỘC (không có giá trị
+ *  mặc định trong code). Thiếu / sai thì báo lỗi nêu tên biến, trang Chi phí hiện nguyên thông báo này. */
 function usdVndRate(): number {
-  const rate = Number(process.env.USD_VND_RATE);
-  return Number.isFinite(rate) && rate > 0 ? rate : 26_000;
+  const rate = Number(process.env[USD_VND_RATE_ENV]);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new InternalServerErrorException(
+      `Thiếu ${USD_VND_RATE_ENV} trong .env (tỷ giá quy đổi chi phí USD → VNĐ, số dương) — xem .env.example.`,
+    );
+  }
+  return rate;
 }
 
 /** Ngày theo lịch Việt Nam (YYYY-MM-DD) của một mốc thời gian. */
