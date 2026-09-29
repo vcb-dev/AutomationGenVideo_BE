@@ -5,6 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 import { ProductImageController } from './product-image.controller';
 import { ProductImageService } from './product-image.service';
+import { ProductImageGenerationsService } from './product-image-generations.service';
 
 @Module({
   imports: [
@@ -22,6 +23,6 @@ import { ProductImageService } from './product-image.service';
     }),
   ],
   controllers: [ProductImageController],
-  providers: [ProductImageService],
+  providers: [ProductImageService, ProductImageGenerationsService],
 })
 export class ProductImageModule {}

@@ -4645,6 +4645,40 @@ enum IdPhotoStatus {
 }
 
 // ─────────────────────────────────────────────
+//  TẠO ẢNH SẢN PHẨM (Tiện ích) — nhật ký từng lượt để tính chi phí
+// ─────────────────────────────────────────────
+
+/// Mỗi lượt bấm ở Tiện ích → Tạo ảnh sản phẩm: tách nền (0đ) hoặc Gemini thay SP trên tay chị Nhạm
+/// (tính phí). Nguồn của tab Chi phí: tổng tiền, số lượt, số ảnh "Đạt", chi phí cho 1 ảnh đạt.
+/// Không lưu ảnh. Không khoá ngoại tới users: xoá người dùng vẫn giữ lịch sử chi phí.
+model ProductImageGeneration {
+  id            String    @id @default(uuid())
+  user_id       String    @db.Uuid
+  /// CUTOUT | HELD_PRODUCT
+  mode          String    @db.VarChar(20)
+  /// SUCCESS | FAILED
+  status        String    @db.VarChar(10)
+  product_name  String?   @db.VarChar(200)
+  model         String?   @db.VarChar(100)
+  input_tokens  Int       @default(0)
+  output_tokens Int       @default(0)
+  /// NULL = chưa tính được tiền (thiếu đơn giá model, hết thời gian chờ...) — lý do ở cost_note
+  cost_usd      Decimal?  @db.Decimal(12, 6)
+  cost_note     String?   @db.VarChar(300)
+  error_message String?   @db.VarChar(500)
+  duration_ms   Int       @default(0)
+  /// Người dùng bấm "Đạt" — ảnh dùng được làm content (chỉ lượt HELD_PRODUCT thành công)
+  approved_at   DateTime?
+  approved_by   String?   @db.Uuid
+  created_at    DateTime  @default(now())
+
+  @@index([created_at(sort: Desc)])
+  @@index([mode, created_at])
+  @@index([user_id])
+  @@map("product_image_generations")
+}
+
+// ─────────────────────────────────────────────
 //  VÒNG QUAY MAY MẮN — sự kiện nội bộ
 //  Dữ liệu dùng chung toàn công ty, mọi người đăng nhập đều xem và thao tác được.
 // ─────────────────────────────────────────────

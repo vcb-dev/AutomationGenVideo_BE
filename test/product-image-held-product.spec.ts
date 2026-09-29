@@ -24,7 +24,8 @@ function makeFile(content: string, mimetype: string): Express.Multer.File {
 function makeService(post: jest.Mock) {
   const configService: any = { get: jest.fn((key: string) => (key === 'AI_SERVICE_URL' ? 'http://ai:8000' : undefined)) };
   const jwtService: any = { sign: jest.fn(() => 'signed.jwt') };
-  return new ProductImageService({ post } as any, configService, jwtService);
+  const generations: any = { record: jest.fn().mockResolvedValue('gen-1') };
+  return new ProductImageService({ post } as any, configService, jwtService, generations);
 }
 
 const PERSON = makeFile('person-bytes', 'image/jpeg');
@@ -35,7 +36,7 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
     const post = jest.fn(() => of({ data: { success: true, image_base64: 'SlBH', mime_type: 'image/jpeg' } }));
     const service = makeService(post);
 
-    const result = await service.heldProduct(PERSON, PRODUCT, '  hộp cao 30cm ', USER);
+    const result = await service.heldProduct(PERSON, PRODUCT, { note: '  hộp cao 30cm ', productName: 'Nhẫn Kim Vũ' }, USER);
 
     const [url, body, config] = post.mock.calls[0] as any[];
     expect(url).toBe('http://ai:8000/api/ai/product-image/held-product/');
@@ -48,12 +49,12 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
     });
     expect(config.timeout).toBe(ProductImageService.HELD_PRODUCT_TIMEOUT_MS);
     expect(config.headers.Authorization).toBe('Bearer signed.jwt');
-    expect(result).toEqual({ imageData: 'data:image/jpeg;base64,SlBH', mimeType: 'image/jpeg' });
+    expect(result).toMatchObject({ imageData: 'data:image/jpeg;base64,SlBH', mimeType: 'image/jpeg' });
   });
 
   it('ghi chú rỗng thì không gửi trường note', async () => {
     const post = jest.fn(() => of({ data: { success: true, image_base64: 'UE5H', mime_type: 'image/png' } }));
-    await makeService(post).heldProduct(PERSON, PRODUCT, '   ', USER);
+    await makeService(post).heldProduct(PERSON, PRODUCT, { note: '   ', productName: 'Nhẫn Kim Vũ' }, USER);
     expect((post.mock.calls[0] as any[])[1].note).toBeUndefined();
   });
 
@@ -61,11 +62,11 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
     const post = jest.fn();
     const service = makeService(post);
 
-    await expect(service.heldProduct(undefined, PRODUCT, undefined, USER)).rejects.toMatchObject({
+    await expect(service.heldProduct(undefined, PRODUCT, { productName: 'Nhẫn' }, USER)).rejects.toMatchObject({
       status: 400,
       message: expect.stringContaining('chị Nhạm'),
     });
-    await expect(service.heldProduct(PERSON, undefined, undefined, USER)).rejects.toMatchObject({
+    await expect(service.heldProduct(PERSON, undefined, { productName: 'Nhẫn' }, USER)).rejects.toMatchObject({
       status: 400,
       message: expect.stringContaining('sản phẩm mới'),
     });
@@ -74,7 +75,7 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
 
   it('AI trả thiếu mime_type thì 502, không tự gán PNG', async () => {
     const post = jest.fn(() => of({ data: { success: true, image_base64: 'UE5H' } }));
-    await expect(makeService(post).heldProduct(PERSON, PRODUCT, undefined, USER)).rejects.toMatchObject({
+    await expect(makeService(post).heldProduct(PERSON, PRODUCT, { productName: 'Nhẫn' }, USER)).rejects.toMatchObject({
       status: HttpStatus.BAD_GATEWAY,
     });
   });
@@ -83,7 +84,7 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
     const post = jest.fn(() =>
       throwError(() => ({ response: { status: 503, data: { error_message: 'Gemini đã hết hạn mức (quota).' } } })),
     );
-    await expect(makeService(post).heldProduct(PERSON, PRODUCT, undefined, USER)).rejects.toMatchObject({
+    await expect(makeService(post).heldProduct(PERSON, PRODUCT, { productName: 'Nhẫn' }, USER)).rejects.toMatchObject({
       status: 503,
       message: 'Gemini đã hết hạn mức (quota).',
     });
@@ -91,11 +92,15 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
 
   it('controller lấy đúng file đầu tiên của từng field và chuyển ghi chú', async () => {
     const heldProduct = jest.fn().mockResolvedValue({ imageData: 'x', mimeType: 'image/png' });
-    const controller = new ProductImageController({ heldProduct } as any);
+    const controller = new ProductImageController({ heldProduct } as any, {} as any);
 
-    await controller.heldProduct({ personImage: [PERSON], productImage: [PRODUCT] }, { note: 'n' }, { user: USER });
+    await controller.heldProduct(
+      { personImage: [PERSON], productImage: [PRODUCT] },
+      { note: 'n', productName: 'Nhẫn Kim Vũ' },
+      { user: USER },
+    );
 
-    expect(heldProduct).toHaveBeenCalledWith(PERSON, PRODUCT, 'n', USER);
+    expect(heldProduct).toHaveBeenCalledWith(PERSON, PRODUCT, { note: 'n', productName: 'Nhẫn Kim Vũ' }, USER);
   });
 
   describe('đổi lỗi AI service cho FE', () => {
@@ -120,12 +125,12 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
 
   describe('HeldProductDto', () => {
     it(`nhận ghi chú tới ${HELD_PRODUCT_NOTE_MAX_LENGTH} ký tự và cho phép bỏ trống`, async () => {
-      expect(await validate(plainToInstance(HeldProductDto, { note: 'a'.repeat(HELD_PRODUCT_NOTE_MAX_LENGTH) }))).toHaveLength(0);
-      expect(await validate(plainToInstance(HeldProductDto, {}))).toHaveLength(0);
+      expect(await validate(plainToInstance(HeldProductDto, { productName: 'Nhẫn', note: 'a'.repeat(HELD_PRODUCT_NOTE_MAX_LENGTH) }))).toHaveLength(0);
+      expect(await validate(plainToInstance(HeldProductDto, { productName: 'Nhẫn' }))).toHaveLength(0);
     });
 
     it('từ chối ghi chú dài quá giới hạn', async () => {
-      const errors = await validate(plainToInstance(HeldProductDto, { note: 'a'.repeat(HELD_PRODUCT_NOTE_MAX_LENGTH + 1) }));
+      const errors = await validate(plainToInstance(HeldProductDto, { productName: 'Nhẫn', note: 'a'.repeat(HELD_PRODUCT_NOTE_MAX_LENGTH + 1) }));
       expect(errors[0]?.constraints).toHaveProperty('maxLength');
     });
   });
