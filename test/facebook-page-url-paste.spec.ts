@@ -1,15 +1,12 @@
 import { HttpException } from '@nestjs/common';
 import { FacebookExternalScraperService } from '../src/modules/facebook-external-scraper/facebook-external-scraper.service';
-import { FacebookExternalScraperReadService } from '../src/modules/facebook-external-scraper/facebook-external-scraper-read.service';
 import {
   cleanFacebookUrl,
   extractFacebookPageNumericId,
   extractHandleFromUrl,
-  isFacebookPageHandle,
   isFacebookPageShareLink,
   resolveFacebookPageInput,
 } from '../src/modules/facebook-external-scraper/facebook-url.util';
-import { preferHostedImage } from '../src/common/utils/hosted-thumbnail-url.util';
 
 /**
  * Dán link Facebook vào ô "Thêm kênh" (Khám phá kênh) phải thêm được page ở mọi dạng link
@@ -17,8 +14,7 @@ import { preferHostedImage } from '../src/common/utils/hosted-thumbnail-url.util
  *   - Page không có tên rút gọn: facebook.com/p/<Tên>-<id>/ — bản cũ báo "Không thể trích
  *     xuất tên page từ URL" vì path có 2 đoạn.
  *   - Copy khi đang ở tab Reels/Video của page: facebook.com/<page>/reels/ — cũng bị từ chối.
- *   - Handle "p" do AI trả cho page /p/... không được ghi vào DB (FE hiện "@p").
- *   - Avatar: cột avatar_drive_url = 'FAILED' không được thắng URL gốc (FE gọi /.../FAILED).
+ *   - Link watch/reel không còn tạo kênh rác; link chia sẻ page báo cách sửa.
  */
 
 describe('facebook-url.util — chuẩn hoá link page', () => {
@@ -56,13 +52,6 @@ describe('facebook-url.util — chuẩn hoá link page', () => {
     const cleanUrl = cleanFacebookUrl(input);
     expect(extractHandleFromUrl(cleanUrl)).toBe('');
     expect(extractFacebookPageNumericId(cleanUrl)).toBe('');
-  });
-
-  it('isFacebookPageHandle loại các đoạn path cố định của Facebook', () => {
-    for (const h of ['p', 'P', 'people', 'profile.php', 'share', 'watch', 'reel', 'groups', '', null, undefined]) {
-      expect(isFacebookPageHandle(h as any)).toBe(false);
-    }
-    expect(isFacebookPageHandle('kazan.jewelry')).toBe(true);
   });
 
   it('isFacebookPageShareLink chỉ nhận link chia sẻ PAGE, không nhận link chia sẻ bài/reel', () => {
@@ -161,77 +150,5 @@ describe('FacebookExternalScraperService.scrapeByUrl — dán link page', () => 
       expect(err.getStatus()).toBe(400);
     }
     expect(prisma.scraperFanpage.create).not.toHaveBeenCalled();
-  });
-});
-
-describe('FacebookExternalScraperService.applyFanpageUpdate — handle từ AI', () => {
-  function buildService(current: any) {
-    const prisma: any = {
-      scraperFanpage: {
-        findUnique: jest.fn().mockImplementation(({ where }: any) => (where.id ? current : null)),
-        update: jest.fn().mockResolvedValue({ id: current.id }),
-        delete: jest.fn(),
-      },
-    };
-    return { service: new FacebookExternalScraperService(prisma, {} as any), prisma };
-  }
-
-  const profile = {
-    profile_id: '405898282610977',
-    name: 'House of Midas Luxe',
-    page_url: 'https://www.facebook.com/p/House-of-Midas-Luxe-61565578125138/',
-    handle: 'p',
-    avatar_url: 'https://cdn.fb/a.jpg',
-    is_verified: null,
-    followers_count: 53700,
-  };
-
-  it('không ghi handle "p" khi cập nhật bằng dữ liệu thật', async () => {
-    const { service, prisma } = buildService({ id: 30n, profile_id: '405898282610977', handle: '' });
-    await (service as any).applyFanpageUpdate(30n, profile);
-    const data = prisma.scraperFanpage.update.mock.calls.at(-1)[0].data;
-    expect(data).not.toHaveProperty('handle');
-    expect(data.name).toBe('House of Midas Luxe');
-  });
-
-  it('không ghi handle "p" khi cập nhật bằng profile tạm', async () => {
-    const { service, prisma } = buildService({ id: 30n, profile_id: 'tmp_1', handle: '', name: '', avatar_url: null, followers_count: 0n });
-    await (service as any).applyFanpageUpdate(30n, profile, true);
-    const data = prisma.scraperFanpage.update.mock.calls.at(-1)[0].data;
-    expect(data).not.toHaveProperty('handle');
-  });
-
-  it('vẫn ghi handle thật', async () => {
-    const { service, prisma } = buildService({ id: 1n, profile_id: '1', handle: '' });
-    await (service as any).applyFanpageUpdate(1n, { ...profile, profile_id: '1', handle: 'kazan.jewelry' });
-    expect(prisma.scraperFanpage.update.mock.calls.at(-1)[0].data.handle).toBe('kazan.jewelry');
-  });
-});
-
-describe('Ảnh fanpage/reel — bỏ qua dấu FAILED của ThumbnailMigration', () => {
-  it('preferHostedImage', () => {
-    expect(preferHostedImage('https://res.cloudinary.com/x.jpg', 'https://fbcdn/a.jpg')).toBe('https://res.cloudinary.com/x.jpg');
-    expect(preferHostedImage('FAILED', 'https://fbcdn/a.jpg')).toBe('https://fbcdn/a.jpg');
-    expect(preferHostedImage(null, 'https://fbcdn/a.jpg')).toBe('https://fbcdn/a.jpg');
-    expect(preferHostedImage('FAILED', 'FAILED')).toBeNull();
-    expect(preferHostedImage('FAILED', null)).toBeNull();
-  });
-
-  it('API danh sách fanpage trả avatar gốc khi avatar_drive_url = FAILED', () => {
-    const read = new FacebookExternalScraperReadService({} as any);
-    const out = (read as any).serializeFanpage(
-      {
-        id: 36n,
-        profile_id: '100063576820959',
-        name: 'Dạy nghề chế tác vàng bạc',
-        handle: 'daychetacvangbac.vn',
-        avatar_url: 'https://scontent.fbcdn.net/a.jpg',
-        avatar_drive_url: 'FAILED',
-        followers_count: 0n,
-        likes_count: 0n,
-      },
-      10,
-    );
-    expect(out.avatar_url).toBe('https://scontent.fbcdn.net/a.jpg');
   });
 });

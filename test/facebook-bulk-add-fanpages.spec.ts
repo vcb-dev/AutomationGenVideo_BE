@@ -1,4 +1,4 @@
-import { FacebookExternalScraperService } from '../facebook-external-scraper.service';
+import { FacebookExternalScraperService } from '../src/modules/facebook-external-scraper/facebook-external-scraper.service';
 
 describe('FacebookExternalScraperService.bulkAddFanpages', () => {
   it('thêm thành công các link hợp lệ và bỏ qua link trùng / sai định dạng', async () => {
