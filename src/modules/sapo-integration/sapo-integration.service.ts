@@ -151,8 +151,30 @@ export class SapoIntegrationService {
       }
     }
 
-    this.logger.log(`[Sapo] Đã tải ${allOrders.length} đơn hàng (${start} -> ${end}) từ Sapo.`);
-    return allOrders;
+    // Bỏ đơn Shopee và Zalo ngay tại nguồn: hai kênh này không gắn với page/kênh cụ thể nào nên
+    // không quy được về người hay team phụ trách. Lọc ở đây để đếm đơn, kéo doanh thu và cron
+    // cùng loại trừ một tập đơn như nhau.
+    const trackedOrders = allOrders.filter((order) => !this.isExcludedSalesChannel(order));
+    this.logger.log(
+      `[Sapo] Đã tải ${allOrders.length} đơn hàng (${start} -> ${end}) từ Sapo, bỏ ${allOrders.length - trackedOrders.length} đơn Shopee/Zalo.`,
+    );
+    return trackedOrders;
+  }
+
+  private isShopeeOrder(order: SapoOrder): boolean {
+    const rawSource = (order.source_name || order.channel || '').toLowerCase();
+    const channelDef = (order as any)?.channel_definition || {};
+    const mainName = (channelDef.main_name || '').toLowerCase();
+    const alias = (channelDef.alias || '').toLowerCase();
+    const branchName = (channelDef.branch_name || '').toLowerCase();
+    return rawSource.includes('shopee') || alias === 'shopee' || mainName.includes('shopee') || branchName.includes('shopee');
+  }
+
+  /**
+   * Đơn thuộc kênh bán không gắn với page cụ thể (Shopee, Zalo) — hệ thống không kéo các đơn này.
+   */
+  isExcludedSalesChannel(order: SapoOrder): boolean {
+    return this.isShopeeOrder(order) || this.detectPlatformAndChannel(order).platform === 'zalo';
   }
 
   /**
@@ -309,7 +331,7 @@ export class SapoIntegrationService {
 
     // 3. Phân loại theo Platform (ưu tiên phân loại rõ ràng)
     // Sàn TMĐT khác (Shopee, Lazada, Tiki) -> other
-    if (rawSource.includes('shopee') || alias === 'shopee' || mainName.includes('shopee') || (branchName && branchName.toLowerCase().includes('shopee'))) {
+    if (this.isShopeeOrder(order)) {
       return {
         platform: 'other',
         channelName: channelName || branchName || 'Shopee',
