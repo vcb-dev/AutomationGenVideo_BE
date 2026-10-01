@@ -1,4 +1,4 @@
-import { FacebookExternalScraperService } from '../facebook-external-scraper.service';
+import { FacebookExternalScraperService } from '../src/modules/facebook-external-scraper/facebook-external-scraper.service';
 
 describe('FacebookExternalScraperService.bulkAddFanpages', () => {
   it('thêm thành công các link hợp lệ và bỏ qua link trùng / sai định dạng', async () => {
@@ -12,13 +12,12 @@ describe('FacebookExternalScraperService.bulkAddFanpages', () => {
     const prisma: any = {
       scraperFanpage: {
         findFirst: jest.fn().mockImplementation(({ where }: any) => {
-          if (where.handle) {
-            return existingRows.find((r) => r.handle === where.handle) || null;
-          }
-          if (where.page_url) {
-            return existingRows.find((r) => r.page_url === where.page_url) || null;
-          }
-          return null;
+          const conditions: Record<string, unknown>[] = where.OR || [where];
+          return (
+            existingRows.find((r: any) =>
+              conditions.some((c) => Object.entries(c).every(([k, v]) => r[k] === v)),
+            ) || null
+          );
         }),
         create: jest.fn().mockImplementation(({ data }: any) => {
           const row = { id: nextId++, ...data };

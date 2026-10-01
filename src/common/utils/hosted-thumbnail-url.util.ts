@@ -25,3 +25,15 @@ export function isHostedThumbnailUrl(url?: string | null): boolean {
 export function notHostedThumbnailSql(expr: string): string {
   return HOSTED_THUMBNAIL_HOSTS.map((host) => `${expr} NOT LIKE '%${host}%'`).join(' AND ');
 }
+
+/**
+ * Chọn ảnh để trả cho FE: bản đã đẩy lên kho nếu có, không thì URL gốc.
+ *
+ * ThumbnailMigrationService ghi chữ 'FAILED' vào cột *_drive_url khi đẩy ảnh thất bại (để
+ * khỏi thử lại mãi). Viết `drive_url || url` thì chính chữ 'FAILED' thắng và FE gắn nó vào
+ * <img src>, trình duyệt gọi /.../FAILED rồi 404 — trong khi URL gốc vẫn còn.
+ */
+export function preferHostedImage(hostedUrl?: string | null, originalUrl?: string | null): string | null {
+  if (hostedUrl && hostedUrl !== 'FAILED') return hostedUrl;
+  return originalUrl && originalUrl !== 'FAILED' ? originalUrl : null;
+}
