@@ -9,7 +9,7 @@ import {
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
-import { LarkWebhookNotifyService } from "../lark-notifications/lark-webhook-notify.service";
+import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/content-approval.dto";
 
 const approvalInclude = {

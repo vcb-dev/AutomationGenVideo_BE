@@ -4,7 +4,7 @@ import { VideoModule } from '../video/video.module'
 import { SapoIntegrationModule } from '../../sapo-integration/sapo-integration.module'
 import { ContentApprovalModule } from '../content-approval/content-approval.module'
 import { PublishedLinksModule } from '../published-links/published-links.module'
-import { LarkNotificationsModule } from '../lark-notifications/lark-notifications.module'
+import { NotificationsModule } from '../notifications/notifications.module'
 import { TaskAutoTasksController } from './tasks.controller'
 import { TaskAutoTasksService } from './tasks.service'
 
@@ -13,7 +13,7 @@ import { TaskAutoTasksService } from './tasks.service'
     PrismaModule,
     VideoModule,
     PublishedLinksModule,
-    LarkNotificationsModule,
+    NotificationsModule,
     ContentApprovalModule,
     SapoIntegrationModule,
   ],

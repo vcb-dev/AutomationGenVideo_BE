@@ -32,7 +32,7 @@ import {
 } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
-import { LarkWebhookNotifyService } from "../lark-notifications/lark-webhook-notify.service";
+import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
 import {
   computeEditorKpiActuals,
@@ -45,7 +45,7 @@ import {
   resolveTaskProductLineId,
 } from "../../../utils/task-auto/product-line-category.util";
 import { SapoIntegrationService } from "../../sapo-integration/sapo-integration.service";
-import { buildTaskListWhere } from "../../../utils/task-auto/task-list-query.util";
+import { buildDeadlineRangeAnd, buildTaskListWhere } from "../../../utils/task-auto/task-list-query.util";
 
 /**
  * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
@@ -725,23 +725,6 @@ export class TaskAutoTasksService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  // Khoảng ngày lọc theo hạn chót; task chưa có hạn chót thì tính theo ngày tạo thay thế — tách
-  // riêng khỏi findAll() để dùng chung với getHeaderCounts(), tránh lệch ngữ nghĩa giữa 2 nơi.
-  private buildDeadlineRangeAnd(from?: string, to?: string) {
-    if (!from && !to) return null;
-    const rangeStart = from ? new Date(`${from}T00:00:00+07:00`) : undefined;
-    const rangeEnd = to ? new Date(`${to}T23:59:59.999+07:00`) : undefined;
-    const bounds: { gte?: Date; lte?: Date } = {};
-    if (rangeStart) bounds.gte = rangeStart;
-    if (rangeEnd) bounds.lte = rangeEnd;
-    return {
-      OR: [
-        { deadline: bounds },
-        { deadline: null, created_at: bounds },
-      ],
-    };
-  }
-
   // Đếm nhanh cho header ("N task") + badge "Video chờ duyệt" trên tasks/page.tsx — dùng count()
   // thuần (không kèm findMany như findAll()) vì FE chỉ cần con số, tránh tốn 1 lượt findMany thừa
   // cho mỗi lần gọi. Badge "Content chờ duyệt" đếm riêng ở ContentApprovalService.countPending()
@@ -758,7 +741,7 @@ export class TaskAutoTasksService {
     if (q.search) {
       totalWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const totalDeadlineAnd = this.buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
+    const totalDeadlineAnd = buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
     if (totalDeadlineAnd) totalWhere.AND = [totalDeadlineAnd];
 
     // Badge "Video chờ duyệt": luôn status SUBMITTED, khoảng ngày riêng (pending_from/to) — khớp
@@ -769,7 +752,7 @@ export class TaskAutoTasksService {
     if (q.search) {
       submittedWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const submittedDeadlineAnd = this.buildDeadlineRangeAnd(q.pending_from, q.pending_to);
+    const submittedDeadlineAnd = buildDeadlineRangeAnd(q.pending_from, q.pending_to);
     if (submittedDeadlineAnd) submittedWhere.AND = [submittedDeadlineAnd];
 
     const [total, submittedTotal] = await Promise.all([
