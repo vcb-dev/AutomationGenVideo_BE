@@ -2339,7 +2339,6 @@ export class TaskAutoTasksService {
     "tiktok",
     "yt",
     "thread",
-    "zalo",
   ] as const;
 
   private ymdLocal(d: Date): string {
@@ -2417,13 +2416,11 @@ export class TaskAutoTasksService {
         traffic_tiktok: true,
         traffic_yt: true,
         traffic_thread: true,
-        traffic_zalo: true,
         channel_fb: true,
         channel_ig: true,
         channel_tiktok: true,
         channel_yt: true,
         channel_thread: true,
-        channel_zalo: true,
       },
     });
 
@@ -2437,7 +2434,6 @@ export class TaskAutoTasksService {
       tiktok: number;
       yt: number;
       thread: number;
-      zalo: number;
       total: number;
       details: { platform: string; channel: string | null; value: number }[];
     };
@@ -2461,7 +2457,6 @@ export class TaskAutoTasksService {
           tiktok: 0,
           yt: 0,
           thread: 0,
-          zalo: 0,
           total: 0,
           details: [],
         } as TrafficRow);

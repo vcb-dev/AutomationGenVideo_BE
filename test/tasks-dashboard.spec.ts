@@ -1,4 +1,4 @@
-import { TaskAutoTasksService } from '../tasks.service';
+import { TaskAutoTasksService } from '../src/modules/task-auto/tasks/tasks.service';
 
 /**
  * getGlobalDashboard (qua getDashboard cho ADMIN/MANAGER) — bug gốc: breakdown theo trạng thái
@@ -980,7 +980,6 @@ describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng 
       ig: 0,
       tiktok: 0,
       thread: 0,
-      zalo: 0,
       total: 180,
     });
     expect(latest.details).toEqual([
