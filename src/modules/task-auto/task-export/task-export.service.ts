@@ -9,13 +9,13 @@ import {
   editorKpiActualKey,
   emptyEditorKpiActuals,
   EditorKpiActuals,
-} from "../kpi/editor-kpi-actuals.util";
+} from "../../../utils/task-auto/editor-kpi-actuals.util";
 import {
   calculateGoalProgress,
   calculateUnweightedOverall,
-} from "../performance-goals/performance-goal.calculator";
-import { TaskAutoTasksService } from "./tasks.service";
-import { QueryTaskDto } from "./dto/task.dto";
+} from "../../../utils/task-auto/performance-goal.calculator";
+import { buildTaskListWhere } from "../../../utils/task-auto/task-list-query.util";
+import { QueryTaskDto } from "../tasks/dto/task.dto";
 
 const EXPORT_MAX_ROWS = 10_000;
 const EXPORT_CHUNK = 1_000;
@@ -172,10 +172,7 @@ interface UserGroup {
 
 @Injectable()
 export class TaskExportService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly tasks: TaskAutoTasksService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   private readonly exportInclude = {
     assignee: { select: { full_name: true, email: true } },
@@ -209,7 +206,7 @@ export class TaskExportService {
     q: QueryTaskDto,
     requester?: ExportRequester,
   ): Promise<{ buffer: Buffer; filename: string }> {
-    const where = this.tasks.buildTaskListWhere({
+    const where = buildTaskListWhere({
       ...q,
       status: "APPROVED" as any,
       overdue: undefined,

@@ -13,7 +13,7 @@ import { JwtOrApiKeyGuard } from "../../api-keys/guards/jwt-or-api-key.guard";
 import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoAssignService } from "../task-auto-assign/task-auto-assign.service";
-import { LarkWebhookNotifyService } from "../tasks/lark-webhook-notify.service";
+import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { UpdateAutoAssignSettingDto, UpdateLarkWebhookSettingDto } from "./dto/settings.dto";
 
 @ApiTags("task-auto")

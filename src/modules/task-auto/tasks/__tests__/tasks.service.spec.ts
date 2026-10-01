@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ContentApprovalService } from '../../content-approval/content-approval.service';
 import { TaskAutoTasksService } from '../tasks.service';
-import { ContentApprovalService } from '../content-approval.service';
 
 /**
  * Gói test cho TaskAutoTasksService — phần create()/update()/remove()/submit()/review()/
@@ -675,6 +675,85 @@ describe('TaskAutoTasksService.getHeaderCounts', () => {
 
     expect(countCalls[0].where.status).toBe('APPROVED');
     expect(countCalls[1].where.status).toBe('SUBMITTED');
+  });
+});
+
+/**
+ * findAll() — where dựng bằng buildTaskListWhere() (utils/task-auto/task-list-query.util, dùng
+ * chung với file export). Khoảng ngày theo hạn chót dùng chung buildDeadlineRangeAnd() với
+ * getHeaderCounts() để danh sách và tổng "N task" ở header không lệch nhau.
+ */
+describe('TaskAutoTasksService.findAll — where danh sách task', () => {
+  function build() {
+    const prisma: any = {
+      task: {
+        findMany: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const whereOf = () => prisma.task.findMany.mock.calls[0][0].where;
+    return { service, prisma, whereOf };
+  }
+
+  it('overdue=true: bỏ qua status/khoảng ngày, chỉ lấy task chưa xong có deadline đã qua', async () => {
+    const { service, whereOf } = build();
+
+    await service.findAll({
+      overdue: 'true',
+      status: 'SUBMITTED',
+      deadline_from: '2026-09-01',
+      deadline_to: '2026-09-30',
+      team_id: 'team-1',
+    } as any);
+
+    const where = whereOf();
+    expect(where.status).toBeUndefined();
+    expect(where.team_id).toBe('team-1');
+    expect(where.AND).toHaveLength(2);
+    expect(where.AND[0].deadline.lt).toBeInstanceOf(Date);
+    expect(where.AND[1]).toEqual({ status: { notIn: ['APPROVED', 'CANCELLED'] } });
+  });
+
+  it('deadline_date: lọc theo ngày VN, task chưa có deadline thì theo ngày tạo; exclude_overdue loại task trễ hạn', async () => {
+    const { service, whereOf } = build();
+
+    await service.findAll({ deadline_date: '2026-09-15', exclude_overdue: 'true', status: 'IN_PROGRESS' } as any);
+
+    const where = whereOf();
+    const dayStart = new Date('2026-09-15T00:00:00+07:00');
+    const dayEnd = new Date('2026-09-15T23:59:59.999+07:00');
+    expect(where.status).toBe('IN_PROGRESS');
+    expect(where.AND[0]).toEqual({
+      OR: [
+        { deadline: { gte: dayStart, lte: dayEnd } },
+        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+      ],
+    });
+    expect(where.AND[1].OR).toEqual([
+      { deadline: null },
+      { deadline: { gte: expect.any(Date) } },
+      { status: { in: ['APPROVED', 'CANCELLED'] } },
+    ]);
+  });
+
+  it('deadline_from/to: cùng điều kiện khoảng ngày với tổng "N task" của getHeaderCounts()', async () => {
+    const { service, prisma, whereOf } = build();
+    const q = { deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any;
+
+    await service.findAll(q);
+    await service.getHeaderCounts(q);
+
+    const headerTotalWhere = prisma.task.count.mock.calls[1][0].where;
+    expect(whereOf().AND).toEqual(headerTotalWhere.AND);
+    expect(whereOf().AND).toEqual([
+      {
+        OR: [
+          { deadline: { gte: new Date('2026-09-01T00:00:00+07:00'), lte: new Date('2026-09-30T23:59:59.999+07:00') } },
+          { deadline: null, created_at: { gte: new Date('2026-09-01T00:00:00+07:00'), lte: new Date('2026-09-30T23:59:59.999+07:00') } },
+        ],
+      },
+    ]);
   });
 });
 

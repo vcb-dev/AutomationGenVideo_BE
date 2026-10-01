@@ -6,13 +6,22 @@ import { KpiModule } from './kpi/kpi.module'
 import { WarehouseModule } from './warehouse/warehouse.module'
 import { UploadModule } from './upload/upload.module'
 import { SettingsModule } from './settings/settings.module'
-import { TaskAutoAssignModule } from "./task-auto-assign/task-auto-assign.module";
+import { TaskAutoAssignModule } from './task-auto-assign/task-auto-assign.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { PerformanceGoalsModule } from './performance-goals/performance-goals.module'
+import { ContentApprovalModule } from './content-approval/content-approval.module'
+import { TaskExportModule } from './task-export/task-export.module'
+import { VideoMatchingModule } from './video-matching/video-matching.module'
+import { VideoScriptModule } from './video-script/video-script.module'
 
 @Module({
   imports: [
+    // Đăng ký route tĩnh /tasks/export trước route động /tasks/:id.
+    TaskExportModule,
     TasksModule,
+    ContentApprovalModule,
+    VideoMatchingModule,
+    VideoScriptModule,
     TeamsModule,
     CatalogModule,
     KpiModule,

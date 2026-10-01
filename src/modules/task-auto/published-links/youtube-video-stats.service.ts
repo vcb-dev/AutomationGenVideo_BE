@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { resolveShortLink } from "../../../common/utils/resolve-short-link.util";
-import { extractYoutubeVideoId } from "./youtube-url.util";
+import { extractYoutubeVideoId } from "../../../utils/task-auto/youtube-url.util";
 
 export interface YoutubeVideoStatsResult {
   status: "success" | "failed" | "unsupported";

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
-import { pickWinningLink, WinningLink } from "./published-link-win-fail.util";
+import { pickWinningLink, WinningLink } from "../../../utils/task-auto/published-link-win-fail.util";
 
 // Nhãn "Win" sẵn có cho content tự đẩy lên kho tổng — tìm-hoặc-tạo theo tên (name unique), không hard-code id.
 const CONTENT_WIN_CLASSIFICATION_NAME = "Win";

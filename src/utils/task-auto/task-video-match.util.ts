@@ -1,4 +1,4 @@
-import { unaccent } from "../../../common/utils/unaccent.util";
+import { unaccent } from "../../common/utils/unaccent.util";
 
 /**
  * Chấm điểm heuristic khớp video kênh nội bộ (FB/IG) với task. Phần thuần, test được
