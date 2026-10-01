@@ -156,6 +156,7 @@ export class ThreadsScraperReadService {
 
   async listAllPosts(params: {
     search?: string;
+    topic_tag?: string;
     media_type?: string;
     sort_by?: 'date' | 'likes' | 'views' | 'replies';
     page?: number;
@@ -186,6 +187,13 @@ export class ThreadsScraperReadService {
 
     if (params.media_type && params.media_type !== 'ALL') {
       where.media_type = params.media_type;
+    }
+
+    // Lọc kho theo tag chủ đề (bấm "> trang sức" trên bài). Tag lưu từ hai nguồn — tên hiển thị của
+    // Threads và tag người dùng gõ khi tìm — nên so không phân biệt hoa thường.
+    const topicTag = (params.topic_tag || '').trim().replace(/^#+/, '');
+    if (topicTag) {
+      where.topic_tag = { equals: topicTag, mode: 'insensitive' };
     }
 
     let orderBy: Prisma.ScraperThreadsPostOrderByWithRelationInput = { date_posted: 'desc' };
