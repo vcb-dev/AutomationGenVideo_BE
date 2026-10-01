@@ -2105,6 +2105,8 @@ model ScraperThreadsPost {
   url                 String                @default("") @db.VarChar(1000)
   text                String                @default("") @db.Text
   hashtags            String[]              @default([])
+  /// Tag chủ đề của bài (dòng "người đăng > trang sức" trên Threads), '' nếu bài không gắn tag.
+  topic_tag           String                @default("") @db.VarChar(255)
   thumbnail_url       String?               @db.Text
   thumbnail_drive_url String?               @db.Text
   media_type          String?               @default("TEXT") @db.VarChar(50)
@@ -2121,6 +2123,7 @@ model ScraperThreadsPost {
   @@index([profile_id, date_posted(sort: Desc)])
   @@index([date_posted(sort: Desc)])
   @@index([views_count(sort: Desc)])
+  @@index([topic_tag])
   @@map("scraper_threads_posts")
 }
 
