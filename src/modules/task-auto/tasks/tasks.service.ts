@@ -27,6 +27,7 @@ import {
   dailyKpiDate,
   vietnamDateString,
   vietnamDayRange,
+  vietnamDayRangeOf,
   vietnamMonthRange,
   vietnamMonthString,
 } from "../../../utils/date.utils";
@@ -1537,19 +1538,18 @@ export class TaskAutoTasksService {
     }
   }
 
-  /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
+  /** "YYYY-MM-DD" date_from/date_to → khoảng [00:00 ngày đầu, 24:00 ngày cuối) theo GIỜ VN (khớp
+   * Kanban `buildDeadlineRangeAnd`), bất kể server chạy timezone gì — prod chạy UTC nên `new Date(y,
+   * m, d)` lệch 7 tiếng, task hạn 0h-7h sáng ngày 1 bị tính sang ngày cuối tháng trước. Thiếu/sai → null. */
   private parseDateRange(
     dateFrom?: string,
     dateTo?: string,
   ): { gte: Date; lt: Date } | null {
     if (!dateFrom || !dateTo) return null;
-    const [fy, fm, fd] = dateFrom.split("-").map(Number);
-    const [ty, tm, td] = dateTo.split("-").map(Number);
-    if (!fy || !fm || !fd || !ty || !tm || !td) return null;
-    const gte = new Date(fy, fm - 1, fd);
-    const lt = new Date(ty, tm - 1, td + 1);
-    if (isNaN(gte.getTime()) || isNaN(lt.getTime()) || gte >= lt) return null;
-    return { gte, lt };
+    const from = vietnamDayRangeOf(dateFrom);
+    const to = vietnamDayRangeOf(dateTo);
+    if (!from || !to || from.gte >= to.lt) return null;
+    return { gte: from.gte, lt: to.lt };
   }
 
   /**
@@ -1670,12 +1670,7 @@ export class TaskAutoTasksService {
     assigneeId?: string,
   ) {
     const now = new Date();
-    const todayStart = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    );
-    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
     // "Khoan sâu" theo team/thành viên cụ thể — orthogonal với bộ lọc ngày (range) và áp dụng cho
     // MỌI số liệu trên màn Tổng quan kể cả 2 cảnh báo "live" (today_deadline/overdue), vì đây là
     // trục lọc THEO AI chứ không phải THEO KHI NÀO.
@@ -1806,10 +1801,7 @@ export class TaskAutoTasksService {
     // đang xem (pinTrafficMonth), không co về đúng 1 ngày như video/content.
     const trafficRange =
       pinTrafficMonth && range
-        ? {
-            gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
-            lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
-          }
+        ? vietnamMonthRange(vietnamMonthString(range.gte))!
         : periodRange;
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
@@ -2296,11 +2288,15 @@ export class TaskAutoTasksService {
    * trọn vẹn, không chia nhỏ theo ngày) khi khoảng ngày báo cáo là tự do, có thể xuyên nhiều tháng. */
   private monthsBetween(start: Date, end: Date): string[] {
     const months: string[] = [];
-    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
-    const last = new Date(end.getFullYear(), end.getMonth(), 1);
-    while (cur <= last) {
-      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
-      cur.setMonth(cur.getMonth() + 1);
+    // Tháng theo giờ VN: mốc 00:00 ngày 1 giờ VN là 17:00 ngày cuối tháng trước theo UTC (prod).
+    const [startY, startM] = vietnamMonthString(start).split("-").map(Number);
+    const last = vietnamMonthString(end);
+    for (let i = 0; ; i++) {
+      const y = startY + Math.floor((startM - 1 + i) / 12);
+      const m = ((startM - 1 + i) % 12) + 1;
+      const key = `${y}-${String(m).padStart(2, "0")}`;
+      if (key > last) break;
+      months.push(key);
     }
     return months;
   }
@@ -2342,10 +2338,6 @@ export class TaskAutoTasksService {
     "zalo",
   ] as const;
 
-  private ymdLocal(d: Date): string {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
-
   async getTrafficReportsForRole(
     userId: string,
     roles: string[],
@@ -2357,9 +2349,8 @@ export class TaskAutoTasksService {
     const now = new Date();
     const parsed = this.parseDateRange(dateFrom, dateTo);
     const range = parsed ?? vietnamMonthRange(vietnamMonthString(now))!;
-    const toYmd = parsed ? (d: Date) => this.ymdLocal(d) : vietnamDateString;
-    const from = toYmd(range.gte);
-    const to = toYmd(new Date(range.lt.getTime() - 1));
+    const from = vietnamDateString(range.gte);
+    const to = vietnamDateString(new Date(range.lt.getTime() - 1));
 
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
@@ -2808,10 +2799,7 @@ export class TaskAutoTasksService {
     const dayEnd = isSingleDay ? explicitRange!.lt : todayEnd;
     const dayKpiDateStr = vietnamDateString(isSingleDay ? explicitRange!.gte : now);
     const trafficRange = pinTrafficMonth
-      ? {
-          gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
-          lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
-        }
+      ? vietnamMonthRange(vietnamMonthString(range.gte))!
       : range;
 
     const isAllTeams = !team || team === "all";

@@ -46,7 +46,8 @@ describe('TaskAutoTasksService.getDashboard (ADMIN/MANAGER) — global dashboard
 
     await service.getDashboard('admin-1', ['ADMIN'], '2026-01-05', '2026-01-10');
 
-    const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
+    // Ngày lịch VN (00:00 VN = 17:00Z hôm trước) — bất kể máy chạy test ở timezone nào.
+    const expectedRange = { gte: new Date('2026-01-04T17:00:00Z'), lt: new Date('2026-01-10T17:00:00Z') };
     const statusCall = prisma.task.groupBy.mock.calls.find((c: any[]) => c[0].by[0] === 'status');
     expect(statusCall[0].where).toEqual({
       AND: [
@@ -269,7 +270,8 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2026-01-05', '2026-01-10');
 
-    const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
+    // Ngày lịch VN (00:00 VN = 17:00Z hôm trước) — bất kể máy chạy test ở timezone nào.
+    const expectedRange = { gte: new Date('2026-01-04T17:00:00Z'), lt: new Date('2026-01-10T17:00:00Z') };
 
     // Task đã duyệt của cả team (KPI completed) — APPROVED + deadline trong kỳ.
     expect(prisma.task.count).toHaveBeenCalledWith(
@@ -360,8 +362,8 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18', undefined, undefined, undefined, true);
 
-    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
-    const month = { gte: new Date(2025, 2, 1), lt: new Date(2025, 3, 1) };
+    const day = { gte: new Date('2025-03-17T17:00:00Z'), lt: new Date('2025-03-18T17:00:00Z') };
+    const month = { gte: new Date('2025-02-28T17:00:00Z'), lt: new Date('2025-03-31T17:00:00Z') };
 
     // Traffic + doanh thu: cả tháng 3 chứ không phải riêng ngày 18.
     expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
@@ -392,9 +394,29 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18');
 
-    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
+    const day = { gte: new Date('2025-03-17T17:00:00Z'), lt: new Date('2025-03-18T17:00:00Z') };
     expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ date: day }) }),
+    );
+  });
+
+  // Bug 1/10/2026: prod chạy UTC → 00:00 ngày 1 giờ VN là 17:00Z ngày cuối tháng trước; tính tháng
+  // bằng getMonth() của server thì "ngày 1" bị gán sang tháng trước. Chạy thêm `TZ=UTC npx jest`.
+  it('ngày đầu tháng → task ngày đó theo giờ VN, traffic theo ĐÚNG tháng mới (không lùi về tháng trước)', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('leader-1', ['LEADER'], '2026-10-01', '2026-10-01', undefined, undefined, undefined, true);
+
+    const day = { gte: new Date('2026-09-30T17:00:00Z'), lt: new Date('2026-10-01T17:00:00Z') };
+    const october = { gte: new Date('2026-09-30T17:00:00Z'), lt: new Date('2026-10-31T17:00:00Z') };
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['assignee_id'],
+        where: expect.objectContaining({ status: 'APPROVED', ...win(day) }),
+      }),
+    );
+    expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ date: october }) }),
     );
   });
 });
@@ -1005,8 +1027,8 @@ describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng 
     expect(res.rows[0]).toMatchObject({ date: '2026-08-31', fb: 10 });
 
     const where = prisma.trafficReport.findMany.mock.calls[0][0].where;
-    expect(where.date.gte).toEqual(new Date(new Date(2026, 7, 1).getTime() - 86_400_000));
-    expect(where.date.lt).toEqual(new Date(new Date(2026, 8, 1).getTime() + 86_400_000));
+    expect(where.date.gte).toEqual(new Date('2026-07-30T17:00:00Z'));
+    expect(where.date.lt).toEqual(new Date('2026-09-01T17:00:00Z'));
     expect(where.email).toBeUndefined();
   });
 
