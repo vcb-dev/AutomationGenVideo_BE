@@ -2,10 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { of } from 'rxjs';
-import { SapoIntegrationService } from '../sapo-integration.service';
-import { PrismaService } from '../../../common/prisma/prisma.service';
-import { CryptoService } from '../../social-publishing/crypto/crypto.service';
-import { SapoOrder } from '../sapo-integration.types';
+import { SapoIntegrationService } from '../src/modules/sapo-integration/sapo-integration.service';
+import { PrismaService } from '../src/common/prisma/prisma.service';
+import { CryptoService } from '../src/modules/social-publishing/crypto/crypto.service';
+import { SapoOrder } from '../src/modules/sapo-integration/sapo-integration.types';
 
 describe('SapoIntegrationService', () => {
   let service: SapoIntegrationService;
@@ -180,15 +180,15 @@ describe('SapoIntegrationService', () => {
   });
 
   describe('getDailyRevenuePreview', () => {
-    it('tổng hợp chính xác doanh thu theo nền tảng, loại bỏ đơn huỷ', async () => {
+    it('tổng hợp chính xác doanh thu theo nền tảng, loại bỏ đơn huỷ và đơn Zalo', async () => {
       const preview = await service.getDailyRevenuePreview('2026-08-29');
 
-      expect(preview.orderCount).toBe(4); // 4 đơn hợp lệ (bỏ 1 đơn cancelled)
-      expect(preview.totalRevenue).toBe((500000 + 750000 + 300000 + 200000).toString()); // 1750000
+      expect(preview.orderCount).toBe(3); // bỏ 1 đơn cancelled và 1 đơn Zalo (không kéo Zalo)
+      expect(preview.totalRevenue).toBe((500000 + 750000 + 300000).toString()); // 1550000
       expect(preview.revenue.fb).toBe('500000');
       expect(preview.revenue.tiktok).toBe('750000');
       expect(preview.revenue.ig).toBe('300000');
-      expect(preview.revenue.zalo).toBe('200000');
+      expect(preview.revenue.zalo).toBe('');
       expect(preview.revenue.yt).toBe('');
       expect(preview.revenue.thread).toBe('');
       expect(preview.channels.fb).toContain('Đồ Da Cao Cấp');
