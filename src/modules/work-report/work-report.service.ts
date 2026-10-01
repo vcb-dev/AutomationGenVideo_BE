@@ -413,7 +413,7 @@ export class WorkReportService implements OnModuleInit {
             }
         }
 
-        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
         const recordsToCreate = [];
 
         // 1. Process breakdown-based submissions
@@ -590,7 +590,7 @@ export class WorkReportService implements OnModuleInit {
             }
         }
 
-        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+        const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
         const recordsToCreate = [];
 
         platformKeys.forEach(pKey => {
@@ -1993,7 +1993,7 @@ export class WorkReportService implements OnModuleInit {
                     const mergeTraffic = (existing: any, current: any) => {
                         const res = { ...existing };
                         if (!res.details) res.details = [];
-                        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+                        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
                         res.total_traffic = (res.total_traffic || BigInt(0)) + (current.total_traffic || BigInt(0));
                         platforms.forEach(p => {
                             const tk = `traffic_${p}`, ck = `channel_${p}`, ek = `evidence_${p}`;
@@ -2932,7 +2932,6 @@ export class WorkReportService implements OnModuleInit {
                             tiktok: Number(personTraffic.traffic_tiktok || 0),
                             yt: Number(personTraffic.traffic_yt || 0),
                             thread: Number(personTraffic.traffic_thread || 0),
-                            zalo: Number(personTraffic.traffic_zalo || 0),
                             total: Number(personTraffic.total_traffic || 0),
                             details: personTraffic.details || []
                         } : null,
@@ -3110,8 +3109,7 @@ export class WorkReportService implements OnModuleInit {
                                     tiktok: Number(personTraffic.traffic_tiktok || 0),
                                     yt: Number(personTraffic.traffic_yt || 0),
                                     thread: Number(personTraffic.traffic_thread || 0),
-                                    zalo: Number(personTraffic.traffic_zalo || 0),
-                                    total: Number(personTraffic.total_traffic || 0),
+                                            total: Number(personTraffic.total_traffic || 0),
                                     details: personTraffic.details || [],
                                 }
                                 : null,
@@ -3705,7 +3703,7 @@ export class WorkReportService implements OnModuleInit {
 
         let traffic: any = null;
         let details: any[] = [];
-        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+        const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
 
         if (trafficRecords.length > 0) {
             traffic = { ...trafficRecords[0] };
@@ -3765,7 +3763,7 @@ export class WorkReportService implements OnModuleInit {
 
         // Process traffic evidence URLs to use proxy
         if (traffic) {
-            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+            const platforms = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
             platforms.forEach(p => {
                 const key = `evidence_${p}`;
                 if (traffic[key]) {
