@@ -88,7 +88,9 @@ export class ChannelsService {
   // ─── CRUD ───────────────────────────────────────────────────────────────────
 
   /**
-   * Tạo kênh mới — mọi role đều được, tự động gán owner_id và team_id từ user.
+   * Tạo kênh mới — mọi role đều được, mặc định gán owner_id và team_id từ user.
+   * Riêng ADMIN/MANAGER được chọn team (team_id) và người cầm kênh (owner_id); người cầm kênh
+   * phải là thành viên của team đó. Role khác truyền 2 field này sẽ bị bỏ qua.
    *
    * Đồng thời ghi thêm `owner`/`team_traffic` (field string cũ, tiền thân từ thời đồng bộ Lark) —
    * đây là field mà logic tính "cần báo cáo traffic" (`needsTraffic` trong lark.service.ts) đang đọc.
@@ -98,16 +100,41 @@ export class ChannelsService {
     dto: CreateChannelDto,
     user: { id: string; roles: UserRole[]; team: string | null; full_name?: string | null },
   ) {
-    const team_id = await this.resolveTeamId(user.team);
+    const { team_id: requestedTeamId, owner_id: requestedOwnerId, ...channelData } = dto;
+    const canAssign = this.isAdminOrManager(user.roles);
+
+    let team_id = await this.resolveTeamId(user.team);
+    let team_traffic = user.team || undefined;
+    if (canAssign && requestedTeamId) {
+      const team = await this.prisma.team.findUnique({
+        where: { id: requestedTeamId },
+        select: { id: true, name: true },
+      });
+      if (!team) throw new NotFoundException(`Team ${requestedTeamId} not found`);
+      team_id = team.id;
+      team_traffic = team.name;
+    }
+
+    let owner_id = user.id;
+    let owner = user.full_name || undefined;
+    if (canAssign && requestedOwnerId && requestedOwnerId !== user.id) {
+      await this.assertOwnerInTeam(requestedOwnerId, team_id, user.id);
+      const newOwner = await this.prisma.user.findUnique({
+        where: { id: requestedOwnerId },
+        select: { full_name: true },
+      });
+      owner_id = requestedOwnerId;
+      owner = newOwner?.full_name || undefined;
+    }
 
     return this.prisma.channel.create({
       data: {
         id: `manual_${randomUUID()}`,
-        ...dto,
-        owner_id: user.id,
+        ...channelData,
+        owner_id,
         team_id: team_id ?? undefined,
-        owner: user.full_name || undefined,
-        team_traffic: user.team || undefined,
+        owner,
+        team_traffic,
       },
       include: CHANNEL_INCLUDE,
     });
