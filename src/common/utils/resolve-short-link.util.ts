@@ -38,7 +38,15 @@ export function extractUrl(text: string): string {
 export async function resolveShortLink(raw: string): Promise<string> {
   const input = extractUrl(raw);
   if (!isShortLink(input)) return input;
+  return followRedirect(input);
+}
 
+/**
+ * Follow redirect của MỘT URL đã được tầng gọi kiểm tra là link chia sẻ của nền tảng
+ * (KHÔNG truyền URL người dùng nhập tuỳ ý — xem cảnh báo SSRF ở trên). Lỗi mạng thì trả
+ * lại nguyên input.
+ */
+export async function followRedirect(input: string): Promise<string> {
   const url = /^https?:\/\//i.test(input) ? input : `https://${input}`;
 
   try {

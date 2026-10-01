@@ -3,8 +3,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
-import { extractKuaishouEid } from '../../common/utils/channel-url.util';
+import { extractUrl, followRedirect, resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { extractKuaishouEid, isKuaishouShareLink } from '../../common/utils/channel-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { KuaishouScraperService } from './kuaishou-scraper.service';
 import { KuaishouScraperReadService } from './kuaishou-scraper-read.service';
@@ -122,8 +122,10 @@ export class KuaishouScraperController {
 
     const targetCount = normalizeTargetCount(body?.num_of_posts);
 
-    // Link rút gọn (v.kuaishou.com) không chứa eid — resolve về URL thật trước.
-    const raw = await resolveShortLink(input);
+    // Link rút gọn (v.kuaishou.com) và link chia sẻ (kuaishou.com/f/...) không chứa eid —
+    // resolve về URL thật trước; link chia sẻ video ra short-video/...?authorId=<eid>.
+    const url = extractUrl(input);
+    const raw = isKuaishouShareLink(url) ? await followRedirect(url) : await resolveShortLink(input);
 
     // Cho phép nhập nguyên URL profile (kuaishou.com/profile/xxxx) hoặc eid trần.
     // Lưu ý: đây LUÔN là eid (chuỗi), không phải numeric user_id — fetch_one_user_v2
