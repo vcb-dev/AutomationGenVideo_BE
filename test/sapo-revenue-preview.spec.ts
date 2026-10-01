@@ -188,7 +188,7 @@ describe('SapoIntegrationService', () => {
       expect(preview.revenue.fb).toBe('500000');
       expect(preview.revenue.tiktok).toBe('750000');
       expect(preview.revenue.ig).toBe('300000');
-      expect(preview.revenue.zalo).toBe('');
+      expect(preview.revenue).not.toHaveProperty('zalo');
       expect(preview.revenue.yt).toBe('');
       expect(preview.revenue.thread).toBe('');
       expect(preview.channels.fb).toContain('Đồ Da Cao Cấp');

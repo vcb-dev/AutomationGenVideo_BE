@@ -216,7 +216,6 @@ export class SapoIntegrationService {
       tiktok: 0,
       yt: 0,
       thread: 0,
-      zalo: 0,
       other: 0,
     };
     const byTeam: Record<string, number> = {};
@@ -390,7 +389,7 @@ export class SapoIntegrationService {
       };
     }
 
-    // Zalo
+    // Zalo — hệ thống không còn báo cáo Zalo; nhận diện ở đây chỉ để isExcludedSalesChannel loại đơn này.
     if (
       rawSource.includes('zalo') ||
       rawSource.includes('zns') ||
@@ -602,7 +601,6 @@ export class SapoIntegrationService {
       tiktok: new Map(),
       yt: new Map(),
       thread: new Map(),
-      zalo: new Map(),
       other: new Map(),
     };
 
@@ -808,7 +806,6 @@ export class SapoIntegrationService {
       tiktok: '',
       yt: '',
       thread: '',
-      zalo: '',
     };
     const channels: Record<string, string> = {
       fb: '',
@@ -816,10 +813,9 @@ export class SapoIntegrationService {
       tiktok: '',
       yt: '',
       thread: '',
-      zalo: '',
     };
 
-    const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+    const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
 
     for (const pKey of platformKeys) {
       const pMap = platformTotals[pKey];
@@ -904,7 +900,7 @@ export class SapoIntegrationService {
     // Tạo các dòng lưu DB cho từng kênh / nền tảng
     const targetDate = new Date(`${dateStr}T12:00:00.000Z`);
     const monthString = 'T' + parseInt(dateStr.split('-')[1], 10).toString();
-    const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread', 'zalo'];
+    const platformKeys = ['fb', 'ig', 'tiktok', 'yt', 'thread'];
     const createdRecords: any[] = [];
 
     for (const pKey of platformKeys) {
@@ -929,7 +925,6 @@ export class SapoIntegrationService {
         else if (pKey === 'tiktok') recordData.revenue_tiktok = valBig;
         else if (pKey === 'yt') recordData.revenue_yt = valBig;
         else if (pKey === 'thread') recordData.revenue_thread = valBig;
-        else if (pKey === 'zalo') recordData.revenue_zalo = valBig;
 
         const created = await this.prisma.revenueReport.create({
           data: recordData,

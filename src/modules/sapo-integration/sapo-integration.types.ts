@@ -46,7 +46,6 @@ export interface SapoRevenuePreviewResponse {
     tiktok: string;
     yt: string;
     thread: string;
-    zalo: string;
   };
   channels: {
     fb: string;
@@ -54,7 +53,6 @@ export interface SapoRevenuePreviewResponse {
     tiktok: string;
     yt: string;
     thread: string;
-    zalo: string;
   };
   breakdown: Record<string, SapoRevenueEntry[]>;
   orderCount: number;
