@@ -2125,6 +2125,61 @@ model ScraperThreadsPost {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  REDDIT — cộng đồng (subreddit) đã lưu + bài viết (tìm từ khoá / cào theo cộng đồng)
+// ═══════════════════════════════════════════════════════════
+
+model ScraperRedditSubreddit {
+  id                BigInt              @id @default(autoincrement())
+  /// Tên subreddit chữ thường, không có "r/" — Reddit không phân biệt hoa thường.
+  name              String              @unique @db.VarChar(50)
+  display_name      String              @default("") @db.VarChar(60)
+  title             String              @default("") @db.VarChar(500)
+  description       String              @default("") @db.Text
+  icon_url          String?             @db.Text
+  subscribers_count BigInt              @default(0)
+  is_nsfw           Boolean             @default(false)
+  last_scraped_at   DateTime?           @db.Timestamptz(6)
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime            @updatedAt @db.Timestamptz(6)
+  posts             ScraperRedditPost[]
+
+  @@map("scraper_reddit_subreddits")
+}
+
+model ScraperRedditPost {
+  id             BigInt                  @id @default(autoincrement())
+  post_id        String                  @unique @db.VarChar(20)
+  /// Cộng đồng đã lưu chứa bài — null với bài tìm theo từ khoá thuộc cộng đồng chưa lưu.
+  subreddit_id   BigInt?
+  subreddit_name String                  @default("") @db.VarChar(50)
+  title          String                  @db.Text
+  text           String                  @default("") @db.Text
+  url            String                  @db.VarChar(1000)
+  link_url       String?                 @db.Text
+  author         String                  @default("") @db.VarChar(100)
+  author_avatar  String?                 @db.Text
+  media_type     String                  @default("TEXT") @db.VarChar(20)
+  thumbnail_url  String?                 @db.Text
+  video_url      String?                 @db.Text
+  score          BigInt                  @default(0)
+  comments_count BigInt                  @default(0)
+  upvote_ratio   Float?
+  is_nsfw        Boolean                 @default(false)
+  /// Từ khoá gần nhất tìm ra bài; bài cào theo cộng đồng thì rỗng.
+  search_keyword String                  @default("") @db.VarChar(255)
+  date_posted    DateTime                @db.Timestamptz(6)
+  created_at     DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime                @updatedAt @db.Timestamptz(6)
+  subreddit      ScraperRedditSubreddit? @relation(fields: [subreddit_id], references: [id], onDelete: Cascade)
+
+  @@index([subreddit_id])
+  @@index([subreddit_name])
+  @@index([date_posted(sort: Desc)])
+  @@index([score(sort: Desc)])
+  @@map("scraper_reddit_posts")
+}
+
+// ═══════════════════════════════════════════════════════════
 //  XIAOHONGSHU — Video Note (keyword search)
 // ═══════════════════════════════════════════════════════════
 

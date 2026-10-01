@@ -48,6 +48,7 @@ import { FacebookExternalScraperModule } from './modules/facebook-external-scrap
 import { YoutubeScraperModule } from './modules/youtube-scraper/youtube-scraper.module';
 import { KuaishouScraperModule } from './modules/kuaishou-scraper/kuaishou-scraper.module';
 import { BilibiliScraperModule } from './modules/bilibili-scraper/bilibili-scraper.module';
+import { RedditScraperModule } from './modules/reddit-scraper/reddit-scraper.module';
 import { ThreadsOwnedAccountsModule } from './modules/threads-owned-accounts/threads-owned-accounts.module';
 import { ThreadsScraperModule } from './modules/threads-scraper/threads-scraper.module';
 import { ScraperAggregateModule } from './modules/scraper-aggregate/scraper-aggregate.module';
@@ -123,6 +124,7 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     YoutubeScraperModule,
     KuaishouScraperModule,
     BilibiliScraperModule,
+    RedditScraperModule,
     ScraperAggregateModule,
     SearchKeywordsModule,
     ScraperProxyModule,
