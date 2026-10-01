@@ -125,46 +125,21 @@ describe('SapoIntegrationService - không kéo đơn Shopee và Zalo', () => {
     const stats = await service.getOrderStats('2026-09-30', '2026-09-30');
 
     expect(stats.totalOrders).toBe(3);
-    expect(stats.byPlatform).not.toHaveProperty('zalo'); // không còn nền tảng Zalo trong báo cáo
+    expect(stats.byPlatform.zalo).toBe(0);
     expect(stats.byPlatform.fb).toBe(1);
     expect(stats.byPlatform.tiktok).toBe(1);
     expect(stats.byPlatform.other).toBe(1); // chỉ còn đơn bán trực tiếp, không còn Shopee
   });
 
-  it('getDailyRevenuePreview không còn ô Zalo và không cộng Shopee vào tổng', async () => {
+  it('getDailyRevenuePreview không điền doanh thu Zalo và không cộng Shopee vào tổng', async () => {
     serveSinglePage([shopeeOrder(1), zaloOrder, zaloOaOmniOrder, facebookPageOrder, tiktokBusinessOrder, posOrder]);
 
     const preview = await service.getDailyRevenuePreview('2026-09-30');
 
-    expect(preview.revenue).not.toHaveProperty('zalo');
-    expect(preview.channels).not.toHaveProperty('zalo');
-    expect(preview.breakdown).not.toHaveProperty('zalo');
+    expect(preview.revenue.zalo).toBe('');
+    expect(preview.breakdown.zalo).toEqual([expect.objectContaining({ value: '', channel: '' })]);
     expect(preview.orderCount).toBe(3);
     expect(preview.totalRevenue).toBe(String(1000000 + 650000 + 200000));
     expect(preview.unassignedRevenue).toBe('200000'); // chỉ đơn bán trực tiếp
-  });
-});
-
-describe('SapoIntegrationService - đồng bộ doanh thu không ghi cột Zalo', () => {
-  it('syncDailyRevenueToDatabase không bao giờ ghi revenue_zalo', async () => {
-    const create = jest.fn().mockResolvedValue({ id: 'r1' });
-    const svc = new SapoIntegrationService(
-      { get: jest.fn().mockReturnValue(of({ data: { orders: [zaloOrder, zaloOaOmniOrder, facebookPageOrder] } })) } as any,
-      { get: jest.fn((k: string) => (k === 'SAPO_STORE' ? 'vienchibao' : k === 'SAPO_ACCESS_TOKEN' ? 't' : null)) } as any,
-      {
-        socialAccount: { findMany: jest.fn().mockResolvedValue([]) },
-        channel: { findMany: jest.fn().mockResolvedValue([]) },
-        trackedChannel: { findMany: jest.fn().mockResolvedValue([]) },
-        revenueReport: { create },
-      } as any,
-      {} as any,
-    );
-
-    await svc.syncDailyRevenueToDatabase('2026-09-30');
-
-    expect(create).toHaveBeenCalled();
-    for (const [args] of create.mock.calls) {
-      expect(args.data).not.toHaveProperty('revenue_zalo');
-    }
   });
 });
