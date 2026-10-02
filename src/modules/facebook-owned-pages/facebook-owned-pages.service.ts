@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { FacebookAiClientService } from './facebook-ai-client.service';
+import { FacebookAiClientService, type FetchedManagedPage } from './facebook-ai-client.service';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { resolveViewCount } from './resolve-view-count';
 import { extractFacebookReelId, extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
@@ -25,6 +25,13 @@ function extractErrorMessage(err: any): string {
 // 27/07–09/08/2026), thay vì âm thầm phục vụ số cũ mãi.
 const OWNED_STATS_FALLBACK_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
+export interface ImportPagesResult {
+  created: number;
+  updated: number;
+  newPageIds: string[];
+  pageIds: string[];
+}
+
 export interface PublishedLinkStatsResult {
   status: 'success' | 'failed' | 'unsupported';
   views?: number;
@@ -48,9 +55,18 @@ export class FacebookOwnedPagesService {
 
   // ─── GĐ0: Import pages (phát hiện page mới từ /me/accounts) ──────────────
 
-  async importManagedPages(userAccessToken?: string): Promise<{ created: number; updated: number; newPageIds: string[] }> {
+  async importManagedPages(userAccessToken?: string): Promise<ImportPagesResult> {
     const { pages } = await this.aiClient.fetchManagedPages(userAccessToken);
-    if (!pages?.length) return { created: 0, updated: 0, newPageIds: [] };
+    return this.upsertManagedPages(pages ?? []);
+  }
+
+  /**
+   * Ghi danh sách page (token page đã được AI mã hoá) vào bảng Kênh nội bộ Facebook. Dùng chung
+   * cho page kéo bằng token hệ thống và page lấy từ tài khoản kết nối ở Đăng bài MXH
+   * (FacebookConnectedPagesService). `pageIds` là mọi page đã ghi, kể cả page cập nhật.
+   */
+  async upsertManagedPages(pages: FetchedManagedPage[]): Promise<ImportPagesResult> {
+    if (!pages.length) return { created: 0, updated: 0, newPageIds: [], pageIds: [] };
 
     let created = 0;
     let updated = 0;
@@ -107,7 +123,7 @@ export class FacebookOwnedPagesService {
     }
 
     this.logger.log(`[IMPORT] +${created} page mới, ~${updated} cập nhật`);
-    return { created, updated, newPageIds };
+    return { created, updated, newPageIds, pageIds: pages.map((p) => p.page_id) };
   }
 
   // ─── Lock helpers (is_scraping) ───────────────────────────────────────────
