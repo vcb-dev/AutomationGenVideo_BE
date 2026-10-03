@@ -172,9 +172,9 @@ describe('TaskAutoKpiService.getContentCreatorKpiReport', () => {
     await service.getContentCreatorKpiReport({ user_id: 'creator-1', from: '2026-08-01', to: '2026-08-31' });
 
     const groupByArgs = prisma.teamContent.groupBy.mock.calls[0][0];
-    expect(groupByArgs.where.added_at.gte).toEqual(new Date(2026, 7, 1));
+    expect(groupByArgs.where.added_at.gte).toEqual(new Date('2026-07-31T17:00:00Z')); // 00:00 1/8 giờ VN
     // "to" là mốc lt của ngày kế tiếp (2026-09-01), không phải lte 2026-08-31 — bao trọn cả ngày cuối.
-    expect(groupByArgs.where.added_at.lt).toEqual(new Date(2026, 8, 1));
+    expect(groupByArgs.where.added_at.lt).toEqual(new Date('2026-08-31T17:00:00Z'));
   });
 });
 

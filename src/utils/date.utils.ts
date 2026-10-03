@@ -74,3 +74,16 @@ export function vietnamDayRange(d: Date = new Date()): { gte: Date; lt: Date } {
     .startOf("day");
   return { gte: start.toJSDate(), lt: start.plus({ days: 1 }).toJSDate() };
 }
+
+// Khoảng [00:00, 24:00) giờ VN của ngày lịch "YYYY-MM-DD" — cho bộ lọc date_from/date_to.
+// Ghép `${date}T00:00:00.000Z` là mốc UTC, tức 07:00 sáng giờ VN: video đăng 0h-7h ngày đầu
+// bị loại, còn 0h-7h ngày sau ngày cuối lại lọt vào. Sai định dạng → null.
+export function vietnamDayRangeOf(
+  date: string,
+): { gte: Date; lt: Date } | null {
+  const start = DateTime.fromFormat(date, "yyyy-MM-dd", {
+    zone: "Asia/Ho_Chi_Minh",
+  });
+  if (!start.isValid) return null;
+  return { gte: start.toJSDate(), lt: start.plus({ days: 1 }).toJSDate() };
+}
