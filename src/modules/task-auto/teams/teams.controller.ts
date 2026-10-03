@@ -420,7 +420,7 @@ export class TaskAutoTeamsController {
   @Get("dashboard")
   @ApiOperation({
     summary:
-      "Dashboard summary stats. team_id/assignee_id chỉ có tác dụng với ADMIN/MANAGER (global dashboard) — khoan sâu về 1 team/1 thành viên cụ thể, bị bỏ qua ở LEADER/MEMBER vì 2 nhánh đó đã tự khoanh phạm vi theo JWT.",
+      "Dashboard summary stats. ADMIN/MANAGER: team_id/assignee_id khoan sâu về 1 team/1 thành viên. LEADER: chỉ assignee_id, và chỉ khi người đó thuộc team mình lead (id lạ bị bỏ qua). MEMBER: bỏ qua cả 2 (luôn là chính mình).",
   })
   getDashboard(
     @Request() req: any,
@@ -446,7 +446,7 @@ export class TaskAutoTeamsController {
   @Get("product-video-stats")
   @ApiOperation({
     summary:
-      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
+      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead, có thể lọc assignee_id là thành viên team mình; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
   })
   getProductVideoStats(
     @Request() req: any,
