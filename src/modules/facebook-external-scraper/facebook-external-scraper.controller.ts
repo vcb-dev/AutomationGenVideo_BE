@@ -3,7 +3,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+import { resolveFacebookPageInput } from './facebook-url.util';
 import { FacebookExternalScraperService } from './facebook-external-scraper.service';
 import { FacebookExternalScraperReadService } from './facebook-external-scraper-read.service';
 
@@ -107,8 +107,8 @@ export class FacebookExternalScraperController {
     const input = (body?.url || '').trim();
     if (!input) throw new HttpException({ error: 'url is required' }, HttpStatus.BAD_REQUEST);
 
-    // Link rút gọn (fb.watch) không chứa tên page — resolve về URL thật trước.
-    const url = await resolveShortLink(input);
+    // Link rút gọn (fb.watch) và link chia sẻ video không chứa tên page — resolve về URL thật trước.
+    const url = await resolveFacebookPageInput(input);
 
     if (!url.includes('facebook.com')) {
       throw new HttpException({ error: 'URL không hợp lệ. Ví dụ: https://www.facebook.com/pagename' }, HttpStatus.BAD_REQUEST);

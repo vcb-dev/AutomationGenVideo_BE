@@ -1,44 +1,117 @@
 // Port thuần TS của clean_facebook_url/extract_handle_from_url (rapidapi_facebook.py cũ).
 // Thuần string/URL transform, không cần gọi AI hay 3rd-party nào.
 
-export function cleanFacebookUrl(rawUrl: string): string {
-  if (!rawUrl) return '';
+import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
+
+// Đoạn path đầu của URL Facebook mà KHÔNG phải tên rút gọn của page. Giữ khớp với
+// _NON_PAGE_SEGMENTS bên AI (video_management/services/facebook_page_url.py).
+const NON_PAGE_SEGMENTS = new Set([
+  'profile.php',
+  'p',
+  'people',
+  'pages',
+  'pg',
+  'share',
+  'watch',
+  'reel',
+  'reels',
+  'groups',
+  'events',
+  'hashtag',
+  'stories',
+  'story.php',
+  'permalink.php',
+  'photo',
+  'photo.php',
+]);
+
+export function isFacebookPageHandle(handle: string | null | undefined): boolean {
+  return !!handle && !NON_PAGE_SEGMENTS.has(handle.toLowerCase());
+}
+
+function parseFacebookUrl(rawUrl: string): URL | null {
+  if (!rawUrl) return null;
   let urlStr = rawUrl.trim();
   if (!urlStr.startsWith('http://') && !urlStr.startsWith('https://')) {
     urlStr = `https://${urlStr}`;
   }
-  let parsed: URL;
   try {
-    parsed = new URL(urlStr);
+    return new URL(urlStr);
   } catch {
-    return '';
+    return null;
   }
-  const path = parsed.pathname.replace(/\/+$/, '') + '/';
+}
 
-  if (path.includes('profile.php')) {
+// Đưa mọi dạng link của một page về URL gốc của page đó, để người dùng copy link ở tab
+// nào (Reels, Video, Giới thiệu, một video cụ thể...) cũng thêm được kênh:
+//   facebook.com/<page>/reels/            → facebook.com/<page>/
+//   facebook.com/<page>/videos/123/       → facebook.com/<page>/
+//   facebook.com/pg/<page>/about/         → facebook.com/<page>/
+//   facebook.com/p/<Tên>-<id>/ và facebook.com/people/<Tên>/<id>/ (page không có tên rút
+//   gọn) giữ nguyên dạng gốc, bỏ đoạn tab phía sau.
+// Link không thuộc một page (watch, reel, groups...) giữ nguyên path để tầng gọi báo lỗi.
+export function cleanFacebookUrl(rawUrl: string): string {
+  const parsed = parseFacebookUrl(rawUrl);
+  if (!parsed) return '';
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  const first = (segments[0] || '').toLowerCase();
+
+  if (first === 'profile.php') {
     const pid = parsed.searchParams.get('id');
     if (pid) return `https://www.facebook.com/profile.php?id=${pid}`;
   }
+  if (first === 'p' && segments[1] && /-\d+$/.test(segments[1])) {
+    return `https://www.facebook.com/p/${segments[1]}/`;
+  }
+  if (first === 'people' && segments[1] && /^\d+$/.test(segments[2] || '')) {
+    return `https://www.facebook.com/people/${segments[1]}/${segments[2]}/`;
+  }
+  if (first === 'pg' && isFacebookPageHandle(segments[1])) {
+    return `https://www.facebook.com/${segments[1]}/`;
+  }
+  if (isFacebookPageHandle(segments[0])) {
+    return `https://www.facebook.com/${segments[0]}/`;
+  }
 
-  return `https://www.facebook.com${path}`;
+  return `https://www.facebook.com${parsed.pathname.replace(/\/+$/, '')}/`;
 }
 
 export function extractHandleFromUrl(url: string): string {
-  if (!url) return '';
-  let urlStr = url.trim();
-  if (!urlStr.startsWith('http://') && !urlStr.startsWith('https://')) {
-    urlStr = `https://${urlStr}`;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(urlStr);
-  } catch {
-    return '';
-  }
+  const parsed = parseFacebookUrl(url);
+  if (!parsed) return '';
   const path = parsed.pathname.replace(/^\/+|\/+$/g, '');
-  if (!path || path === 'profile.php') return '';
-  if (path.includes('/')) return '';
-  return path;
+  if (!path || path.includes('/')) return '';
+  return isFacebookPageHandle(path) ? path : '';
+}
+
+// ID số của page/profile không có tên rút gọn — đây là định danh duy nhất của nó trong URL:
+//   profile.php?id=<id>, /p/<Tên>-<id>/, /people/<Tên>/<id>/
+// Trả '' với URL dạng tên rút gọn (đã có handle) hoặc URL không thuộc page.
+export function extractFacebookPageNumericId(url: string): string {
+  const parsed = parseFacebookUrl(url);
+  if (!parsed) return '';
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  const first = (segments[0] || '').toLowerCase();
+
+  if (first === 'profile.php') {
+    const pid = parsed.searchParams.get('id') || '';
+    return /^\d+$/.test(pid) ? pid : '';
+  }
+  if (first === 'p') {
+    const m = (segments[1] || '').match(/-(\d+)$/);
+    return m ? m[1] : '';
+  }
+  if (first === 'people') {
+    return /^\d+$/.test(segments[2] || '') ? segments[2] : '';
+  }
+  return '';
+}
+
+// Link "Chia sẻ" một PAGE (facebook.com/share/<mã>/, không có chữ r|v|p như link bài) —
+// Facebook chặn bot nên không đọc được page đích; tầng gọi báo người dùng mở link rồi copy
+// URL trên thanh địa chỉ.
+export function isFacebookPageShareLink(url: string): boolean {
+  return /facebook\.com\/share\/(?![a-z]\/)[^/?#]+/i.test(url);
 }
 
 // Facebook ID hợp lệ: số thuần (dạng cũ) HOẶC "pfbid..." — chuỗi opaque Facebook dùng
@@ -148,6 +221,14 @@ export async function resolveFacebookShareLink(rawUrl: string): Promise<string> 
   } catch {
     return rawUrl;
   }
+}
+
+// Link người dùng dán để THÊM PAGE: fb.watch (redirect chuẩn) và link chia sẻ bài/reel/video
+// (facebook.com/share/r|v|p/...) đều trỏ tới một video — resolve ra URL thật để
+// cleanFacebookUrl lấy được page chủ video (facebook.com/<page>/videos/<id> → <page>).
+export async function resolveFacebookPageInput(input: string): Promise<string> {
+  const url = await resolveShortLink(input);
+  return isFacebookShareLink(url) ? resolveFacebookShareLink(url) : url;
 }
 
 export interface FacebookPageMeta {
