@@ -119,8 +119,9 @@ export class BilibiliScraperController {
     // Link rút gọn (b23.tv) không chứa mid — resolve về URL thật trước.
     const raw = await resolveShortLink(input);
 
-    // Cho phép nhập nguyên URL profile (space.bilibili.com/xxxx) hoặc mid trần.
-    const urlMatch = raw.match(/space\.bilibili\.com\/(\d+)/i);
+    // Cho phép nhập nguyên URL profile (space.bilibili.com/xxxx, bản mobile
+    // m.bilibili.com/space/xxxx) hoặc mid trần.
+    const urlMatch = raw.match(/(?:space\.bilibili\.com\/|m\.bilibili\.com\/space\/)(\d+)/i);
     const mid = urlMatch ? urlMatch[1] : raw;
 
     if (!/^\d+$/.test(mid)) {
