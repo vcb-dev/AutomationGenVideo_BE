@@ -59,6 +59,8 @@ export function extractXiaohongshuUserId(raw: string): string | null {
  * Kuaishou: Trích xuất `eid`.
  * Hỗ trợ:
  * - URL web/profile: https://www.kuaishou.com/profile/<eid>
+ * - URL video mang eid tác giả: https://www.kuaishou.com/short-video/<id>?authorId=<eid>
+ *   (link copy trên thanh địa chỉ khi xem video, và đích của link chia sẻ /f/...)
  * - eid thuần (không phải URL)
  */
 export function extractKuaishouEid(raw: string): string | null {
@@ -69,7 +71,13 @@ export function extractKuaishouEid(raw: string): string | null {
   const urlMatch = trimmed.match(/kuaishou\.com\/profile\/([\w-]+)/i);
   if (urlMatch) return urlMatch[1];
 
-  // 2. eid thuần (không phải URL)
+  // 2. URL video kèm eid tác giả
+  if (/kuaishou\.com\//i.test(trimmed)) {
+    const authorMatch = trimmed.match(/[?&]authorId=([\w-]+)/i);
+    if (authorMatch) return authorMatch[1];
+  }
+
+  // 3. eid thuần (không phải URL)
   if (!/^https?:\/\//i.test(trimmed) && /^[\w-]+$/.test(trimmed)) {
     return trimmed;
   }
@@ -109,4 +117,14 @@ export function extractThreadsUsername(raw: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Link "Chia sẻ" của Kuaishou (https://www.kuaishou.com/f/<mã>) — không chứa eid, phải
+ * follow redirect mới ra URL video kèm authorId. Không đưa vào allowlist chung của
+ * resolveShortLink: video-library lưu nguyên link /f/ vì API phát video bên kia chỉ nhận
+ * link chia sẻ.
+ */
+export function isKuaishouShareLink(url: string): boolean {
+  return /^https?:\/\/(?:www\.)?kuaishou\.com\/f\/[\w-]+/i.test((url || '').trim());
 }
