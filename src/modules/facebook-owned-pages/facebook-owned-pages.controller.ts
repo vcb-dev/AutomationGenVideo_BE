@@ -6,6 +6,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';
+import { FacebookConnectedPagesService, importSummaryMessage } from './facebook-connected-pages.service';
 import { InvalidRefreshDaysError, parseRefreshDays } from './parse-refresh-days';
 
 // Kéo lại chỉ số là thao tác nặng (mỗi video một lượt hỏi Graph API) nên siết quyền như thao tác
@@ -31,6 +32,7 @@ export class FacebookOwnedPagesController {
     private readonly service: FacebookOwnedPagesService,
     private readonly readService: FacebookOwnedPagesReadService,
     private readonly prisma: PrismaService,
+    private readonly connectedPages: FacebookConnectedPagesService,
   ) {}
 
   @Get('manage-pages')
@@ -48,17 +50,19 @@ export class FacebookOwnedPagesController {
   @Roles(UserRole.ADMIN, UserRole.LEADER)
   async import(@Body() body: { user_access_token?: string }) {
     try {
-      const { created, updated, newPageIds } = await this.service.importManagedPages(body?.user_access_token);
-      for (const pageId of newPageIds || []) {
+      const result = await this.connectedPages.importAll(body?.user_access_token);
+      for (const pageId of result.newPageIds) {
         this.service.backfillPage(pageId, 300).catch((err) => {
           this.logger.error(`[IMPORT-BACKFILL] ${pageId} thất bại: ${err.message}`);
         });
       }
       return {
         status: 'ok',
-        created,
-        updated,
-        message: `Đã đồng bộ xong danh sách Page (Thêm mới: ${created}, Cập nhật: ${updated})`,
+        created: result.created,
+        updated: result.updated,
+        connected_pages: result.connectedPages,
+        failed_accounts: result.failedAccounts,
+        message: importSummaryMessage(result),
       };
     } catch (err: any) {
       throw new HttpException({ status: 'error', message: err.message }, HttpStatus.INTERNAL_SERVER_ERROR);
