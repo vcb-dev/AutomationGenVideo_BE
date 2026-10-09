@@ -58,7 +58,7 @@ import {
 @Injectable()
 export class TaskAutoKpiService {
   // Giới hạn số task cào traffic ĐỒNG THỜI trong refreshContentWinFailStats() — tránh dội request
-  // FB/YouTube (mức 4, đồng bộ với publish.service.ts/warehouse.service.ts).
+  // FB/YouTube (mức 4, đồng bộ với publish.service.ts).
   private readonly linkRefreshSemaphore = new Semaphore(4);
 
   constructor(

@@ -421,6 +421,53 @@ describe('TaskAutoTasksService — ghi nhận assigned_by_id ở create()/update
 });
 
 /**
+ * Task AUTO (chia tự động theo KPI tuyến A4) được tạo chỉ với sản phẩm kho team, chưa có content —
+ * editor phải chọn được content sau. Sản phẩm/nguồn của task AUTO vẫn khoá.
+ */
+describe('TaskAutoTasksService.update — task AUTO chỉ cho đổi content', () => {
+  function buildService() {
+    const prisma: any = {
+      task: {
+        findUnique: jest.fn(async () => ({
+          task_type: 'AUTO', assignee_id: 'member-1', status: 'ASSIGNED', team_id: 'team-1',
+          editor_product_id: null, oms_product_id: null, oms_variant_id: null,
+        })),
+        update: jest.fn(async (args: any) => ({ id: 'task-1', ...args.data, team: { leader_id: null } })),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('assignee chọn content kho team cho task AUTO → lưu được', async () => {
+    const { service, prisma } = buildService();
+
+    await service.update(
+      'task-1',
+      { content_id: null, editor_content_id: null, team_content_id: 'tc-1' } as any,
+      'member-1',
+      ['MEMBER'],
+    );
+
+    const updateArgs = prisma.task.update.mock.calls[0][0];
+    expect(updateArgs.data.team_content_id).toBe('tc-1');
+    expect(updateArgs.data.content_id).toBeNull();
+  });
+
+  it('đổi sản phẩm hoặc nguồn của task AUTO → Forbidden, không ghi gì', async () => {
+    const { service, prisma } = buildService();
+
+    await expect(
+      service.update('task-1', { team_content_id: 'tc-1', team_product_id: 'tp-2' } as any, 'member-1', ['MEMBER']),
+    ).rejects.toThrow('chỉ cho phép đổi content');
+    await expect(
+      service.update('task-1', { source_outro_id: null } as any, 'leader-1', ['LEADER']),
+    ).rejects.toThrow('chỉ cho phép đổi content');
+    expect(prisma.task.update).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * remove() (xoá task) — trước đây chặn xoá task IN_PROGRESS. Giờ được xoá ở mọi trạng thái, kể cả
  * IN_PROGRESS. Luật phân quyền: ADMIN/MANAGER xoá được mọi task; LEADER xoá được task của team mình
  * quản lý; thành viên thường (không có role đặc quyền) chỉ xoá được task do chính mình đảm nhận

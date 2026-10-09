@@ -1,7 +1,6 @@
 import {
   Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException,
 } from '@nestjs/common'
-import { DateTime } from 'luxon'
 import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './dto/team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/dto/catalog.dto'
@@ -17,11 +16,6 @@ type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 @Injectable()
 export class TaskAutoTeamsService {
   constructor(private prisma: PrismaService, private oms: OmsIntegrationService) {}
-
-  /** Tháng hiện tại (yyyy-MM) theo giờ VN — dùng để tự thêm item mới đẩy lên kho tổng vào kho tháng đang chạy */
-  private currentMonth(): string {
-    return DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM')
-  }
 
   private teamInclude = {
     leader: { select: { id: true, full_name: true, email: true } },
@@ -436,7 +430,7 @@ export class TaskAutoTeamsService {
     const orderBy = [{ added_at: 'desc' as const }, { id: 'asc' as const }]
 
     // Không truyền page → giữ nguyên hành vi cũ (trả mảng đầy đủ, không giới hạn) — nhiều nơi
-    // gọi hàm này (dropdown chọn sản phẩm khi tạo task, kho tháng team...) cần lấy hết, không
+    // gọi hàm này (dropdown chọn sản phẩm khi tạo task...) cần lấy hết, không
     // phân trang được. Chỉ khi caller chủ động truyền `page` mới chuyển sang chế độ phân trang.
     if (!opts?.page) {
       return this.prisma.teamProduct.findMany({ where, include: this.teamProductInclude, orderBy })
@@ -638,10 +632,6 @@ export class TaskAutoTeamsService {
         added_by_id:            userId,
       },
     })
-    // Thêm luôn vào kho tháng hiện tại — nếu không, sản phẩm vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
-    await this.prisma.productWarehouse.create({
-      data: { product_id: product.id, month: this.currentMonth() },
-    })
     return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
@@ -822,10 +812,6 @@ export class TaskAutoTeamsService {
         added_by_id:            userId,
         origin:                 entry.origin,
       },
-    })
-    // Thêm luôn vào kho tháng hiện tại — nếu không, content vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
-    await this.prisma.contentWarehouse.create({
-      data: { content_id: content.id, month: this.currentMonth() },
     })
     return { success: true, message: 'Đã đẩy content lên kho tổng', content }
   }
@@ -1028,10 +1014,6 @@ export class TaskAutoTeamsService {
         is_active:             entry.is_active,
         added_by_id:           userId,
       },
-    })
-    // Thêm luôn vào kho tháng hiện tại — nếu không, source vừa đẩy sẽ không hiện trong danh sách kho tổng tháng này
-    await this.prisma.sourceWarehouse.create({
-      data: { source_id: source.id, month: this.currentMonth() },
     })
     return { success: true, message: 'Đã đẩy source lên kho tổng', source }
   }

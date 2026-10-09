@@ -47,6 +47,6 @@ import { CryptoService } from '../social-publishing/crypto/crypto.service';
     TrafficInsightsService,
     CryptoService,
   ],
-  exports: [TrafficInsightsService],
+  exports: [TrafficInsightsService, ScraperAggregateReadService],
 })
 export class ScraperAggregateModule {}

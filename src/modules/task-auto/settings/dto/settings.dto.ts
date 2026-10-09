@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsInt, IsUrl, Min } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsInt, IsUrl, Min, IsArray } from 'class-validator'
 import { Type } from 'class-transformer'
 import { ApiPropertyOptional } from '@nestjs/swagger'
 
@@ -17,6 +17,12 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional({ description: 'Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng', example: 5 })
   @IsInt() @Min(0) @IsOptional() @Type(() => Number) default_cooldown_days?: number
+
+  @ApiPropertyOptional({ description: 'Lập Kế hoạch ngày (chỉ tiêu + gợi ý content, không tạo task) cùng lượt chia task' })
+  @IsBoolean() @IsOptional() daily_plan_enabled?: boolean
+
+  @ApiPropertyOptional({ description: 'Tên tuyến nội dung lập Kế hoạch ngày', example: ['A1', 'A2', 'A3', 'A5'] })
+  @IsArray() @IsString({ each: true }) @IsOptional() daily_plan_line_names?: string[]
 }
 
 export class UpdateLarkWebhookSettingDto {

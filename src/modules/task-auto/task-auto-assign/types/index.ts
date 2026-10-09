@@ -2,101 +2,56 @@
 
 export const DEADLINE_CALENDAR_DAYS = 1;
 export const DEFAULT_TZ = "Asia/Ho_Chi_Minh";
-export const FILL_STRATEGY: "CAPACITY" | "RATIO" = "CAPACITY";
+/** Tuyến nội dung duy nhất hệ thống tự chia task — khớp content_lines.name, không phân biệt hoa thường. */
+export const AUTO_ASSIGN_CONTENT_LINE_NAME = "A4";
+/** Giãn cách giao lại cùng 1 SP cho cùng 1 editor khi settings chưa có giá trị (khớp default cột auto_assign_settings.default_cooldown_days). */
+export const DEFAULT_COOLDOWN_DAYS = 5;
+/** Tuyến lập Kế hoạch ngày khi settings chưa có giá trị (khớp default cột auto_assign_settings.daily_plan_line_names). */
+export const DEFAULT_DAILY_PLAN_LINE_NAMES = ["A1", "A2", "A3", "A5"];
 
-// ── Source types ──────────────────────────────────────────────────────────────
+// ── Kho sản phẩm team ───────────────────────────────────────────────────────────
 
-export type PoolSource = "personal" | "team" | "global";
-
-// ── Pool entries ──────────────────────────────────────────────────────────────
-
-export type ContentPoolItem = {
+export type TeamProductCandidate = {
   id: string;
-  content_line_id: string | null;
-  source: PoolSource;
-  source_content_id?: string | null;
-};
-
-export type ProductPoolItem = {
-  id: string;
+  name: string | null;
   product_line_id: string | null;
   priority_score: number;
-  source: PoolSource;
-  source_product_id?: string | null;
   // Override cooldown riêng của sản phẩm; null = dùng default_cooldown_days toàn cục
   cooldown_days: number | null;
-  // Chỉ có giá trị cho SP kho team — dùng để nêu tên cụ thể trong thông báo kho tháng rỗng
-  name?: string | null;
+  // Product kho tổng tương ứng (tự có hoặc qua editor product gốc) — dùng tra outro source
+  source_product_id: string | null;
+  // Nhận diện cùng 1 SP ở kho cá nhân/kho tổng — để task tạo tay gắn SP đó vẫn tính cooldown
+  sku: string | null;
+  oms_variant_id: string | null;
+  source_editor_product_id: string | null;
 };
 
 // ── Editor ────────────────────────────────────────────────────────────────────
 
-export type WeightedAllocation = { key: string; weight: number };
-
-export type EditorCapacity = {
+export type A4EditorQuota = {
   userId: string;
-  remainingDaily: number;
-  remainingMonthly: number;
-  productGmv: number;
-  contentTypeWeights: WeightedAllocation[];
-  productTypeWeights: WeightedAllocation[];
-  // Quota còn lại trong tháng theo từng content/product line (quantity - đã giao),
-  // chỉ có giá trị khi editor có allocation riêng (contentTypeWeights/productTypeWeights > 0)
-  contentLineRemaining: Map<string, number>;
-  productLineRemaining: Map<string, number>;
+  /** KPI tháng của tuyến A4 (EditorKpiAllocation CONTENT_LINE) */
+  monthlyTarget: number;
+  /** Task A4 (chưa huỷ) có hạn trong tháng KPI — gồm cả task tạo tay */
+  assignedThisMonth: number;
+  /** Số task A4 còn phải giao cho ngày hiệu lực (ngày mai) */
+  remainingToday: number;
 };
 
-export type EditorAssignmentHistory = {
-  assignedPairKeys: Set<string>;
-  assignedContentKeys: Set<string>;
-  // SP team riêng biệt đã đẩy trong tháng (đếm theo sản phẩm, không phải số task)
-  pushedProductIds: Set<string>;
-  // Phần đẩy trước hôm nay — giữ daily target ổn định khi chạy nhiều lần trong ngày
-  pushedProductIdsBeforeToday: Set<string>;
-  // productKey (personal:id/team:id/global:id) -> assigned_at gần nhất (non-cancelled),
-  // dùng để tính cooldown per (editor, product) — xem steps/cooldown.ts
-  lastAssignedByProduct: Map<string, Date>;
+/** Chỉ tiêu ngày hiệu lực của 1 editor cho 1 tuyến nội dung (KPI tháng rải đều các ngày còn lại). */
+export type LineQuota = A4EditorQuota & {
+  contentLineId: string;
+  /** Số task tuyến này cần có hạn vào ngày hiệu lực — gồm cả task đã có (onDay) */
+  dailyTarget: number;
+  /** Task tuyến này (chưa huỷ) đã có hạn vào ngày hiệu lực */
+  onDay: number;
 };
-
-export function emptyEditorAssignmentHistory(): EditorAssignmentHistory {
-  return {
-    assignedPairKeys: new Set(),
-    assignedContentKeys: new Set(),
-    pushedProductIds: new Set(),
-    pushedProductIdsBeforeToday: new Set(),
-    lastAssignedByProduct: new Map(),
-  };
-}
 
 // ── Assignment ────────────────────────────────────────────────────────────────
 
-export type AssignmentPair = {
-  contentId: string;
-  contentSource: PoolSource;
-  productId: string;
-  productSource: PoolSource;
-  contentLineId: string | null;
-  productLineId: string | null;
-  priorityScore: number;
+export type ScheduledAssignment = {
+  editorId: string;
+  product: TeamProductCandidate;
 };
-
-export type ScheduledAssignment = { editorId: string; pair: AssignmentPair };
 
 export type TeamResult = { assigned: number; skipped: number };
-
-// ── Product target_quantity (kho tháng) ─────────────────────────────────────────
-
-/**
- * State dùng chung, mutable, phạm vi cả team — build 1 lần trước vòng lặp editor,
- * consume dần khi mỗi editor được chốt assignment (xem steps/product-quota.ts).
- */
-export type ProductQuotaState = {
-  /** team_product_id -> remaining (target_quantity - tổng task không-huỷ tháng này,
-   *  cộng dồn MỌI assignee). Floor tại 0. */
-  teamRemaining: Map<string, number>;
-  /** team_product_id -> override cho editor gốc — chỉ có khi TeamProduct.source_editor_product_id
-   *  trỏ tới 1 editor đã tự warehouse đúng sản phẩm/tháng này (EditorProductWarehouse). */
-  originOverride: Map<string, { editorId: string; remaining: number }>;
-  /** editorId -> (editor_product_id -> remaining) — thuần cá nhân, cho lane sáng tạo. */
-  personalRemaining: Map<string, Map<string, number>>;
-};

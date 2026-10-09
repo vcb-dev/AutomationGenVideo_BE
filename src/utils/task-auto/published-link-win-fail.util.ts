@@ -78,3 +78,57 @@ export function summarizeWinFailCounts(
   for (const s of statuses) result[s]++;
   return result;
 }
+
+/** ContentClassification HIỆN TẠI của content gắn task — null khi content chưa phân loại / task không gắn content. */
+export type WinFailClassification = { id: string; name: string } | null;
+
+/** Giá trị lọc "Chưa phân loại" — classification_id thật là uuid nên không trùng. */
+export const UNCLASSIFIED_FILTER = "none";
+export const UNCLASSIFIED_LABEL = "Chưa phân loại";
+
+/** Bỏ trống filter = mọi phân loại; UNCLASSIFIED_FILTER = chỉ content chưa phân loại; còn lại so id. */
+export function matchesClassificationFilter(
+  classification: WinFailClassification,
+  filter?: string,
+): boolean {
+  if (!filter) return true;
+  if (filter === UNCLASSIFIED_FILTER) return !classification;
+  return classification?.id === filter;
+}
+
+export interface WinFailByClassificationRow {
+  /** null = "Chưa phân loại" — FE gửi lại UNCLASSIFIED_FILTER để lọc nhóm này. */
+  classification_id: string | null;
+  classification: string;
+  win: number;
+  fail: number;
+  pending: number;
+}
+
+/**
+ * Đếm win/fail/pending theo phân loại content — nhiều win trước, "Chưa phân loại" luôn cuối. Cộng
+ * dồn y như `totals` (theo từng người) để số trên ô lọc khớp tổng sau khi lọc.
+ */
+export function summarizeWinFailByClassification(
+  videos: Array<{ classification: WinFailClassification; win_status_auto: PublishedLinkWinFailStatus }>,
+): WinFailByClassificationRow[] {
+  const groups = new Map<string, WinFailByClassificationRow>();
+  for (const v of videos) {
+    const key = v.classification?.id ?? "";
+    const row = groups.get(key) ?? {
+      classification_id: v.classification?.id ?? null,
+      classification: v.classification?.name ?? UNCLASSIFIED_LABEL,
+      win: 0,
+      fail: 0,
+      pending: 0,
+    };
+    row[v.win_status_auto]++;
+    groups.set(key, row);
+  }
+  const total = (r: WinFailByClassificationRow) => r.win + r.fail + r.pending;
+  return [...groups.values()].sort((a, b) => {
+    if (!a.classification_id) return 1;
+    if (!b.classification_id) return -1;
+    return b.win - a.win || total(b) - total(a) || a.classification.localeCompare(b.classification, "vi");
+  });
+}
