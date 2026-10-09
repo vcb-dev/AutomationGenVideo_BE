@@ -1,7 +1,7 @@
 import * as ExcelJS from 'exceljs';
 
-jest.mock('../../kpi/editor-kpi-actuals.util', () => ({
-  ...jest.requireActual('../../kpi/editor-kpi-actuals.util'),
+jest.mock('../../../../utils/task-auto/editor-kpi-actuals.util', () => ({
+  ...jest.requireActual('../../../../utils/task-auto/editor-kpi-actuals.util'),
   computeEditorKpiActuals: jest.fn(async () => new Map()),
 }));
 
@@ -9,9 +9,8 @@ import {
   computeEditorKpiActuals,
   editorKpiActualKey,
   emptyEditorKpiActuals,
-} from '../../kpi/editor-kpi-actuals.util';
+} from '../../../../utils/task-auto/editor-kpi-actuals.util';
 import { TaskExportService } from '../task-export.service';
-import { TaskAutoTasksService } from '../tasks.service';
 
 const computeActuals = computeEditorKpiActuals as jest.Mock;
 
@@ -27,9 +26,8 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       performanceGoal: { findMany: jest.fn(async () => goals) },
       contentLine: { findMany: jest.fn(async () => []) },
     };
-    const tasks = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
-    const service = new TaskExportService(prisma, tasks);
-    return { service, prisma, tasks };
+    const service = new TaskExportService(prisma);
+    return { service, prisma };
   }
 
   const taskRow = (over: Partial<any> = {}) => ({

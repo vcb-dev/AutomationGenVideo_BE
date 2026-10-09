@@ -1,15 +1,15 @@
 import {
   classifyPublishedLinksWinFail,
   PublishedLinkLike,
-} from "../tasks/published-link-win-fail.util";
-import { PAAST_CLASSIFICATION_NAME } from "../tasks/paast-classification.util";
-import { deadlineWindow } from "../tasks/deadline-window.util";
-import { vietnamMonthRange } from "../../../utils/date.utils";
+} from "./published-link-win-fail.util";
+import { PAAST_CLASSIFICATION_NAME } from "./paast-classification.util";
+import { deadlineWindow } from "./deadline-window.util";
+import { vietnamMonthRange } from "../date.utils";
 import {
   productLineCategoryLabel,
   resolveTaskProductLineId,
   ProductLineLookup,
-} from "../tasks/product-line-category.util";
+} from "./product-line-category.util";
 
 export const CONTENT_NEW_CLASSIFICATION_NAME = "Mới";
 

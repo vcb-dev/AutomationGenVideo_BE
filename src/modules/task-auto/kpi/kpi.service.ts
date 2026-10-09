@@ -23,21 +23,21 @@ import {
   classifyPublishedLinksWinFail,
   summarizeWinFailCounts,
   PublishedLinkWinFailStatus,
-} from "../tasks/published-link-win-fail.util";
-import { TaskAutoContentWinPushService } from "../tasks/content-win-auto-push.service";
-import { deadlineWindow } from "../tasks/deadline-window.util";
+} from "../../../utils/task-auto/published-link-win-fail.util";
+import { TaskAutoContentWinPushService } from "../published-links/content-win-auto-push.service";
+import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
 import {
   computeEditorKpiActuals,
   editorKpiActualKey,
   emptyEditorKpiActuals,
-} from "./editor-kpi-actuals.util";
-import { productLineCategoryLabel } from "../tasks/product-line-category.util";
+} from "../../../utils/task-auto/editor-kpi-actuals.util";
+import { productLineCategoryLabel } from "../../../utils/task-auto/product-line-category.util";
 import {
   TaskPublishedLinkStatsService,
   isSupportedLinkStatsPlatform,
   isLinkStatsFresh,
-} from "../tasks/task-published-link-stats.service";
-import { resolveTaskProductLineId } from "../tasks/product-line-category.util";
+} from "../published-links/task-published-link-stats.service";
+import { resolveTaskProductLineId } from "../../../utils/task-auto/product-line-category.util";
 import {
   KPI_PAYROLL_SYNC_CONTRACT_VERSION,
   METRICS_WITHOUT_ACTUAL_SOURCE,

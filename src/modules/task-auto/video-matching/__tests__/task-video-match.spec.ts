@@ -13,7 +13,7 @@ import {
   skuMatches,
   statusFromReason,
   tokenOverlapRatio,
-} from "../task-video-match.util";
+} from "../../../../utils/task-auto/task-video-match.util";
 
 /**
  * Một chức năng: khớp tự động video kênh nội bộ (FB/IG kéo về) với task rồi gắn link
