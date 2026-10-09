@@ -7,6 +7,7 @@ import { NotificationStreamService } from '../../../common/push/notification-str
 import { SocialPostStatus, SocialPostSource } from '@prisma/client';
 import { PLATFORM_CONCURRENCY, GLOBAL_CONCURRENCY } from '../queue/queue.service';
 import { isPermanentPublishError } from '../publish/publish-error.util';
+import { mutateTaskPublishedLinks } from '../../../common/utils/task-published-links.util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
@@ -453,22 +454,13 @@ export class ScheduleService {
     if (!url) return;
 
     try {
-      const task = await this.prisma.task.findUnique({
-        where: { id: post.task_id },
-        select: { published_links: true },
-      });
-      if (!task) return;
-
-      const links = Array.isArray(task.published_links) ? (task.published_links as any[]) : [];
-      if (links.some((l) => l?.url === url)) return;
-
       const platformLabel = PLATFORM_LABEL[post.platform] ?? post.platform;
-      const next = [...links, { id: randomUUID(), platform: platformLabel, url }];
-
-      await this.prisma.task.update({
-        where: { id: post.task_id },
-        data: { published_links: next as any },
-      });
+      const result = await mutateTaskPublishedLinks(this.prisma, post.task_id, (links) =>
+        links.some((l) => l?.url === url)
+          ? null
+          : [...links, { id: randomUUID(), platform: platformLabel, url }],
+      );
+      if (!result?.changed) return;
       this.logger.log(`[Worker] 🔗 Đã tự động thêm link bài đăng vào task ${post.task_id}: ${url}`);
     } catch (err: any) {
       this.logger.warn(`[Worker] Không thể tự động thêm link bài đăng cho task ${post.task_id}: ${err.message}`);

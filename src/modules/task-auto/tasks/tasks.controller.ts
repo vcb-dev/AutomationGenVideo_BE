@@ -59,6 +59,10 @@ export class TaskAutoTasksController {
         team_id: q.team_id,
         search: q.search,
         assignee_id: q.assignee_id,
+        content_line_id: q.content_line_id,
+        product_line_id: q.product_line_id,
+        date_from: q.approval_from,
+        date_to: q.approval_to,
       }),
     ]);
     return { total, submittedTotal, contentApprovalTotal };

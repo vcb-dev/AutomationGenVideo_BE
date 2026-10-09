@@ -32,6 +32,12 @@ import {
   vietnamMonthString,
 } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
+import {
+  asPublishedLinks,
+  mutateTaskPublishedLinks,
+  publishedLinkKey,
+  withFetchedStats,
+} from "../../../common/utils/task-published-links.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
 import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
@@ -46,7 +52,11 @@ import {
   resolveTaskProductLineId,
 } from "../../../utils/task-auto/product-line-category.util";
 import { SapoIntegrationService } from "../../sapo-integration/sapo-integration.service";
-import { buildDeadlineRangeAnd, buildTaskListWhere } from "../../../utils/task-auto/task-list-query.util";
+import {
+  buildDeadlineRangeAnd,
+  buildTaskListWhere,
+  taskLineConditions,
+} from "../../../utils/task-auto/task-list-query.util";
 
 /**
  * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
@@ -661,10 +671,13 @@ export class TaskAutoTasksService {
   // Bản include nhẹ — dùng cho findAll (bảng danh sách task + SubmittedVideosGrid).
   // FE (TasksTable.tsx: resolveContentTitle/resolveProductName/resolveProductImage,
   // ExtraTaskGroupPanel.tsx) chỉ đọc title/name/image_url + team/assignee/status/deadline/
-  // task_type ở list view — không cần material/product_line/sources/content_line/reviewed_by/
+  // task_type ở list view — không cần material/product_line/sources/reviewed_by/
   // pending_video như bản detail. Đã verify bằng cách đọc toàn bộ FE consumers của getTasks().
+  // content_line (1 JOIN theo FK): tab "Video đã làm" lọc sẵn tuyến khi mở picker gắn link bài
+  // đăng, và picker "Gắn vào video đã làm" hiện tuyến trên từng thẻ.
   private taskListInclude = {
     team: { select: { id: true, name: true } },
+    content_line: { select: { id: true, name: true } },
     assignee: { select: { id: true, full_name: true, email: true } },
     content: {
       select: {
@@ -741,8 +754,11 @@ export class TaskAutoTasksService {
     if (q.search) {
       totalWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const totalDeadlineAnd = buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
-    if (totalDeadlineAnd) totalWhere.AND = [totalDeadlineAnd];
+    const totalAnd = [
+      buildDeadlineRangeAnd(q.deadline_from, q.deadline_to),
+      ...taskLineConditions(q),
+    ].filter(Boolean);
+    if (totalAnd.length) totalWhere.AND = totalAnd;
 
     // Badge "Video chờ duyệt": luôn status SUBMITTED, khoảng ngày riêng (pending_from/to) — khớp
     // SubmittedVideosGrid, KHÔNG dùng chung deadline_from/to của header.
@@ -752,8 +768,11 @@ export class TaskAutoTasksService {
     if (q.search) {
       submittedWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const submittedDeadlineAnd = buildDeadlineRangeAnd(q.pending_from, q.pending_to);
-    if (submittedDeadlineAnd) submittedWhere.AND = [submittedDeadlineAnd];
+    const submittedAnd = [
+      buildDeadlineRangeAnd(q.pending_from, q.pending_to),
+      ...taskLineConditions(q),
+    ].filter(Boolean);
+    if (submittedAnd.length) submittedWhere.AND = submittedAnd;
 
     const [total, submittedTotal] = await Promise.all([
       this.prisma.task.count({ where: totalWhere }),
@@ -1316,28 +1335,40 @@ export class TaskAutoTasksService {
 
     // stats là dữ liệu do server tính (không nhận từ client) — chỉ giữ lại stats cũ
     // nếu link không đổi (cùng id, platform, url); link mới hoặc bị sửa url/platform
-    // thì fetch lại ngay để hiển thị số liệu mới nhất cạnh link.
-    const oldLinks = Array.isArray(task.published_links)
-      ? (task.published_links as any[])
-      : [];
-    const oldById = new Map(oldLinks.map((l) => [l.id, l]));
-
-    const linksWithStats = await Promise.all(
-      links.map(async (l) => {
-        const prev = oldById.get(l.id);
-        if (prev && prev.url === l.url && prev.platform === l.platform && prev.stats) {
-          return { ...l, stats: prev.stats };
-        }
-        const stats = await this.linkStats.fetchStatsForLink(l.platform, l.url);
-        return { ...l, stats };
-      }),
+    // thì fetch lại ngay để hiển thị số liệu mới nhất cạnh link. Cào xong mới ghi, và lúc
+    // ghi lấy stats cũ từ bản MỚI NHẤT trong DB (cron có thể vừa cào lại trong lúc chờ).
+    const oldByKey = new Map(
+      asPublishedLinks(task.published_links).map((l) => [publishedLinkKey(l), l]),
+    );
+    const fetched = new Map<string, unknown>();
+    await Promise.all(
+      links
+        .filter((l) => !oldByKey.get(publishedLinkKey(l))?.stats)
+        .map(async (l) => {
+          const stats = await this.linkStats.fetchStatsForLink(l.platform, l.url);
+          fetched.set(publishedLinkKey(l), stats);
+        }),
     );
 
-    return this.prisma.task.update({
+    const result = await mutateTaskPublishedLinks(this.prisma, id, (current) => {
+      const currentByKey = new Map(current.map((l) => [publishedLinkKey(l), l]));
+      return links.map((l) => {
+        const key = publishedLinkKey(l);
+        const stats = currentByKey.get(key)?.stats ?? fetched.get(key);
+        return stats === undefined ? l : { ...l, stats };
+      });
+    });
+    if (!result) throw new NotFoundException("Task not found");
+    return this.findTaskDetail(id);
+  }
+
+  private async findTaskDetail(id: string) {
+    const task = await this.prisma.task.findUnique({
       where: { id },
-      data: { published_links: linksWithStats },
       include: this.taskDetailInclude,
     });
+    if (!task) throw new NotFoundException("Task not found");
+    return task;
   }
 
   // Làm mới thủ công số liệu tương tác cho 1 link đã nộp (nút "Làm mới" ở FE).
@@ -1360,20 +1391,16 @@ export class TaskAutoTasksService {
       throw new ForbiddenException("Không có quyền làm mới số liệu cho task này");
     }
 
-    const links = Array.isArray(task.published_links)
-      ? (task.published_links as any[])
-      : [];
-    const target = links.find((l) => l.id === linkId);
+    const target = asPublishedLinks(task.published_links).find((l) => l.id === linkId);
     if (!target) throw new NotFoundException("Không tìm thấy link");
 
     const stats = await this.linkStats.fetchStatsForLink(target.platform, target.url);
-    const next = links.map((l) => (l.id === linkId ? { ...l, stats } : l));
-
-    return this.prisma.task.update({
-      where: { id },
-      data: { published_links: next },
-      include: this.taskDetailInclude,
-    });
+    // Link bị xoá/sửa url trong lúc cào thì không còn khớp khoá → bỏ qua, không gắn số liệu nhầm.
+    const result = await mutateTaskPublishedLinks(this.prisma, id, (current) =>
+      withFetchedStats(current, new Map([[publishedLinkKey(target), stats]])),
+    );
+    if (!result) throw new NotFoundException("Task not found");
+    return this.findTaskDetail(id);
   }
 
   // Tự động refresh số liệu tương tác (views/likes/comments/shares) mỗi sáng cho các
@@ -1415,30 +1442,33 @@ export class TaskAutoTasksService {
       let failCount = 0;
 
       for (const task of withLinks) {
-        const links = task.published_links as any[];
-        const next: any[] = [];
-        for (const link of links) {
+        const fetched = new Map<string, unknown>();
+        for (const link of asPublishedLinks(task.published_links)) {
           linkCount++;
           try {
             const stats = await this.linkStats.fetchStatsForLink(
               link.platform,
               link.url,
             );
-            next.push({ ...link, stats });
+            fetched.set(publishedLinkKey(link), stats);
             if (stats.status === "success") successCount++;
             else if (stats.status === "failed") failCount++;
           } catch (err: any) {
-            next.push(link);
             failCount++;
             this.logger.warn(
               `[LINK-STATS-CRON] Task ${task.id} link ${link.id} lỗi: ${err.message}`,
             );
           }
         }
-        await this.prisma.task.update({
-          where: { id: task.id },
-          data: { published_links: next },
-        });
+        // Ghi lên bản MỚI NHẤT của task, không phải bản đọc lúc cron bắt đầu — link user thêm/xoá
+        // trong lúc cron đang cào được giữ nguyên. Lỗi ghi 1 task không chặn các task còn lại.
+        await mutateTaskPublishedLinks(this.prisma, task.id, (current) =>
+          withFetchedStats(current, fetched),
+        ).catch((err: any) =>
+          this.logger.warn(
+            `[LINK-STATS-CRON] Task ${task.id} ghi số liệu lỗi: ${err.message}`,
+          ),
+        );
       }
 
       this.logger.log(

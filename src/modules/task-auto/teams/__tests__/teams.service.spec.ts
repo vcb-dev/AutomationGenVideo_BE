@@ -598,3 +598,168 @@ describe('TaskAutoTeamsService.create/update — webhook Lark riêng của team'
     });
   });
 });
+
+describe('TaskAutoTeamsService.updateTeamContent — đồng bộ tuyến sang task', () => {
+  function build(oldLine: string | null) {
+    const taskUpdateMany = jest.fn(async () => ({ count: 2 }));
+    const tx: any = {
+      task: { updateMany: taskUpdateMany },
+      teamContent: {
+        update: jest.fn(async ({ data }: any) => ({
+          id: 'tc-1',
+          content_line_id: 'content_line_id' in data ? data.content_line_id : oldLine,
+        })),
+      },
+    };
+    const prisma: any = {
+      teamContent: {
+        findFirst: jest.fn(async () => ({ id: 'tc-1', team_id: 'team-1', content_line_id: oldLine })),
+      },
+      $transaction: jest.fn(async (fn: any) => fn(tx)),
+    };
+    const service = new TaskAutoTeamsService(prisma, {} as any) as any;
+    jest.spyOn(service, 'findOneForAuth').mockResolvedValue({ id: 'team-1', leader_id: null, members: [] });
+    jest.spyOn(service, 'assertCanManageContent').mockReturnValue(undefined);
+    return { service, taskUpdateMany };
+  }
+
+  it('content chưa có tuyến → gán A4: task từ content đó đang null được gán A4', async () => {
+    const { service, taskUpdateMany } = build(null);
+
+    await service.updateTeamContent('team-1', 'tc-1', { content_line_id: 'line-a4' }, 'u-1', ['ADMIN']);
+
+    expect(taskUpdateMany).toHaveBeenCalledWith({
+      where: { team_content_id: 'tc-1', OR: [{ content_line_id: null }] },
+      data: { content_line_id: 'line-a4' },
+    });
+  });
+
+  it('đổi A1 → A2: task đang null hoặc A1 đi theo', async () => {
+    const { service, taskUpdateMany } = build('line-a1');
+
+    await service.updateTeamContent('team-1', 'tc-1', { content_line_id: 'line-a2' }, 'u-1', ['ADMIN']);
+
+    expect(taskUpdateMany).toHaveBeenCalledWith({
+      where: { team_content_id: 'tc-1', OR: [{ content_line_id: null }, { content_line_id: 'line-a1' }] },
+      data: { content_line_id: 'line-a2' },
+    });
+  });
+
+  it('bỏ tuyến (null) hoặc không gửi content_line_id → không đụng task', async () => {
+    const cleared = build('line-a1');
+    await cleared.service.updateTeamContent('team-1', 'tc-1', { content_line_id: null }, 'u-1', ['ADMIN']);
+    expect(cleared.taskUpdateMany).not.toHaveBeenCalled();
+
+    const titleOnly = build(null);
+    await titleOnly.service.updateTeamContent('team-1', 'tc-1', { title: 'Mới' }, 'u-1', ['ADMIN']);
+    expect(titleOnly.taskUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('TaskAutoTeamsService.listTeamSources — tìm theo tên sản phẩm', () => {
+  function buildSources() {
+    const findManyCalls: any[] = [];
+    const queryRaw = jest.fn(async () => [{ id: 'ts-1' }]);
+    const prisma: any = {
+      team: { findUnique: jest.fn(async () => ({ id: 'team-1' })) },
+      teamSource: {
+        findMany: jest.fn(async (args: any) => {
+          findManyCalls.push(args);
+          return [];
+        }),
+      },
+      $queryRaw: queryRaw,
+    };
+    const service = new TaskAutoTeamsService(prisma, {} as any);
+    return { service, queryRaw, getWhere: () => findManyCalls[0]?.where };
+  }
+
+  it('search → lọc theo id khớp; SQL join team_products + products, giới hạn đúng team', async () => {
+    const { service, queryRaw, getWhere } = buildSources();
+
+    await service.listTeamSources('team-1', undefined, undefined, undefined, undefined, { search: 'ví da' });
+
+    expect(getWhere().team_id).toBe('team-1');
+    expect(getWhere().id).toEqual({ in: ['ts-1'] });
+    const sql = (queryRaw.mock.calls[0] as any[])[0] as Prisma.Sql;
+    expect(sql.sql).toContain('FROM team_sources s LEFT JOIN team_products tp');
+    expect(sql.sql).toContain('tp.name');
+    expect(sql.sql).toContain('s.team_id =');
+    expect(sql.values).toEqual(['ví da', 'team-1']);
+  });
+
+  it('không truyền search → không query raw', async () => {
+    const { service, queryRaw, getWhere } = buildSources();
+
+    await service.listTeamSources('team-1');
+
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(getWhere().id).toBeUndefined();
+  });
+
+  it('teamId = "all" + search → không lọc team_id, SQL tìm kiếm không giới hạn team', async () => {
+    const { service, queryRaw, getWhere } = buildSources();
+
+    await service.listTeamSources('all', undefined, undefined, undefined, undefined, { search: 'ví da' }, ['MANAGER']);
+
+    expect(getWhere()).not.toHaveProperty('team_id');
+    expect(getWhere().id).toEqual({ in: ['ts-1'] });
+    const sql = (queryRaw.mock.calls[0] as any[])[0] as Prisma.Sql;
+    expect(sql.sql).not.toContain('s.team_id =');
+    expect(sql.values).toEqual(['ví da']);
+  });
+});
+
+describe('TaskAutoTeamsService — danh sách kho của tất cả team (teamId = "all")', () => {
+  function buildAll() {
+    const calls: Record<string, any[]> = { teamProduct: [], teamContent: [] };
+    const recordFindMany = (key: string) => jest.fn(async (args: any) => {
+      calls[key].push(args);
+      return [];
+    });
+    const prisma: any = {
+      team: { findUnique: jest.fn(async () => ({ id: 'team-1' })) },
+      teamProduct: { findMany: recordFindMany('teamProduct'), count: jest.fn(async () => 0) },
+      teamContent: { findMany: recordFindMany('teamContent'), count: jest.fn(async () => 0) },
+    };
+    const service = new TaskAutoTeamsService(prisma, {} as any);
+    return { service, prisma, calls };
+  }
+
+  it('ADMIN xem sản phẩm mọi team → không lọc team_id, không tra team', async () => {
+    const { service, prisma, calls } = buildAll();
+
+    await service.listTeamProducts('all', undefined, undefined, undefined, { page: 1, limit: 24 }, ['ADMIN']);
+
+    expect(prisma.team.findUnique).not.toHaveBeenCalled();
+    expect(calls.teamProduct[0].where).not.toHaveProperty('team_id');
+  });
+
+  it('MANAGER xem content mọi team vẫn giữ các bộ lọc khác', async () => {
+    const { service, calls } = buildAll();
+
+    await service.listTeamContents('all', 'DO_DA', undefined, 'cls-1', undefined, ['MANAGER']);
+
+    expect(calls.teamContent[0].where).toEqual({ brand_type: 'DO_DA', classification_id: 'cls-1' });
+  });
+
+  it('LEADER/MEMBER hoặc không có roles → ForbiddenException, không query', async () => {
+    const { service, calls } = buildAll();
+
+    await expect(service.listTeamProducts('all', undefined, undefined, undefined, undefined, ['LEADER']))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.listTeamContents('all'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(calls.teamProduct).toHaveLength(0);
+    expect(calls.teamContent).toHaveLength(0);
+  });
+
+  it('teamId thường vẫn lọc đúng team như cũ', async () => {
+    const { service, prisma, calls } = buildAll();
+
+    await service.listTeamProducts('team-1', undefined, undefined, undefined, undefined, ['ADMIN']);
+
+    expect(prisma.team.findUnique).toHaveBeenCalled();
+    expect(calls.teamProduct[0].where.team_id).toBe('team-1');
+  });
+});
