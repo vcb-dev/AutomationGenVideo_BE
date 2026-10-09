@@ -16,6 +16,7 @@ import {
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import {
   dailyKpiDate,
+  vietnamDayRangeOf,
   vietnamMonthRange,
 } from "../../../utils/date.utils";
 import { Semaphore } from "../../../common/utils/semaphore";
@@ -575,15 +576,10 @@ export class TaskAutoKpiService {
 
   private parseFromTo(from?: string, to?: string): { gte?: Date; lt?: Date } | null {
     if (!from && !to) return null;
+    // Ngày lịch VN, không theo giờ server (prod UTC lệch 7 tiếng ở mốc đầu/cuối ngày).
     const range: { gte?: Date; lt?: Date } = {};
-    if (from) {
-      const [y, m, d] = from.split("-").map(Number);
-      if (y && m && d) range.gte = new Date(y, m - 1, d);
-    }
-    if (to) {
-      const [y, m, d] = to.split("-").map(Number);
-      if (y && m && d) range.lt = new Date(y, m - 1, d + 1);
-    }
+    if (from) range.gte = vietnamDayRangeOf(from)?.gte;
+    if (to) range.lt = vietnamDayRangeOf(to)?.lt;
     return range;
   }
 
