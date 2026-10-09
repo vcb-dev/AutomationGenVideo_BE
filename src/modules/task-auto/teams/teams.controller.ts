@@ -131,9 +131,10 @@ export class TaskAutoTeamsController {
   // ── Team Products ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/products")
-  @ApiOperation({ summary: "List products in team inventory (standalone)" })
+  @ApiOperation({ summary: "List products in team inventory (standalone). id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamProducts(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
@@ -145,7 +146,7 @@ export class TaskAutoTeamsController {
     // Không truyền page → service trả mảng đầy đủ như cũ (tương thích ngược cho các nơi
     // cần lấy hết, vd dropdown chọn sản phẩm khi tạo task).
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, product_line_id: productLineId } : undefined;
-    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId, opts);
+    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId, opts, req.user.roles ?? []);
   }
 
   @Post("teams/:id/products")
@@ -212,9 +213,10 @@ export class TaskAutoTeamsController {
   // ── Team Contents ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/contents")
-  @ApiOperation({ summary: "List contents in team storage (standalone)" })
+  @ApiOperation({ summary: "List contents in team storage (standalone). id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamContents(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
@@ -225,7 +227,7 @@ export class TaskAutoTeamsController {
     @Query("market") market?: string,
   ) {
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market } : undefined;
-    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts);
+    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts, req.user.roles ?? []);
   }
 
   @Get("teams/:id/contents/:teamContentId")
@@ -286,9 +288,10 @@ export class TaskAutoTeamsController {
   // ── Team Sources ──────────────────────────────────────────────────────────
 
   @Get("teams/:id/sources")
-  @ApiOperation({ summary: "List sources in team inventory" })
+  @ApiOperation({ summary: "List sources in team inventory. id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamSources(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("product_id") productId?: string,
     @Query("team_product_id") teamProductId?: string,
@@ -300,7 +303,7 @@ export class TaskAutoTeamsController {
     @Query("added_by_id") addedById?: string,
   ) {
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, type, added_by_id: addedById } : undefined;
-    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month, opts);
+    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month, opts, req.user.roles ?? []);
   }
 
   @Post("teams/:id/sources")

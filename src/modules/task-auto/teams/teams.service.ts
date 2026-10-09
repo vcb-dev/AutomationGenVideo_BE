@@ -6,10 +6,12 @@ import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './dto/team.dto'
 import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/dto/catalog.dto'
 import { Prisma, UserRole } from '@prisma/client'
-import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember } from '../../../common/utils/team-membership.util'
+import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember, ALL_TEAMS_ID, assertCanViewAllTeams } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
 import { findProductBySku, findTeamProductBySku, backfillTeamSourcesForNewTeamProduct } from '../../../common/utils/catalog-link.util'
+import { findSourceIdsBySearch } from '../../../common/utils/source-search.util'
 import { runOrNotFound } from '../../../common/utils/prisma-not-found.util'
+import { syncTaskContentLine } from '../../../common/utils/task-content-line-sync.util'
 import { OmsIntegrationService } from '../../oms-integration/oms-integration.service'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -133,6 +135,16 @@ export class TaskAutoTeamsService {
   private async assertTeamExists(id: string): Promise<void> {
     const team = await this.prisma.team.findUnique({ where: { id }, select: { id: true } })
     if (!team) throw new NotFoundException('Team not found')
+  }
+
+  /** Điều kiện `team_id` cho các API danh sách kho team — teamId = ALL_TEAMS_ID thì không lọc team (chỉ ADMIN/MANAGER). */
+  private async teamScope(teamId: string, userRoles?: string[]): Promise<{ team_id?: string }> {
+    if (teamId === ALL_TEAMS_ID) {
+      assertCanViewAllTeams(userRoles)
+      return {}
+    }
+    await this.assertTeamExists(teamId)
+    return { team_id: teamId }
   }
 
   /**
@@ -414,10 +426,10 @@ export class TaskAutoTeamsService {
     month?: string,
     classificationId?: string,
     opts?: { search?: string; page?: number; limit?: number; product_line_id?: string },
+    userRoles?: string[],
   ) {
-    await this.assertTeamExists(teamId)
     const where: any = {
-      team_id: teamId,
+      ...await this.teamScope(teamId, userRoles),
       ...(brandType ? { brand_type: brandType } : {}),
       ...(classificationId ? { classification_id: classificationId } : {}),
       ...(opts?.product_line_id ? { product_line_id: opts.product_line_id } : {}),
@@ -651,10 +663,10 @@ export class TaskAutoTeamsService {
     month?: string,
     classificationId?: string,
     opts?: { search?: string; page?: number; limit?: number; content_line_id?: string; market?: string },
+    userRoles?: string[],
   ) {
-    await this.assertTeamExists(teamId)
     const where: any = {
-      team_id: teamId,
+      ...await this.teamScope(teamId, userRoles),
       ...(brandType ? { brand_type: brandType } : {}),
       ...(classificationId ? { classification_id: classificationId } : {}),
       ...(opts?.market ? { market: opts.market } : {}),
@@ -772,23 +784,29 @@ export class TaskAutoTeamsService {
     if (!entry) throw new NotFoundException('Content không có trong kho team')
     if (dto.code) await this.assertTeamContentCodeAvailable(dto.code, teamContentId)
 
-    return this.prisma.teamContent.update({
-      where: { id: teamContentId },
-      data: {
-        ...(dto.brand_type !== undefined       && { brand_type: dto.brand_type }),
-        ...(dto.market !== undefined           && { market: dto.market }),
-        ...(dto.code !== undefined             && { code: dto.code }),
-        ...(dto.title !== undefined            && { title: dto.title }),
-        ...(dto.body !== undefined             && { body: dto.body }),
-        ...(dto.script !== undefined           && { script: dto.script }),
-        ...(dto.file_content_url !== undefined && { file_content_url: dto.file_content_url }),
-        ...(dto.voice_url !== undefined        && { voice_url: dto.voice_url }),
-        ...(dto.content_line_id !== undefined  && { content_line_id: dto.content_line_id }),
-        ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
-        ...(dto.status !== undefined           && { status: dto.status as any }),
-        ...(dto.origin !== undefined           && { origin: dto.origin as any }),
-      },
-      include: this.teamContentInclude,
+    // Đổi tuyến content → kéo tuyến mới sang task đã tạo từ content này (xem syncTaskContentLine).
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.teamContent.update({
+        where: { id: teamContentId },
+        data: {
+          ...(dto.brand_type !== undefined       && { brand_type: dto.brand_type }),
+          ...(dto.market !== undefined           && { market: dto.market }),
+          ...(dto.code !== undefined             && { code: dto.code }),
+          ...(dto.title !== undefined            && { title: dto.title }),
+          ...(dto.body !== undefined             && { body: dto.body }),
+          ...(dto.script !== undefined           && { script: dto.script }),
+          ...(dto.file_content_url !== undefined && { file_content_url: dto.file_content_url }),
+          ...(dto.voice_url !== undefined        && { voice_url: dto.voice_url }),
+          ...(dto.content_line_id !== undefined  && { content_line_id: dto.content_line_id }),
+          ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
+          ...(dto.status !== undefined           && { status: dto.status as any }),
+          ...(dto.origin !== undefined           && { origin: dto.origin as any }),
+        },
+        include: this.teamContentInclude,
+      })
+      if (dto.content_line_id !== undefined)
+        await syncTaskContentLine(tx, 'team_content_id', teamContentId, entry.content_line_id, updated.content_line_id)
+      return updated
     })
   }
 
@@ -866,10 +884,11 @@ export class TaskAutoTeamsService {
     teamProductId?: string,
     month?: string,
     opts?: { search?: string; page?: number; limit?: number; type?: string; added_by_id?: string },
+    userRoles?: string[],
   ) {
-    await this.assertTeamExists(teamId)
+    const scope = await this.teamScope(teamId, userRoles)
     const where: any = {
-      team_id: teamId,
+      ...scope,
       ...(brandType     ? { brand_type: brandType }          : {}),
       ...(productId     ? { product_id: productId }          : {}),
       ...(teamProductId ? { team_product_id: teamProductId } : {}),
@@ -877,12 +896,8 @@ export class TaskAutoTeamsService {
       ...(opts?.added_by_id ? { added_by_id: opts.added_by_id } : {}),
       ...this.teamMonthRange(month),
     }
-    if (opts?.search) {
-      // Thêm `code` so với pattern gốc ở kho tổng (findAllSources chỉ search name/link) —
-      // hợp lý vì code giờ chính là mã sản phẩm (xem tính năng auto-link source<->product).
-      const contains = { contains: opts.search, mode: 'insensitive' as const }
-      where.OR = [{ name: contains }, { link: contains }, { code: contains }]
-    }
+    const searchIds = await findSourceIdsBySearch(this.prisma, 'team', opts?.search, scope.team_id)
+    if (searchIds) where.id = { in: searchIds }
     // Tiebreaker ổn định — xem giải thích ở listTeamProducts.
     const orderBy = [{ added_at: 'desc' as const }, { id: 'asc' as const }]
 
