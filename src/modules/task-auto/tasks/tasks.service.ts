@@ -76,11 +76,10 @@ function parseVNDeadline(value: string): Date {
   return new Date(`${withSeconds}+07:00`);
 }
 
-// Các field content/sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa
+// Các field sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa. Content (content_id,
+// editor_content_id, team_content_id) sửa được ở mọi task: task AUTO tạo ra chưa gắn content,
+// editor tự chọn sau.
 const CATALOG_FIELDS = [
-  "content_id",
-  "editor_content_id",
-  "team_content_id",
   "product_id",
   "editor_product_id",
   "team_product_id",
@@ -1031,7 +1030,7 @@ export class TaskAutoTasksService {
       CATALOG_FIELDS.some((f) => dto[f] !== undefined)
     ) {
       throw new ForbiddenException(
-        "Task đẩy SP theo kế hoạch không cho phép sửa content/sản phẩm/nguồn",
+        "Task tự động chỉ cho phép đổi content, không đổi sản phẩm/nguồn",
       );
     }
 

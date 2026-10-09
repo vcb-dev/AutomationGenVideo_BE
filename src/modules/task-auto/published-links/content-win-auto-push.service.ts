@@ -1,5 +1,4 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { pickWinningLink, WinningLink } from "../../../utils/task-auto/published-link-win-fail.util";
 
@@ -24,8 +23,8 @@ type WinningTaskRow = {
  * Luồng "content win → tự đẩy về kho tổng". Khi 1 task APPROVED có link bài đăng >
  * VIEW_WIN_THRESHOLD view (xem published-link-win-fail.util.ts): lấy/tạo 1 row Content ở kho
  * tổng (global → dùng thẳng; team/editor content → tạo bản mirror; không gắn content → tạo mới
- * từ video thắng, dedupe theo win_video_url), thêm vào ContentWarehouse tháng hiện tại, gắn
- * nhãn "Win" + lưu link view cao nhất (chỉ lần đầu), rồi set Task.content_win_pushed_at.
+ * từ video thắng, dedupe theo win_video_url), gắn nhãn "Win" + lưu link view cao nhất (chỉ lần
+ * đầu), rồi set Task.content_win_pushed_at.
  *
  * Gọi từ cron 8:15 và nút "Cập nhật" Content Win/Fail. Idempotent, không bao giờ throw ra ngoài.
  */
@@ -34,10 +33,6 @@ export class TaskAutoContentWinPushService {
   private readonly logger = new Logger(TaskAutoContentWinPushService.name);
 
   constructor(private prisma: PrismaService) {}
-
-  private currentMonth(): string {
-    return DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyy-MM");
-  }
 
   async pushWinningTasks(
     taskIds: string[],
@@ -115,18 +110,12 @@ export class TaskAutoContentWinPushService {
 
     await this.ensureEditorContentInTeamCatalog(task, contentWinClassificationId);
 
-    const month = this.currentMonth();
     const current = await this.prisma.content.findUnique({
       where: { id: contentId },
       select: { classification_id: true, won_at: true },
     });
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.contentWarehouse.upsert({
-        where: { content_id_month: { content_id: contentId, month } },
-        create: { content_id: contentId, month },
-        update: {},
-      });
       await tx.content.update({
         where: { id: contentId },
         data: {

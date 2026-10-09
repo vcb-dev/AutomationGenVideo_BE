@@ -87,6 +87,8 @@ model User {
   editor_kpis_set                  EditorKpi[]                    @relation("EditorKpiSetBy")
   editor_daily_kpis                EditorDailyKpi[]               @relation("EditorDailyKpiOf")
   editor_daily_kpis_set            EditorDailyKpi[]               @relation("EditorDailyKpiSetBy")
+  daily_line_plans                 DailyLinePlan[]                @relation("DailyLinePlanOf")
+  daily_task_compliance            DailyTaskCompliance[]          @relation("DailyTaskComplianceOf")
   content_creator_kpis             ContentCreatorKpi[]            @relation("ContentCreatorKpiOf")
   content_creator_kpis_set         ContentCreatorKpi[]            @relation("ContentCreatorKpiSetBy")
   content_creator_daily_kpis       ContentCreatorDailyKpi[]       @relation("ContentCreatorDailyKpiOf")
@@ -2721,6 +2723,8 @@ model Team {
   team_kpis                  TeamKpi[]
   editor_kpis                EditorKpi[]
   editor_daily_kpis          EditorDailyKpi[]
+  daily_line_plans           DailyLinePlan[]
+  daily_task_compliance      DailyTaskCompliance[]
   content_creator_kpis       ContentCreatorKpi[]
   content_creator_daily_kpis ContentCreatorDailyKpi[]
   tasks                      Task[]
@@ -2842,15 +2846,16 @@ model TeamContent {
   added_at                 DateTime           @default(now())
   updated_at               DateTime           @updatedAt
 
-  team                  Team                   @relation(fields: [team_id], references: [id], onDelete: Cascade)
-  added_by              User                   @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
-  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
-  classification        ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
-  source_editor_content EditorContent?         @relation("TeamContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
-  source_content        Content?               @relation("TeamContentGlobalRef", fields: [source_content_id], references: [id])
-  tasks                 Task[]
-  warehouses            TeamContentWarehouse[]
-  global_content        Content?               @relation("ContentTeamRef")
+  team                   Team                      @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  added_by               User                      @relation("TeamContentAddedBy", fields: [added_by_id], references: [id])
+  content_line           ContentLine?              @relation(fields: [content_line_id], references: [id])
+  classification         ContentClassification?    @relation(fields: [classification_id], references: [id], onDelete: SetNull)
+  source_editor_content  EditorContent?            @relation("TeamContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  source_content         Content?                  @relation("TeamContentGlobalRef", fields: [source_content_id], references: [id])
+  tasks                  Task[]
+  warehouses             TeamContentWarehouse[]
+  global_content         Content?                  @relation("ContentTeamRef")
+  daily_plan_suggestions DailyLinePlanSuggestion[]
 
   @@unique([team_id, source_editor_content_id])
   @@map("team_contents")
@@ -2945,36 +2950,41 @@ model EditorProduct {
 }
 
 model EditorContent {
-  id                String             @id @default(uuid())
-  user_id           String
-  brand_type        BrandType          @default(DO_DA)
-  market            String             @default("VIETNAM")
+  id                      String             @id @default(uuid())
+  user_id                 String
+  brand_type              BrandType          @default(DO_DA)
+  market                  String             @default("VIETNAM")
   /// Mã content (business code), unique toàn hệ thống
-  code              String?            @unique
-  title             String?
-  body              String?
-  script            String?
-  file_content_url  String?
-  voice_url         String?
-  content_line_id   String?
-  classification_id String?
-  status            ContentUsageStatus @default(AVAILABLE)
+  code                    String?            @unique
+  title                   String?
+  body                    String?
+  script                  String?
+  file_content_url        String?
+  voice_url               String?
+  content_line_id         String?
+  classification_id       String?
+  status                  ContentUsageStatus @default(AVAILABLE)
   /// NULL = tạo mới; có giá trị = được copy từ content trong kho tổng
-  source_content_id String?
-  added_by_id       String
-  added_at          DateTime           @default(now())
-  updated_at        DateTime           @updatedAt
+  source_content_id       String?
+  /// Video win gốc khi content được tạo nhanh từ gợi ý video win của Kế hoạch ngày (caption đã bỏ
+  /// hashtag) — để editor mở lại video tham khảo, và để không gợi ý lại video người đó đã lấy.
+  reference_video_url     String?
+  reference_video_post_id String?
+  added_by_id             String
+  added_at                DateTime           @default(now())
+  updated_at              DateTime           @updatedAt
 
-  user           User                     @relation("EditorContentOf", fields: [user_id], references: [id], onDelete: Cascade)
-  added_by       User                     @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
-  content_line   ContentLine?             @relation(fields: [content_line_id], references: [id])
-  classification ContentClassification?   @relation(fields: [classification_id], references: [id], onDelete: SetNull)
-  source_content Content?                 @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
-  global_content Content?                 @relation("ContentEditorRef")
-  team_contents  TeamContent[]            @relation("TeamContentEditorRef")
-  tasks          Task[]
-  warehouses     EditorContentWarehouse[]
-  push_requests  TeamPushRequest[]
+  user                   User                      @relation("EditorContentOf", fields: [user_id], references: [id], onDelete: Cascade)
+  added_by               User                      @relation("EditorContentAddedBy", fields: [added_by_id], references: [id])
+  content_line           ContentLine?              @relation(fields: [content_line_id], references: [id])
+  classification         ContentClassification?    @relation(fields: [classification_id], references: [id], onDelete: SetNull)
+  source_content         Content?                  @relation("EditorContentGlobalRef", fields: [source_content_id], references: [id])
+  global_content         Content?                  @relation("ContentEditorRef")
+  team_contents          TeamContent[]             @relation("TeamContentEditorRef")
+  tasks                  Task[]
+  warehouses             EditorContentWarehouse[]
+  push_requests          TeamPushRequest[]
+  daily_plan_suggestions DailyLinePlanSuggestion[]
 
   @@index([user_id])
   @@map("editor_contents")
@@ -3255,6 +3265,20 @@ model ContentCreatorKpi {
   @@map("content_creator_kpis")
 }
 
+/// Mốc "tháng này đã tự chép KPI từ tháng trước" (KpiRolloverService) — mỗi tháng chỉ chép 1 lần.
+/// Có dòng = đã xử lý, kể cả khi chép được 0 dòng: leader xoá/đặt 0 KPI của ai đó sau lượt chép thì
+/// lượt sau không chép lại. trigger = CRON | AUTO_ASSIGN | BASELINE (tháng triển khai, không chép).
+model KpiMonthRollover {
+  month               String   @id // tháng đích "YYYY-MM"
+  source_month        String
+  editor_kpis_copied  Int      @default(0)
+  creator_kpis_copied Int      @default(0)
+  trigger             String
+  created_at          DateTime @default(now())
+
+  @@map("kpi_month_rollovers")
+}
+
 model PerformanceGoal {
   id                 String                    @id @default(uuid()) @db.Uuid
   user_id            String                    @db.Uuid
@@ -3370,6 +3394,8 @@ model ContentLine {
   tasks                  Task[]
   allocations            TeamKpiAllocation[]
   editor_kpi_allocations EditorKpiAllocation[]
+  daily_line_plans       DailyLinePlan[]
+  daily_task_compliance  DailyTaskCompliance[]
 
   @@map("content_lines")
 }
@@ -3516,16 +3542,17 @@ model Content {
   created_at               DateTime           @default(now())
   updated_at               DateTime           @updatedAt
 
-  content_line          ContentLine?           @relation(fields: [content_line_id], references: [id])
-  classification        ContentClassification? @relation(fields: [classification_id], references: [id], onDelete: SetNull)
-  added_by              User                   @relation("ContentAddedBy", fields: [added_by_id], references: [id])
-  source_team_content   TeamContent?           @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
-  source_editor_content EditorContent?         @relation("ContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
-  team_versions         TeamContent[]          @relation("TeamContentGlobalRef")
-  editor_versions       EditorContent[]        @relation("EditorContentGlobalRef")
-  tasks                 Task[]
-  warehouses            ContentWarehouse[]
-  translations          ContentTranslation[]
+  content_line           ContentLine?              @relation(fields: [content_line_id], references: [id])
+  classification         ContentClassification?    @relation(fields: [classification_id], references: [id], onDelete: SetNull)
+  added_by               User                      @relation("ContentAddedBy", fields: [added_by_id], references: [id])
+  source_team_content    TeamContent?              @relation("ContentTeamRef", fields: [source_team_content_id], references: [id], onDelete: SetNull)
+  source_editor_content  EditorContent?            @relation("ContentEditorRef", fields: [source_editor_content_id], references: [id], onDelete: SetNull)
+  team_versions          TeamContent[]             @relation("TeamContentGlobalRef")
+  editor_versions        EditorContent[]           @relation("EditorContentGlobalRef")
+  tasks                  Task[]
+  warehouses             ContentWarehouse[]
+  translations           ContentTranslation[]
+  daily_plan_suggestions DailyLinePlanSuggestion[]
 
   @@index([added_by_id])
   @@index([classification_id])
@@ -3653,31 +3680,31 @@ model Task {
   created_at                DateTime   @default(now())
   updated_at                DateTime   @updatedAt
 
-  team                   Team                  @relation(fields: [team_id], references: [id])
-  content                Content?              @relation(fields: [content_id], references: [id])
-  product                Product?              @relation(fields: [product_id], references: [id])
-  editor_product         EditorProduct?        @relation(fields: [editor_product_id], references: [id])
-  team_product           TeamProduct?          @relation(fields: [team_product_id], references: [id])
-  editor_content         EditorContent?        @relation(fields: [editor_content_id], references: [id])
-  team_content           TeamContent?          @relation(fields: [team_content_id], references: [id])
-  content_line           ContentLine?          @relation(fields: [content_line_id], references: [id])
-  product_line           ProductLine?          @relation(fields: [product_line_id], references: [id])
-  source_outro           Source?               @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
-  source_extra           Source?               @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
-  source_workshop        Source?               @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
-  source_huyk            Source?               @relation("TaskSourceHuyk", fields: [source_huyk_id], references: [id])
-  editor_source_outro    EditorSource?         @relation("TaskEditorSourceOutro", fields: [editor_source_outro_id], references: [id])
-  editor_source_extra    EditorSource?         @relation("TaskEditorSourceExtra", fields: [editor_source_extra_id], references: [id])
-  editor_source_workshop EditorSource?         @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
-  editor_source_huyk     EditorSource?         @relation("TaskEditorSourceHuyk", fields: [editor_source_huyk_id], references: [id])
-  team_source_outro      TeamSource?           @relation("TaskTeamSourceOutro", fields: [team_source_outro_id], references: [id])
-  team_source_extra      TeamSource?           @relation("TaskTeamSourceExtra", fields: [team_source_extra_id], references: [id])
-  team_source_workshop   TeamSource?           @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
-  team_source_huyk       TeamSource?           @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
-  assignee               User?                 @relation("TaskAssignee", fields: [assignee_id], references: [id])
-  assigned_by            User?                 @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
-  reviewed_by            User?                 @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
-  run                    AssignmentRun?        @relation(fields: [run_id], references: [id])
+  team                   Team                     @relation(fields: [team_id], references: [id])
+  content                Content?                 @relation(fields: [content_id], references: [id])
+  product                Product?                 @relation(fields: [product_id], references: [id])
+  editor_product         EditorProduct?           @relation(fields: [editor_product_id], references: [id])
+  team_product           TeamProduct?             @relation(fields: [team_product_id], references: [id])
+  editor_content         EditorContent?           @relation(fields: [editor_content_id], references: [id])
+  team_content           TeamContent?             @relation(fields: [team_content_id], references: [id])
+  content_line           ContentLine?             @relation(fields: [content_line_id], references: [id])
+  product_line           ProductLine?             @relation(fields: [product_line_id], references: [id])
+  source_outro           Source?                  @relation("TaskSourceOutro", fields: [source_outro_id], references: [id])
+  source_extra           Source?                  @relation("TaskSourceExtra", fields: [source_extra_id], references: [id])
+  source_workshop        Source?                  @relation("TaskSourceWorkshop", fields: [source_workshop_id], references: [id])
+  source_huyk            Source?                  @relation("TaskSourceHuyk", fields: [source_huyk_id], references: [id])
+  editor_source_outro    EditorSource?            @relation("TaskEditorSourceOutro", fields: [editor_source_outro_id], references: [id])
+  editor_source_extra    EditorSource?            @relation("TaskEditorSourceExtra", fields: [editor_source_extra_id], references: [id])
+  editor_source_workshop EditorSource?            @relation("TaskEditorSourceWorkshop", fields: [editor_source_workshop_id], references: [id])
+  editor_source_huyk     EditorSource?            @relation("TaskEditorSourceHuyk", fields: [editor_source_huyk_id], references: [id])
+  team_source_outro      TeamSource?              @relation("TaskTeamSourceOutro", fields: [team_source_outro_id], references: [id])
+  team_source_extra      TeamSource?              @relation("TaskTeamSourceExtra", fields: [team_source_extra_id], references: [id])
+  team_source_workshop   TeamSource?              @relation("TaskTeamSourceWorkshop", fields: [team_source_workshop_id], references: [id])
+  team_source_huyk       TeamSource?              @relation("TaskTeamSourceHuyk", fields: [team_source_huyk_id], references: [id])
+  assignee               User?                    @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  assigned_by            User?                    @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
+  reviewed_by            User?                    @relation("TaskReviewer", fields: [reviewed_by_id], references: [id])
+  run                    AssignmentRun?           @relation(fields: [run_id], references: [id])
   assignments            TaskAssignment[]
   notifications          Notification[]
   pending_video          TaskPendingVideo?
@@ -3685,6 +3712,7 @@ model Task {
   content_approvals      TaskContentApproval[]
   scheduled_posts        SocialPost[]
   video_matches          TaskVideoMatch[]
+  daily_plan_suggestion  DailyLinePlanSuggestion?
 
   // Dùng bởi editor-eligibility.ts (groupBy assignee+team+assigned_at) và
   // editor-history.ts (dedup theo assignee, push-count theo assignee+team+assigned_at)
@@ -3825,8 +3853,9 @@ model AssignmentRun {
   error_msg      String?
   finished_at    DateTime?
 
-  tasks       Task[]
-  assignments TaskAssignment[]
+  tasks            Task[]
+  assignments      TaskAssignment[]
+  daily_line_plans DailyLinePlan[]
 
   @@index([run_at(sort: Desc)])
   @@map("assignment_runs")
@@ -3840,10 +3869,122 @@ model AutoAssignSetting {
   is_active             Boolean  @default(true)
   /// Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng
   default_cooldown_days Int      @default(5)
+  /// Sinh Kế hoạch ngày (chỉ tiêu + gợi ý content, không tạo task) cùng lượt chia task — vẫn cần
+  /// is_active bật
+  daily_plan_enabled    Boolean  @default(true)
+  /// Tên tuyến nội dung lập Kế hoạch ngày (khớp content_lines.name, không phân biệt hoa thường)
+  daily_plan_line_names String[] @default(["A1", "A2", "A3", "A5"])
   updated_by            String?
   updated_at            DateTime @updatedAt
 
   @@map("auto_assign_settings")
+}
+
+/// Kế hoạch ngày của 1 người ở 1 team cho 1 tuyến nội dung (mặc định A1/A2/A3/A5): số video cần
+/// làm + gợi ý content. Sinh cùng lượt chia task (task-auto-assign), KHÔNG tạo task — editor tự
+/// tạo từ gợi ý hoặc tạo tay. Số đã làm không lưu ở đây, luôn đếm từ bảng tasks theo hạn chót.
+model DailyLinePlan {
+  id              String   @id @default(uuid())
+  user_id         String   @db.Uuid
+  team_id         String   @db.Uuid
+  /// Ngày lịch VN lưu UTC midnight — cùng quy ước EditorDailyKpi.date (dailyKpiDate)
+  plan_date       DateTime @db.Date
+  content_line_id String
+  /// Số video cần làm trong ngày lúc chia — rải KPI tháng còn lại như task A4
+  target          Int
+  monthly_target  Int
+  /// Hạn chót gắn cho task tạo nhanh — trùng hạn task A4 cùng lượt chia
+  deadline        DateTime
+  run_id          String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  user         User                      @relation("DailyLinePlanOf", fields: [user_id], references: [id], onDelete: Cascade)
+  team         Team                      @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  content_line ContentLine               @relation(fields: [content_line_id], references: [id], onDelete: Cascade)
+  run          AssignmentRun?            @relation(fields: [run_id], references: [id], onDelete: SetNull)
+  suggestions  DailyLinePlanSuggestion[]
+
+  @@unique([user_id, team_id, plan_date, content_line_id])
+  // Lượt chia chạy lại trong ngày + GET /daily-plans/me đều lọc theo ngày kế hoạch
+  @@index([plan_date])
+  @@map("daily_line_plans")
+}
+
+enum DailyTaskComplianceSource {
+  /// Task A4 được hệ thống tự tạo và giao trực tiếp.
+  AUTO_A4
+  /// Chỉ tiêu tuyến khác từ DailyLinePlan; editor tự tạo task để hoàn thành.
+  DAILY_PLAN
+}
+
+/// Bản chụp kết quả thực hiện task theo từng ngày/người/team/tuyến. Cron chỉ ghi sau khi hạn chót
+/// đã qua; completed_count chỉ tính task nộp đúng hạn, nên lịch sử không đổi khi task được nộp bù
+/// hoặc duyệt vào ngày sau.
+model DailyTaskCompliance {
+  id                   String                    @id @default(uuid())
+  user_id              String                    @db.Uuid
+  team_id              String                    @db.Uuid
+  work_date            DateTime                  @db.Date
+  content_line_id      String
+  source               DailyTaskComplianceSource
+  expected_count       Int
+  completed_count      Int
+  missing_count        Int
+  deadline             DateTime
+  evaluated_at         DateTime                  @default(now())
+  notification_sent_at DateTime?
+  created_at           DateTime                  @default(now())
+  updated_at           DateTime                  @updatedAt
+
+  user         User        @relation("DailyTaskComplianceOf", fields: [user_id], references: [id], onDelete: Cascade)
+  team         Team        @relation(fields: [team_id], references: [id], onDelete: Cascade)
+  content_line ContentLine @relation(fields: [content_line_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, team_id, work_date, content_line_id, source])
+  @@index([work_date(sort: Desc)])
+  @@index([user_id, work_date(sort: Desc)])
+  @@index([team_id, work_date(sort: Desc)])
+  @@index([missing_count, notification_sent_at])
+  @@map("daily_task_compliance")
+}
+
+enum DailyPlanSuggestionKind {
+  CONTENT
+  WIN_VIDEO
+}
+
+/// Gợi ý của 1 Kế hoạch ngày: content có sẵn (đúng 1 trong 3 kho) hoặc video win chưa có content —
+/// tạo nhanh từ video win sẽ tạo content kho cá nhân từ caption.
+model DailyLinePlanSuggestion {
+  id                  String                  @id @default(uuid())
+  plan_id             String
+  kind                DailyPlanSuggestionKind
+  rank                Int
+  content_id          String?
+  team_content_id     String?
+  editor_content_id   String?
+  video_platform      String?
+  video_post_id       String?
+  video_url           String?
+  video_caption       String?
+  video_thumbnail_url String?
+  video_views         Int?
+  video_published_at  DateTime?
+  video_page_name     String?
+  /// Đặt ngay khi bắt đầu tạo task từ gợi ý — chặn bấm 2 lần tạo trùng
+  used_at             DateTime?
+  task_id             String?                 @unique
+  created_at          DateTime                @default(now())
+
+  plan           DailyLinePlan  @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  content        Content?       @relation(fields: [content_id], references: [id], onDelete: Cascade)
+  team_content   TeamContent?   @relation(fields: [team_content_id], references: [id], onDelete: Cascade)
+  editor_content EditorContent? @relation(fields: [editor_content_id], references: [id], onDelete: Cascade)
+  task           Task?          @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@index([plan_id])
+  @@map("daily_line_plan_suggestions")
 }
 
 model LarkWebhookSetting {
