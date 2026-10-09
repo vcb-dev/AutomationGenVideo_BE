@@ -12,8 +12,8 @@ import { Prisma, SocialPostStatus } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
-import { TaskPublishedLinkStatsService } from "./task-published-link-stats.service";
-import { TaskAutoContentWinPushService } from "./content-win-auto-push.service";
+import { TaskPublishedLinkStatsService } from "../published-links/task-published-link-stats.service";
+import { TaskAutoContentWinPushService } from "../published-links/content-win-auto-push.service";
 import {
   CreateTaskDto,
   UpdateTaskDto,
@@ -27,24 +27,26 @@ import {
   dailyKpiDate,
   vietnamDateString,
   vietnamDayRange,
+  vietnamDayRangeOf,
   vietnamMonthRange,
   vietnamMonthString,
 } from "../../../utils/date.utils";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
-import { LarkWebhookNotifyService } from "./lark-webhook-notify.service";
-import { deadlineWindow } from "./deadline-window.util";
+import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
+import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
 import {
   computeEditorKpiActuals,
   editorKpiActualKey,
   emptyEditorKpiActuals,
-} from "../kpi/editor-kpi-actuals.util";
+} from "../../../utils/task-auto/editor-kpi-actuals.util";
 import {
   DEFAULT_OMS_PRODUCT_LINE_NAME,
   productLineCategoryLabel,
   resolveTaskProductLineId,
-} from "./product-line-category.util";
+} from "../../../utils/task-auto/product-line-category.util";
 import { SapoIntegrationService } from "../../sapo-integration/sapo-integration.service";
+import { buildDeadlineRangeAnd, buildTaskListWhere } from "../../../utils/task-auto/task-list-query.util";
 
 /**
  * Cổng đọc số đơn Sapo, khai TẠI NƠI DÙNG thay vì phụ thuộc hình dạng đầy đủ của
@@ -704,7 +706,7 @@ export class TaskAutoTasksService {
   };
 
   async findAll(q: QueryTaskDto) {
-    const where = this.buildTaskListWhere(q);
+    const where = buildTaskListWhere(q);
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 20;
@@ -724,87 +726,6 @@ export class TaskAutoTasksService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  buildTaskListWhere(q: QueryTaskDto) {
-    const where: any = {};
-    const and: any[] = [];
-    // Trạng thái coi như "xong việc" — task ở đây không tính trễ hạn dù deadline đã qua.
-    // Phải khớp isOverdue() ở FE (src/components/task-auto/helpers.ts và PersonalDashboard.tsx).
-    const doneStatuses = ["APPROVED", "CANCELLED"];
-
-    const teamIdFilter = parseTeamIdFilter(q.team_id);
-    if (teamIdFilter) where.team_id = teamIdFilter;
-    if (q.assignee_id) where.assignee_id = q.assignee_id;
-    if (q.task_type === "auto") where.task_type = "AUTO";
-    if (q.task_type === "extra") where.task_type = "EXTRA";
-
-    if (q.overdue === "true") {
-      // Cột "Quá hạn" ảo (Kanban): không phải 1 status thật nên bỏ qua q.status/deadline_from/to/
-      // deadline_date/month — trễ hạn tự neo theo thời điểm hiện tại, không phải khoảng ngày lọc thêm.
-      and.push({ deadline: { lt: new Date() } });
-      and.push({ status: { notIn: doneStatuses } });
-    } else {
-      if (q.status) where.status = q.status;
-      if (q.deadline_from || q.deadline_to) {
-        and.push(this.buildDeadlineRangeAnd(q.deadline_from, q.deadline_to)!);
-      } else if (q.deadline_date) {
-        const dayStart = new Date(`${q.deadline_date}T00:00:00+07:00`);
-        const dayEnd = new Date(`${q.deadline_date}T23:59:59.999+07:00`);
-        // Task có deadline rơi vào ngày lọc; task chưa có deadline thì tính theo ngày tạo thay thế.
-        and.push({
-          OR: [
-            { deadline: { gte: dayStart, lte: dayEnd } },
-            { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
-          ],
-        });
-      } else if (q.month) {
-        const start = new Date(`${q.month}-01`);
-        const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
-        where.created_at = { gte: start, lt: end };
-      }
-
-      if (q.exclude_overdue === "true") {
-        // Task trễ hạn giờ dồn về cột "Quá hạn" riêng — loại khỏi các cột trạng thái khác
-        // (trừ APPROVED/CANCELLED, vốn không tính trễ hạn) để tránh hiển thị trùng 2 nơi.
-        and.push({
-          OR: [
-            { deadline: null },
-            { deadline: { gte: new Date() } },
-            { status: { in: doneStatuses } },
-          ],
-        });
-      }
-    }
-    if (q.search) {
-      where.content = { title: { contains: q.search, mode: "insensitive" } };
-    }
-    if (q.reviewed_from || q.reviewed_to) {
-      const bounds: { gte?: Date; lte?: Date } = {};
-      if (q.reviewed_from) bounds.gte = new Date(`${q.reviewed_from}T00:00:00+07:00`);
-      if (q.reviewed_to) bounds.lte = new Date(`${q.reviewed_to}T23:59:59.999+07:00`);
-      where.reviewed_at = bounds;
-    }
-    if (and.length) where.AND = and;
-
-    return where;
-  }
-
-  // Khoảng ngày lọc theo hạn chót; task chưa có hạn chót thì tính theo ngày tạo thay thế — tách
-  // riêng khỏi findAll() để dùng chung với getHeaderCounts(), tránh lệch ngữ nghĩa giữa 2 nơi.
-  private buildDeadlineRangeAnd(from?: string, to?: string) {
-    if (!from && !to) return null;
-    const rangeStart = from ? new Date(`${from}T00:00:00+07:00`) : undefined;
-    const rangeEnd = to ? new Date(`${to}T23:59:59.999+07:00`) : undefined;
-    const bounds: { gte?: Date; lte?: Date } = {};
-    if (rangeStart) bounds.gte = rangeStart;
-    if (rangeEnd) bounds.lte = rangeEnd;
-    return {
-      OR: [
-        { deadline: bounds },
-        { deadline: null, created_at: bounds },
-      ],
-    };
-  }
-
   // Đếm nhanh cho header ("N task") + badge "Video chờ duyệt" trên tasks/page.tsx — dùng count()
   // thuần (không kèm findMany như findAll()) vì FE chỉ cần con số, tránh tốn 1 lượt findMany thừa
   // cho mỗi lần gọi. Badge "Content chờ duyệt" đếm riêng ở ContentApprovalService.countPending()
@@ -821,7 +742,7 @@ export class TaskAutoTasksService {
     if (q.search) {
       totalWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const totalDeadlineAnd = this.buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
+    const totalDeadlineAnd = buildDeadlineRangeAnd(q.deadline_from, q.deadline_to);
     if (totalDeadlineAnd) totalWhere.AND = [totalDeadlineAnd];
 
     // Badge "Video chờ duyệt": luôn status SUBMITTED, khoảng ngày riêng (pending_from/to) — khớp
@@ -832,7 +753,7 @@ export class TaskAutoTasksService {
     if (q.search) {
       submittedWhere.content = { title: { contains: q.search, mode: "insensitive" } };
     }
-    const submittedDeadlineAnd = this.buildDeadlineRangeAnd(q.pending_from, q.pending_to);
+    const submittedDeadlineAnd = buildDeadlineRangeAnd(q.pending_from, q.pending_to);
     if (submittedDeadlineAnd) submittedWhere.AND = [submittedDeadlineAnd];
 
     const [total, submittedTotal] = await Promise.all([
@@ -1537,19 +1458,18 @@ export class TaskAutoTasksService {
     }
   }
 
-  /** Parses "YYYY-MM-DD" date_from/date_to into an inclusive local-day Prisma range; null if absent/invalid. */
+  /** "YYYY-MM-DD" date_from/date_to → khoảng [00:00 ngày đầu, 24:00 ngày cuối) theo GIỜ VN (khớp
+   * Kanban `buildDeadlineRangeAnd`), bất kể server chạy timezone gì — prod chạy UTC nên `new Date(y,
+   * m, d)` lệch 7 tiếng, task hạn 0h-7h sáng ngày 1 bị tính sang ngày cuối tháng trước. Thiếu/sai → null. */
   private parseDateRange(
     dateFrom?: string,
     dateTo?: string,
   ): { gte: Date; lt: Date } | null {
     if (!dateFrom || !dateTo) return null;
-    const [fy, fm, fd] = dateFrom.split("-").map(Number);
-    const [ty, tm, td] = dateTo.split("-").map(Number);
-    if (!fy || !fm || !fd || !ty || !tm || !td) return null;
-    const gte = new Date(fy, fm - 1, fd);
-    const lt = new Date(ty, tm - 1, td + 1);
-    if (isNaN(gte.getTime()) || isNaN(lt.getTime()) || gte >= lt) return null;
-    return { gte, lt };
+    const from = vietnamDayRangeOf(dateFrom);
+    const to = vietnamDayRangeOf(dateTo);
+    if (!from || !to || from.gte >= to.lt) return null;
+    return { gte: from.gte, lt: to.lt };
   }
 
   /**
@@ -1574,12 +1494,13 @@ export class TaskAutoTasksService {
     dateTo?: string,
     /** "YYYY-MM" — tháng báo cáo cho leader dashboard (mặc định tháng hiện tại nếu bỏ trống/sai định dạng). */
     month?: string,
-    /** Chỉ áp dụng cho ADMIN/MANAGER (global dashboard) — thu hẹp mọi số liệu về 1 team/1 thành
-     * viên cụ thể để "khoan sâu" thay vì chỉ xem tổng hệ thống. Bị bỏ qua ở nhánh LEADER/MEMBER vì
-     * 2 nhánh đó đã tự khoanh phạm vi theo JWT (team mình lead / chính mình) rồi. */
+    /** "Khoan sâu" về 1 team/1 thành viên cụ thể thay vì xem tổng. ADMIN/MANAGER: dùng cả 2.
+     * LEADER: chỉ dùng `assigneeId`, và chỉ khi người đó là thành viên (các) team mình lead — xem
+     * getLeaderDashboard. MEMBER: bỏ qua cả 2 (luôn là chính mình theo JWT). */
     teamId?: string,
     assigneeId?: string,
-    /** Tab "Thống kê theo ngày" của leader dashboard — giữ traffic/doanh thu theo tháng chứa `range`. */
+    /** Tab "Thống kê theo ngày" của leader dashboard — giữ traffic/doanh thu theo tháng chứa `range`,
+     * KPI ngày (kpi_day_*) tính trên cả khoảng `range` kể cả khi chọn nhiều ngày. */
     pinTrafficMonth = false,
   ) {
     const range = this.parseDateRange(dateFrom, dateTo);
@@ -1587,7 +1508,8 @@ export class TaskAutoTasksService {
       roles.includes("ADMIN") || roles.includes("MANAGER");
     const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
     if (isAdminOrManager) return this.getGlobalDashboard(range, teamId, assigneeId);
-    if (isLeaderOnly) return this.getLeaderDashboard(userId, range, month, pinTrafficMonth);
+    if (isLeaderOnly)
+      return this.getLeaderDashboard(userId, range, month, pinTrafficMonth, assigneeId);
     return this.getPersonalDashboard(userId, range);
   }
 
@@ -1595,7 +1517,8 @@ export class TaskAutoTasksService {
    * "Video/sản phẩm theo dòng sản phẩm" — tách riêng khỏi getDashboard() để FE load độc lập thay vì
    * gánh vào payload Tổng quan. Tự khoanh phạm vi theo role, CÙNG quy tắc với getDashboard():
    *  - ADMIN/MANAGER: toàn hệ thống, có thể khoan sâu qua team_id/assignee_id.
-   *  - LEADER: tự động khoanh về (các) team đang lead — không nhận team_id/assignee_id (JWT quyết định).
+   *  - LEADER: tự động khoanh về (các) team đang lead (JWT quyết định, bỏ qua team_id); assignee_id
+   *    thu hẹp về 1 thành viên, chỉ khi người đó đang ở team mình lead — cùng quy tắc getLeaderDashboard.
    *  - MEMBER: tự động khoanh về chính mình.
    * Lọc theo `deadlineWindow` (deadline rơi vào `range`, chưa đặt deadline thì theo created_at) —
    * CÙNG trục lọc với dashboard chính (getDashboard) để số liệu khớp nhau, thay vì `reviewed_at`
@@ -1640,7 +1563,19 @@ export class TaskAutoTasksService {
           products_with_video_list: [],
         };
       }
-      where = { ...baseWhere, team_id: { in: teamIds } };
+      // id ngoài team mình lead (hoặc đã nghỉ) bị bỏ qua → vẫn trả số liệu cả team, không lộ dữ
+      // liệu của người team khác.
+      const focusMember = assigneeId
+        ? await this.prisma.teamMember.findFirst({
+            where: { team_id: { in: teamIds }, user_id: assigneeId, user: { is_active: true } },
+            select: { user_id: true },
+          })
+        : null;
+      where = {
+        ...baseWhere,
+        team_id: { in: teamIds },
+        ...(focusMember ? { assignee_id: focusMember.user_id } : {}),
+      };
     } else {
       where = { ...baseWhere, assignee_id: userId };
     }
@@ -1670,12 +1605,7 @@ export class TaskAutoTasksService {
     assigneeId?: string,
   ) {
     const now = new Date();
-    const todayStart = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    );
-    const todayEnd = new Date(todayStart.getTime() + 86_400_000);
+    const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
     // "Khoan sâu" theo team/thành viên cụ thể — orthogonal với bộ lọc ngày (range) và áp dụng cho
     // MỌI số liệu trên màn Tổng quan kể cả 2 cảnh báo "live" (today_deadline/overdue), vì đây là
     // trục lọc THEO AI chứ không phải THEO KHI NÀO.
@@ -1773,8 +1703,12 @@ export class TaskAutoTasksService {
     range: { gte: Date; lt: Date } | null,
     month?: string,
     /** Tab "Thống kê theo ngày": traffic/doanh thu vẫn hiển thị theo THÁNG chứa `range`, không co
-     * về đúng khoảng ngày như các số liệu khác. Bỏ qua khi không có `range` (chế độ xem theo tháng). */
+     * về đúng khoảng ngày như các số liệu khác; KPI ngày cộng trên cả khoảng `range`. Bỏ qua khi
+     * không có `range` (chế độ xem theo tháng). */
     pinTrafficMonth = false,
+    /** Dropdown "Thành viên" ở trang Tổng quan: thu hẹp MỌI số liệu về 1 người. Chỉ nhận thành viên
+     * đang active của (các) team mình lead — id lạ bị bỏ qua, vẫn trả số liệu cả team. */
+    assigneeId?: string,
   ) {
     const now = new Date();
     const realCurrentMonth = vietnamMonthString(now);
@@ -1793,23 +1727,23 @@ export class TaskAutoTasksService {
     // mới/cũ, sản phẩm...) — ưu tiên bộ lọc ngày (`range`) do trang Task Auto truyền xuống; không có
     // thì mặc định cả tháng đang xem, nhất quán với getGlobalDashboard.
     const periodRange = range ?? { gte: monthStart, lt: monthEnd };
-    // "KPI ngày" mặc định tính theo NGÀY THỰC TẾ (hôm nay). Ngoại lệ: tab "Thống kê theo ngày" chọn
-    // đúng 1 ngày (range gói gọn 24h) → mọi chỉ số "ngày" (KPI ngày, task giao/duyệt trong ngày) quy
-    // về chính ngày đó để xem lại lịch sử; chọn nhiều ngày thì FE tự ẩn cụm KPI ngày.
+    // "KPI ngày" mặc định tính theo NGÀY THỰC TẾ (hôm nay). Ngoại lệ: chọn đúng 1 ngày (range gói
+    // gọn 24h), hoặc tab "Thống kê theo ngày" (pinTrafficMonth) chọn khoảng nhiều ngày (vd nút "Tuần
+    // này") → mọi chỉ số "ngày" quy về đúng khoảng đó: mục tiêu = cộng chỉ tiêu TỪNG ngày trong
+    // khoảng (xem sumDailyTargets), đã làm = task duyệt có deadline trong khoảng.
     const { gte: todayStart, lt: todayEnd } = vietnamDayRange(now);
     const isSingleDay =
       !!range && range.lt.getTime() - range.gte.getTime() === 86_400_000;
-    const dayStart = isSingleDay ? range!.gte : todayStart;
-    const dayEnd = isSingleDay ? range!.lt : todayEnd;
-    const dayKpiDateStr = vietnamDateString(isSingleDay ? range!.gte : now);
+    const dayWindowIsRange = !!range && (isSingleDay || pinTrafficMonth);
+    const dayStart = dayWindowIsRange ? range!.gte : todayStart;
+    const dayEnd = dayWindowIsRange ? range!.lt : todayEnd;
+    const dayKpiDateFrom = vietnamDateString(dayStart);
+    const dayKpiDateTo = vietnamDateString(new Date(dayEnd.getTime() - 1));
     // Traffic/doanh thu là "điểm cuối kỳ" của báo cáo tay — tab "Theo ngày" giữ theo THÁNG chứa ngày
     // đang xem (pinTrafficMonth), không co về đúng 1 ngày như video/content.
     const trafficRange =
       pinTrafficMonth && range
-        ? {
-            gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
-            lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
-          }
+        ? vietnamMonthRange(vietnamMonthString(range.gte))!
         : periodRange;
 
     // findMany (không phải findFirst): trên DB thật có leader lead CÙNG LÚC nhiều team (vd 1 người
@@ -1838,6 +1772,8 @@ export class TaskAutoTasksService {
         video_by_line: [],
         product_by_category: [],
         content_by_classification: [],
+        member_options: [],
+        focus_member: null,
       };
 
     const teamIds = teamsLed.map((t) => t.id);
@@ -1846,7 +1782,14 @@ export class TaskAutoTasksService {
     for (const t of teamsLed) {
       for (const m of t.members) memberByUserId.set(m.user_id, m);
     }
-    const memberRows = Array.from(memberByUserId.values());
+    const allMemberRows = Array.from(memberByUserId.values());
+    const focusMember = assigneeId ? memberByUserId.get(assigneeId) : undefined;
+    // Đang xem 1 thành viên → mọi query theo người (memberIds) chỉ còn người đó, còn các query cấp
+    // team (team_id) thêm focusWhere. Vẫn giữ team_id để không lộ task người đó làm cho team khác.
+    const memberRows = focusMember ? [focusMember] : allMemberRows;
+    const focusWhere: Prisma.TaskWhereInput = focusMember
+      ? { assignee_id: focusMember.user_id }
+      : {};
     const memberIds = memberRows.map((m) => m.user_id);
     const memberEmails = memberRows
       .map((m) => m.user?.email?.toLowerCase().trim())
@@ -1875,6 +1818,7 @@ export class TaskAutoTasksService {
         by: ["status"],
         where: {
           team_id: { in: teamIds },
+          ...focusWhere,
           ...this.deadlineWindow(range),
         },
         _count: { id: true },
@@ -1905,6 +1849,7 @@ export class TaskAutoTasksService {
       this.prisma.task.count({
         where: {
           team_id: { in: teamIds },
+          ...focusWhere,
           status: "APPROVED",
           ...this.deadlineWindow(periodRange),
         },
@@ -1918,16 +1863,17 @@ export class TaskAutoTasksService {
         },
         _count: { id: true },
       }),
-      // "KPI ngày": mục tiêu ngày = số task có deadline rơi vào NGÀY ĐANG XEM (mặc định hôm nay); task
-      // chưa có deadline thì tính theo ngày tạo (created_at) thay thế — thống nhất với Global/Personal.
-      this.prisma.task.groupBy({
-        by: ["assignee_id"],
+      // "KPI ngày" (fallback khi chưa set tay): mục tiêu ngày = số task có deadline rơi vào NGÀY ĐANG
+      // XEM (mặc định hôm nay); task chưa có deadline thì tính theo ngày tạo (created_at) thay thế —
+      // thống nhất với Global/Personal. Lấy dòng thay vì groupBy để chia được theo từng ngày khi cửa
+      // sổ là cả khoảng (sumDailyTargets).
+      this.prisma.task.findMany({
         where: {
           assignee_id: { in: memberIds },
           status: { notIn: ["CANCELLED"] },
           ...this.deadlineWindow({ gte: dayStart, lt: dayEnd }),
         },
-        _count: { id: true },
+        select: { assignee_id: true, deadline: true, created_at: true },
       }),
       // "KPI ngày — đã hoàn thành": cùng cửa sổ deadline với mục tiêu ngày ở trên, chỉ thêm APPROVED
       // (trước đây đếm theo reviewed_at nên lệch: task deadline hôm nay mà duyệt hôm sau không được
@@ -1970,17 +1916,18 @@ export class TaskAutoTasksService {
       // không gộp task không thuộc tuyến nào. Đếm theo deadline (không phải reviewed_at) để khớp KPI.
       this.getVideoByContentLine({
         team_id: { in: teamIds },
+        ...focusWhere,
         ...this.deadlineWindow(periodRange),
       }),
-      // KPI ngày set tay (EditorDailyKpi) cho NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
+      // KPI ngày set tay (EditorDailyKpi) cho (các) NGÀY ĐANG XEM — target = 0 coi như chưa set (lọc tại query).
       this.prisma.editorDailyKpi.findMany({
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(dayKpiDateStr),
+          date: { gte: dailyKpiDate(dayKpiDateFrom), lte: dailyKpiDate(dayKpiDateTo) },
           target: { gt: 0 },
         },
-        select: { user_id: true, target: true },
+        select: { user_id: true, date: true, target: true },
       }),
       // "Content theo phân loại": gộp task có deadline rơi vào kỳ (null → created_at) theo
       // ContentClassification của content gắn vào task (join động — phản ánh phân loại hiện tại của
@@ -1996,6 +1943,7 @@ export class TaskAutoTasksService {
       // GET /task-auto/product-video-stats (getProductVideoStatsForRole).
       this.getApprovedProductLineBreakdown({
         team_id: { in: teamIds },
+        ...focusWhere,
         status: "APPROVED",
         ...this.deadlineWindow(periodRange),
       }),
@@ -2007,14 +1955,16 @@ export class TaskAutoTasksService {
         periodRange,
         todayStart: dayStart,
         todayEnd: dayEnd,
-        dailyDateStr: dayKpiDateStr,
+        dailyDateStr: dayKpiDateFrom,
+        dailyDateTo: dayKpiDateTo,
         months: [currentMonth],
       }),
       // Ai đã được duyệt làm editor (EditorApproval, toàn cục theo user — không theo team) — dùng
       // để loại thành viên chỉ mang vai trò quản lý (LEADER/ADMIN/MANAGER) khỏi danh sách card, xem
-      // isDashboardVisibleMember().
+      // isDashboardVisibleMember(). Tra cả team (không chỉ người đang xem) vì danh sách dropdown
+      // member_options cũng lọc theo quy tắc này.
       this.prisma.editorApproval.findMany({
-        where: { user_id: { in: memberIds }, status: "APPROVED" },
+        where: { user_id: { in: allMemberRows.map((m) => m.user_id) }, status: "APPROVED" },
         select: { user_id: true },
       }),
     ]);
@@ -2031,18 +1981,10 @@ export class TaskAutoTasksService {
     const kpiApprovedByUser = Object.fromEntries(
       monthlyMemberApproved.map((r) => [r.assignee_id!, r._count.id]),
     );
-    const assignedTodayByUser = Object.fromEntries(
-      memberAssignedToday.map((r) => [r.assignee_id!, r._count.id]),
-    );
     const approvedTodayByUser = Object.fromEntries(
       memberApprovedToday.map((r) => [r.assignee_id!, r._count.id]),
     );
-    // user → KPI ngày set tay hôm nay (cộng dồn nếu thuộc nhiều team của cùng leader)
-    const manualDayTargetByUser: Record<string, number> = {};
-    for (const dk of manualDailyKpis) {
-      manualDayTargetByUser[dk.user_id] =
-        (manualDayTargetByUser[dk.user_id] ?? 0) + dk.target;
-    }
+    const dayTargetByUser = this.sumDailyTargets(manualDailyKpis, memberAssignedToday);
     const trafficMonthByEmail = this.sumTrafficOnLatestDate(memberTrafficMonth);
     const revenueMonthByEmail = Object.fromEntries(
       memberRevenueMonth.map((r) => [
@@ -2056,9 +1998,12 @@ export class TaskAutoTasksService {
     // content creator, dù họ luôn có mặt trong TeamMember của team mình lead (xem invariant ở
     // teams.service.ts create()/update()).
     const approvedEditorIds = new Set(approvedEditors.map((a) => a.user_id));
-    const visibleMemberRows = memberRows.filter((m) =>
+    const visibleTeamRows = allMemberRows.filter((m) =>
       this.isDashboardVisibleMember(m.is_content_creator, approvedEditorIds.has(m.user_id), m.user?.roles ?? []),
     );
+    const visibleMemberRows = focusMember
+      ? visibleTeamRows.filter((m) => m.user_id === focusMember.user_id)
+      : visibleTeamRows;
 
     const kpiByUser = Object.fromEntries(editorKpis.map((k) => [k.user_id, k]));
     const members = visibleMemberRows.map((m) => {
@@ -2087,10 +2032,10 @@ export class TaskAutoTasksService {
         /** KPI ngày: content creator lấy từ ContentCreatorDailyKpi (không có fallback theo task vì
          * content creator không được giao task theo nghĩa video); editor ưu tiên số set tay
          * (EditorDailyKpi), chưa set → fallback số task có deadline hôm nay (hoặc tạo hôm nay nếu
-         * chưa có deadline) như cũ. */
+         * chưa có deadline) như cũ. Cửa sổ ngày là cả khoảng → cộng từng ngày (sumDailyTargets). */
         kpi_day_target: isContentCreator
           ? contentCreatorStats.dayTargetByUser[m.user_id] ?? 0
-          : manualDayTargetByUser[m.user_id] ?? assignedTodayByUser[m.user_id] ?? 0,
+          : dayTargetByUser[m.user_id] ?? 0,
         /** Content creator: số content thêm vào kho hôm nay; editor: số task đã duyệt hôm nay. */
         kpi_day_completed: isContentCreator
           ? contentCreatorStats.dayCompletedByUser[m.user_id] ?? 0
@@ -2146,13 +2091,15 @@ export class TaskAutoTasksService {
       team: {
         id: teamsLed[0].id,
         name: teamsLed.map((t) => t.name).join(", "),
-        member_count: visibleMemberRows.length,
+        member_count: visibleTeamRows.length,
       },
       tasks: {
         total: Object.values(taskMap).reduce((s, v) => s + v, 0),
         ...taskMap,
       },
       members,
+      /** Đơn Sapo theo tên team — không tách được theo người, nên vẫn là số cả team kể cả khi lọc
+       * 1 thành viên. */
       total_orders: totalOrders,
       kpi: {
         month: currentMonth,
@@ -2168,6 +2115,15 @@ export class TaskAutoTasksService {
       product_by_category: productByCategory,
       /** Số task có deadline trong kỳ của cả team, gộp theo phân loại content (ContentClassification). */
       content_by_classification: contentByClassification,
+      /** Lựa chọn cho dropdown "Thành viên" — luôn là cả team (cùng quy tắc ẩn/hiện với `members`),
+       * không co lại khi đang lọc 1 người. */
+      member_options: visibleTeamRows
+        .map((m) => ({ user_id: m.user_id, full_name: m.user?.full_name ?? "" }))
+        .sort((a, b) => a.full_name.localeCompare(b.full_name, "vi")),
+      /** Thành viên đang được lọc (null = xem cả team, kể cả khi assignee_id gửi lên không hợp lệ). */
+      focus_member: focusMember
+        ? { user_id: focusMember.user_id, full_name: focusMember.user?.full_name ?? "" }
+        : null,
     };
   }
 
@@ -2190,6 +2146,9 @@ export class TaskAutoTasksService {
     /** Ngày (YYYY-MM-DD giờ VN) để tra ContentCreatorDailyKpi — mặc định hôm nay; tab "Theo ngày"
      * truyền đúng ngày đang xem. */
     dailyDateStr?: string;
+    /** Ngày cuối (YYYY-MM-DD) khi tab "Theo ngày" chọn khoảng nhiều ngày — cộng KPI ngày từ
+     * `dailyDateStr` tới ngày này. Bỏ trống = chỉ đúng 1 ngày `dailyDateStr`. */
+    dailyDateTo?: string;
     months: string[];
   }) {
     const result = {
@@ -2200,8 +2159,9 @@ export class TaskAutoTasksService {
       dayCompletedByUser: {} as Record<string, number>,
       approvedMonthByUser: {} as Record<string, number>,
     };
-    const { teamIds, memberIds, periodRange, todayStart, todayEnd, dailyDateStr, months } =
+    const { teamIds, memberIds, periodRange, todayStart, todayEnd, dailyDateStr, dailyDateTo, months } =
       params;
+    const dailyFrom = dailyDateStr ?? vietnamDateString(new Date());
     if (memberIds.length === 0) return result;
 
     const [kpis, contentByOrigin, dailyKpis, contentToday, approvedPushes] = await Promise.all([
@@ -2217,7 +2177,9 @@ export class TaskAutoTasksService {
         where: {
           user_id: { in: memberIds },
           team_id: { in: teamIds },
-          date: dailyKpiDate(dailyDateStr ?? vietnamDateString(new Date())),
+          date: dailyDateTo
+            ? { gte: dailyKpiDate(dailyFrom), lte: dailyKpiDate(dailyDateTo) }
+            : dailyKpiDate(dailyFrom),
           target: { gt: 0 },
         },
         select: { user_id: true, target: true },
@@ -2292,15 +2254,49 @@ export class TaskAutoTasksService {
     return !isManagementOnly;
   }
 
+  /**
+   * Mục tiêu "KPI ngày" của editor cộng qua TỪNG ngày trong cửa sổ: ngày có set tay (EditorDailyKpi,
+   * cộng dồn nếu thuộc nhiều team) lấy số set tay, ngày chưa set fallback số task có deadline ngày
+   * đó (chưa có deadline → ngày tạo). Cửa sổ 1 ngày thì đúng bằng quy tắc "set tay ?? fallback" cũ.
+   */
+  private sumDailyTargets(
+    manual: { user_id: string; date: Date; target: number }[],
+    tasks: { assignee_id: string | null; deadline: Date | null; created_at: Date }[],
+  ): Record<string, number> {
+    const manualByUserDay = new Map<string, number>();
+    for (const dk of manual) {
+      // Cột DATE lưu UTC midnight của ngày lịch VN (dailyKpiDate) → cắt ISO là ra đúng ngày.
+      const key = `${dk.user_id}|${dk.date.toISOString().slice(0, 10)}`;
+      manualByUserDay.set(key, (manualByUserDay.get(key) ?? 0) + dk.target);
+    }
+    const fallbackByUserDay = new Map<string, number>();
+    for (const t of tasks) {
+      if (!t.assignee_id) continue;
+      const key = `${t.assignee_id}|${vietnamDateString(t.deadline ?? t.created_at)}`;
+      fallbackByUserDay.set(key, (fallbackByUserDay.get(key) ?? 0) + 1);
+    }
+    const totals: Record<string, number> = {};
+    for (const key of new Set([...manualByUserDay.keys(), ...fallbackByUserDay.keys()])) {
+      const userId = key.slice(0, key.indexOf("|"));
+      totals[userId] =
+        (totals[userId] ?? 0) + (manualByUserDay.get(key) ?? fallbackByUserDay.get(key) ?? 0);
+    }
+    return totals;
+  }
+
   /** "YYYY-MM" của mọi tháng bị [start, end] chạm tới — dùng để gộp EditorKpi (chỉ lưu theo THÁNG
    * trọn vẹn, không chia nhỏ theo ngày) khi khoảng ngày báo cáo là tự do, có thể xuyên nhiều tháng. */
   private monthsBetween(start: Date, end: Date): string[] {
     const months: string[] = [];
-    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
-    const last = new Date(end.getFullYear(), end.getMonth(), 1);
-    while (cur <= last) {
-      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
-      cur.setMonth(cur.getMonth() + 1);
+    // Tháng theo giờ VN: mốc 00:00 ngày 1 giờ VN là 17:00 ngày cuối tháng trước theo UTC (prod).
+    const [startY, startM] = vietnamMonthString(start).split("-").map(Number);
+    const last = vietnamMonthString(end);
+    for (let i = 0; ; i++) {
+      const y = startY + Math.floor((startM - 1 + i) / 12);
+      const m = ((startM - 1 + i) % 12) + 1;
+      const key = `${y}-${String(m).padStart(2, "0")}`;
+      if (key > last) break;
+      months.push(key);
     }
     return months;
   }
@@ -2342,10 +2338,6 @@ export class TaskAutoTasksService {
     "zalo",
   ] as const;
 
-  private ymdLocal(d: Date): string {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
-
   async getTrafficReportsForRole(
     userId: string,
     roles: string[],
@@ -2357,9 +2349,8 @@ export class TaskAutoTasksService {
     const now = new Date();
     const parsed = this.parseDateRange(dateFrom, dateTo);
     const range = parsed ?? vietnamMonthRange(vietnamMonthString(now))!;
-    const toYmd = parsed ? (d: Date) => this.ymdLocal(d) : vietnamDateString;
-    const from = toYmd(range.gte);
-    const to = toYmd(new Date(range.lt.getTime() - 1));
+    const from = vietnamDateString(range.gte);
+    const to = vietnamDateString(new Date(range.lt.getTime() - 1));
 
     const isAdminOrManager =
       roles.includes("ADMIN") || roles.includes("MANAGER");
@@ -2808,10 +2799,7 @@ export class TaskAutoTasksService {
     const dayEnd = isSingleDay ? explicitRange!.lt : todayEnd;
     const dayKpiDateStr = vietnamDateString(isSingleDay ? explicitRange!.gte : now);
     const trafficRange = pinTrafficMonth
-      ? {
-          gte: new Date(range.gte.getFullYear(), range.gte.getMonth(), 1),
-          lt: new Date(range.gte.getFullYear(), range.gte.getMonth() + 1, 1),
-        }
+      ? vietnamMonthRange(vietnamMonthString(range.gte))!
       : range;
 
     const isAllTeams = !team || team === "all";

@@ -18,11 +18,16 @@ const SHORT_LINK_HOSTS = [
   'b23.tv',
   'fb.watch',
   'v.kuaishou.com',
+  'v.redd.it',
 ];
+
+// Link chia sẻ của app Reddit: reddit.com/r/<sub>/s/<mã> — cùng tên miền với link thường nên
+// không thể thêm cả 'reddit.com' vào danh sách trên, phải nhận diện theo đường dẫn.
+const SHORT_LINK_PATTERNS = [/reddit\.com\/r\/[^/?#]+\/s\/[\w]+/i];
 
 export function isShortLink(raw: string): boolean {
   const lower = raw.toLowerCase();
-  return SHORT_LINK_HOSTS.some((host) => lower.includes(host));
+  return SHORT_LINK_HOSTS.some((host) => lower.includes(host)) || SHORT_LINK_PATTERNS.some((re) => re.test(raw));
 }
 
 export function extractUrl(text: string): string {

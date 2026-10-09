@@ -16,6 +16,7 @@ import {
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import {
   dailyKpiDate,
+  vietnamDayRangeOf,
   vietnamMonthRange,
 } from "../../../utils/date.utils";
 import { Semaphore } from "../../../common/utils/semaphore";
@@ -23,21 +24,21 @@ import {
   classifyPublishedLinksWinFail,
   summarizeWinFailCounts,
   PublishedLinkWinFailStatus,
-} from "../tasks/published-link-win-fail.util";
-import { TaskAutoContentWinPushService } from "../tasks/content-win-auto-push.service";
-import { deadlineWindow } from "../tasks/deadline-window.util";
+} from "../../../utils/task-auto/published-link-win-fail.util";
+import { TaskAutoContentWinPushService } from "../published-links/content-win-auto-push.service";
+import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
 import {
   computeEditorKpiActuals,
   editorKpiActualKey,
   emptyEditorKpiActuals,
-} from "./editor-kpi-actuals.util";
-import { productLineCategoryLabel } from "../tasks/product-line-category.util";
+} from "../../../utils/task-auto/editor-kpi-actuals.util";
+import { productLineCategoryLabel } from "../../../utils/task-auto/product-line-category.util";
 import {
   TaskPublishedLinkStatsService,
   isSupportedLinkStatsPlatform,
   isLinkStatsFresh,
-} from "../tasks/task-published-link-stats.service";
-import { resolveTaskProductLineId } from "../tasks/product-line-category.util";
+} from "../published-links/task-published-link-stats.service";
+import { resolveTaskProductLineId } from "../../../utils/task-auto/product-line-category.util";
 import {
   KPI_PAYROLL_SYNC_CONTRACT_VERSION,
   METRICS_WITHOUT_ACTUAL_SOURCE,
@@ -575,15 +576,10 @@ export class TaskAutoKpiService {
 
   private parseFromTo(from?: string, to?: string): { gte?: Date; lt?: Date } | null {
     if (!from && !to) return null;
+    // Ngày lịch VN, không theo giờ server (prod UTC lệch 7 tiếng ở mốc đầu/cuối ngày).
     const range: { gte?: Date; lt?: Date } = {};
-    if (from) {
-      const [y, m, d] = from.split("-").map(Number);
-      if (y && m && d) range.gte = new Date(y, m - 1, d);
-    }
-    if (to) {
-      const [y, m, d] = to.split("-").map(Number);
-      if (y && m && d) range.lt = new Date(y, m - 1, d + 1);
-    }
+    if (from) range.gte = vietnamDayRangeOf(from)?.gte;
+    if (to) range.lt = vietnamDayRangeOf(to)?.lt;
     return range;
   }
 

@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon';
-import { dailyKpiDate, vietnamDateString } from '../date.utils';
+import { dailyKpiDate, vietnamDateString, vietnamDayRangeOf } from '../date.utils';
 
 /**
  * `EditorDailyKpi.date` (KPI ngày set tay, ca6d6bc) là cột DATE lưu tại UTC midnight của
@@ -63,5 +63,27 @@ describe('vietnamDateString', () => {
     expect(kpiDate.toISOString().slice(0, 10)).toBe(
       DateTime.fromJSDate(now).setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd'),
     );
+  });
+});
+
+describe('vietnamDayRangeOf', () => {
+  it('ngày lịch VN bắt đầu lúc 17:00Z hôm trước, không phải 00:00Z', () => {
+    const r = vietnamDayRangeOf('2026-09-01');
+
+    expect(r!.gte.toISOString()).toBe('2026-08-31T17:00:00.000Z');
+    expect(r!.lt.toISOString()).toBe('2026-09-01T17:00:00.000Z');
+  });
+
+  it('video đăng 06:00 sáng 01/09 giờ VN (= 23:00Z ngày 31/08) nằm TRONG ngày 01/09', () => {
+    const r = vietnamDayRangeOf('2026-09-01')!;
+    const sangSom = new Date('2026-08-31T23:00:00.000Z');
+
+    expect(sangSom >= r.gte && sangSom < r.lt).toBe(true);
+  });
+
+  it('sai định dạng hoặc ngày không tồn tại thì trả null', () => {
+    expect(vietnamDayRangeOf('abc')).toBeNull();
+    expect(vietnamDayRangeOf('2026-02-30')).toBeNull();
+    expect(vietnamDayRangeOf('01/09/2026')).toBeNull();
   });
 });

@@ -1375,6 +1375,18 @@ model ApprovedContent {
   approved_by_id       String
   approved_by_name     String   @default("")
   approved_by_role     UserRole
+  /// Kịch bản sinh chạy nền sau khi duyệt: PROCESSING → DONE | FAILED (dòng cũ mặc định DONE).
+  script_status        String   @default("DONE") @db.VarChar(20)
+  /// GEMINI_VIDEO (xem + nghe video) | GEMINI_TEXT (chỉ tiêu đề/mô tả) | LEGACY_TEXT (cách cũ).
+  script_source        String?  @db.VarChar(30)
+  /// Lời thoại gốc bóc từ video (giữ ngôn ngữ gốc) để đối chiếu với kịch bản.
+  transcript           String?
+  transcript_language  String?  @db.VarChar(20)
+  has_voice            Boolean?
+  script_error         String?
+  source_platform      String?  @db.VarChar(20)
+  /// Video tải bằng đường nào: free | tikhub (null = không tải được / chưa tải).
+  download_source      String?  @db.VarChar(20)
   created_at           DateTime @default(now())
   updated_at           DateTime @updatedAt
 
@@ -1405,10 +1417,67 @@ model VideoLibrary {
   sourcing_url    String?        @db.VarChar(4000)
   created_at      DateTime       @default(now())
   updated_at      DateTime       @updatedAt
+  teams           VideoLibraryTeam[]
 
   @@unique([video_id, collection_type])
   @@index([collection_type, created_at(sort: Desc)])
   @@map("video_library")
+}
+
+/// Chi phí API bên thứ ba (TikHub, Gemini) của Bộ Sưu Tập — để thống kê và kiểm soát chi phí.
+/// Mỗi dòng = một lượt gọi mà AI service đo được. Giá tính TẠI LÚC GỌI (TikHub theo bảng giá của
+/// chính TikHub, Gemini theo số token thật × giá model) nên đổi giá về sau không làm sai lịch sử.
+/// Không khoá ngoại: xoá video/content vẫn giữ lịch sử chi phí.
+model ApiUsageLog {
+  id                  String   @id @default(uuid())
+  /// TIKHUB | GEMINI
+  provider            String   @db.VarChar(20)
+  /// Bước tốn chi phí — nhãn ở COST_FEATURE_LABEL (common/api-usage): PROPOSAL_DETAIL, SCRIPT_DOWNLOAD,
+  /// SCRIPT_GEMINI, SEARCH, PLATFORM_SEARCH, CHANNEL_SYNC, CHANNEL_VIDEOS, VIDEO_DETAIL, PLAY_URL, OTHER
+  feature             String   @db.VarChar(40)
+  /// Trang trong menu Khám phá Video: SEARCH | INTERNAL_CHANNELS | EXTERNAL_CHANNELS | COLLECTION
+  /// | AUTO (cron) | OTHER (ngoài menu — không cộng vào chi phí Khám phá Video)
+  page                String   @default("OTHER") @db.VarChar(30)
+  /// Endpoint TikHub hoặc tên model Gemini
+  endpoint            String   @db.VarChar(200)
+  platform            String?  @db.VarChar(20)
+  /// Dùng lại hồi đáp trong bộ đệm — không tốn lượt gọi (cost 0), giữ để thấy phần tiết kiệm
+  cached              Boolean  @default(false)
+  http_status         Int?
+  /// Số lượt gọi gộp trong dòng này (AI gộp các lượt giống nhau của cùng một request)
+  calls               Int      @default(1)
+  input_tokens        Int      @default(0)
+  output_tokens       Int      @default(0)
+  cost_usd            Decimal  @default(0) @db.Decimal(12, 6)
+  /// Người thao tác (đề xuất / duyệt / thêm thẳng / bấm tạo lại)
+  user_id             String?  @db.Uuid
+  video_id            String?  @db.VarChar(255)
+  approved_content_id String?
+  /// Endpoint AI đã gọi (vd /api/scraper/tiktok/fetch/profile-posts/) — để tra ngược
+  ai_path             String?  @db.VarChar(200)
+  /// Request BE sinh ra lượt gọi (vd "POST /api/scraper/tiktok/profiles/9/scrape"); trống = cron
+  request_route       String?  @db.VarChar(200)
+  created_at          DateTime @default(now())
+
+  @@index([created_at(sort: Desc)])
+  @@index([provider, created_at])
+  @@index([page, created_at])
+  @@map("api_usage_logs")
+}
+
+/// Video tab Team thuộc những team nào — chỉ thành viên/leader các team này thấy video ở tab
+/// Team (tab Chung thì ai cũng thấy). Một video có thể thuộc nhiều team: người thêm/đề xuất
+/// thuộc nhiều team thì gắn vào tất cả.
+model VideoLibraryTeam {
+  video_library_id String
+  team_id          String       @db.Uuid
+  created_at       DateTime     @default(now())
+  video_library    VideoLibrary @relation(fields: [video_library_id], references: [id], onDelete: Cascade)
+  team             Team         @relation(fields: [team_id], references: [id], onDelete: Cascade)
+
+  @@id([video_library_id, team_id])
+  @@index([team_id])
+  @@map("video_library_teams")
 }
 
 enum CollectionType {
@@ -2661,6 +2730,7 @@ model Team {
   channels                   Channel[]                @relation("ChannelTeam")
   ordered_sources            Source[]                 @relation("SourceOrderedTeam")
   push_requests              TeamPushRequest[]
+  video_library_teams        VideoLibraryTeam[]
   performance_goals          PerformanceGoal[]
   performance_kpi_groups     PerformanceKpiGroup[]
 

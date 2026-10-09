@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { TaskStatus } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
-import { TaskPublishedLinkStatsService } from "./task-published-link-stats.service";
+import { TaskPublishedLinkStatsService } from "../published-links/task-published-link-stats.service";
 import { extractHashtags } from "../../instagram-owned-accounts/instagram-owned-accounts.service";
 import {
   CandidateTask,
@@ -16,7 +16,7 @@ import {
   pickWinner,
   scoreCandidate,
   statusFromReason,
-} from "./task-video-match.util";
+} from "../../../utils/task-auto/task-video-match.util";
 
 /**
  * Job hằng ngày: khớp video kênh nội bộ (FB owned pages + IG owned accounts) với task rồi TỰ

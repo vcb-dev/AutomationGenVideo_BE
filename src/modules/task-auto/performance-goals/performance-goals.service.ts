@@ -20,7 +20,7 @@ import {
 import {
   calculateGoalProgress,
   calculateUnweightedOverall,
-} from "./performance-goal.calculator";
+} from "../../../utils/task-auto/performance-goal.calculator";
 
 const includeGoalRelations = {
   user: { select: { id: true, full_name: true, email: true, employee_id: true } },

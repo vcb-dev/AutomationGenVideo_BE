@@ -1,4 +1,4 @@
-import { extractYoutubeVideoId } from '../youtube-url.util';
+import { extractYoutubeVideoId } from '../../../../utils/task-auto/youtube-url.util';
 import { YoutubeVideoStatsService } from '../youtube-video-stats.service';
 import { TaskPublishedLinkStatsService, isLinkStatsFresh, LINK_STATS_FRESH_MS } from '../task-published-link-stats.service';
 import {
@@ -6,7 +6,7 @@ import {
   pickWinningLink,
   summarizeWinFailCounts,
   VIEW_WIN_THRESHOLD,
-} from '../published-link-win-fail.util';
+} from '../../../../utils/task-auto/published-link-win-fail.util';
 
 /**
  * Một chức năng lớn duy nhất — thống kê traffic link đã đăng để tính win/fail:

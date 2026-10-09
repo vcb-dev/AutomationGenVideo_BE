@@ -1,7 +1,7 @@
 import {
-  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean, ValidateIf, IsArray, ValidateNested,
+  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, ValidateIf, IsArray, ValidateNested,
 } from 'class-validator'
-import { Transform, Type } from 'class-transformer'
+import { Type } from 'class-transformer'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 
 export enum TaskStatus {
@@ -148,61 +148,4 @@ export class UpdatePublishedLinksDto {
   @ApiProperty({ type: [PublishedLinkItemDto] })
   @IsArray() @ValidateNested({ each: true }) @Type(() => PublishedLinkItemDto)
   links: PublishedLinkItemDto[]
-}
-
-export class GenerateVideoScriptDto {
-  @ApiPropertyOptional() @IsString() @IsOptional() fileUrl?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() scriptText?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentTitle?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentLine?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentMarket?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productName?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productSku?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productPrice?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productMaterial?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productPriceSegment?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productLine?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productMarket?: string | null
-  @ApiPropertyOptional() @IsBoolean() @IsOptional() force?: boolean
-}
-
-export class UpdateVideoScriptTranslationDto {
-  @ApiProperty() @IsString() content: string
-  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
-}
-
-export class UpdateVideoScriptDto {
-  @ApiProperty() @IsString() content: string
-  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
-  @ApiPropertyOptional({ type: UpdateVideoScriptTranslationDto })
-  @ValidateNested() @Type(() => UpdateVideoScriptTranslationDto) @IsOptional()
-  translation?: UpdateVideoScriptTranslationDto
-}
-
-export class ReviewContentApprovalDto {
-  @ApiProperty({ enum: ['APPROVED', 'REJECTED'] })
-  @IsEnum(['APPROVED', 'REJECTED']) action: 'APPROVED' | 'REJECTED'
-
-  @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
-}
-
-export class QueryContentApprovalDto {
-  @ApiPropertyOptional({ enum: ['PENDING', 'APPROVED', 'REJECTED'] })
-  @IsIn(['PENDING', 'APPROVED', 'REJECTED']) @IsOptional() status?: 'PENDING' | 'APPROVED' | 'REJECTED'
-  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
-  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
-  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
-
-  @ApiPropertyOptional({ default: 1 })
-  @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
-
-  @ApiPropertyOptional({ default: 10 })
-  @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 10
-}
-
-export class TranslateVideoScriptDto {
-  @ApiPropertyOptional({
-    description: "Thị trường mục tiêu (vd 'Indonesia') — dùng để AI tự xác định ngôn ngữ khi task chưa từng có bản dịch nào",
-  })
-  @IsString() @IsOptional() market?: string | null
 }
