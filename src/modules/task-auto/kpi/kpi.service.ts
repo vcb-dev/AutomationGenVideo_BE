@@ -21,7 +21,15 @@ import {
 } from "../../../utils/date.utils";
 import { Semaphore } from "../../../common/utils/semaphore";
 import {
+  asPublishedLinks,
+  mutateTaskPublishedLinks,
+  publishedLinkKey,
+  withFetchedStats,
+} from "../../../common/utils/task-published-links.util";
+import {
   classifyPublishedLinksWinFail,
+  matchesClassificationFilter,
+  summarizeWinFailByClassification,
   summarizeWinFailCounts,
   PublishedLinkWinFailStatus,
 } from "../../../utils/task-auto/published-link-win-fail.util";
@@ -54,6 +62,9 @@ import {
   type KpiPayrollSyncWarning,
   type MetricContribution,
 } from "./kpi-payroll-sync.mapper";
+
+/** Phân loại content gắn task — đọc lúc query (không chụp lên task), sửa nhãn kho thì số đổi theo. */
+const CLASSIFICATION_SELECT = { select: { id: true, name: true } } as const;
 
 @Injectable()
 export class TaskAutoKpiService {
@@ -649,12 +660,15 @@ export class TaskAutoKpiService {
           status: true,
           published_links: true,
           assignee: { select: { id: true, full_name: true } },
-          team_content: { select: { added_by_id: true, code: true, title: true } },
+          team_content: {
+            select: { added_by_id: true, code: true, title: true, classification: CLASSIFICATION_SELECT },
+          },
           content: {
             select: {
               id: true,
               code: true,
               title: true,
+              classification: CLASSIFICATION_SELECT,
               source_team_content: { select: { added_by_id: true } },
             },
           },
@@ -677,6 +691,7 @@ export class TaskAutoKpiService {
         content_id: task.content?.id ?? null,
         content_code: task.content?.code ?? task.team_content?.code ?? null,
         content_title: task.content?.title ?? task.team_content?.title ?? null,
+        classification: task.content?.classification ?? task.team_content?.classification ?? null,
         editor: task.assignee,
         published_links: task.published_links,
       });
@@ -703,13 +718,17 @@ export class TaskAutoKpiService {
   // task trong kỳ" — creator: content họ thêm (added_by_id) dùng ở bất kỳ task nào; editor:
   // content gắn vào task họ được giao (assignee_id). Gộp theo user_id, dedupe theo task_id nên
   // 1 người vừa là creator vừa là editor của cùng 1 task chỉ tính 1 lần.
+  //
+  // `classification_id` (uuid, hoặc "none" = chưa phân loại) lọc content theo phân loại;
+  // `by_classification` luôn đếm trên MỌI phân loại (trước khi lọc) để FE vẽ đủ ô lọc.
   async getContentWinFailStats(params: {
     user_id?: string;
     team_id?: string;
     from?: string;
     to?: string;
+    classification_id?: string;
   }) {
-    const { user_id, team_id, from, to } = params;
+    const { user_id, team_id, from, to, classification_id } = params;
     if (!user_id && !team_id)
       throw new BadRequestException("Cần truyền user_id hoặc team_id");
 
@@ -722,27 +741,38 @@ export class TaskAutoKpiService {
           })
         ).map((m) => m.user_id);
 
-    if (userIds.length === 0) return { by_member: [], totals: { win: 0, fail: 0, pending: 0 } };
+    if (userIds.length === 0)
+      return { by_member: [], totals: { win: 0, fail: 0, pending: 0 }, by_classification: [] };
 
     // Nguồn 1 — content creator: tái dùng nguyên getContentCreatorKpiReport() đã có sẵn logic
     // resolve đúng người ghi công + published_links, chỉ hậu xử lý thêm win/fail.
     const creatorReport = await this.getContentCreatorKpiReport({ user_id, team_id, from, to });
     const range = this.parseFromTo(from, to);
-    const by_member = await this.mergeWinFailByMember(userIds, creatorReport, range);
+    const { by_member, by_classification } = await this.mergeWinFailByMember(
+      userIds,
+      creatorReport,
+      range,
+      classification_id,
+    );
 
     const totals = by_member.reduce(
       (s, m) => ({ win: s.win + m.win, fail: s.fail + m.fail, pending: s.pending + m.pending }),
       { win: 0, fail: 0, pending: 0 },
     );
 
-    return { by_member, totals };
+    return { by_member, totals, by_classification };
   }
 
   // Top N người nhiều content WIN nhất TOÀN HỆ THỐNG — mặc định cho ADMIN/MANAGER ở trang Tổng
   // quan, khỏi bắt chọn team trước. `totals` phản ánh toàn hệ thống (trước khi cắt top N);
-  // `by_member` chỉ top N đã lọc bỏ người toàn 0.
-  async getTopContentWinFailMembers(params: { from?: string; to?: string; limit?: number }) {
-    const { from, to, limit = 5 } = params;
+  // `by_member` chỉ top N đã lọc bỏ người toàn 0. Lọc phân loại áp trước khi xếp hạng.
+  async getTopContentWinFailMembers(params: {
+    from?: string;
+    to?: string;
+    limit?: number;
+    classification_id?: string;
+  }) {
+    const { from, to, limit = 5, classification_id } = params;
 
     const allUserIds = (
       await this.prisma.teamMember.findMany({
@@ -751,11 +781,17 @@ export class TaskAutoKpiService {
       })
     ).map((m) => m.user_id);
 
-    if (allUserIds.length === 0) return { by_member: [], totals: { win: 0, fail: 0, pending: 0 } };
+    if (allUserIds.length === 0)
+      return { by_member: [], totals: { win: 0, fail: 0, pending: 0 }, by_classification: [] };
 
     const creatorReport = await this.getContentCreatorKpiReport({ user_ids: allUserIds, from, to });
     const range = this.parseFromTo(from, to);
-    const allMembers = await this.mergeWinFailByMember(allUserIds, creatorReport, range);
+    const { by_member: allMembers, by_classification } = await this.mergeWinFailByMember(
+      allUserIds,
+      creatorReport,
+      range,
+      classification_id,
+    );
 
     const totals = allMembers.reduce(
       (s, m) => ({ win: s.win + m.win, fail: s.fail + m.fail, pending: s.pending + m.pending }),
@@ -767,16 +803,18 @@ export class TaskAutoKpiService {
       .sort((a, b) => b.win - a.win || a.fail - b.fail || b.pending - a.pending)
       .slice(0, limit);
 
-    return { by_member, totals };
+    return { by_member, totals, by_classification };
   }
 
   // Gộp video theo user_id từ 2 nguồn (creator qua added_by_id + editor qua assignee_id), dedupe
   // theo task_id. Dùng chung cho getContentWinFailStats (1 team/người) và
   // getTopContentWinFailMembers (toàn hệ thống) — chỉ khác tập userIds/creatorReport.
+  // `by_classification` đếm trước khi lọc `classificationId`; `by_member` đếm sau khi lọc.
   private async mergeWinFailByMember(
     userIds: string[],
     creatorReport: Array<{ user_id: string; user: any; videos: any[] }>,
     range: { gte?: Date; lt?: Date } | null,
+    classificationId?: string,
   ) {
     const [users, editorTasks] = await Promise.all([
       this.prisma.user.findMany({
@@ -793,9 +831,9 @@ export class TaskAutoKpiService {
           id: true,
           assignee_id: true,
           published_links: true,
-          content: { select: { code: true, title: true } },
-          team_content: { select: { code: true, title: true } },
-          editor_content: { select: { code: true, title: true } },
+          content: { select: { code: true, title: true, classification: CLASSIFICATION_SELECT } },
+          team_content: { select: { code: true, title: true, classification: CLASSIFICATION_SELECT } },
+          editor_content: { select: { code: true, title: true, classification: CLASSIFICATION_SELECT } },
         },
       }),
     ]);
@@ -815,6 +853,7 @@ export class TaskAutoKpiService {
           task_id: v.task_id,
           content_title: v.content_title,
           content_code: v.content_code,
+          classification: v.classification ?? null,
           published_links: v.published_links,
           win_status_auto: wf.status,
           views_auto: wf.views,
@@ -828,17 +867,26 @@ export class TaskAutoKpiService {
         task_id: t.id,
         content_title: t.content?.title ?? t.team_content?.title ?? t.editor_content?.title ?? null,
         content_code: t.content?.code ?? t.team_content?.code ?? t.editor_content?.code ?? null,
+        classification:
+          t.content?.classification ?? t.team_content?.classification ?? t.editor_content?.classification ?? null,
         published_links: t.published_links,
         win_status_auto: wf.status,
         views_auto: wf.views,
       });
     }
 
-    return userIds.map((uid) => {
-      const videos = Array.from(videosByUser.get(uid)?.values() ?? []);
+    const allVideosByUser = userIds.map((uid) => Array.from(videosByUser.get(uid)?.values() ?? []));
+    const by_classification = summarizeWinFailByClassification(allVideosByUser.flat());
+
+    const by_member = userIds.map((uid, i) => {
+      const videos = allVideosByUser[i].filter((v: any) =>
+        matchesClassificationFilter(v.classification, classificationId),
+      );
       const counts = summarizeWinFailCounts(videos.map((v: any) => v.win_status_auto as PublishedLinkWinFailStatus));
       return { user_id: uid, user: userMap.get(uid) ?? null, ...counts, videos };
     });
+
+    return { by_member, by_classification };
   }
 
   // Cào lại traffic (SUPPORTED_LINK_STATS_PLATFORMS) cho content trong `byMember` rồi ghi lại
@@ -863,25 +911,26 @@ export class TaskAutoKpiService {
     await Promise.all(
       Array.from(linksByTask.entries()).map(([taskId, links]) =>
         this.linkRefreshSemaphore.run(async () => {
-          let changed = false;
-          const nextLinks = await Promise.all(
-            (links as any[]).map(async (l) => {
-              if (!isSupportedLinkStatsPlatform(l.platform)) return l;
-              if (isLinkStatsFresh(l.stats, now)) return l; // vừa cào gần đây — khỏi gọi lại.
-              changed = true;
+          const fetched = new Map<string, unknown>();
+          await Promise.all(
+            asPublishedLinks(links).map(async (l) => {
+              if (!isSupportedLinkStatsPlatform(l.platform)) return;
+              if (isLinkStatsFresh(l.stats as { fetched_at?: string } | undefined, now)) return;
               try {
-                const stats = await this.linkStats.fetchStatsForLink(l.platform, l.url);
-                return { ...l, stats };
+                fetched.set(publishedLinkKey(l), await this.linkStats.fetchStatsForLink(l.platform, l.url));
               } catch {
-                return l; // 1 link lỗi không chặn các link/task còn lại — giữ nguyên số cũ cho link đó.
+                // 1 link lỗi không chặn các link/task còn lại — giữ nguyên số cũ cho link đó.
               }
             }),
           );
-          if (!changed) return;
+          if (!fetched.size) return;
           try {
-            await this.prisma.task.update({ where: { id: taskId }, data: { published_links: nextLinks } });
+            // Ghi lên bản MỚI NHẤT để không đè link vừa thêm/xoá trong lúc chờ API ngoài.
+            await mutateTaskPublishedLinks(this.prisma, taskId, (current) =>
+              withFetchedStats(current, fetched),
+            );
           } catch {
-            // Task có thể đã bị xoá/đổi trạng thái giữa lúc đọc và lúc ghi — bỏ qua, không chặn task khác.
+            // Ghi bị chen ngang liên tục — bỏ qua, không chặn task khác.
           }
         }),
       ),
@@ -895,6 +944,7 @@ export class TaskAutoKpiService {
     team_id?: string;
     from?: string;
     to?: string;
+    classification_id?: string;
   }) {
     const before = await this.getContentWinFailStats(params);
     await this.refreshPublishedLinksForMembers(before.by_member);
@@ -916,7 +966,12 @@ export class TaskAutoKpiService {
 
   // Nút "Cập nhật" khi xem bảng xếp hạng Top N toàn hệ thống — chỉ cào lại traffic cho content
   // thuộc top N ĐANG HIỂN THỊ (không phải toàn hệ thống) để giữ chi phí mỗi lần bấm chấp nhận được.
-  async refreshTopContentWinFailMembers(params: { from?: string; to?: string; limit?: number }) {
+  async refreshTopContentWinFailMembers(params: {
+    from?: string;
+    to?: string;
+    limit?: number;
+    classification_id?: string;
+  }) {
     const before = await this.getTopContentWinFailMembers(params);
     await this.refreshPublishedLinksForMembers(before.by_member);
     await this.autoPushWinningContent(before.by_member);
@@ -1212,7 +1267,7 @@ export class TaskAutoKpiService {
         team_id: teamId,
         range,
       });
-      const winFail = await this.mergeWinFailByMember(creatorIds, creatorReport, range);
+      const { by_member: winFail } = await this.mergeWinFailByMember(creatorIds, creatorReport, range);
 
       const reportByUser = new Map(creatorReport.map((r) => [r.user_id, r]));
       const winFailByUser = new Map(winFail.map((r) => [r.user_id, r]));

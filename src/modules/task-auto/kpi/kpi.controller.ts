@@ -164,12 +164,14 @@ export class TaskAutoKpiController {
     @Query("team_id") teamId?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
     return this.kpi.getContentWinFailStats({
       user_id: userId,
       team_id: teamId,
       from,
       to,
+      classification_id: classificationId,
     });
   }
 
@@ -185,12 +187,14 @@ export class TaskAutoKpiController {
     @Query("team_id") teamId?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
     return this.kpi.refreshContentWinFailStats({
       user_id: userId,
       team_id: teamId,
       from,
       to,
+      classification_id: classificationId,
     });
   }
 
@@ -204,12 +208,14 @@ export class TaskAutoKpiController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("limit") limit?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
     return this.kpi.getTopContentWinFailMembers({
       from,
       to,
       limit: parsedLimit && parsedLimit > 0 ? parsedLimit : undefined,
+      classification_id: classificationId,
     });
   }
 
@@ -224,12 +230,14 @@ export class TaskAutoKpiController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("limit") limit?: string,
+    @Query("classification_id") classificationId?: string,
   ) {
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
     return this.kpi.refreshTopContentWinFailMembers({
       from,
       to,
       limit: parsedLimit && parsedLimit > 0 ? parsedLimit : undefined,
+      classification_id: classificationId,
     });
   }
 

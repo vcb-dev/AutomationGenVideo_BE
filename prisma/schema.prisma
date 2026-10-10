@@ -3862,20 +3862,23 @@ model AssignmentRun {
 }
 
 model AutoAssignSetting {
-  id                    Int      @id @default(1)
-  schedule_time         String   @default("17:00")
-  timezone              String   @default("Asia/Ho_Chi_Minh")
-  weekend_enabled       Boolean  @default(true)
-  is_active             Boolean  @default(true)
+  id                     Int      @id @default(1)
+  schedule_time          String   @default("17:00")
+  timezone               String   @default("Asia/Ho_Chi_Minh")
+  weekend_enabled        Boolean  @default(true)
+  is_active              Boolean  @default(true)
   /// Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng
-  default_cooldown_days Int      @default(5)
+  default_cooldown_days  Int      @default(5)
   /// Sinh Kế hoạch ngày (chỉ tiêu + gợi ý content, không tạo task) cùng lượt chia task — vẫn cần
   /// is_active bật
-  daily_plan_enabled    Boolean  @default(true)
+  daily_plan_enabled     Boolean  @default(true)
   /// Tên tuyến nội dung lập Kế hoạch ngày (khớp content_lines.name, không phân biệt hoa thường)
-  daily_plan_line_names String[] @default(["A1", "A2", "A3", "A5"])
-  updated_by            String?
-  updated_at            DateTime @updatedAt
+  daily_plan_line_names  String[] @default(["A1", "A2", "A3", "A5"])
+  /// Job khớp video ↔ task (cron + nút Map video) hỏi AI cho ca heuristic bỏ trống và gắn link khi
+  /// AI đủ tự tin. Thay env TASK_VIDEO_MATCH_AI_MODE — bật/tắt ngay trên UI, không cần restart BE.
+  video_match_ai_enabled Boolean  @default(false)
+  updated_by             String?
+  updated_at             DateTime @updatedAt
 
   @@map("auto_assign_settings")
 }

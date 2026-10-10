@@ -5,9 +5,9 @@ import { TaskVideoMatchService } from "./task-video-match.service";
 const VN_TZ = { timeZone: "Asia/Ho_Chi_Minh" };
 
 /**
- * Khớp video kênh nội bộ mới kéo về với task, chạy 07:45 VN — sau cron kéo FB (07:00) / IG
- * (07:15) và trước cron cào traffic link (`refreshMonthlyPublishedLinkStats`, 08:15) nên link
- * vừa gắn kịp được cào trong cùng buổi sáng.
+ * Khớp video Facebook kênh nội bộ mới kéo về với task, chạy 07:45 VN — sau cron kéo FB (07:00)
+ * và trước cron cào traffic link (`refreshMonthlyPublishedLinkStats`, 08:15) nên link vừa gắn
+ * kịp được cào trong cùng buổi sáng.
  */
 @Injectable()
 export class TaskVideoMatchCronService {

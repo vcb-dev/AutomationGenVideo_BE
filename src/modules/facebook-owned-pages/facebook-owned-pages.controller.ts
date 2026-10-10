@@ -6,6 +6,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';
+import { PublishedVideosRefreshService, RefreshParams } from './published-videos-refresh.service';
 import { InvalidRefreshDaysError, parseRefreshDays } from './parse-refresh-days';
 
 // Kéo lại chỉ số là thao tác nặng (mỗi video một lượt hỏi Graph API) nên siết quyền như thao tác
@@ -31,6 +32,7 @@ export class FacebookOwnedPagesController {
     private readonly service: FacebookOwnedPagesService,
     private readonly readService: FacebookOwnedPagesReadService,
     private readonly prisma: PrismaService,
+    private readonly refreshService: PublishedVideosRefreshService,
   ) {}
 
   @Get('manage-pages')
@@ -41,6 +43,35 @@ export class FacebookOwnedPagesController {
   @Get('page-videos/:pageId')
   async syncedVideos(@Param('pageId') pageId: string, @Query() query: Record<string, string>) {
     return this.readService.getSyncedVideos(pageId, query);
+  }
+
+  // Tab "Video đã đăng" ở màn Nhiệm vụ — video mọi page, lọc thêm team / người cầm kênh.
+  @Get('videos')
+  async allVideos(@Req() req: any, @Query() query: Record<string, string>) {
+    const scope = await this.refreshService.resolveScope(req.user, query);
+    return this.readService.getAllVideos({ ...query, team_id: scope.teamIds.join(',') || undefined, owner_id: scope.ownerId });
+  }
+
+  @Get('videos/filter-options')
+  async videoFilterOptions(@Req() req: any) {
+    const scope = await this.refreshService.resolveScope(req.user, {});
+    return this.readService.getVideoFilterOptions(scope);
+  }
+
+  // Body là bộ lọc đang chọn; chạy nền, trả job để FE hỏi tiến độ. Phạm vi bị ép theo quyền trong service.
+  @Post('videos/refresh')
+  async refreshVideos(@Req() req: any, @Body() body: RefreshParams) {
+    return this.refreshService.start(req.user, body ?? {});
+  }
+
+  @Get('videos/refresh/latest')
+  async latestVideoRefresh(@Req() req: any) {
+    return { job: this.refreshService.latestFor(req.user.id) };
+  }
+
+  @Get('videos/refresh/:jobId')
+  async videoRefreshStatus(@Req() req: any, @Param('jobId') jobId: string) {
+    return this.refreshService.getJob(jobId, req.user);
   }
 
   @Post('import')
@@ -80,7 +111,7 @@ export class FacebookOwnedPagesController {
     }
 
     // Fire-and-forget — trả về ngay, chạy nền giống Celery worker trước đây.
-    this.service.syncPage(pageId, 10).catch((err) => {
+    this.service.syncPageDelta(page).catch((err) => {
       this.logger.error(`[SYNC] ${pageId} thất bại: ${err.message}`);
     });
 
