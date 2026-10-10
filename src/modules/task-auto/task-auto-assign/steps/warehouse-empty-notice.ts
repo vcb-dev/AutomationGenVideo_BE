@@ -1,13 +1,7 @@
-import { ProductPoolItem } from "../types";
-
+// Giữ đúng shape meta cũ (productKpi/contentLines) — WarehouseEmptyBanner ở FE đọc thẳng các field này.
 export type EmptyWarehouseNoticeMeta = {
   videosNeededToday: number;
-  productKpi: {
-    planned: number;
-    pushedThisMonth: number;
-    remaining: number;
-    pendingProducts?: { id: string; name: string }[];
-  } | null;
+  productKpi: null;
   contentLines: { id: string; name: string; count: number }[];
 };
 
@@ -19,67 +13,24 @@ export type EmptyWarehouseNotice = {
 };
 
 /**
- * Xây thông báo "kho tháng rỗng" cho 1 editor không có bất kỳ cặp content×product nào để
- * tạo task (cả 3 lane — đẩy SP, sáng tạo, lấp đầy — đều rỗng). Tái sử dụng nguyên các số liệu
- * đã tính trong assignTasksForTeam (remainingDaily, pushNeed, contentQuota, lịch sử pushedProductIds),
- * không tính lại theo công thức khác.
+ * Thông báo cho editor còn phải làm task tuyến tự động hôm nay nhưng Kho sản phẩm của team không có
+ * SP nào đang bật — không tạo được task, báo số video cần làm để editor tự tạo task hoặc nhờ leader
+ * bổ sung kho.
  */
 export function buildEmptyWarehouseNotice(args: {
   editorId: string;
-  remainingDaily: number;
-  productGmv: number;
-  pushedProductIds: Set<string>;
-  pushProducts: ProductPoolItem[];
-  contentQuota: Map<string, number>;
-  contentLineNames: Map<string, string>;
-}): EmptyWarehouseNotice | null {
-  const {
-    editorId,
-    remainingDaily,
-    productGmv,
-    pushedProductIds,
-    pushProducts,
-    contentQuota,
-    contentLineNames,
-  } = args;
-  if (remainingDaily <= 0) return null;
-
-  const pushedThisMonth = pushedProductIds.size;
-  const remaining = Math.max(0, productGmv - pushedThisMonth);
-
-  // Chỉ liệt kê tên sản phẩm cụ thể khi kho SẢN PHẨM còn hàng (tức lý do rỗng là kho CONTENT) —
-  // nếu kho sản phẩm cũng rỗng thì không có SKU cụ thể nào để nêu tên, chỉ báo số lượng còn thiếu.
-  const productKpi =
-    remaining > 0
-      ? {
-          planned: productGmv,
-          pushedThisMonth,
-          remaining,
-          ...(pushProducts.length > 0
-            ? {
-                pendingProducts: pushProducts.slice(0, remaining).map((p) => ({
-                  id: p.id,
-                  name: p.name ?? "(Sản phẩm chưa đặt tên)",
-                })),
-              }
-            : {}),
-        }
-      : null;
-
-  const contentLines = [...contentQuota.entries()]
-    .filter(([, count]) => count > 0)
-    .map(([id, count]) => ({ id, name: contentLineNames.get(id) ?? "Khác", count }));
-
-  const summaryLine = contentLines.length
-    ? `Cần làm ${remainingDaily} video hôm nay (${contentLines
-        .map((l) => `${l.name}: ${l.count}`)
-        .join(", ")}).`
-    : `Cần làm ${remainingDaily} video hôm nay.`;
-
+  videosNeeded: number;
+  contentLine: { id: string; name: string };
+}): EmptyWarehouseNotice {
+  const { editorId, videosNeeded, contentLine } = args;
   return {
     editorId,
-    title: "Không có task tự động hôm nay — kho tháng đang trống",
-    body: `${summaryLine} Kho tháng chưa có content/sản phẩm để tạo task tự động.`,
-    meta: { videosNeededToday: remainingDaily, productKpi, contentLines },
+    title: `Không có task ${contentLine.name} tự động hôm nay — kho sản phẩm team đang trống`,
+    body: `Cần làm ${videosNeeded} video ${contentLine.name} hôm nay theo KPI nhưng Kho sản phẩm của team chưa có sản phẩm nào đang bật để tạo task tự động.`,
+    meta: {
+      videosNeededToday: videosNeeded,
+      productKpi: null,
+      contentLines: [{ id: contentLine.id, name: contentLine.name, count: videosNeeded }],
+    },
   };
 }

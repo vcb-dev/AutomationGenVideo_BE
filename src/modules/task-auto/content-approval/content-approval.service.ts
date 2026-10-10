@@ -11,6 +11,8 @@ import { PushService } from "../../../common/push/push.service";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { ReviewContentApprovalDto, QueryContentApprovalDto } from "./dto/content-approval.dto";
+import { taskLineConditions } from "../../../utils/task-auto/task-list-query.util";
+import { vietnamDayRangeOf } from "../../../utils/date.utils";
 
 const approvalInclude = {
   requested_by: { select: { id: true, full_name: true, email: true } },
@@ -43,6 +45,40 @@ const approvalListInclude = {
   },
 };
 
+type ApprovalFilters = Pick<
+  QueryContentApprovalDto,
+  "team_id" | "search" | "assignee_id" | "content_line_id" | "product_line_id" | "date_from" | "date_to"
+>;
+
+/**
+ * Where chung cho list() và countPending() (badge) — cùng bộ lọc màn Nhiệm vụ: team / người làm /
+ * từ khoá / tuyến / dòng SP (theo task) + khoảng ngày GỬI yêu cầu duyệt (created_at, ngày giờ VN).
+ */
+function approvalWhere(status: string, q: ApprovalFilters): any {
+  const where: any = { status };
+
+  const taskWhere: any = {};
+  const teamIdFilter = parseTeamIdFilter(q.team_id);
+  if (teamIdFilter) taskWhere.team_id = teamIdFilter;
+  if (q.assignee_id) taskWhere.assignee_id = q.assignee_id;
+  if (q.search) {
+    taskWhere.content = { title: { contains: q.search, mode: "insensitive" } };
+  }
+  const lineAnd = taskLineConditions(q);
+  if (lineAnd.length) taskWhere.AND = lineAnd;
+  if (Object.keys(taskWhere).length) where.task = taskWhere;
+
+  const from = q.date_from ? vietnamDayRangeOf(q.date_from) : null;
+  const to = q.date_to ? vietnamDayRangeOf(q.date_to) : null;
+  if (from || to) {
+    where.created_at = {
+      ...(from ? { gte: from.gte } : {}),
+      ...(to ? { lt: to.lt } : {}),
+    };
+  }
+  return where;
+}
+
 @Injectable()
 export class ContentApprovalService {
   private readonly logger = new Logger(ContentApprovalService.name);
@@ -55,16 +91,7 @@ export class ContentApprovalService {
 
   /** Danh sách yêu cầu duyệt content (mặc định PENDING) — dùng cho tab "Content chờ duyệt". */
   async list(q: QueryContentApprovalDto) {
-    const where: any = { status: q.status ?? "PENDING" };
-
-    const taskWhere: any = {};
-    const teamIdFilter = parseTeamIdFilter(q.team_id);
-    if (teamIdFilter) taskWhere.team_id = teamIdFilter;
-    if (q.assignee_id) taskWhere.assignee_id = q.assignee_id;
-    if (q.search) {
-      taskWhere.content = { title: { contains: q.search, mode: "insensitive" } };
-    }
-    if (Object.keys(taskWhere).length) where.task = taskWhere;
+    const where = approvalWhere(q.status ?? "PENDING", q);
 
     const page = q.page ?? 1;
     const limit = q.limit ?? 10;
@@ -86,18 +113,8 @@ export class ContentApprovalService {
 
   /** Đếm nhanh số yêu cầu PENDING khớp bộ lọc — dùng cho badge "Content chờ duyệt" ở
    * tasks/page.tsx, chỉ cần count() thuần (không cần findMany như list()). */
-  async countPending(params: { team_id?: string; search?: string; assignee_id?: string }) {
-    const where: any = { status: "PENDING" };
-    const taskWhere: any = {};
-    const teamIdFilter = parseTeamIdFilter(params.team_id);
-    if (teamIdFilter) taskWhere.team_id = teamIdFilter;
-    if (params.assignee_id) taskWhere.assignee_id = params.assignee_id;
-    if (params.search) {
-      taskWhere.content = { title: { contains: params.search, mode: "insensitive" } };
-    }
-    if (Object.keys(taskWhere).length) where.task = taskWhere;
-
-    return this.prisma.taskContentApproval.count({ where });
+  async countPending(params: ApprovalFilters) {
+    return this.prisma.taskContentApproval.count({ where: approvalWhere("PENDING", params) });
   }
 
   /** Yêu cầu duyệt content gần nhất của task (nếu có) — dùng để render badge trạng thái ở task detail. */

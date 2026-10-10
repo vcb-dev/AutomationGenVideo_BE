@@ -3,9 +3,8 @@ import { TaskAutoContentWinPushService } from '../content-win-auto-push.service'
 /**
  * Luồng "content win → tự đẩy về kho tổng" (content-win-auto-push.service.ts).
  * Khi 1 task APPROVED có >=1 link bài đăng > 10.000 view: đảm bảo có Content ở kho tổng
- * (dùng thẳng / tạo từ TeamContent-EditorContent / tạo mới đại diện video thắng) → thêm vào
- * ContentWarehouse tháng hiện tại → gắn nhãn "Win" + lưu link video thắng → đánh dấu
- * Task.content_win_pushed_at.
+ * (dùng thẳng / tạo từ TeamContent-EditorContent / tạo mới đại diện video thắng) → gắn nhãn
+ * "Win" + lưu link video thắng → đánh dấu Task.content_win_pushed_at.
  */
 
 function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 'success', url = 'https://facebook.com/reel/1') {
@@ -94,7 +93,6 @@ function build(opts: {
       findUnique: jest.fn(async () => clsResolved),
       create: jest.fn(async () => ({ id: 'cls-win-created' })),
     },
-    contentWarehouse: { upsert: jest.fn(async (a: any) => a) },
     $transaction: jest.fn(async (fn: any) => fn(prisma)),
   };
   const service = new TaskAutoContentWinPushService(prisma);
@@ -128,7 +126,7 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     expect(res).toEqual({ pushed: 0, skipped: 0, failed: 0 });
   });
 
-  it('task content-win có sẵn content_id: thêm vào ContentWarehouse tháng + ghi link win + đánh dấu task', async () => {
+  it('task content-win có sẵn content_id: ghi link win + đánh dấu task', async () => {
     const { service, prisma } = build({
       tasks: [winTask('t1', { content_id: 'c1' })],
     });
@@ -137,12 +135,6 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
 
     expect(res.pushed).toBe(1);
     expect(prisma.content.create).not.toHaveBeenCalled();
-    expect(prisma.contentWarehouse.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { content_id_month: { content_id: 'c1', month: expect.any(String) } },
-        create: { content_id: 'c1', month: expect.any(String) },
-      }),
-    );
     const upd = prisma.content.update.mock.calls[0][0];
     expect(upd.where).toEqual({ id: 'c1' });
     expect(upd.data).toEqual({
@@ -168,7 +160,6 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     expect(res).toEqual({ pushed: 0, skipped: 1, failed: 0 });
     expect(prisma.content.update).not.toHaveBeenCalled();
     expect(prisma.task.update).not.toHaveBeenCalled();
-    expect(prisma.contentWarehouse.upsert).not.toHaveBeenCalled();
   });
 
   it('task có team_content_id chưa lên kho tổng → tạo Content(source_team_content_id) gắn nhãn Win', async () => {
@@ -234,7 +225,7 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     expect(created[0].data).not.toHaveProperty('code');
   });
 
-  it('content-win từ kho cá nhân còn tìm-hoặc-tạo TeamContent tương ứng trong kho team (không đụng TeamContentWarehouse)', async () => {
+  it('content-win từ kho cá nhân còn tìm-hoặc-tạo TeamContent tương ứng trong kho team ', async () => {
     const { service, prisma, teamContentCreated } = build({
       tasks: [winTask('t1', { team_id: 'team-9', editor_content_id: 'ec1', assignee_id: null, published_links: fbLink(15000) })],
       editorContentById: {
@@ -259,7 +250,6 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
       content_line_id: 'cl-A4',
       market: 'JAPAN',
     });
-    expect(prisma).not.toHaveProperty('teamContentWarehouse');
   });
 
   it('content-win từ kho cá nhân nhưng TeamContent đã có sẵn trong kho team → không tạo lại', async () => {
@@ -354,12 +344,9 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     });
     expect(created[0].data).not.toHaveProperty('source_team_content_id');
     expect(created[0].data).not.toHaveProperty('source_editor_content_id');
-    // Content vừa tạo được ghi link win + thêm vào kho tháng + task đánh dấu.
+    // Content vừa tạo được ghi link win + task đánh dấu.
     expect(prisma.content.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'content-new-1' } }),
-    );
-    expect(prisma.contentWarehouse.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { content_id_month: { content_id: 'content-new-1', month: expect.any(String) } } }),
     );
     expect(prisma.task.update).toHaveBeenCalledWith({
       where: { id: 't1' },
@@ -397,7 +384,7 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     });
   });
 
-  it('content đã won_at (thắng lần trước) → KHÔNG ghi đè link/nhãn, vẫn thêm vào kho tháng + đánh dấu task', async () => {
+  it('content đã won_at (thắng lần trước) → KHÔNG ghi đè link/nhãn, vẫn đánh dấu task', async () => {
     const { service, prisma } = build({
       tasks: [winTask('t1', { content_id: 'c1' })],
       contentById: { c1: { classification_id: 'cls-thu-cong', won_at: new Date('2026-01-01') } },
@@ -406,7 +393,6 @@ describe('TaskAutoContentWinPushService.pushWinningTasks', () => {
     await service.pushWinningTasks(['t1']);
 
     expect(prisma.content.update.mock.calls[0][0].data).toEqual({});
-    expect(prisma.contentWarehouse.upsert).toHaveBeenCalled();
     expect(prisma.task.update).toHaveBeenCalledWith({
       where: { id: 't1' },
       data: { content_win_pushed_at: expect.any(Date) },

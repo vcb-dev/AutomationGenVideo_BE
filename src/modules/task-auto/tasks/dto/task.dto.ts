@@ -84,6 +84,14 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() reviewed_from?: string
   @ApiPropertyOptional() @IsString() @IsOptional() reviewed_to?: string
 
+  // Picker "Gắn vào video đã làm": chỉ video nộp TRƯỚC giờ đăng bài (ISO datetime, chính xác tới giây).
+  @ApiPropertyOptional() @IsDateString() @IsOptional() submitted_before?: string
+  // Mã tuyến nội dung (A1…A5) — so theo tên tuyến, không phân biệt hoa thường.
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line?: string
+  // Bộ lọc tuyến nội dung / dòng sản phẩm ở tab "Danh sách task" (theo id) — xem taskLineConditions().
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string
+
   // Cột "Quá hạn" ảo (Kanban): task đang xử lý (chưa duyệt/huỷ) có deadline đã qua.
   // Khi bật, bỏ qua deadline_from/to/date/month và cả `status` — xem tasks.service.ts findAll.
   @ApiPropertyOptional({ enum: ['true', 'false'] })
@@ -99,8 +107,9 @@ export class QueryTaskDto {
 
   // Kanban cần task vừa đổi cột (đổi status) nổi lên đầu danh sách thay vì kẹt theo created_at
   // như view bảng — mặc định giữ nguyên created_at để không đổi hành vi Table view hiện có.
-  @ApiPropertyOptional({ enum: ['created_at', 'updated_at'] })
-  @IsIn(['created_at', 'updated_at']) @IsOptional() sort?: 'created_at' | 'updated_at'
+  // submitted_at: picker "Gắn vào video đã làm" — video nộp gần giờ đăng bài nhất lên đầu.
+  @ApiPropertyOptional({ enum: ['created_at', 'updated_at', 'submitted_at'] })
+  @IsIn(['created_at', 'updated_at', 'submitted_at']) @IsOptional() sort?: 'created_at' | 'updated_at' | 'submitted_at'
 
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
@@ -123,6 +132,12 @@ export class QueryTaskHeaderCountsDto {
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string
   @ApiPropertyOptional() @IsString() @IsOptional() pending_from?: string
   @ApiPropertyOptional() @IsString() @IsOptional() pending_to?: string
+  // Bộ lọc chung của màn Nhiệm vụ — áp cho tổng "N task" lẫn 2 badge chờ duyệt.
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string
+  // Khoảng ngày cho badge "Content chờ duyệt" — theo ngày gửi yêu cầu duyệt (YYYY-MM-DD, giờ VN).
+  @ApiPropertyOptional() @IsString() @IsOptional() approval_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() approval_to?: string
   @ApiPropertyOptional({ enum: ['auto', 'extra'] })
   @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 }

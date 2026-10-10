@@ -18,6 +18,34 @@ export function buildDeadlineRangeAnd(from?: string, to?: string) {
   }
 }
 
+/**
+ * Lọc theo tuyến nội dung / dòng sản phẩm — dùng chung cho danh sách task, file export và tổng "N task"
+ * ở header để 3 nơi không lệch nhau. Dòng sản phẩm: ưu tiên Task.product_line_id, trống thì lấy dòng của
+ * sản phẩm gắn trên task (thực tế đây mới là nhánh chính).
+ */
+export function taskLineConditions(q: { content_line_id?: string; product_line_id?: string }): any[] {
+  const conds: any[] = []
+  const contentLineId = (q.content_line_id || '').trim()
+  const productLineId = (q.product_line_id || '').trim()
+  if (contentLineId) conds.push({ content_line_id: contentLineId })
+  if (productLineId) {
+    conds.push({
+      OR: [
+        { product_line_id: productLineId },
+        {
+          product_line_id: null,
+          OR: [
+            { product: { product_line_id: productLineId } },
+            { editor_product: { product_line_id: productLineId } },
+            { team_product: { product_line_id: productLineId } },
+          ],
+        },
+      ],
+    })
+  }
+  return conds
+}
+
 /** Tạo cùng một Prisma where cho danh sách task và file export. */
 export function buildTaskListWhere(q: QueryTaskDto) {
   const where: any = {}
@@ -78,6 +106,13 @@ export function buildTaskListWhere(q: QueryTaskDto) {
     if (q.reviewed_to) bounds.lte = new Date(`${q.reviewed_to}T23:59:59.999+07:00`)
     where.reviewed_at = bounds
   }
+  if (q.submitted_before) {
+    where.submitted_at = { lte: new Date(q.submitted_before) }
+  }
+  if (q.content_line) {
+    where.content_line = { name: { equals: q.content_line.trim(), mode: 'insensitive' } }
+  }
+  and.push(...taskLineConditions(q))
   if (and.length) where.AND = and
 
   return where

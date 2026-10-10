@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,6 +20,18 @@ export const TEAM_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
 
 /** Tên các team được cấp quyền quản lý source ở kho ngang với ADMIN/MANAGER (ví dụ: Scale Data, MEDIA). */
 export const PRIVILEGED_SOURCE_TEAM_NAMES = ['Scale Data', 'MEDIA'];
+
+/**
+ * Giá trị `:id` đặc biệt ở các API danh sách kho team (sản phẩm/content/source/yêu cầu đẩy kho):
+ * GET /teams/all/... trả dữ liệu gộp của mọi team — chỉ ADMIN/MANAGER (assertCanViewAllTeams).
+ */
+export const ALL_TEAMS_ID = 'all';
+
+export function assertCanViewAllTeams(userRoles: string[] = []): void {
+  if (!userRoles.includes('ADMIN') && !userRoles.includes('MANAGER')) {
+    throw new ForbiddenException('Chỉ admin hoặc quản lý mới xem được dữ liệu của tất cả team');
+  }
+}
 
 /** True nếu user là thành viên của một trong các team có quyền quản lý source đặc biệt (PRIVILEGED_SOURCE_TEAM_NAMES). */
 export async function isPrivilegedSourceTeamMember(db: Db, userId: string): Promise<boolean> {

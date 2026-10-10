@@ -19,6 +19,11 @@ export class QueryContentApprovalDto {
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string
+  // Bộ lọc chung màn Nhiệm vụ: tuyến / dòng SP của task + khoảng ngày GỬI yêu cầu duyệt (YYYY-MM-DD, giờ VN)
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() date_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() date_to?: string
 
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)

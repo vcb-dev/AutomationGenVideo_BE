@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { buildPageChannelMap, ResolverChannel } from '../facebook-owned-pages/page-channel-resolver';
 
 /**
  * Hai bộ lọc dùng chung cho video kênh nội bộ: theo THỊ TRƯỜNG (VN / Global) và theo
@@ -114,6 +115,15 @@ export function contentLineFilter(
   ))`;
 }
 
+/**
+ * Tuyến nội dung có trong chữ (#A1…#A5) — bản JS của contentLineFilter, cùng ranh giới cuối nên
+ * #A54 không thành A5. Trả theo thứ tự CONTENT_LINES, không lặp.
+ */
+export function contentLinesInText(text: string | null | undefined): ContentLine[] {
+  const found = new Set<string>();
+  for (const m of (text || '').matchAll(/#(A\d+)(?![\p{L}\p{N}])/giu)) found.add(m[1].toUpperCase());
+  return CONTENT_LINES.filter((line) => found.has(line));
+}
 
 /**
  * Lọc theo HASHTAG bất kỳ (khác với tuyến A1–A5 vốn là bộ mã cố định).
@@ -171,4 +181,66 @@ export function channelFilter(cot: Prisma.Sql, kenh: string): Prisma.Sql | null 
   const v = (kenh || '').trim();
   if (!v) return null;
   return Prisma.sql`lower(COALESCE(${cot}, '')) = ${v.toLowerCase()}`;
+}
+
+/**
+ * Lọc theo MỘT TẬP kênh (vd mọi kênh của một người cầm). Tập rỗng nghĩa là "không kênh nào"
+ * chứ không phải "không lọc" — trả FALSE để nhánh đó không lọt video nào.
+ */
+export function channelInFilter(cot: Prisma.Sql, keys: string[]): Prisma.Sql {
+  const ds = [...new Set(keys.map((k) => (k || '').trim().toLowerCase()).filter(Boolean))];
+  if (!ds.length) return Prisma.sql`FALSE`;
+  return Prisma.sql`lower(COALESCE(${cot}, '')) IN (${Prisma.join(ds)})`;
+}
+
+/** Nền tảng có bảng profile nội bộ ghép được với huyk_channels. Douyin/XHS chưa có kênh nội bộ. */
+export const OWNER_SCOPE_PLATFORMS = ['facebook', 'instagram', 'threads', 'tiktok', 'youtube'] as const;
+export type OwnerScopePlatform = (typeof OWNER_SCOPE_PLATFORMS)[number];
+
+export interface OwnedProfile {
+  platform: OwnerScopePlatform;
+  /** Khoá dùng ở cột lọc kênh của nhánh: page_id (FB) / username / channel_id (YouTube). */
+  key: string;
+  name: string;
+  username: string | null;
+}
+
+export interface ChannelScope {
+  keys: Record<OwnerScopePlatform, string[]>;
+  channels: { platform: OwnerScopePlatform; name: string }[];
+}
+
+/**
+ * Kênh nội bộ (page FB, profile IG/Threads/...) thuộc một người cầm và/hoặc một team, theo từng nền tảng.
+ * Phải đưa MỌI kênh vào buildPageChannelMap (không chỉ kênh trong phạm vi) để phát hiện mơ hồ:
+ * 2 người cùng một tên kênh thì không gán cho ai.
+ */
+export function channelScope(
+  scope: { ownerId?: string; teamId?: string },
+  profiles: OwnedProfile[],
+  channels: ResolverChannel[],
+): ChannelScope {
+  const keys = Object.fromEntries(OWNER_SCOPE_PLATFORMS.map((p) => [p, [] as string[]])) as Record<
+    OwnerScopePlatform,
+    string[]
+  >;
+  const owned: ChannelScope['channels'] = [];
+  for (const platform of OWNER_SCOPE_PLATFORMS) {
+    const list = profiles.filter((p) => p.platform === platform);
+    if (!list.length) continue;
+    const map = buildPageChannelMap(
+      list.map((p) => ({ page_id: p.key, name: p.name, username: p.username })),
+      channels,
+      platform,
+    );
+    for (const p of list) {
+      const ref = map.get(p.key);
+      if (!ref) continue;
+      if (scope.ownerId && ref.ownerId !== scope.ownerId) continue;
+      if (scope.teamId && ref.teamId !== scope.teamId) continue;
+      keys[platform].push(p.key);
+      owned.push({ platform, name: p.name || p.key });
+    }
+  }
+  return { keys, channels: owned };
 }
