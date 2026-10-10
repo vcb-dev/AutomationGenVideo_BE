@@ -1,4 +1,7 @@
 import { ForbiddenException, Injectable, Logger, Optional } from "@nestjs/common";
+import { HttpService } from "@nestjs/axios";
+import { ConfigService } from "@nestjs/config";
+import { firstValueFrom } from "rxjs";
 import { createHash, randomUUID } from "crypto";
 import { TaskStatus, UserRole } from "@prisma/client";
 import { PrismaService } from "../../../common/prisma/prisma.service";
@@ -14,6 +17,9 @@ import { TaskPublishedLinkStatsService } from "../published-links/task-published
 import { vietnamDayRangeOf } from "../../../utils/date.utils";
 import { taskLineConditions } from "../../../utils/task-auto/task-list-query.util";
 import {
+  AI_DEFAULT_MIN_CONFIDENCE,
+  AiMatchMode,
+  AiVerdict,
   CandidateTask,
   CandidateVideo,
   ChannelContext,
@@ -35,11 +41,6 @@ import {
   statusFromReason,
   taskAnchor,
 } from "../../../utils/task-auto/task-video-match.util";
-import {
-  AI_PROMPT_VERSION,
-  AiJudgeCase,
-  TaskVideoMatchAiClient,
-} from "./task-video-match-ai.client";
 
 /** Tăng số này khi rule thay đổi để các bản ghi bỏ qua của rule cũ được xét lại đúng 1 lần. */
 const MATCHER_VERSION = 7;
@@ -48,6 +49,37 @@ const DEFAULT_MAX_VIDEOS = 6000;
 const MANUAL_MAX_VIDEOS = 3000;
 /** Trần số ca hỏi AI mỗi lượt (~0.35s/ca ⇒ ~70s): ca còn lại để lượt sau. */
 const MAX_AI_CASES_PER_RUN = 200;
+export const AI_PROMPT_VERSION = 4;
+const AI_CHUNK_SIZE = 10;
+
+export interface AiJudgeCandidate {
+  task_id: string;
+  title: string;
+  script: string;
+  product_names: string[];
+  product_skus: string[];
+  anchor_at: string | null;
+  days_from_video: number | null;
+  has_platform_link: boolean;
+  linked_videos_same_platform: (string | null)[];
+}
+
+export interface AiJudgeCase {
+  case_id: string;
+  video: {
+    platform: string;
+    caption: string;
+    published_at: string;
+    transcript?: string | null;
+  };
+  candidates: AiJudgeCandidate[];
+}
+
+export interface AiJudgeResult extends AiVerdict {
+  videoTopic?: string;
+  taskTopic?: string;
+  error?: string;
+}
 
 export interface VideoMatchMappedItem {
   platform: MatchPlatform;
@@ -113,6 +145,69 @@ export interface VideoMatchUser {
 interface VideoMatchOutcome {
   status: "MATCHED" | "UNMATCHED" | "SKIPPED_AMBIGUOUS";
   mappedItem?: VideoMatchMappedItem;
+}
+
+@Injectable()
+export class TaskVideoMatchAiClient {
+  private readonly logger = new Logger(TaskVideoMatchAiClient.name);
+
+  readonly minConfidence = AI_DEFAULT_MIN_CONFIDENCE;
+
+  constructor(
+    private readonly http: HttpService,
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  async getMode(): Promise<AiMatchMode> {
+    const setting = await this.prisma.autoAssignSetting
+      .findUnique({ where: { id: 1 }, select: { video_match_ai_enabled: true } })
+      .catch(() => null);
+    return setting?.video_match_ai_enabled ? "apply" : "off";
+  }
+
+  async judge(
+    cases: AiJudgeCase[],
+  ): Promise<{ model: string | null; results: Map<string, AiJudgeResult> }> {
+    const results = new Map<string, AiJudgeResult>();
+    const baseUrl = this.config.get<string>("AI_SERVICE_URL", "http://localhost:8000");
+    let usedModel: string | null = null;
+
+    for (let i = 0; i < cases.length; i += AI_CHUNK_SIZE) {
+      const chunk = cases.slice(i, i + AI_CHUNK_SIZE);
+      try {
+        const { data } = await firstValueFrom(
+          this.http.post(
+            `${baseUrl}/api/task-auto/video-match/judge/`,
+            { cases: chunk },
+            { timeout: 180_000 },
+          ),
+        );
+        usedModel = data?.model ?? usedModel;
+        for (const row of data?.results ?? []) {
+          if (!row?.case_id) continue;
+          results.set(row.case_id, {
+            taskId: row.error ? null : (row.task_id ?? null),
+            confidence: Number(row.confidence) || 0,
+            reason: row.reason,
+            videoTopic: row.video_topic || undefined,
+            taskTopic: row.task_topic || undefined,
+            ...(row.error ? { error: String(row.error) } : {}),
+          });
+        }
+      } catch (err: any) {
+        const message = err?.response?.data?.error || err?.message || "unknown";
+        this.logger.warn(`[VIDEO-MATCH][AI] AI service lỗi: ${message}`);
+        for (const c of cases.slice(i)) {
+          if (!results.has(c.case_id)) {
+            results.set(c.case_id, { taskId: null, confidence: 0, error: String(message) });
+          }
+        }
+        break;
+      }
+    }
+    return { model: usedModel, results };
+  }
 }
 
 /**

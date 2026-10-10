@@ -26,10 +26,10 @@ import {
 import { ForbiddenException } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import {
+  TaskVideoMatchAiClient,
   TaskVideoMatchService,
   VideoMatchRunResult,
 } from "../task-video-match.service";
-import { TaskVideoMatchAiClient } from "../task-video-match-ai.client";
 
 /**
  * Một chức năng: khớp tự động video kênh nội bộ (FB/IG kéo về) với task rồi gắn link
