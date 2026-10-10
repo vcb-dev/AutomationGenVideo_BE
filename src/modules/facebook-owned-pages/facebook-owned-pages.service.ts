@@ -1,11 +1,36 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { FacebookAiClientService } from './facebook-ai-client.service';
+import { FacebookAiClientService, SyncRange } from './facebook-ai-client.service';
 import { resolveShortLink } from '../../common/utils/resolve-short-link.util';
 import { resolveViewCount } from './resolve-view-count';
 import { extractFacebookReelId, extractPostIdFromUrl, isFacebookShareLink, resolveFacebookShareLink } from '../facebook-external-scraper/facebook-url.util';
 
 const STALE_LOCK_MINUTES = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Delta cào lùi lại ngần này ngày trước lần sync thành công gần nhất — bù bài đăng trễ/lệch giờ. */
+const DELTA_OVERLAP_DAYS = 2;
+/** Page lâu không sync được thì cũng chỉ lùi tối đa ngần này ngày; xa hơn dùng Backfill. */
+const DELTA_MAX_LOOKBACK_DAYS = 30;
+/** Trần số bài/page/lượt delta — 30 ngày × ~10 bài vẫn còn dư. */
+export const DELTA_MAX_POSTS = 1000;
+
+/**
+ * Mốc `since` cho delta sync: mọi bài kể từ lần sync thành công trước (lùi DELTA_OVERLAP_DAYS),
+ * nên cron lỡ vài hôm vẫn tự lấp ở lượt kế tiếp.
+ */
+export function deltaSince(lastSyncedAt: Date | null, now: Date = new Date()): Date {
+  const floor = now.getTime() - DELTA_MAX_LOOKBACK_DAYS * DAY_MS;
+  const base = (lastSyncedAt ?? now).getTime() - DELTA_OVERLAP_DAYS * DAY_MS;
+  return new Date(Math.max(base, floor));
+}
+
+/** Lượt cào theo khoảng có phủ trọn từ mốc sync trước tới hiện tại không (được phép dời mốc). */
+export function coversSinceLastSync(lastSyncedAt: Date | null, range: SyncRange | undefined, now: Date): boolean {
+  if (!range?.since) return false;
+  if (range.until && range.until.getTime() < now.getTime()) return false;
+  return !lastSyncedAt || range.since.getTime() <= lastSyncedAt.getTime();
+}
 
 function extractErrorMessage(err: any): string {
   if (err?.response?.data?.error) {
@@ -244,9 +269,15 @@ export class FacebookOwnedPagesService {
     if (!page.page_access_token) throw new Error(`Page ${pageId} chưa có access token`);
 
     await this.lockPage(page.id);
-    const { videos } = await this.aiClient.fetchPageBackfill(pageId, page.page_access_token, count);
-    if (videos.length === 0) return { created: 0, updated: 0 };
-    return this.upsertVideos(page.id, videos);
+    try {
+      const { videos } = await this.aiClient.fetchPageBackfill(pageId, page.page_access_token, count);
+      if (videos.length === 0) return { created: 0, updated: 0 };
+      return await this.upsertVideos(page.id, videos);
+    } catch (err: any) {
+      // Batch đầu hỏng thì controller không dispatch phần nền → phải tự mở khoá ở đây.
+      await this.unlockPage(page.id, extractErrorMessage(err));
+      throw err;
+    }
   }
 
   async backfillPage(pageId: string, maxTotal = 300): Promise<{ created: number; updated: number; total_scanned: number }> {
@@ -310,15 +341,34 @@ export class FacebookOwnedPagesService {
 
   // ─── GĐ2: Delta sync (cào bài mới) ────────────────────────────────────────
 
-  async syncPage(pageId: string, maxPosts = 10): Promise<{ created: number; updated: number }> {
+  /**
+   * Không truyền `range`: `maxPosts` bài mới nhất. Có `range.since`: mọi bài trong khoảng (tối đa `maxPosts`).
+   * `last_synced_at` chỉ dời lên sau khi lưu xong và khi lượt này phủ trọn từ mốc cũ tới hiện tại
+   * (`coversSinceLastSync`) hoặc `advanceWatermark` — nếu không delta sẽ bỏ sót phần ở giữa.
+   */
+  async syncPage(
+    pageId: string,
+    maxPosts = 10,
+    range?: SyncRange,
+    opts: { advanceWatermark?: boolean } = {},
+  ): Promise<{ created: number; updated: number }> {
     const page = await this.prisma.video_management_managedfacebookpage.findUnique({ where: { page_id: pageId } });
     if (!page) throw new Error(`Page ${pageId} không tồn tại`);
 
     await this.lockPage(page.id);
     try {
-      const { page_metadata, videos } = await this.aiClient.fetchPageSync(pageId, page.page_access_token, maxPosts);
-
       const now = new Date();
+      const { page_metadata, videos, truncated } = await this.aiClient.fetchPageSync(pageId, page.page_access_token, maxPosts, range);
+
+      let created = 0;
+      let updated = 0;
+      if (videos.length > 0) {
+        ({ created, updated } = await this.upsertVideos(page.id, videos));
+      }
+      if (truncated) {
+        this.logger.warn(`[SYNC] ${page.name}: chạm trần ${maxPosts} bài trong khoảng cào — có thể còn bài cũ hơn chưa lấy`);
+      }
+
       await this.prisma.video_management_managedfacebookpage.update({
         where: { id: page.id },
         data: {
@@ -329,16 +379,12 @@ export class FacebookOwnedPagesService {
           followers_count: BigInt(page_metadata.followers_count || 0),
           likes_count: BigInt(page_metadata.likes_count || 0),
           raw_data: page_metadata.raw_data ?? {},
-          last_synced_at: now,
+          ...((opts.advanceWatermark || coversSinceLastSync(page.last_synced_at, range, now)) && {
+            last_synced_at: now,
+          }),
           updated_at: now,
         },
       });
-
-      let created = 0;
-      let updated = 0;
-      if (videos.length > 0) {
-        ({ created, updated } = await this.upsertVideos(page.id, videos));
-      }
 
       await this.unlockPage(page.id);
       this.logger.log(`[SYNC] ${page.name}: +${created} mới, ~${updated} cập nhật`);
@@ -347,6 +393,16 @@ export class FacebookOwnedPagesService {
       await this.unlockPage(page.id, extractErrorMessage(err));
       throw err;
     }
+  }
+
+  /** Delta 1 page: mọi bài từ lần sync thành công trước (xem `deltaSince`), rồi dời mốc. */
+  async syncPageDelta(page: {
+    page_id: string;
+    last_synced_at: Date | null;
+    last_scraped_at: Date | null;
+  }): Promise<{ created: number; updated: number }> {
+    const since = deltaSince(page.last_synced_at ?? page.last_scraped_at);
+    return this.syncPage(page.page_id, DELTA_MAX_POSTS, { since }, { advanceWatermark: true });
   }
 
   async deltaSyncAllPages(): Promise<{ total: number; done: number; failed: number }> {
@@ -368,7 +424,7 @@ export class FacebookOwnedPagesService {
 
     for (const page of pages) {
       try {
-        await this.syncPage(page.page_id, 10);
+        await this.syncPageDelta(page);
         done++;
       } catch (err: any) {
         failed++;
@@ -409,31 +465,13 @@ export class FacebookOwnedPagesService {
         continue;
       }
 
-      const postIds = videos.map((v) => v.post_id);
-
       // Bọc TỪNG page, giống backfillAllPages/deltaSyncAllPages ngay phía trên.
       // Thiếu try/catch ở đây thì một token hỏng (hay một cú 502 của AI service) làm
       // `throw` bay khỏi vòng lặp và mọi page phía sau không được cập nhật — bảng số
       // trang tổng quan đứng im mà trông y như "kỳ này ít view", không ai biết là hỏng.
       try {
-        const { metrics } = await this.aiClient.fetchMetricsRefresh(page.page_access_token, postIds);
-
-        for (const v of videos) {
-          const m = metrics[v.post_id];
-          if (!m) continue;
-          await this.prisma.video_management_ownedvideocontent.update({
-            where: { id: v.id },
-            data: {
-              view_count: BigInt(m.view_count ?? Number(v.view_count)),
-              like_count: m.like_count ?? v.like_count,
-              comment_count: m.comment_count ?? v.comment_count,
-              share_count: m.share_count ?? v.share_count,
-              updated_at: new Date(),
-            },
-          });
-          totalUpdated++;
-        }
-        this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${postIds.length} video`);
+        totalUpdated += await this.refreshMetricsForPage(page.page_access_token, videos);
+        this.logger.log(`📊 [METRICS] ${page.name}: cập nhật ${videos.length} video`);
       } catch (err: any) {
         failed++;
         this.logger.error(`❌ [METRICS] ${page.name}: ${extractErrorMessage(err)}`);
@@ -443,6 +481,36 @@ export class FacebookOwnedPagesService {
     const phanLoi = failed > 0 ? ` (${failed} page lỗi)` : '';
     this.logger.log(`✅ [METRICS] Tổng: ${totalUpdated} video cập nhật metrics${phanLoi}`);
     return { updated: totalUpdated, total: recentVideos.length };
+  }
+
+  /**
+   * Kéo lại view/like/comment/share cho một lô video cùng page (1 lượt gọi AI). Trả số video ghi được;
+   * lỗi AI/token ném ra để người gọi tự bọc theo page.
+   */
+  async refreshMetricsForPage(
+    pageAccessToken: string,
+    videos: { id: bigint; post_id: string; view_count: bigint; like_count: number; comment_count: number; share_count: number }[],
+  ): Promise<number> {
+    if (!videos.length) return 0;
+    const { metrics } = await this.aiClient.fetchMetricsRefresh(pageAccessToken, videos.map((v) => v.post_id));
+
+    let updated = 0;
+    for (const v of videos) {
+      const m = metrics[v.post_id];
+      if (!m) continue;
+      await this.prisma.video_management_ownedvideocontent.update({
+        where: { id: v.id },
+        data: {
+          view_count: BigInt(m.view_count ?? Number(v.view_count)),
+          like_count: m.like_count ?? v.like_count,
+          comment_count: m.comment_count ?? v.comment_count,
+          share_count: m.share_count ?? v.share_count,
+          updated_at: new Date(),
+        },
+      });
+      updated++;
+    }
+    return updated;
   }
 
   // Chuẩn hoá permalink Facebook để so khớp: bỏ query string/tracking param, ép

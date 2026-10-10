@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { Prisma, SocialPostStatus } from "@prisma/client";
+import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { TaskAutoVideoService } from "../video/video.service";
@@ -108,6 +109,130 @@ const CATALOG_FIELDS = [
   "team_source_workshop_id",
   "team_source_huyk_id",
 ] as const;
+
+/*
+ * Biểu đồ "Traffic theo ngày" ở Tổng quan, dựng từ lịch sử báo cáo traffic nhập tay (traffic_reports).
+ *
+ * Số người dùng nhập là LUỸ KẾ TỪ ĐẦU THÁNG (sang tháng mới quay về 0) — xem sumTrafficOnLatestDate.
+ * Nên "phát sinh" của 1 ngày = luỹ kế ngày đó − luỹ kế lần báo cáo trước trong cùng tháng, không
+ * phải chính con số đã nhập.
+ */
+
+/** Một luồng báo cáo = 1 người × 1 team đã ghi trên báo cáo (người nhiều team nộp riêng từng team). */
+export interface TrafficStream {
+  /** Định danh người nộp (email thường hoá) — để đếm số người đã báo cáo mỗi ngày. */
+  person: string;
+  /** Ngày VN "YYYY-MM-DD" → tổng traffic mọi nền tảng của ngày đó (số luỹ kế tháng). */
+  byDay: Map<string, number>;
+}
+
+export interface TrafficTrendDay {
+  date: string;
+  /** Traffic phát sinh trong ngày; null = trong phạm vi không ai báo cáo ngày này. */
+  daily: number | null;
+  /** Luỹ kế từ đầu tháng tới ngày này (người chưa báo cáo hôm đó giữ số lần báo cáo trước). */
+  cumulative: number | null;
+  /** Số người đã báo cáo ngày này. */
+  reporters: number;
+  /**
+   * Phần của `daily` là SỐ DỒN: người nộp hôm nay nhưng bỏ trống hôm trước (hoặc lần đầu nộp trong
+   * tháng, không phải ngày 1) → chênh luỹ kế gồm traffic của nhiều ngày, không riêng ngày này.
+   */
+  catch_up: number;
+}
+
+export interface TrafficTrendSummary {
+  /** Tổng phát sinh trong kỳ. */
+  daily_sum: number;
+  /** Luỹ kế tháng ở ngày gần nhất có báo cáo trong kỳ. */
+  latest_cumulative: number;
+  /** Số ngày trong kỳ có ít nhất 1 báo cáo. */
+  reported_days: number;
+  /** Số người khác nhau đã báo cáo trong kỳ. */
+  reporters: number;
+}
+
+/** Mọi ngày VN từ `from` tới `to` (gồm cả 2 đầu), dạng "YYYY-MM-DD". */
+function eachVietnamDay(from: string, to: string): string[] {
+  const days: string[] = [];
+  let cur = DateTime.fromFormat(from, "yyyy-MM-dd", { zone: "Asia/Ho_Chi_Minh" });
+  const end = DateTime.fromFormat(to, "yyyy-MM-dd", { zone: "Asia/Ho_Chi_Minh" });
+  if (!cur.isValid || !end.isValid) return days;
+  while (cur <= end) {
+    days.push(cur.toFormat("yyyy-MM-dd"));
+    cur = cur.plus({ days: 1 });
+  }
+  return days;
+}
+
+/**
+ * Chuỗi theo ngày cho 1 nhóm luồng báo cáo, chỉ trả các ngày từ `from` tới `to`.
+ *
+ * `calcFrom` phải là ngày 1 của tháng chứa `from`: ngày đầu kỳ cần luỹ kế của hôm trước để tính
+ * phát sinh, và người không báo cáo hôm nay vẫn được giữ số luỹ kế lần trước (không rơi về 0 làm
+ * đường luỹ kế tụt giả).
+ *
+ * Luỹ kế bị nhập giảm (sửa số, gõ nhầm hôm trước) → phát sinh ngày đó tính 0, không âm.
+ *
+ * Không tự chia đều số dồn ra các ngày bị bỏ trống (đó là số đoán) — chỉ tách riêng `catch_up` để
+ * màn hình đánh dấu ngày đó.
+ */
+export function buildTrafficTrend(
+  streams: TrafficStream[],
+  calcFrom: string,
+  from: string,
+  to: string,
+): { days: TrafficTrendDay[]; summary: TrafficTrendSummary } {
+  const state = streams.map(() => ({ month: "", cumulative: 0, reportedYesterday: false }));
+  const days: TrafficTrendDay[] = [];
+  const reportersInRange = new Set<string>();
+
+  for (const date of eachVietnamDay(calcFrom, to)) {
+    const month = date.slice(0, 7);
+    const firstOfMonth = date.endsWith("-01");
+    let daily = 0;
+    let catchUp = 0;
+    let cumulative = 0;
+    const reporters = new Set<string>();
+
+    streams.forEach((s, i) => {
+      const st = state[i];
+      if (st.month !== month) {
+        st.month = month;
+        st.cumulative = 0;
+      }
+      const value = s.byDay.get(date);
+      if (value !== undefined) {
+        const inc = Math.max(0, value - st.cumulative);
+        daily += inc;
+        if (!firstOfMonth && !st.reportedYesterday) catchUp += inc;
+        st.cumulative = value;
+        reporters.add(s.person);
+      }
+      st.reportedYesterday = value !== undefined;
+      cumulative += st.cumulative;
+    });
+
+    if (date < from) continue;
+    reporters.forEach((p) => reportersInRange.add(p));
+    days.push(
+      reporters.size > 0
+        ? { date, daily, cumulative, reporters: reporters.size, catch_up: catchUp }
+        : { date, daily: null, cumulative: null, reporters: 0, catch_up: 0 },
+    );
+  }
+
+  const reported = days.filter((d) => d.reporters > 0);
+  return {
+    days,
+    summary: {
+      daily_sum: reported.reduce((s, d) => s + (d.daily ?? 0), 0),
+      latest_cumulative: reported.length ? reported[reported.length - 1].cumulative ?? 0 : 0,
+      reported_days: reported.length,
+      reporters: reportersInRange.size,
+    },
+  };
+}
 
 @Injectable()
 export class TaskAutoTasksService {
@@ -842,6 +967,95 @@ export class TaskAutoTasksService {
     };
   }
 
+  // Fallback về content_line_id của bản ghi gốc (source_editor_content / source_team_content)
+  // khi field thô trên chính record bị null — cùng cách loadAssignmentPools (task-auto-assign.
+  // service.ts) đã làm cho lane auto-assign. TeamContent/Content chỉ copy content_line_id tại
+  // thời điểm push (copyEditorContentToTeam, pushTeamContentToGlobal — cái sau còn không copy
+  // luôn), nên record cũ hoặc content gốc được gán tuyến sau khi đã push vẫn có thể null dù
+  // nội dung thực sự thuộc 1 tuyến — thiếu fallback này khiến task tạo thủ công từ content đó
+  // bị content_line_id = null và rơi khỏi "Số video theo tuyến nội dung" (getVideoByContentLine).
+  private async resolveContentLineId(ref: {
+    content_id?: string | null;
+    editor_content_id?: string | null;
+    team_content_id?: string | null;
+  }): Promise<string | null> {
+    if (ref.content_id) {
+      const content = await this.prisma.content.findUnique({
+        where: { id: ref.content_id },
+        select: {
+          content_line_id: true,
+          source_team_content: {
+            select: {
+              content_line_id: true,
+              source_editor_content: { select: { content_line_id: true } },
+            },
+          },
+        },
+      });
+      if (!content) throw new NotFoundException("Content not found");
+      return (
+        content.content_line_id ??
+        content.source_team_content?.content_line_id ??
+        content.source_team_content?.source_editor_content?.content_line_id ??
+        null
+      );
+    }
+    if (ref.editor_content_id) {
+      const ec = await this.prisma.editorContent.findUnique({
+        where: { id: ref.editor_content_id },
+        select: { content_line_id: true },
+      });
+      if (!ec) throw new NotFoundException("EditorContent not found");
+      return ec.content_line_id;
+    }
+    if (ref.team_content_id) {
+      const tc = await this.prisma.teamContent.findUnique({
+        where: { id: ref.team_content_id },
+        select: {
+          content_line_id: true,
+          source_editor_content: { select: { content_line_id: true } },
+        },
+      });
+      if (!tc) throw new NotFoundException("TeamContent not found");
+      return tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null;
+    }
+    return null;
+  }
+
+  private async assertNoDuplicateContentProduct(
+    pair: {
+      assignee_id?: string | null;
+      content_id?: string | null;
+      editor_content_id?: string | null;
+      team_content_id?: string | null;
+      product_id?: string | null;
+      editor_product_id?: string | null;
+      team_product_id?: string | null;
+    },
+    excludeTaskId?: string,
+  ) {
+    if (!pair.assignee_id) return;
+    if (!pair.product_id && !pair.editor_product_id && !pair.team_product_id) return;
+    const duplicate = await this.prisma.task.findFirst({
+      where: {
+        assignee_id: pair.assignee_id,
+        ...(excludeTaskId ? { id: { not: excludeTaskId } } : {}),
+        ...(pair.content_id ? { content_id: pair.content_id } : {}),
+        ...(pair.editor_content_id ? { editor_content_id: pair.editor_content_id } : {}),
+        ...(pair.team_content_id ? { team_content_id: pair.team_content_id } : {}),
+        ...(pair.product_id ? { product_id: pair.product_id } : {}),
+        ...(pair.editor_product_id ? { editor_product_id: pair.editor_product_id } : {}),
+        ...(pair.team_product_id ? { team_product_id: pair.team_product_id } : {}),
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new BadRequestException(
+        "Editor này đã có task với cặp content + sản phẩm này",
+      );
+    }
+  }
+
   async create(dto: CreateTaskDto, creatorId: string, roles: string[] = []) {
     const isPrivileged = roles.some((r) =>
       ["ADMIN", "MANAGER", "LEADER"].includes(r),
@@ -868,52 +1082,7 @@ export class TaskAutoTasksService {
     });
     if (!team) throw new NotFoundException("Team not found");
 
-    // Fallback về content_line_id của bản ghi gốc (source_editor_content / source_team_content)
-    // khi field thô trên chính record bị null — cùng cách loadAssignmentPools (task-auto-assign.
-    // service.ts) đã làm cho lane auto-assign. TeamContent/Content chỉ copy content_line_id tại
-    // thời điểm push (copyEditorContentToTeam, pushTeamContentToGlobal — cái sau còn không copy
-    // luôn), nên record cũ hoặc content gốc được gán tuyến sau khi đã push vẫn có thể null dù
-    // nội dung thực sự thuộc 1 tuyến — thiếu fallback này khiến task tạo thủ công từ content đó
-    // bị content_line_id = null và rơi khỏi "Số video theo tuyến nội dung" (getVideoByContentLine).
-    let resolvedContentLineId: string | null = null;
-    if (dto.content_id) {
-      const content = await this.prisma.content.findUnique({
-        where: { id: dto.content_id },
-        select: {
-          content_line_id: true,
-          source_team_content: {
-            select: {
-              content_line_id: true,
-              source_editor_content: { select: { content_line_id: true } },
-            },
-          },
-        },
-      });
-      if (!content) throw new NotFoundException("Content not found");
-      resolvedContentLineId =
-        content.content_line_id ??
-        content.source_team_content?.content_line_id ??
-        content.source_team_content?.source_editor_content?.content_line_id ??
-        null;
-    } else if (dto.editor_content_id) {
-      const ec = await this.prisma.editorContent.findUnique({
-        where: { id: dto.editor_content_id },
-        select: { content_line_id: true },
-      });
-      if (!ec) throw new NotFoundException("EditorContent not found");
-      resolvedContentLineId = ec.content_line_id;
-    } else if (dto.team_content_id) {
-      const tc = await this.prisma.teamContent.findUnique({
-        where: { id: dto.team_content_id },
-        select: {
-          content_line_id: true,
-          source_editor_content: { select: { content_line_id: true } },
-        },
-      });
-      if (!tc) throw new NotFoundException("TeamContent not found");
-      resolvedContentLineId =
-        tc.content_line_id ?? tc.source_editor_content?.content_line_id ?? null;
-    }
+    const resolvedContentLineId = await this.resolveContentLineId(dto);
 
     if (!isPrivileged) {
       const membership = await this.prisma.teamMember.findFirst({
@@ -946,41 +1115,15 @@ export class TaskAutoTasksService {
       }
     }
 
-    const hasProduct =
-      dto.product_id || resolvedEditorProductId || dto.team_product_id || pendingOmsVariantId;
-
     // Không dùng interactive transaction ($transaction(async tx => ...)) ở đây:
     // DATABASE_URL chạy qua Supabase pgbouncer (transaction-pooling mode, port 6543),
     // pooler có thể thu hồi connection giữa 2 lệnh trong 1 transaction đang mở, khiến
     // Prisma báo "Transaction API error: Transaction not found...". Tách thành 2 lệnh
     // độc lập để mỗi lệnh tự đóng gói trong 1 statement, tương thích với pgbouncer.
-    if (dto.assignee_id && hasProduct) {
-      const duplicate = await this.prisma.task.findFirst({
-        where: {
-          assignee_id: dto.assignee_id,
-          ...(dto.content_id ? { content_id: dto.content_id } : {}),
-          ...(dto.editor_content_id
-            ? { editor_content_id: dto.editor_content_id }
-            : {}),
-          ...(dto.team_content_id
-            ? { team_content_id: dto.team_content_id }
-            : {}),
-          ...(dto.product_id ? { product_id: dto.product_id } : {}),
-          ...(resolvedEditorProductId
-            ? { editor_product_id: resolvedEditorProductId }
-            : {}),
-          ...(dto.team_product_id
-            ? { team_product_id: dto.team_product_id }
-            : {}),
-        },
-        select: { id: true },
-      });
-      if (duplicate) {
-        throw new BadRequestException(
-          "Editor này đã có task với cặp content + sản phẩm này",
-        );
-      }
-    }
+    await this.assertNoDuplicateContentProduct({
+      ...dto,
+      editor_product_id: resolvedEditorProductId,
+    });
 
     const task = await this.prisma.task.create({
       data: {
@@ -1039,7 +1182,9 @@ export class TaskAutoTasksService {
       where: { id },
       select: {
         task_type: true, assignee_id: true, status: true, team_id: true,
-        editor_product_id: true, oms_product_id: true, oms_variant_id: true,
+        product_id: true, editor_product_id: true, team_product_id: true,
+        oms_product_id: true, oms_variant_id: true,
+        content_id: true, editor_content_id: true, team_content_id: true, content_line_id: true,
       },
     });
     if (!task) throw new NotFoundException("Task not found");
@@ -1149,6 +1294,41 @@ export class TaskAutoTasksService {
     if (dto.status === "APPROVED" || dto.status === "REJECTED") {
       data.reviewed_by_id = userId;
       data.reviewed_at = new Date();
+    }
+
+    const next = <K extends keyof typeof task>(k: K) =>
+      (data[k] !== undefined ? data[k] : task[k]) as (typeof task)[K];
+    const nextContent = {
+      content_id: next("content_id"),
+      editor_content_id: next("editor_content_id"),
+      team_content_id: next("team_content_id"),
+    };
+    const contentChanged =
+      nextContent.content_id !== task.content_id ||
+      nextContent.editor_content_id !== task.editor_content_id ||
+      nextContent.team_content_id !== task.team_content_id;
+    const hasNextContent =
+      !!(nextContent.content_id || nextContent.editor_content_id || nextContent.team_content_id);
+    if (contentChanged && hasNextContent) {
+      await this.assertNoDuplicateContentProduct(
+        {
+          ...nextContent,
+          assignee_id: next("assignee_id"),
+          product_id: next("product_id"),
+          editor_product_id: next("editor_product_id"),
+          team_product_id: next("team_product_id"),
+        },
+        id,
+      );
+      if (task.task_type !== "AUTO") {
+        const [oldLineId, newLineId] = await Promise.all([
+          this.resolveContentLineId(task).catch(() => null),
+          this.resolveContentLineId(nextContent),
+        ]);
+        if (newLineId && (task.content_line_id === null || task.content_line_id === oldLineId)) {
+          data.content_line_id = newLineId;
+        }
+      }
     }
 
     const updated = await this.prisma.task.update({
@@ -2507,6 +2687,171 @@ export class TaskAutoTasksService {
     );
 
     return { range: { from, to }, rows: result };
+  }
+
+  /**
+   * Biểu đồ "Traffic theo ngày" ở Tổng quan — dựng từ lịch sử báo cáo tay (traffic_reports), xem
+   * buildTrafficTrend. Phạm vi theo role, CÙNG quy tắc với getProductVideoStatsForRole:
+   *  - ADMIN/MANAGER: toàn hệ thống (tách theo team), team_id → 1 team (tách theo thành viên),
+   *    assignee_id → 1 người.
+   *  - LEADER: (các) team đang lead (tách theo thành viên); assignee_id chỉ nhận thành viên đang
+   *    hoạt động của team mình, id lạ bị bỏ qua → vẫn cả team.
+   *  - Còn lại: chính mình.
+   *
+   * Báo cáo thuộc team nào: ưu tiên team ghi trên báo cáo (người nhiều team chọn team lúc nộp — đúng
+   * team tại thời điểm đó), tên không khớp Team nào thì theo team người đó đang là thành viên.
+   * Không truyền ngày → tháng hiện tại; ngày cuối không vượt quá hôm nay.
+   */
+  async getTrafficTrendForRole(
+    userId: string,
+    roles: string[],
+    dateFrom?: string,
+    dateTo?: string,
+    teamId?: string,
+    assigneeId?: string,
+  ) {
+    const now = new Date();
+    const today = vietnamDateString(now);
+    const range =
+      this.parseDateRange(dateFrom, dateTo) ?? vietnamMonthRange(vietnamMonthString(now))!;
+    const from = vietnamDateString(range.gte);
+    const lastDay = vietnamDateString(new Date(range.lt.getTime() - 1));
+    const to = lastDay > today ? today : lastDay;
+
+    const isAdminOrManager = roles.includes("ADMIN") || roles.includes("MANAGER");
+    const isLeaderOnly = roles.includes("LEADER") && !isAdminOrManager;
+
+    const teams = await this.prisma.team.findMany({
+      select: {
+        id: true,
+        name: true,
+        leader_id: true,
+        members: {
+          select: { user: { select: { id: true, email: true, full_name: true, is_active: true } } },
+        },
+      },
+    });
+    const teamName = new Map(teams.map((t) => [t.id, t.name]));
+    const teamIdByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t.id]));
+    const teamsOfEmail = new Map<string, string[]>();
+    const userByEmail = new Map<string, { id: string; full_name: string | null }>();
+    for (const t of teams)
+      for (const m of t.members) {
+        const email = m.user?.email?.toLowerCase().trim();
+        if (!email) continue;
+        teamsOfEmail.set(email, [...(teamsOfEmail.get(email) ?? []), t.id]);
+        userByEmail.set(email, { id: m.user.id, full_name: m.user.full_name });
+      }
+
+    // Khoanh phạm vi: teamScope = các team được xem (null = mọi team), personEmail = 1 người.
+    let teamScope: Set<string> | null = null;
+    let personEmail: string | null = null;
+    const emailOf = async (id: string) =>
+      (
+        await this.prisma.user.findUnique({ where: { id }, select: { email: true } })
+      )?.email?.toLowerCase().trim() ?? null;
+
+    if (isAdminOrManager) {
+      if (teamId) teamScope = new Set([teamId]);
+      if (assigneeId) personEmail = await emailOf(assigneeId);
+      if (assigneeId && !personEmail) return this.emptyTrafficTrend(from, to);
+    } else if (isLeaderOnly) {
+      const led = teams.filter((t) => t.leader_id === userId);
+      if (led.length === 0) return this.emptyTrafficTrend(from, to);
+      teamScope = new Set(led.map((t) => t.id));
+      const focus = assigneeId
+        ? led.flatMap((t) => t.members).find((m) => m.user?.id === assigneeId && m.user.is_active)
+        : undefined;
+      personEmail = focus?.user.email?.toLowerCase().trim() ?? null;
+    } else {
+      personEmail = await emailOf(userId);
+      if (!personEmail) return this.emptyTrafficTrend(from, to);
+    }
+
+    const breakdownKind: "team" | "member" | null = personEmail
+      ? null
+      : teamScope
+        ? "member"
+        : "team";
+
+    // Đọc từ ngày 1 của tháng chứa `from`: số nhập là luỹ kế tháng, cần lần báo cáo trước đó.
+    const calcFrom = `${from.slice(0, 7)}-01`;
+    const rows = await this.prisma.trafficReport.findMany({
+      where: {
+        date: { gte: vietnamDayRangeOf(calcFrom)!.gte, lt: vietnamDayRangeOf(to)!.lt },
+        ...(personEmail
+          ? { email: { equals: personEmail, mode: "insensitive" as any } }
+          : {}),
+      },
+      select: { email: true, name: true, team: true, date: true, total_traffic: true },
+    });
+
+    type Stream = TrafficStream & { teamId: string | null; email: string | null; name: string | null };
+    const streams = new Map<string, Stream>();
+    for (const r of rows) {
+      if (!r.date) continue;
+      const email = r.email?.toLowerCase().trim() || null;
+      const person = email ?? `name:${(r.name ?? "").trim().toLowerCase()}`;
+      const reportTeam = (r.team ?? "").trim().toLowerCase();
+      const resolvedTeam =
+        teamIdByName.get(reportTeam) ?? (email ? teamsOfEmail.get(email)?.[0] : undefined) ?? null;
+      if (teamScope && (!resolvedTeam || !teamScope.has(resolvedTeam))) continue;
+
+      const key = `${person}|${reportTeam}`;
+      const stream =
+        streams.get(key) ??
+        ({ person, byDay: new Map(), teamId: resolvedTeam, email, name: r.name ?? null } as Stream);
+      const day = vietnamDateString(r.date);
+      stream.byDay.set(day, (stream.byDay.get(day) ?? 0) + Number(r.total_traffic ?? 0n));
+      streams.set(key, stream);
+    }
+
+    const all = [...streams.values()];
+    const total = buildTrafficTrend(all, calcFrom, from, to);
+
+    const groups = new Map<string, Stream[]>();
+    if (breakdownKind) {
+      for (const s of all) {
+        const key = breakdownKind === "team" ? (s.teamId ?? "") : s.person;
+        groups.set(key, [...(groups.get(key) ?? []), s]);
+      }
+    }
+    const breakdown = [...groups.entries()]
+      .map(([key, list]) => {
+        const { days, summary } = buildTrafficTrend(list, calcFrom, from, to);
+        const user = list[0].email ? userByEmail.get(list[0].email) : undefined;
+        return {
+          id: breakdownKind === "team" ? key || null : user?.id ?? null,
+          label:
+            breakdownKind === "team"
+              ? (key && teamName.get(key)) || "Chưa có team"
+              : user?.full_name || list[0].name || list[0].email || "—",
+          ...summary,
+          daily: days.map((d) => d.daily),
+          cumulative: days.map((d) => d.cumulative),
+        };
+      })
+      // Chỉ có báo cáo ở đầu tháng, trước kỳ đang xem → không có gì để vẽ trong kỳ.
+      .filter((b) => b.reported_days > 0)
+      .sort((a, b) => b.daily_sum - a.daily_sum || a.label.localeCompare(b.label));
+
+    return {
+      range: { from, to },
+      breakdown_kind: breakdownKind,
+      days: total.days,
+      summary: total.summary,
+      breakdown,
+    };
+  }
+
+  private emptyTrafficTrend(from: string, to: string) {
+    return {
+      range: { from, to },
+      breakdown_kind: null,
+      days: [],
+      summary: { daily_sum: 0, latest_cumulative: 0, reported_days: 0, reporters: 0 },
+      breakdown: [],
+    };
   }
 
   /**

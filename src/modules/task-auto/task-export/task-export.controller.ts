@@ -16,7 +16,8 @@ export class TaskExportController {
   @ApiOperation({
     summary:
       'Xuất Excel danh sách task ĐÃ HOÀN THÀNH (APPROVED) theo đúng bộ lọc đang chọn trên trang ' +
-      "Nhiệm vụ — mỗi người thực hiện 1 sheet, kèm bảng KPI tháng (đạt / mục tiêu). Ô 'Trạng thái' " +
+      "Nhiệm vụ — mỗi người thực hiện 1 sheet, kèm bảng KPI tháng (đạt / mục tiêu) và danh sách " +
+      "video Facebook đã đăng trên page người đó cầm trong cùng khoảng ngày. Ô 'Trạng thái' " +
       'bị bỏ qua (luôn xuất task đã duyệt); tối đa 10.000 dòng/lần.',
   })
   async exportTasks(

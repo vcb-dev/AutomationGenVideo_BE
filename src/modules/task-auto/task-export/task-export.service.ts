@@ -2,6 +2,8 @@ import { Injectable } from "@nestjs/common";
 import * as ExcelJS from "exceljs";
 import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
+import { OwnerVideos, FacebookOwnedPagesReadService } from "../../facebook-owned-pages/facebook-owned-pages-read.service";
+import { contentLinesInText, laTuyenHopLe } from "../../scraper-aggregate/content-filters";
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import { vietnamMonthString } from "../../../utils/date.utils";
 import {
@@ -20,6 +22,8 @@ import { QueryTaskDto } from "../tasks/dto/task.dto";
 const EXPORT_MAX_ROWS = 10_000;
 const EXPORT_CHUNK = 1_000;
 const MAX_KPI_MONTHS = 6;
+const VIDEO_MAX_PER_USER = 1_000;
+const VIDEO_CAPTION_MAX = 200;
 
 const INDIGO = "FF4F46E5";
 const INDIGO_DARK = "FF3730A3";
@@ -66,6 +70,8 @@ interface ExportColumn {
   header: string;
   width: number;
   align?: "left" | "center" | "right";
+  /** Cột chứa link — 1 link thì thành hyperlink bấm được. */
+  link?: boolean;
 }
 
 const EXPORT_COLUMNS: ExportColumn[] = [
@@ -74,9 +80,21 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   { header: "Tuyến nội dung", width: 22 },
   { header: "Dòng sản phẩm", width: 22 },
   { header: "Phân loại content", width: 24 },
-  { header: "Link bài đăng", width: 62 },
+  { header: "Link bài đăng", width: 62, link: true },
 ];
 const LAST_COL = EXPORT_COLUMNS.length;
+
+// A–F cùng độ rộng với bảng task (tuyến nội dung thẳng cột C, link thẳng cột F) để chung 1 lưới
+// trên sheet; cột G chỉ bảng video dùng. Độ rộng cột của sheet lấy theo bảng này.
+const VIDEO_COLUMNS: ExportColumn[] = [
+  { header: "STT", width: 8, align: "center" },
+  { header: "Nội dung video", width: 58 },
+  { header: "Tuyến nội dung", width: 22 },
+  { header: "Page", width: 22 },
+  { header: "Ngày đăng", width: 24, align: "center" },
+  { header: "Link video", width: 62, link: true },
+  { header: "Lượt xem", width: 14, align: "right" },
+];
 
 type KpiTargetKey =
   | "total_target"
@@ -163,6 +181,12 @@ interface ContentLineProgress {
 
 const contentLineLabel = (name: string) => (/^tuyến/i.test(name.trim()) ? name.trim() : `Tuyến ${name.trim()}`);
 
+interface PublishedVideos {
+  byOwner: Map<string, OwnerVideos>;
+  /** Tuyến đang lọc dạng hashtag (#A1) — null khi không lọc tuyến. */
+  hashtag: string | null;
+}
+
 interface UserGroup {
   userId: string | null;
   name: string;
@@ -172,7 +196,10 @@ interface UserGroup {
 
 @Injectable()
 export class TaskExportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fbVideos: FacebookOwnedPagesReadService,
+  ) {}
 
   private readonly exportInclude = {
     assignee: { select: { full_name: true, email: true } },
@@ -227,12 +254,13 @@ export class TaskExportService {
     }
 
     const groups = this.groupByAssignee(rows);
-    const [filterLine, kpiBlocks] = await Promise.all([
+    const [filterLine, kpiBlocks, videos] = await Promise.all([
       this.describeFilters(q),
       this.loadKpiBlocks(groups, q, requester),
+      this.loadPublishedVideos(groups, q),
     ]);
     return {
-      buffer: await this.buildWorkbook(groups, kpiBlocks, filterLine, rows.length >= EXPORT_MAX_ROWS),
+      buffer: await this.buildWorkbook(groups, kpiBlocks, videos, filterLine, rows.length >= EXPORT_MAX_ROWS),
       filename: this.buildFilename(q),
     };
   }
@@ -251,6 +279,32 @@ export class TaskExportService {
       map.set(key, group);
     }
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "vi"));
+  }
+
+  /**
+   * Video Facebook đã đăng trên page mỗi người cầm, cùng khoảng ngày với bộ lọc task (ngày duyệt
+   * nếu có, không thì hạn chót), cùng bộ lọc team, và cùng tuyến nội dung — video không gắn tuyến
+   * nên lọc theo hashtag #A1…#A5 trong caption. Dòng sản phẩm, từ khoá, loại task không áp cho video.
+   */
+  private async loadPublishedVideos(groups: UserGroup[], q: QueryTaskDto): Promise<PublishedVideos> {
+    const [dateFrom, dateTo] =
+      q.reviewed_from || q.reviewed_to ? [q.reviewed_from, q.reviewed_to] : [q.deadline_from, q.deadline_to];
+    const line = q.content_line_id
+      ? await this.prisma.contentLine.findUnique({ where: { id: q.content_line_id }, select: { name: true } })
+      : null;
+    const code = line?.name.trim().replace(/^tuyến\s*/i, "").toUpperCase() ?? "";
+    const contentLine = laTuyenHopLe(code) ? code : undefined;
+    const byOwner = await this.fbVideos.getVideosByOwner(
+      groups.map((g) => g.userId).filter((id): id is string => !!id),
+      {
+        date_from: dateFrom,
+        date_to: dateTo,
+        team_ids: (q.team_id ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+        content_line: contentLine,
+        limit_per_owner: VIDEO_MAX_PER_USER,
+      },
+    );
+    return { byOwner, hashtag: contentLine ? `#${contentLine}` : null };
   }
 
   private fmtDate(d: Date | null | undefined): string {
@@ -281,6 +335,15 @@ export class TaskExportService {
         select: { full_name: true, email: true },
       });
       if (user) parts.push(`Người thực hiện: ${user.full_name || user.email}`);
+    }
+
+    if (q.content_line_id) {
+      const line = await this.prisma.contentLine.findUnique({ where: { id: q.content_line_id }, select: { name: true } });
+      if (line) parts.push(`Tuyến nội dung: ${line.name}`);
+    }
+    if (q.product_line_id) {
+      const line = await this.prisma.productLine.findUnique({ where: { id: q.product_line_id }, select: { name: true } });
+      if (line) parts.push(`Dòng sản phẩm: ${line.name}`);
     }
 
     if (q.search) parts.push(`Từ khoá: "${q.search}"`);
@@ -607,15 +670,19 @@ export class TaskExportService {
     });
     ws.properties.defaultRowHeight = ROW_HEIGHT;
     (ws.properties as any).tabColor = { argb: INDIGO };
-    ws.columns = EXPORT_COLUMNS.map((c) => ({ width: c.width }));
+    ws.columns = VIDEO_COLUMNS.map((c) => ({ width: c.width }));
     return ws;
   }
 
-  private fitRowHeight(texts: (string | null | undefined)[], min = ROW_HEIGHT): number {
+  private fitRowHeight(
+    texts: (string | null | undefined)[],
+    min = ROW_HEIGHT,
+    columns: ExportColumn[] = EXPORT_COLUMNS,
+  ): number {
     let lines = 1;
     texts.forEach((text, i) => {
       if (!text) return;
-      const perLine = Math.max(1, Math.floor(EXPORT_COLUMNS[i].width * CHARS_PER_WIDTH));
+      const perLine = Math.max(1, Math.floor(columns[i].width * CHARS_PER_WIDTH));
       const n = text
         .split("\n")
         .reduce((sum, part) => {
@@ -634,9 +701,10 @@ export class TaskExportService {
     cellFont: Partial<ExcelJS.Font>,
     fill?: string,
     height?: number,
+    lastCol = LAST_COL,
   ): ExcelJS.Row {
     const row = ws.addRow([text]);
-    ws.mergeCells(row.number, 1, row.number, LAST_COL);
+    ws.mergeCells(row.number, 1, row.number, lastCol);
     const cell = row.getCell(1);
     cell.font = cellFont;
     cell.alignment = { vertical: "middle", wrapText: true, indent: fill ? 1 : 0 };
@@ -665,17 +733,29 @@ export class TaskExportService {
       );
   }
 
-  private writeSectionHeading(ws: ExcelJS.Worksheet, text: string) {
+  private writeSectionHeading(ws: ExcelJS.Worksheet, text: string, lastCol = LAST_COL) {
     ws.addRow([]).height = 14;
-    const row = this.addBanner(ws, text, font(FONT_SIZE.section, { bold: true, color: { argb: INDIGO_DARK } }), undefined, 30);
+    const row = this.addBanner(
+      ws,
+      text,
+      font(FONT_SIZE.section, { bold: true, color: { argb: INDIGO_DARK } }),
+      undefined,
+      30,
+      lastCol,
+    );
     row.getCell(1).alignment = { vertical: "bottom" };
   }
 
   private styleCells(
     row: ExcelJS.Row,
-    opts: { font?: Partial<ExcelJS.Font>; fill?: string; align?: (col: number) => "left" | "center" | "right" },
+    opts: {
+      font?: Partial<ExcelJS.Font>;
+      fill?: string;
+      align?: (col: number) => "left" | "center" | "right";
+      lastCol?: number;
+    },
   ) {
-    for (let col = 1; col <= LAST_COL; col++) {
+    for (let col = 1; col <= (opts.lastCol ?? LAST_COL); col++) {
       const cell = row.getCell(col);
       cell.font = opts.font ?? font(FONT_SIZE.body, { color: { argb: INK } });
       cell.alignment = { horizontal: opts.align?.(col) ?? "left", vertical: "middle", wrapText: true, indent: col === 1 ? 0 : 1 };
@@ -865,7 +945,6 @@ export class TaskExportService {
   }
 
   private writeTaskTable(ws: ExcelJS.Worksheet, tasks: any[], tableIndex: number) {
-    const headerRow = ws.rowCount + 1;
     const urlsByRow = tasks.map((t) => this.publishedUrls(t));
     const values = tasks.map((t, i) => [
       i + 1,
@@ -875,19 +954,108 @@ export class TaskExportService {
       this.resolveClassification(t) || null,
       urlsByRow[i].join("\n") || null,
     ]);
+    const headerRow = this.writeTable(ws, `DanhSachTask_${tableIndex}`, EXPORT_COLUMNS, values, {
+      links: urlsByRow.map((urls) => (urls.length === 1 ? urls[0] : null)),
+    });
+    (ws.pageSetup as any).printTitlesRow = `${headerRow}:${headerRow}`;
+  }
 
+  private writeVideoSection(
+    ws: ExcelJS.Worksheet,
+    data: OwnerVideos | undefined,
+    hashtag: string | null,
+    tableIndex: number,
+  ) {
+    const n = (v: number) => v.toLocaleString("vi-VN");
+    const lastCol = VIDEO_COLUMNS.length;
+    const title = hashtag ? `VIDEO ĐÃ ĐĂNG ${hashtag}` : "VIDEO ĐÃ ĐĂNG";
+    this.writeSectionHeading(
+      ws,
+      data?.total ? `${title} — ${n(data.total)} video · ${n(data.total_views)} lượt xem` : title,
+      lastCol,
+    );
+    const cut = data && data.videos.length < data.total;
+    this.addBanner(
+      ws,
+      "Video Facebook đăng trên các page người này cầm (theo Quản lý kênh), trong khoảng ngày đang lọc" +
+        (hashtag ? `, chỉ video có hashtag ${hashtag} trong nội dung` : "") +
+        " — lượt xem lấy theo lần cập nhật gần nhất." +
+        (cut ? ` Chỉ liệt kê ${n(data.videos.length)} video mới nhất.` : "") +
+        " Tuyến nội dung đọc từ hashtag #A1…#A5 trong nội dung video.",
+      font(FONT_SIZE.note, { italic: true, color: { argb: SLATE } }),
+      undefined,
+      34,
+      lastCol,
+    );
+
+    if (!data?.videos.length) {
+      const empty = this.addBanner(
+        ws,
+        data
+          ? `Không có video nào${hashtag ? ` gắn ${hashtag}` : ""} được đăng trên page người này cầm trong khoảng ngày đang lọc.`
+          : "Chưa ghép được page Facebook nào với người này — kiểm tra kênh trong Quản lý kênh.",
+        font(FONT_SIZE.body, { italic: true, color: { argb: SLATE } }),
+        SLATE_SOFT,
+        32,
+        lastCol,
+      );
+      empty.getCell(1).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      return;
+    }
+
+    const values = data.videos.map((v, i) => [
+      i + 1,
+      this.videoCaption(v.caption),
+      contentLinesInText(v.caption).join(", ") || null,
+      v.page_name || null,
+      this.vietnamWallClock(v.published_at),
+      v.permalink_url || null,
+      v.view_count,
+    ]);
+    this.writeTable(ws, `VideoDaDang_${tableIndex}`, VIDEO_COLUMNS, values, {
+      links: data.videos.map((v) => v.permalink_url),
+      numFmt: { 5: "dd/mm/yyyy hh:mm", 7: "#,##0" },
+      heightTexts: values.map((v) => [null, v[1] as string, v[2] as string, v[3] as string, null, v[5] as string, null]),
+    });
+  }
+
+  private videoCaption(caption: string | null | undefined): string {
+    const text = (caption ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return "(Không có nội dung)";
+    return text.length > VIDEO_CAPTION_MAX ? `${text.slice(0, VIDEO_CAPTION_MAX).trimEnd()}…` : text;
+  }
+
+  /** Excel không có múi giờ: ghi giờ VN dưới dạng "giờ đồng hồ" để ô ngày hiện đúng giờ đăng ở VN. */
+  private vietnamWallClock(d: Date): Date {
+    const vn = DateTime.fromJSDate(d).setZone("Asia/Ho_Chi_Minh");
+    return new Date(Date.UTC(vn.year, vn.month - 1, vn.day, vn.hour, vn.minute, vn.second));
+  }
+
+  /** Excel Table lọc/sắp xếp được, ngay dưới dòng cuối hiện tại. Trả số dòng header. */
+  private writeTable(
+    ws: ExcelJS.Worksheet,
+    name: string,
+    columns: ExportColumn[],
+    values: ExcelJS.CellValue[][],
+    opts: {
+      links: (string | null)[];
+      numFmt?: Record<number, string>;
+      heightTexts?: (string | null)[][];
+    },
+  ): number {
+    const headerRow = ws.rowCount + 1;
     ws.addTable({
-      name: `DanhSachTask_${tableIndex}`,
+      name,
       ref: `A${headerRow}`,
       headerRow: true,
       totalsRow: false,
       style: { theme: "TableStyleMedium2", showRowStripes: true } as any,
-      columns: EXPORT_COLUMNS.map((c) => ({ name: c.header, filterButton: true })),
+      columns: columns.map((c) => ({ name: c.header, filterButton: true })),
       rows: values,
     });
 
     const header = ws.getRow(headerRow);
-    EXPORT_COLUMNS.forEach((_, i) => {
+    columns.forEach((_, i) => {
       const cell = header.getCell(i + 1);
       cell.font = font(FONT_SIZE.body, { bold: true, color: { argb: "FFFFFFFF" } });
       cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: INDIGO } } as any;
@@ -895,24 +1063,31 @@ export class TaskExportService {
       cell.border = this.thinBorder(INDIGO_DARK);
     });
     header.height = 32;
-    (ws.pageSetup as any).printTitlesRow = `${headerRow}:${headerRow}`;
 
+    const linkCol = columns.findIndex((c) => c.link) + 1;
     values.forEach((v, i) => {
       const row = ws.getRow(headerRow + 1 + i);
-      this.styleCells(row, { align: (col) => EXPORT_COLUMNS[col - 1].align ?? "left" });
-      row.height = this.fitRowHeight(v.map((x) => (x === null ? null : String(x))));
-      const urls = urlsByRow[i];
-      if (urls.length === 1 && /^https?:\/\//i.test(urls[0])) {
-        const c = row.getCell(LAST_COL);
-        c.value = { text: urls[0], hyperlink: urls[0] } as any;
+      this.styleCells(row, { align: (col) => columns[col - 1].align ?? "left", lastCol: columns.length });
+      for (const [col, fmt] of Object.entries(opts.numFmt ?? {})) row.getCell(Number(col)).numFmt = fmt;
+      row.height = this.fitRowHeight(
+        opts.heightTexts?.[i] ?? v.map((x) => (x === null ? null : String(x))),
+        ROW_HEIGHT,
+        columns,
+      );
+      const url = opts.links[i];
+      if (url && linkCol && /^https?:\/\//i.test(url)) {
+        const c = row.getCell(linkCol);
+        c.value = { text: url, hyperlink: url } as any;
         c.font = font(FONT_SIZE.body, { color: { argb: LINK }, underline: true });
       }
     });
+    return headerRow;
   }
 
   private async buildWorkbook(
     groups: UserGroup[],
     kpiBlocks: Map<string, KpiBlock[]>,
+    videos: PublishedVideos,
     filterLine: string,
     truncated: boolean,
   ): Promise<Buffer> {
@@ -938,10 +1113,19 @@ export class TaskExportService {
     const usedNames = new Set<string>();
     groups.forEach((g, index) => {
       const ws = this.addSheet(wb, this.sheetName(g.name, usedNames));
+      const userVideos = g.userId ? videos.byOwner.get(g.userId) : undefined;
       this.writeTitle(
         ws,
         g.email && g.email !== g.name ? `${g.name}  (${g.email})` : g.name,
-        `${filterLine}   ·   ${g.tasks.length.toLocaleString("vi-VN")} task đã hoàn thành`,
+        [
+          filterLine,
+          `${g.tasks.length.toLocaleString("vi-VN")} task đã hoàn thành`,
+          userVideos
+            ? `${userVideos.total.toLocaleString("vi-VN")} video đã đăng${videos.hashtag ? ` (${videos.hashtag})` : ""}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("   ·   "),
         truncated,
       );
 
@@ -968,6 +1152,7 @@ export class TaskExportService {
         `DANH SÁCH TASK ĐÃ HOÀN THÀNH — ${g.tasks.length.toLocaleString("vi-VN")} task`,
       );
       this.writeTaskTable(ws, g.tasks, index + 1);
+      if (g.userId) this.writeVideoSection(ws, userVideos, videos.hashtag, index + 1);
     });
 
     return Buffer.from(await wb.xlsx.writeBuffer());

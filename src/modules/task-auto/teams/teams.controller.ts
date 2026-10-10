@@ -420,6 +420,28 @@ export class TaskAutoTeamsController {
     );
   }
 
+  @Get("traffic-trend")
+  @ApiOperation({
+    summary:
+      "Traffic theo từng ngày từ lịch sử báo cáo tay (biểu đồ đường ở Tổng quan): phát sinh mỗi ngày + luỹ kế tháng, kèm tách theo team (toàn hệ thống) hoặc theo thành viên (1 team). Phạm vi theo role như /product-video-stats. Không truyền date_from/date_to → tháng hiện tại.",
+  })
+  getTrafficTrend(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
+  ) {
+    return this.tasks.getTrafficTrendForRole(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+      teamId,
+      assigneeId,
+    );
+  }
+
   @Get("dashboard")
   @ApiOperation({
     summary:
