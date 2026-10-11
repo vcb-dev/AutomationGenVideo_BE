@@ -23,6 +23,9 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional({ description: 'Tên tuyến nội dung lập Kế hoạch ngày', example: ['A1', 'A2', 'A3', 'A5'] })
   @IsArray() @IsString({ each: true }) @IsOptional() daily_plan_line_names?: string[]
+
+  @ApiPropertyOptional({ description: 'Job khớp video ↔ task hỏi AI cho ca heuristic bỏ trống, gắn link khi AI đủ tự tin' })
+  @IsBoolean() @IsOptional() video_match_ai_enabled?: boolean
 }
 
 export class UpdateLarkWebhookSettingDto {

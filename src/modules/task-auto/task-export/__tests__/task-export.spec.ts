@@ -26,8 +26,9 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
       performanceGoal: { findMany: jest.fn(async () => goals) },
       contentLine: { findMany: jest.fn(async () => []) },
     };
-    const service = new TaskExportService(prisma);
-    return { service, prisma };
+    const fbVideos: any = { getVideosByOwner: jest.fn(async () => new Map()) };
+    const service = new TaskExportService(prisma, fbVideos);
+    return { service, prisma, fbVideos };
   }
 
   const taskRow = (over: Partial<any> = {}) => ({
@@ -95,12 +96,14 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
     return 0;
   }
   const taskHeaderRow = (ws: ExcelJS.Worksheet) => findRow(ws, (v) => v[0] === 'STT' && v[1] === 'Tiêu đề');
-  function taskRows(ws: ExcelJS.Worksheet): any[][] {
-    const header = taskHeaderRow(ws);
+  // Dòng của bảng bắt đầu ở `header`, dừng ở dòng trống đầu tiên (trước mục kế tiếp).
+  function tableRows(ws: ExcelJS.Worksheet, header: number): any[][] {
     const out: any[][] = [];
-    for (let n = header + 1; n <= ws.rowCount; n++) out.push(values(ws, n));
+    for (let n = header + 1; n <= ws.rowCount && values(ws, n).length; n++) out.push(values(ws, n));
     return out;
   }
+  const taskRows = (ws: ExcelJS.Worksheet) => tableRows(ws, taskHeaderRow(ws));
+  const videoHeaderRow = (ws: ExcelJS.Worksheet) => findRow(ws, (v) => v[0] === 'STT' && v[1] === 'Nội dung video');
   const kpiRowOf = (ws: ExcelJS.Worksheet, label: string) => values(ws, findRow(ws, (v) => v[1] === label));
   const kpiWhere = (prisma: any) => prisma.editorKpi.findMany.mock.calls[0][0].where;
 
@@ -511,5 +514,143 @@ describe('TaskExportService.exportApprovedTasks — xuất task đã hoàn thàn
 
     expect(filename).toContain('2026-09-01_2026-09-14');
     expect(filename).toMatch(/^task-da-hoan-thanh_2026-09-01_2026-09-14_\d{8}-\d{4}\.xlsx$/);
+  });
+  describe('mục "Video đã đăng" — video Facebook trên page người thực hiện cầm', () => {
+    const video = (over: Partial<any> = {}) => ({
+      post_id: 'v-1',
+      caption: 'Nhẫn kim cương #A1 #N0006',
+      published_at: new Date('2026-09-10T13:30:00Z'),
+      permalink_url: 'https://www.facebook.com/reel/1108106365200234/',
+      view_count: 12500,
+      page_name: 'HuyK - Góc Kim Hoàn',
+      ...over,
+    });
+    const owned = (videos: any[], over: Partial<any> = {}) => ({
+      page_count: 1,
+      total: videos.length,
+      total_views: videos.reduce((sum, v) => sum + v.view_count, 0),
+      videos,
+      ...over,
+    });
+
+    it('cuối sheet, sau bảng task: mỗi video 1 dòng (nội dung, tuyến, page, giờ đăng VN, link bấm được, lượt xem)', async () => {
+      const { service, fbVideos } = build([taskRow()]);
+      fbVideos.getVideosByOwner.mockResolvedValue(
+        new Map([
+          ['u-a', owned([
+            video(),
+            video({ post_id: 'v-2', caption: `  Dòng 1\n\nDòng 2 ${'rất dài '.repeat(40)}`, view_count: 300, permalink_url: null }),
+            video({ post_id: 'v-3', caption: 'Hai tuyến #a4 #A1 #A1', view_count: 0 }),
+          ])],
+        ]),
+      );
+
+      const ws = (await load((await service.exportApprovedTasks({} as any)).buffer)).worksheets[0];
+
+      expect(String(ws.getRow(2).getCell(1).value)).toContain('1 task đã hoàn thành   ·   3 video đã đăng');
+      const header = videoHeaderRow(ws);
+      expect(header).toBeGreaterThan(taskHeaderRow(ws));
+      expect(String(values(ws, findRow(ws, (v) => String(v[0]).startsWith('VIDEO ĐÃ ĐĂNG')))[0])).toBe(
+        'VIDEO ĐÃ ĐĂNG — 3 video · 12.800 lượt xem',
+      );
+      expect(values(ws, header)).toEqual([
+        'STT', 'Nội dung video', 'Tuyến nội dung', 'Page', 'Ngày đăng', 'Link video', 'Lượt xem',
+      ]);
+
+      const [r1, r2, r3] = tableRows(ws, header);
+      expect(r1.slice(0, 4)).toEqual([1, 'Nhẫn kim cương #A1 #N0006', 'A1', 'HuyK - Góc Kim Hoàn']);
+      expect(r1[4]).toEqual(new Date('2026-09-10T20:30:00Z'));
+      expect(r1[6]).toBe(12500);
+      const link = ws.getRow(header + 1).getCell(6);
+      expect((link.value as any).hyperlink).toBe('https://www.facebook.com/reel/1108106365200234/');
+      expect(ws.getRow(header + 1).getCell(5).numFmt).toBe('dd/mm/yyyy hh:mm');
+      expect(ws.getRow(header + 1).getCell(7).numFmt).toBe('#,##0');
+      expect(ws.getRow(header + 1).getCell(7).border).toBeDefined();
+
+      expect(r2[1]).toMatch(/^Dòng 1 Dòng 2 rất dài .*…$/);
+      expect(r2[1].length).toBeLessThanOrEqual(201);
+      expect(r2[2]).toBeUndefined();
+      expect(r2[5]).toBeUndefined();
+      expect(r3[2]).toBe('A1, A4');
+
+      // Tiêu đề mục video trải hết 7 cột của bảng video; mục KPI/task vẫn 6 cột như cũ.
+      const videoHeading = findRow(ws, (v) => String(v[0]).startsWith('VIDEO ĐÃ ĐĂNG'));
+      expect(ws.getRow(videoHeading).getCell(7).isMerged).toBe(true);
+      expect(ws.getRow(1).getCell(6).isMerged).toBe(true);
+      expect(ws.getRow(1).getCell(7).isMerged).toBe(false);
+
+      const names = (ws.getTables() as any[]).map((t) => (t.table ?? t.model).name);
+      expect(names).toEqual(['DanhSachTask_1', 'VideoDaDang_1']);
+    });
+
+    it('cùng khoảng ngày + team với bộ lọc task: ngày duyệt nếu có, không thì hạn chót', async () => {
+      const { service, fbVideos } = build([taskRow(), taskRow({ id: 't-x', assignee_id: null, assignee: null })]);
+
+      await service.exportApprovedTasks({ reviewed_from: '2026-09-01', reviewed_to: '2026-09-14', team_id: 'team-1, team-2' } as any);
+      await service.exportApprovedTasks({ deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any);
+
+      expect(fbVideos.getVideosByOwner.mock.calls[0]).toEqual([
+        ['u-a'],
+        {
+          date_from: '2026-09-01',
+          date_to: '2026-09-14',
+          team_ids: ['team-1', 'team-2'],
+          content_line: undefined,
+          limit_per_owner: 1000,
+        },
+      ]);
+      expect(fbVideos.getVideosByOwner.mock.calls[1][1]).toMatchObject({ date_from: '2026-09-01', date_to: '2026-09-30', team_ids: [] });
+    });
+
+    it('lọc tuyến nội dung → video lọc theo hashtag tuyến (#A1) trong caption, ghi rõ trên sheet', async () => {
+      const { service, prisma, fbVideos } = build([
+        taskRow(),
+        taskRow({ id: 't-b', assignee_id: 'u-b', assignee: { full_name: 'Trần Thị B' } }),
+      ]);
+      prisma.contentLine.findUnique = jest.fn(async () => ({ name: 'a1' }));
+      fbVideos.getVideosByOwner.mockResolvedValue(new Map([['u-a', owned([video()])], ['u-b', owned([])]]));
+
+      const [a, b] = (await load((await service.exportApprovedTasks({ content_line_id: 'cl-a1' } as any)).buffer)).worksheets;
+
+      expect(prisma.contentLine.findUnique).toHaveBeenCalledWith({ where: { id: 'cl-a1' }, select: { name: true } });
+      expect(fbVideos.getVideosByOwner.mock.calls[0][1].content_line).toBe('A1');
+      expect(String(a.getRow(2).getCell(1).value)).toContain('1 video đã đăng (#A1)');
+      expect(findRow(a, (v) => String(v[0]).startsWith('VIDEO ĐÃ ĐĂNG #A1 — 1 video'))).toBeGreaterThan(0);
+      expect(findRow(a, (v) => String(v[0]).includes('chỉ video có hashtag #A1 trong nội dung'))).toBeGreaterThan(0);
+      expect(findRow(b, (v) => String(v[0]).startsWith('Không có video nào gắn #A1 được đăng'))).toBeGreaterThan(0);
+    });
+
+    it('tuyến không quy được về mã A1…A5 → không lọc video theo hashtag', async () => {
+      const { service, prisma, fbVideos } = build([taskRow()]);
+      prisma.contentLine.findUnique = jest.fn(async () => ({ name: 'Tuyến đặc biệt' }));
+
+      await service.exportApprovedTasks({ content_line_id: 'cl-x' } as any);
+
+      expect(fbVideos.getVideosByOwner.mock.calls[0][1].content_line).toBeUndefined();
+    });
+
+    it('chưa ghép page / không có video trong kỳ → dòng giải thích thay cho bảng; bị cắt thì ghi rõ chỉ liệt kê N video mới nhất', async () => {
+      const { service, fbVideos } = build([
+        taskRow(),
+        taskRow({ id: 't-b', assignee_id: 'u-b', assignee: { full_name: 'Trần Thị B' } }),
+        taskRow({ id: 't-c', assignee_id: 'u-c', assignee: { full_name: 'Võ Văn C' } }),
+      ]);
+      fbVideos.getVideosByOwner.mockResolvedValue(
+        new Map([
+          ['u-b', owned([])],
+          ['u-c', owned([video()], { total: 1500, total_views: 99000 })],
+        ]),
+      );
+
+      const [a, b, c] = (await load((await service.exportApprovedTasks({} as any)).buffer)).worksheets;
+
+      expect(videoHeaderRow(a)).toBe(0);
+      expect(findRow(a, (v) => String(v[0]).startsWith('Chưa ghép được page Facebook nào'))).toBeGreaterThan(0);
+      expect(String(a.getRow(2).getCell(1).value)).not.toContain('video đã đăng');
+      expect(videoHeaderRow(b)).toBe(0);
+      expect(findRow(b, (v) => String(v[0]).startsWith('Không có video nào được đăng'))).toBeGreaterThan(0);
+      expect(findRow(c, (v) => String(v[0]).includes('Chỉ liệt kê 1 video mới nhất.'))).toBeGreaterThan(0);
+      expect(tableRows(c, videoHeaderRow(c))).toHaveLength(1);
+    });
   });
 });
