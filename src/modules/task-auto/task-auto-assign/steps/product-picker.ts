@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { BrandType, Prisma } from "@prisma/client";
-import { TeamProductCandidate } from "../types";
+import { AUTO_ASSIGN_PRODUCT_LINE_NAME, TeamProductCandidate } from "../types";
 import { isOnCooldown } from "./cooldown";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
@@ -43,14 +43,28 @@ function toCandidate(tp: TeamProductRow): TeamProductCandidate {
   };
 }
 
-/** "Kho sản phẩm" của team (tab Kho sản phẩm) — mọi SP đang bật, đúng brand của team. */
+/**
+ * "Kho sản phẩm" của team (tab Kho sản phẩm) — SP đang bật, đúng brand của team, thuộc dòng GMV
+ * (SP push từ kho editor chưa tự gắn dòng thì xét dòng của editor product gốc).
+ */
 export async function loadTeamProductPool(
   prisma: PrismaService,
   teamId: string,
   brandType: BrandType,
 ): Promise<TeamProductCandidate[]> {
+  const autoAssignLine = {
+    name: { equals: AUTO_ASSIGN_PRODUCT_LINE_NAME, mode: "insensitive" as const },
+  };
   const rows = await prisma.teamProduct.findMany({
-    where: { team_id: teamId, is_active: true, brand_type: brandType },
+    where: {
+      team_id: teamId,
+      is_active: true,
+      brand_type: brandType,
+      OR: [
+        { product_line: autoAssignLine },
+        { product_line_id: null, source_editor_product: { product_line: autoAssignLine } },
+      ],
+    },
     select: TEAM_PRODUCT_SELECT,
     orderBy: { priority_score: "desc" },
   });
@@ -166,8 +180,8 @@ export async function loadLastAssignedByEditor(
  * (luật cứng — kho không đủ SP ngoài cooldown thì giao thiếu, không lấy SP cooldown bù vào).
  * Trong số còn lại, ưu tiên:
  *   1. SP ít được giao cho người khác trong CÙNG lượt chạy — rải đều SP cho cả team
- *   2. SP editor lâu chưa làm nhất (chưa từng làm lên đầu) — xoay vòng hết kho
- *   3. priority_score cao hơn
+ *   2. priority_score cao hơn
+ *   3. SP editor lâu chưa làm nhất (chưa từng làm lên đầu) — xoay vòng các SP cùng điểm
  * Không bao giờ lặp 1 SP trong cùng 1 lượt cho cùng editor.
  */
 export function pickProductsForEditor(args: {
@@ -194,8 +208,8 @@ export function pickProductsForEditor(args: {
     .sort(
       (a, b) =>
         a.picked - b.picked ||
-        a.last - b.last ||
         b.p.priority_score - a.p.priority_score ||
+        a.last - b.last ||
         a.p.id.localeCompare(b.p.id),
     )
     .slice(0, need)

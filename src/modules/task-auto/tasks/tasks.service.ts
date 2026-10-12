@@ -360,7 +360,16 @@ export class TaskAutoTasksService {
     // thay vì phải query lại team.findUnique riêng chỉ để lấy leader_id (xem bên dưới).
     // market: FE dùng để biết editor đang làm task cho thị trường nào (xem ContentSection —
     // gợi ý dùng/dịch bản content sang đúng thị trường team khi content nguồn là tiếng Việt).
-    team: { select: { id: true, name: true, leader_id: true, market: true, lark_webhook_url: true } },
+    team: {
+      select: {
+        id: true,
+        name: true,
+        leader_id: true,
+        market: true,
+        brand_type: true,
+        lark_webhook_url: true,
+      },
+    },
     content: {
       select: {
         id: true,
@@ -748,51 +757,6 @@ export class TaskAutoTasksService {
     pending_video: true,
   };
 
-  // Danh sách nhánh quan hệ trong taskDetailInclude phụ thuộc 1-1 vào 1 cột FK trên Task.
-  // FK null → quan hệ luôn resolve về null dù có include hay không, nên include nó chỉ tốn
-  // thêm JOIN/sub-query (nặng nhất là các nhánh to-many product.sources/editor_sources/
-  // team_sources) mà không đổi kết quả. findOne() dùng danh sách này để chỉ include đúng
-  // những nhánh có dữ liệu thật, dựa trên giá trị FK đọc trước đó.
-  private readonly detailBranchByFk: [
-    keyof typeof this.taskDetailInclude,
-    string,
-  ][] = [
-    ["content", "content_id"],
-    ["editor_content", "editor_content_id"],
-    ["team_content", "team_content_id"],
-    ["product", "product_id"],
-    ["editor_product", "editor_product_id"],
-    ["team_product", "team_product_id"],
-    ["source_outro", "source_outro_id"],
-    ["source_extra", "source_extra_id"],
-    ["source_workshop", "source_workshop_id"],
-    ["source_huyk", "source_huyk_id"],
-    ["editor_source_outro", "editor_source_outro_id"],
-    ["editor_source_extra", "editor_source_extra_id"],
-    ["editor_source_workshop", "editor_source_workshop_id"],
-    ["editor_source_huyk", "editor_source_huyk_id"],
-    ["team_source_outro", "team_source_outro_id"],
-    ["team_source_extra", "team_source_extra_id"],
-    ["team_source_workshop", "team_source_workshop_id"],
-    ["team_source_huyk", "team_source_huyk_id"],
-  ];
-
-  private buildDetailInclude(
-    fk: Record<string, string | null>,
-  ): typeof this.taskDetailInclude {
-    const include: Record<string, unknown> = {
-      team: this.taskDetailInclude.team,
-      content_line: this.taskDetailInclude.content_line,
-      assignee: this.taskDetailInclude.assignee,
-      reviewed_by: this.taskDetailInclude.reviewed_by,
-      pending_video: this.taskDetailInclude.pending_video,
-    };
-    for (const [relation, fkField] of this.detailBranchByFk) {
-      if (fk[fkField]) include[relation] = this.taskDetailInclude[relation];
-    }
-    return include as typeof this.taskDetailInclude;
-  }
-
   // Bản include nhẹ — dùng cho findAll (bảng danh sách task + SubmittedVideosGrid).
   // FE (TasksTable.tsx: resolveContentTitle/resolveProductName/resolveProductImage,
   // ExtraTaskGroupPanel.tsx) chỉ đọc title/name/image_url + team/assignee/status/deadline/
@@ -907,53 +871,13 @@ export class TaskAutoTasksService {
   }
 
   async findOne(id: string) {
-    // Pre-fetch rẻ (PK lookup, không JOIN) chỉ để biết nhánh quan hệ nào thực sự có dữ liệu,
-    // tránh JOIN/sub-query thừa cho các FK null ở query detail bên dưới.
-    const fk = await this.prisma.task.findUnique({
-      where: { id },
-      select: {
-        content_id: true,
-        editor_content_id: true,
-        team_content_id: true,
-        product_id: true,
-        editor_product_id: true,
-        team_product_id: true,
-        source_outro_id: true,
-        source_extra_id: true,
-        source_workshop_id: true,
-        source_huyk_id: true,
-        editor_source_outro_id: true,
-        editor_source_extra_id: true,
-        editor_source_workshop_id: true,
-        editor_source_huyk_id: true,
-        team_source_outro_id: true,
-        team_source_extra_id: true,
-        team_source_workshop_id: true,
-        team_source_huyk_id: true,
-      },
-    });
-    if (!fk) throw new NotFoundException("Task not found");
-
+    // Prisma tự bỏ qua query của nhánh có FK null nên không cần đọc trước FK. Mỗi lệnh Prisma qua
+    // pgbouncer tốn thêm 3 round-trip (BEGIN/DEALLOCATE ALL/COMMIT) — giữ đúng 1 lệnh ở đây.
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: {
-        ...this.buildDetailInclude(fk),
-        assignments: {
-          include: {
-            user: { select: { id: true, full_name: true, email: true } },
-          },
-          orderBy: { assigned_at: "desc" },
-        },
-        notifications: { take: 5, orderBy: { created_at: "desc" } },
-      },
+      include: this.taskDetailInclude,
     });
     if (!task) throw new NotFoundException("Task not found");
-
-    // Các nhánh bị bỏ qua ở include (vì FK null) không có key trong kết quả —
-    // set về null để giữ nguyên shape response như bản include đầy đủ trước đây.
-    for (const [relation] of this.detailBranchByFk) {
-      if (!(relation in task)) (task as Record<string, unknown>)[relation] = null;
-    }
 
     const productSources =
       task.product?.sources ??
