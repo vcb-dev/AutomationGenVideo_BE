@@ -2,12 +2,8 @@ import { of } from 'rxjs';
 import { AiIntegrationService } from './ai-integration.service';
 
 /**
- * Regression test: /api/voice/* (TTS + clone giọng) phải gọi qua
- * voiceAiServiceUrl thay vì AI_SERVICE_URL chung (tunnel máy local) — root
- * cause khiến TTS 0:00/không tải được khi máy local tắt hoặc chưa cập nhật
- * code. Trên Railway (RAILWAY_ENVIRONMENT_NAME tự có, không cần khai báo),
- * mặc định trỏ private network automationgenvideo-ai.railway.internal — không
- * cần set biến gì thêm trên Railway. Xem ai-integration.service.ts constructor.
+ * /api/voice/* chỉ gọi AI_SERVICE_URL_VOICE (GPU). Không fallback MiniMax,
+ * không fallback AI_SERVICE_URL / Railway private network.
  */
 describe('AiIntegrationService voice endpoint URL routing', () => {
   function buildService(configValues: Record<string, string>) {
@@ -28,36 +24,24 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
     return { service, httpService };
   }
 
-  it('local dev (no RAILWAY_ENVIRONMENT_NAME): falls back to AI_SERVICE_URL', async () => {
-    const { service, httpService } = buildService({
-      AI_SERVICE_URL: 'http://localhost:8000',
-    });
-
-    await service.generateTTS('xin chào', 'voice_1');
-
-    expect(httpService.post).toHaveBeenCalledWith(
-      'http://localhost:8000/api/voice/tts/',
-      expect.anything(),
-      expect.anything(),
-    );
+  it('thiếu AI_SERVICE_URL_VOICE thì không khởi động — kể cả trên Railway', () => {
+    expect(() =>
+      buildService({
+        AI_SERVICE_URL: 'https://local-tunnel.example.com',
+        RAILWAY_ENVIRONMENT_NAME: 'production',
+      }),
+    ).toThrow(/AI_SERVICE_URL_VOICE/);
   });
 
-  it('running on Railway: defaults to the AI service private network URL, no extra config needed', async () => {
-    const { service, httpService } = buildService({
-      AI_SERVICE_URL: 'https://local-tunnel.example.com',
-      RAILWAY_ENVIRONMENT_NAME: 'production',
-    });
-
-    await service.generateTTS('xin chào', 'voice_1');
-
-    expect(httpService.post).toHaveBeenCalledWith(
-      'http://automationgenvideo-ai.railway.internal:8080/api/voice/tts/',
-      expect.anything(),
-      expect.anything(),
-    );
+  it('không fallback sang AI_SERVICE_URL khi thiếu URL GPU', () => {
+    expect(() =>
+      buildService({
+        AI_SERVICE_URL: 'http://localhost:8000',
+      }),
+    ).toThrow(/AI_SERVICE_URL_VOICE/);
   });
 
-  it('explicit AI_SERVICE_URL_VOICE always wins, even on Railway', async () => {
+  it('gọi đúng AI_SERVICE_URL_VOICE, không đụng AI_SERVICE_URL', async () => {
     const { service, httpService } = buildService({
       AI_SERVICE_URL: 'https://local-tunnel.example.com',
       RAILWAY_ENVIRONMENT_NAME: 'production',
@@ -73,16 +57,14 @@ describe('AiIntegrationService voice endpoint URL routing', () => {
     );
   });
 
-  it('running on Railway: listVoices also uses the private network URL', async () => {
+  it('listVoices cũng dùng AI_SERVICE_URL_VOICE', async () => {
     const { service, httpService } = buildService({
       AI_SERVICE_URL: 'https://local-tunnel.example.com',
-      RAILWAY_ENVIRONMENT_NAME: 'production',
+      AI_SERVICE_URL_VOICE: 'https://gpu.example.com',
     });
 
     await service.listVoices();
 
-    expect(httpService.get).toHaveBeenCalledWith(
-      'http://automationgenvideo-ai.railway.internal:8080/api/voice/list/',
-    );
+    expect(httpService.get).toHaveBeenCalledWith('https://gpu.example.com/api/voice/list/');
   });
 });

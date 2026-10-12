@@ -1,6 +1,7 @@
 import {
   resolveAiServiceUrl,
   resolveAiServiceUrlFromEnv,
+  resolveVoiceAiServiceUrl,
 } from '../ai-service-url';
 
 /**
@@ -35,6 +36,19 @@ describe('resolveAiServiceUrl', () => {
   it('thông báo lỗi nêu cả hai cổng để người đọc biết đặt gì', () => {
     const config = { get: () => undefined } as any;
     expect(() => resolveAiServiceUrl(config)).toThrow(/8001[\s\S]*8000|8000[\s\S]*8001/);
+  });
+});
+
+describe('resolveVoiceAiServiceUrl', () => {
+  it('trả về URL GPU đã cấu hình, cắt dấu / cuối', () => {
+    const config = { get: () => 'https://pod-8000.proxy.runpod.net/' } as any;
+    expect(resolveVoiceAiServiceUrl(config)).toBe('https://pod-8000.proxy.runpod.net');
+  });
+
+  it('thiếu biến thì báo lỗi, KHÔNG fallback MiniMax hay AI_SERVICE_URL', () => {
+    const config = { get: () => undefined } as any;
+    expect(() => resolveVoiceAiServiceUrl(config)).toThrow(/AI_SERVICE_URL_VOICE/);
+    expect(() => resolveVoiceAiServiceUrl(config)).toThrow(/MiniMax/);
   });
 });
 
