@@ -467,6 +467,88 @@ describe('TaskAutoTasksService.update — task AUTO chỉ cho đổi content', (
   });
 });
 
+describe('TaskAutoTasksService.update — đổi content', () => {
+  const lineOf: Record<string, string | null> = { 'ec-old': 'line-A1', 'ec-new': 'line-A2', 'ec-noline': null };
+
+  function buildService(task: any, opts: { duplicate?: any } = {}) {
+    const prisma: any = {
+      editorContent: { findUnique: jest.fn(async ({ where }: any) => (where.id in lineOf ? { content_line_id: lineOf[where.id] } : null)) },
+      task: {
+        findUnique: jest.fn(async () => ({
+          assignee_id: 'member-1', status: 'IN_PROGRESS', team_id: 'team-1',
+          product_id: null, editor_product_id: 'ep-1', team_product_id: null, oms_product_id: null, oms_variant_id: null,
+          content_id: null, editor_content_id: 'ec-old', team_content_id: null,
+          ...task,
+        })),
+        findFirst: jest.fn(async () => opts.duplicate ?? null),
+        update: jest.fn(async (args: any) => ({ id: 'task-1', ...args.data, team: { leader_id: null } })),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  const pickEditorContent = (id: string) => ({ content_id: null, editor_content_id: id, team_content_id: null }) as any;
+
+  it('task tạo tay đang theo tuyến content cũ → tuyến đổi theo content mới', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    const updateArgs = prisma.task.update.mock.calls[0][0];
+    expect(updateArgs.data.editor_content_id).toBe('ec-new');
+    expect(updateArgs.data.content_line_id).toBe('line-A2');
+  });
+
+  it('task tạo tay đặt tuyến riêng (khác tuyến content cũ) → giữ nguyên tuyến', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A5' });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+
+  it('content mới chưa có tuyến → không xoá tuyến đang có của task', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' });
+
+    await service.update('task-1', pickEditorContent('ec-noline'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+
+  it('task AUTO đổi content khác tuyến → vẫn giữ tuyến A4 (đếm theo KPI)', async () => {
+    const { service, prisma } = buildService({
+      task_type: 'AUTO', content_line_id: 'line-A1', editor_product_id: null, team_product_id: 'tp-1',
+    });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+    expect(prisma.editorContent.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('editor đã có task khác cùng cặp content + sản phẩm → BadRequest, không ghi gì', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' }, { duplicate: { id: 'task-2' } });
+
+    await expect(
+      service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']),
+    ).rejects.toThrow('cặp content + sản phẩm');
+    expect(prisma.task.findFirst.mock.calls[0][0].where).toEqual({
+      assignee_id: 'member-1', id: { not: 'task-1' }, editor_content_id: 'ec-new', editor_product_id: 'ep-1',
+    });
+    expect(prisma.task.update).not.toHaveBeenCalled();
+  });
+
+  it('form Sửa gửi lại đúng content đang gắn (chỉ đổi deadline) → không kiểm trùng, không đụng tuyến', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' }, { duplicate: { id: 'task-2' } });
+
+    await service.update('task-1', { ...pickEditorContent('ec-old'), deadline: '2026-10-11' }, 'member-1', ['MEMBER']);
+
+    expect(prisma.task.findFirst).not.toHaveBeenCalled();
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+});
+
 /**
  * remove() (xoá task) — trước đây chặn xoá task IN_PROGRESS. Giờ được xoá ở mọi trạng thái, kể cả
  * IN_PROGRESS. Luật phân quyền: ADMIN/MANAGER xoá được mọi task; LEADER xoá được task của team mình

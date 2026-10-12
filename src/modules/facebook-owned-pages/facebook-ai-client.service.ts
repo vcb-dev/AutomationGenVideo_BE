@@ -29,6 +29,12 @@ export interface FetchedVideo {
   raw_data: any;
 }
 
+/** Khoảng thời gian bài đăng cần cào (theo created_time của bài). */
+export interface SyncRange {
+  since?: Date;
+  until?: Date;
+}
+
 export interface FetchedPageMetadata {
   page_id: string;
   name: string;
@@ -75,15 +81,28 @@ export class FacebookAiClientService {
     return data;
   }
 
+  /**
+   * Không có `range.since`: `maxPosts` bài mới nhất (1 lượt gọi Graph API). Có `since`: mọi bài
+   * trong khoảng since..until, AI lần theo phân trang (tối đa maxPosts) — `truncated` = chạm trần.
+   */
   async fetchPageSync(
     pageId: string,
     tokenEncrypted: string,
     maxPosts = 10,
-  ): Promise<{ page_metadata: FetchedPageMetadata; videos: FetchedVideo[] }> {
+    range?: SyncRange,
+  ): Promise<{ page_metadata: FetchedPageMetadata; videos: FetchedVideo[]; truncated?: boolean; posts_scanned?: number }> {
+    const toUnix = (d?: Date) => (d ? Math.floor(d.getTime() / 1000) : undefined);
     const { data } = await axios.post(
       `${this.aiServiceUrl}/api/facebook/fetch/sync/`,
-      { page_id: pageId, page_access_token_encrypted: tokenEncrypted, max_posts: maxPosts },
-      { headers: this.authHeaders(), timeout: 120_000 },
+      {
+        page_id: pageId,
+        page_access_token_encrypted: tokenEncrypted,
+        max_posts: maxPosts,
+        since: toUnix(range?.since),
+        until: toUnix(range?.until),
+      },
+      // Cào theo khoảng có thể phải lần nhiều trang (nghỉ 1s/trang) — cho thời gian như backfill.
+      { headers: this.authHeaders(), timeout: range?.since ? 900_000 : 120_000 },
     );
     return data;
   }

@@ -12,6 +12,19 @@ function fbLink(views: number, status: 'success' | 'failed' | 'unsupported' = 's
   return [{ id: 'l1', platform: 'FACEBOOK', url: 'https://facebook.com/x', stats: { views, status } }];
 }
 
+/** task.findUnique/updateMany trên store — ghi chỉ khi updated_at chưa đổi, như DB thật. */
+function storeTaskWrites(store: Map<string, any>) {
+  return {
+    findUnique: jest.fn(async (args: any) => store.get(args.where.id) ?? null),
+    updateMany: jest.fn(async (args: any) => {
+      const current = store.get(args.where.id);
+      if (!current || current.updated_at !== args.where.updated_at) return { count: 0 };
+      store.set(args.where.id, { ...current, ...args.data, updated_at: new Date() });
+      return { count: 1 };
+    }),
+  };
+}
+
 /**
  * getContentCreatorKpiReport() — báo cáo TỰ TÍNH (không phải target đặt tay) từ dữ liệu thật:
  * số content sưu tầm (TeamContent.added_by), số bản dịch (ContentTranslation.translated_by),
@@ -241,7 +254,7 @@ describe('TaskAutoKpiService.getContentWinFailStats', () => {
   it('team không có thành viên nào → trả rỗng, không lỗi', async () => {
     const { service } = build({ members: [] });
     const result = await service.getContentWinFailStats({ team_id: 'team-empty' });
-    expect(result).toEqual({ by_member: [], totals: { win: 0, fail: 0, pending: 0 } });
+    expect(result).toEqual({ by_member: [], totals: { win: 0, fail: 0, pending: 0 }, by_classification: [] });
   });
 
   it('mọi thành viên team đều xuất hiện trong by_member kể cả khi chưa có hoạt động gì', async () => {
@@ -341,6 +354,66 @@ describe('TaskAutoKpiService.getContentWinFailStats', () => {
 
     expect(result.totals).toEqual({ win: 2, fail: 1, pending: 0 });
   });
+
+  describe('phân loại nội dung', () => {
+    const HAI = { id: 'cls-hai', name: 'Hài hước' };
+    const KE = { id: 'cls-ke', name: 'Kể chuyện' };
+    // creator-1: 2 task (Hài win, Kể fail) — editor-1: 3 task (Hài win, Kể win, chưa phân loại pending).
+    const fixture = () => build({
+      members: [{ user_id: 'creator-1' }, { user_id: 'editor-1' }],
+      creatorTasks: [
+        { id: 'c-1', status: 'APPROVED', published_links: fbLink(12000), assignee: null, team_content: { added_by_id: 'creator-1', code: 'C1', title: 'T1', classification: HAI }, content: null },
+        { id: 'c-2', status: 'APPROVED', published_links: fbLink(800), assignee: null, team_content: null, content: { id: 'g-1', code: 'G1', title: 'T2', classification: KE, source_team_content: { added_by_id: 'creator-1' } } },
+      ],
+      editorTasks: [
+        { id: 'e-1', assignee_id: 'editor-1', published_links: fbLink(15000), content: null, team_content: null, editor_content: { code: 'E1', title: 'V1', classification: HAI } },
+        { id: 'e-2', assignee_id: 'editor-1', published_links: fbLink(20000), content: { code: 'G2', title: 'V2', classification: KE }, team_content: null, editor_content: null },
+        { id: 'e-3', assignee_id: 'editor-1', published_links: [], content: null, team_content: { code: 'C9', title: 'V3', classification: null }, editor_content: null },
+      ],
+    });
+
+    it('mỗi video mang phân loại của content gắn task (content / team_content / editor_content), không có → null', async () => {
+      const { service } = fixture();
+      const result = await service.getContentWinFailStats({ team_id: 'team-1' });
+      const videos = result.by_member.flatMap((m) => m.videos);
+      const clsOf = (id: string) => videos.find((v: any) => v.task_id === id).classification;
+      expect(clsOf('c-1')).toEqual(HAI);
+      expect(clsOf('c-2')).toEqual(KE);
+      expect(clsOf('e-1')).toEqual(HAI);
+      expect(clsOf('e-2')).toEqual(KE);
+      expect(clsOf('e-3')).toBeNull();
+    });
+
+    it('by_classification đếm win/fail/pending theo phân loại, nhiều win trước, "Chưa phân loại" cuối', async () => {
+      const { service } = fixture();
+      const result = await service.getContentWinFailStats({ team_id: 'team-1' });
+      expect(result.by_classification).toEqual([
+        { classification_id: 'cls-hai', classification: 'Hài hước', win: 2, fail: 0, pending: 0 },
+        { classification_id: 'cls-ke', classification: 'Kể chuyện', win: 1, fail: 1, pending: 0 },
+        { classification_id: null, classification: 'Chưa phân loại', win: 0, fail: 0, pending: 1 },
+      ]);
+    });
+
+    it('classification_id chỉ giữ content thuộc phân loại đó — đếm lại by_member + totals, by_classification vẫn đủ', async () => {
+      const { service } = fixture();
+      const result = await service.getContentWinFailStats({ team_id: 'team-1', classification_id: 'cls-ke' });
+
+      expect(result.totals).toEqual({ win: 1, fail: 1, pending: 0 });
+      const creator = result.by_member.find((m) => m.user_id === 'creator-1')!;
+      const editor = result.by_member.find((m) => m.user_id === 'editor-1')!;
+      expect(creator.videos.map((v: any) => v.task_id)).toEqual(['c-2']);
+      expect(editor.videos.map((v: any) => v.task_id)).toEqual(['e-2']);
+      expect(result.by_classification).toHaveLength(3);
+    });
+
+    it('classification_id = "none" → chỉ content chưa phân loại', async () => {
+      const { service } = fixture();
+      const result = await service.getContentWinFailStats({ team_id: 'team-1', classification_id: 'none' });
+
+      expect(result.totals).toEqual({ win: 0, fail: 0, pending: 1 });
+      expect(result.by_member.flatMap((m) => m.videos).map((v: any) => v.task_id)).toEqual(['e-3']);
+    });
+  });
 });
 
 /**
@@ -362,11 +435,7 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
         findMany: jest.fn(async (args: any) =>
           args?.select?.assignee_id ? Array.from(store.values()) : [],
         ),
-        update: jest.fn(async (args: any) => {
-          const current = store.get(args.where.id);
-          if (current) store.set(args.where.id, { ...current, ...args.data });
-          return args;
-        }),
+        ...storeTaskWrites(store),
       },
     };
     const linkStats: any = { fetchStatsForLink: opts.fetchStatsForLink ?? jest.fn() };
@@ -387,9 +456,9 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
     const result = await service.refreshContentWinFailStats({ user_id: 'editor-1' });
 
     expect(fetchStatsForLink).toHaveBeenCalledWith('FACEBOOK', 'https://facebook.com/x');
-    expect(prisma.task.update).toHaveBeenCalledWith(
+    expect(prisma.task.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'e-1' },
+        where: expect.objectContaining({ id: 'e-1' }),
         data: { published_links: [expect.objectContaining({ stats: expect.objectContaining({ views: 12000, status: 'success' }) })] },
       }),
     );
@@ -411,13 +480,13 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
     expect(result.by_member.find((m) => m.user_id === 'editor-1')).toEqual(expect.objectContaining({ fail: 1 }));
   });
 
-  it('không có link Facebook/YouTube nào cần cào → không gọi task.update', async () => {
+  it('không có link Facebook/YouTube nào cần cào → không ghi lại published_links', async () => {
     const { service, prisma, linkStats } = build({ editorTasks: [] });
 
     await service.refreshContentWinFailStats({ user_id: 'editor-1' });
 
     expect(linkStats.fetchStatsForLink).not.toHaveBeenCalled();
-    expect(prisma.task.update).not.toHaveBeenCalled();
+    expect(prisma.task.updateMany).not.toHaveBeenCalled();
   });
 
   it('link YouTube được cào lại VÀ tính vào win/fail — win/fail xét mọi nền tảng, không chỉ Facebook', async () => {
@@ -449,7 +518,7 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
     expect(fetchStatsForLink).toHaveBeenCalledWith('FACEBOOK', 'https://facebook.com/x');
     expect(fetchStatsForLink).toHaveBeenCalledWith('YouTube', 'https://youtube.com/watch?v=x');
     // Ghi lại đúng cả 2 link với số mới.
-    const updateCall = prisma.task.update.mock.calls.find((c: any[]) => c[0].where.id === 'e-yt');
+    const updateCall = prisma.task.updateMany.mock.calls.find((c: any[]) => c[0].where.id === 'e-yt');
     const savedLinks = updateCall[0].data.published_links;
     expect(savedLinks.find((l: any) => l.id === 'l-yt').stats.views).toBe(999999);
     expect(savedLinks.find((l: any) => l.id === 'l-fb').stats.views).toBe(1000);
@@ -457,7 +526,7 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
     expect(result.by_member.find((m) => m.user_id === 'editor-1')).toEqual(expect.objectContaining({ win: 1, fail: 0, pending: 0 }));
   });
 
-  it('link vừa cào THÀNH CÔNG gần đây (còn mới) → bỏ qua, không gọi lại API và không ghi task.update', async () => {
+  it('link vừa cào THÀNH CÔNG gần đây (còn mới) → bỏ qua, không gọi lại API và không ghi lại published_links', async () => {
     const fetchStatsForLink = jest.fn();
     const freshFetchedAt = new Date().toISOString(); // vừa cào xong ngay bây giờ → chắc chắn còn mới.
     const { service, prisma } = build({
@@ -475,7 +544,7 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
     const result = await service.refreshContentWinFailStats({ user_id: 'editor-1' });
 
     expect(fetchStatsForLink).not.toHaveBeenCalled();
-    expect(prisma.task.update).not.toHaveBeenCalled();
+    expect(prisma.task.updateMany).not.toHaveBeenCalled();
     // Vẫn trả đúng số liệu hiện có (không đổi vì không cào lại).
     expect(result.by_member.find((m) => m.user_id === 'editor-1')).toEqual(expect.objectContaining({ win: 1, fail: 0, pending: 0 }));
   });
@@ -492,9 +561,9 @@ describe('TaskAutoKpiService.refreshContentWinFailStats', () => {
 
     await service.refreshContentWinFailStats({ user_id: 'editor-1' });
 
-    expect(prisma.task.update).toHaveBeenCalledTimes(2);
-    expect(prisma.task.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'e-1' } }));
-    expect(prisma.task.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'e-2' } }));
+    expect(prisma.task.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.task.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 'e-1' }) }));
+    expect(prisma.task.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 'e-2' }) }));
   });
 });
 
@@ -543,7 +612,7 @@ describe('TaskAutoKpiService.getTopContentWinFailMembers', () => {
   it('không có thành viên nào trong hệ thống → trả rỗng, không lỗi', async () => {
     const { service } = build({ allUserIds: [] });
     const result = await service.getTopContentWinFailMembers({});
-    expect(result).toEqual({ by_member: [], totals: { win: 0, fail: 0, pending: 0 } });
+    expect(result).toEqual({ by_member: [], totals: { win: 0, fail: 0, pending: 0 }, by_classification: [] });
   });
 
   it('xếp hạng theo win giảm dần, cắt đúng limit', async () => {
@@ -603,6 +672,25 @@ describe('TaskAutoKpiService.getTopContentWinFailMembers', () => {
 
     expect(result.by_member).toHaveLength(5);
   });
+
+  it('lọc phân loại áp TRƯỚC khi xếp hạng — người nhiều win nhất của phân loại đó lên đầu', async () => {
+    const HAI = { id: 'cls-hai', name: 'Hài hước' };
+    const KE = { id: 'cls-ke', name: 'Kể chuyện' };
+    const task = (id: string, uid: string, cls: any) => ({
+      id, assignee_id: uid, published_links: fbLink(12000), content: { code: id, title: id, classification: cls }, team_content: null, editor_content: null,
+    });
+    const { service } = build({
+      allUserIds: ['u1', 'u2'],
+      // u1 nhiều win nhất tổng (3) nhưng chỉ 1 win "Kể chuyện"; u2 có 2 win "Kể chuyện".
+      editorTasks: [task('a', 'u1', HAI), task('b', 'u1', HAI), task('c', 'u1', KE), task('d', 'u2', KE), task('e', 'u2', KE)],
+    });
+
+    const result = await service.getTopContentWinFailMembers({ limit: 1, classification_id: 'cls-ke' });
+
+    expect(result.by_member.map((m) => [m.user_id, m.win])).toEqual([['u2', 2]]);
+    expect(result.totals).toEqual({ win: 3, fail: 0, pending: 0 });
+    expect(result.by_classification.map((c) => [c.classification_id, c.win])).toEqual([['cls-ke', 3], ['cls-hai', 2]]);
+  });
 });
 
 /**
@@ -627,11 +715,7 @@ describe('TaskAutoKpiService.refreshTopContentWinFailMembers', () => {
       contentTranslation: { groupBy: jest.fn(async () => []) },
       task: {
         findMany: jest.fn(async (args: any) => (args?.select?.assignee_id ? Array.from(store.values()) : [])),
-        update: jest.fn(async (args: any) => {
-          const current = store.get(args.where.id);
-          if (current) store.set(args.where.id, { ...current, ...args.data });
-          return args;
-        }),
+        ...storeTaskWrites(store),
       },
     };
     const linkStats: any = { fetchStatsForLink: opts.fetchStatsForLink ?? jest.fn() };
@@ -657,9 +741,9 @@ describe('TaskAutoKpiService.refreshTopContentWinFailMembers', () => {
     // limit: 2 → u3 (win thấp nhất trong 3 người active) bị cắt khỏi top, không nên bị cào lại.
     const result = await service.refreshTopContentWinFailMembers({ limit: 2 });
 
-    expect(prisma.task.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 't-u1' } }));
-    expect(prisma.task.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 't-u2' } }));
-    expect(prisma.task.update).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: 't-u3' } }));
+    expect(prisma.task.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 't-u1' }) }));
+    expect(prisma.task.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 't-u2' }) }));
+    expect(prisma.task.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 't-u3' }) }));
     // Sau khi cào, view 12000 > 10.000 → cả u1/u2 đều thành win.
     expect(result.by_member.map((m: any) => m.user_id)).toEqual(['u1', 'u2']);
     expect(result.by_member.every((m: any) => m.win === 1)).toBe(true);
