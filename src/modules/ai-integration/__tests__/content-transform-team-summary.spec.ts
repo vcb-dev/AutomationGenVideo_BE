@@ -21,11 +21,7 @@ describe('AiIntegrationService.getContentTransformTeamSummary', () => {
   }) {
     const httpService: any = { post: jest.fn() };
     const configService: any = {
-      get: jest.fn((key: string, def?: string) => {
-        if (key === 'AI_SERVICE_URL') return 'http://ai.test:8001';
-        if (key === 'AI_SERVICE_URL_VOICE') return 'http://voice.test:8000';
-        return def;
-      }),
+      get: jest.fn((key: string, def?: string) => (key === 'AI_SERVICE_URL' ? 'http://ai.test:8001' : def)),
     };
     const jwtService: any = { sign: jest.fn() };
     const groupBy = jest
