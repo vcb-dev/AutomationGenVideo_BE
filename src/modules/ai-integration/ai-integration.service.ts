@@ -9,7 +9,7 @@ import { AxiosError } from 'axios';
 import { TransformStatus, UserRole, Prisma } from '@prisma/client';
 import { TeamSummaryRange } from './dto/content-transform-team-summary-query.dto';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { resolveAiServiceUrl, resolveVoiceAiServiceUrl } from '../../common/config/ai-service-url';
+import { resolveAiServiceUrl } from '../../common/config/ai-service-url';
 import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 import { extractMissingElements } from './paast/paast-missing-elements.util';
 import { INTERNAL_TOKEN_HEADER } from '../characters/guards/admin-or-internal.guard';
@@ -94,10 +94,35 @@ export class AiIntegrationService {
   private readonly logger = new Logger(AiIntegrationService.name);
   private readonly aiServiceUrl: string;
   /**
-   * URL GPU (RunPod) cho /api/voice/* — TTS + clone. Bắt buộc qua
-   * AI_SERVICE_URL_VOICE. Không fallback MiniMax, không fallback AI Railway.
+   * URL riêng cho các endpoint /api/voice/* (TTS + clone giọng Minimax). Các
+   * endpoint này chỉ gọi API cloud Minimax, không cần torch/GPU/NAS như
+   * smart-mix video — nên deploy được thẳng trên Railway (build tự động qua
+   * push, xem AutomationGenVideo_AI/.github/workflows/deploy-railway.yml),
+   * khác với AI_SERVICE_URL chung (trỏ máy local qua Cloudflare Tunnel, dùng
+   * cho các tính năng cần torch/NAS).
+   *
+   * Không cần cấu hình gì thêm trên Railway: khi BE tự chạy trên Railway
+   * (nhận biết qua RAILWAY_ENVIRONMENT_NAME — biến Railway tự bơm vào mọi
+   * service, không cần khai báo tay), mặc định gọi thẳng service
+   * automationgenvideo-ai qua Private Networking (<service>.railway.internal
+   * — hostname cố định theo tên service, tự có sẵn, không cần bấm "Generate
+   * Domain"). Chạy local dev (không có RAILWAY_ENVIRONMENT_NAME) → fallback
+   * về AI_SERVICE_URL như cũ. Set tay AI_SERVICE_URL_VOICE nếu cần override.
    */
   private readonly voiceAiServiceUrl: string;
+  private static readonly RAILWAY_VOICE_AI_INTERNAL_URL =
+    'http://automationgenvideo-ai.railway.internal:8080';
+  private readonly minimaxApiKey?: string;
+  /**
+   * Đơn giá quy đổi "điểm âm thanh" MiniMax ra tiền: VND cho mỗi 1000 ký tự tính phí.
+   * Set qua env MINIMAX_VND_PER_1K_CHARS (Mặc định: 2.600đ / 1.000 ký tự với model speech-2.8-hd - $100/1M ký tự).
+   */
+  private readonly minimaxVndPer1kChars: number;
+  /**
+   * Đơn giá clone 1 giọng nói MiniMax ra tiền VND.
+   * Set qua env MINIMAX_VND_PER_CLONE (Mặc định: 38.000đ ≈ $1.50 USD / giọng clone).
+   */
+  private readonly minimaxVndPerClone: number;
 
   // ── Phần "chuyển đổi content" (gộp từ module content-transform) ──
   // Rate limit đơn giản, in-memory, theo user — 5 lần/phút cho cả transform + upgrade gộp
@@ -157,9 +182,27 @@ export class AiIntegrationService {
     private readonly voiceQuotaService?: VoiceQuotaService,
   ) {
     this.aiServiceUrl = resolveAiServiceUrl(this.configService);
-    this.voiceAiServiceUrl = resolveVoiceAiServiceUrl(this.configService);
+    const runningOnRailway = !!this.configService.get<string>('RAILWAY_ENVIRONMENT_NAME');
+    this.voiceAiServiceUrl = this.configService.get<string>(
+      'AI_SERVICE_URL_VOICE',
+      runningOnRailway ? AiIntegrationService.RAILWAY_VOICE_AI_INTERNAL_URL : this.aiServiceUrl,
+    );
+    this.minimaxApiKey = this.configService.get<string>('MINIMAX_API_KEY');
+    this.minimaxVndPer1kChars = Number(this.configService.get<string>('MINIMAX_VND_PER_1K_CHARS', '2600')) || 2600;
+    this.minimaxVndPerClone = Number(this.configService.get<string>('MINIMAX_VND_PER_CLONE', '38000')) || 38000;
     this.logger.log(`AI Service URL: ${this.aiServiceUrl}`);
     this.logger.log(`Voice AI Service URL: ${this.voiceAiServiceUrl}`);
+    if (!this.minimaxApiKey) {
+      this.logger.warn('MINIMAX_API_KEY chưa được set — TTS/clone giọng sẽ lỗi (key giữ ở BE, gửi sang AI qua header X-Minimax-Key)');
+    }
+  }
+
+  /**
+   * Key MiniMax giữ ở .env của BE và gửi kèm từng request voice sang AI service qua
+   * header X-Minimax-Key — AI không còn giữ key trong .env của nó.
+   */
+  private minimaxHeaders(): Record<string, string> {
+    return this.minimaxApiKey ? { 'X-Minimax-Key': this.minimaxApiKey } : {};
   }
 
 
@@ -1793,8 +1836,15 @@ export class AiIntegrationService {
           })
         )
       );
-      if (data && typeof data === 'object' && this.voiceQuotaService) {
-        data.quota = await this.voiceQuotaService.getQuota(userId);
+      // Kèm đơn giá và hạn mức tạo voice để FE hiển thị ngay khi tải trang
+      if (data && typeof data === 'object') {
+        data.pricing = {
+          vnd_per_1k_chars: this.minimaxVndPer1kChars,
+          vnd_per_clone: this.minimaxVndPerClone,
+        };
+        if (this.voiceQuotaService) {
+          data.quota = await this.voiceQuotaService.getQuota(userId);
+        }
       }
       return data;
     } catch (error: any) {
@@ -1828,9 +1878,11 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
+          // AI service retries upload+clone up to 3x60s each on network blips to
+          // api.minimax.io (worst case ~360s) — keep this above that ceiling.
           timeout: 480000,
         }).pipe(
           catchError((error: AxiosError) => {
@@ -1853,8 +1905,10 @@ export class AiIntegrationService {
   }
 
   /**
-   * Start voice cloning as a background job on the GPU AI service (returns job_id
-   * immediately). Dùng cloneVoiceStatus() để poll kết quả.
+   * Start voice cloning as a background job on the AI service (returns job_id
+   * immediately). Mạng tới api.minimax.io có thể chập chờn vài phút — clone
+   * đồng bộ (cloneVoice ở trên) dễ khiến FE/BE tự timeout dù MiniMax cuối cùng
+   * vẫn xử lý xong. Dùng cloneVoiceStatus() để poll kết quả.
    */
   async cloneVoiceStart(file: any, voiceName: string, gender = 'female', userId?: string, promptText?: string): Promise<any> {
     if (userId && this.voiceQuotaService) {
@@ -1878,7 +1932,7 @@ export class AiIntegrationService {
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, formData, {
-          headers: formData.getHeaders(),
+          headers: { ...formData.getHeaders(), ...this.minimaxHeaders() },
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           // Chỉ upload file + spawn job nền trên AI service, không chờ clone
@@ -1983,7 +2037,10 @@ export class AiIntegrationService {
   }
 
   /**
-   * Xoá hẳn một giọng đã clone trên GPU rồi xoá bản ghi Voice.
+   * Xoá hẳn một giọng đã clone: AI service xoá trên MiniMax rồi xoá bản ghi Voice.
+   *
+   * Timeout 60s (dài hơn poll status 15s): đường truyền tới api.minimax.io hay
+   * chập chờn nên delete_voice bên AI đã có sẵn 3 lần thử x 30s.
    */
   async deleteClonedVoice(voiceId: string, userId?: string): Promise<any> {
     const url = `${this.voiceAiServiceUrl}/api/voice/delete/${encodeURIComponent(voiceId)}/`;
@@ -1991,7 +2048,7 @@ export class AiIntegrationService {
 
     try {
       const { data } = await firstValueFrom(
-        this.httpService.delete(url, { timeout: 60000 }).pipe(
+        this.httpService.delete(url, { headers: this.minimaxHeaders(), timeout: 60000 }).pipe(
           catchError((error: AxiosError) => {
             this.logger.error(`AI Service error deleting voice: ${error.message}`, error.response?.data as any);
             throw new HttpException(
@@ -2496,7 +2553,7 @@ export class AiIntegrationService {
   }
 
   /**
-   * Generate Text-to-Speech on GPU (RunPod)
+   * Generate Text-to-Speech using Minimax
    */
   async generateTTS(text: string, voiceId: string, speed = 1.0, pitch = 0, volume = 100, language?: string, userId?: string, emotion = 'calm'): Promise<any> {
     // Kiểm tra và trừ hạn mức tạo voice trong ngày (mặc định 8 lượt/ngày)
@@ -2518,6 +2575,7 @@ export class AiIntegrationService {
           language,
           emotion: emotion || 'calm',
         }, {
+          headers: this.minimaxHeaders(),
           timeout: 300000, // TTS on long text can take a while; module default (30s) is too short
         }).pipe(
           catchError((error: AxiosError) => {
@@ -2701,14 +2759,24 @@ export class AiIntegrationService {
       if (row.created_at > entry.last_used_at) entry.last_used_at = row.created_at;
     }
 
-    const byUserList = [...byUser.values()].sort((a, b) => b.characters - a.characters);
+    // Quy đổi điểm đã tiêu và số giọng clone ra tiền theo đơn giá cấu hình
+    const toVnd = (chars: number, clones: number) =>
+      Math.round((chars / 1000) * this.minimaxVndPer1kChars) + clones * this.minimaxVndPerClone;
+    const byUserList = [...byUser.values()]
+      .map((u) => ({ ...u, cost_vnd: toVnd(u.characters, u.clone_count) }))
+      .sort((a, b) => b.characters - a.characters);
 
     return {
       success: true,
+      pricing: {
+        vnd_per_1k_chars: this.minimaxVndPer1kChars,
+        vnd_per_clone: this.minimaxVndPerClone,
+      },
       total: {
         characters: totalCharacters,
         tts_count: totalTts,
         clone_count: totalClones,
+        cost_vnd: toVnd(totalCharacters, totalClones),
       },
       by_user: byUserList,
     };
