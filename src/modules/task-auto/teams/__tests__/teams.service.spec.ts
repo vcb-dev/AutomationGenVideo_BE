@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TaskAutoTeamsService } from '../teams.service';
+import { taskProductSkuWhere } from '../../../../common/utils/content-product-link.util';
 
 // create()/update() gọi seedEditorKpiForMembers + recomputeUserTeamFieldsBatch (qua
 // syncAffectedUsers) bằng chính transaction client — không liên quan gì tới việc lưu đúng
@@ -761,5 +762,50 @@ describe('TaskAutoTeamsService — danh sách kho của tất cả team (teamId 
 
     expect(prisma.team.findUnique).toHaveBeenCalled();
     expect(calls.teamProduct[0].where.team_id).toBe('team-1');
+  });
+});
+
+describe('TaskAutoTeamsService — lọc content kho team theo sản phẩm', () => {
+  function build() {
+    const prisma: any = {
+      team: { findUnique: jest.fn(async () => ({ id: 'team-1' })) },
+      teamContent: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
+      task: { findMany: jest.fn(async () => []) },
+    };
+    return { service: new TaskAutoTeamsService(prisma, {} as any), prisma };
+  }
+
+  it('product_sku → chỉ lấy content có task dùng SKU đó', async () => {
+    const { service, prisma } = build();
+
+    await service.listTeamContents('team-1', undefined, undefined, undefined, { page: 1, product_sku: 'N0017' });
+
+    expect(prisma.teamContent.findMany.mock.calls[0][0].where.tasks).toEqual({ some: taskProductSkuWhere('N0017') });
+  });
+
+  it('không truyền product_sku → không lọc theo task', async () => {
+    const { service, prisma } = build();
+
+    await service.listTeamContents('team-1', undefined, undefined, undefined, { page: 1 });
+
+    expect(prisma.teamContent.findMany.mock.calls[0][0].where).not.toHaveProperty('tasks');
+  });
+
+  it('danh sách sản phẩm gắn content chỉ lấy task của content trong team + nhóm hàng', async () => {
+    const { service, prisma } = build();
+
+    await service.listTeamContentLinkedProducts('team-1', 'DO_DA', ['LEADER']);
+
+    expect(prisma.task.findMany.mock.calls[0][0].where.AND[0]).toEqual({
+      team_content: { is: { team_id: 'team-1', brand_type: 'DO_DA' } },
+    });
+  });
+
+  it('"all" với LEADER → ForbiddenException, không query task', async () => {
+    const { service, prisma } = build();
+
+    await expect(service.listTeamContentLinkedProducts('all', undefined, ['LEADER']))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.task.findMany).not.toHaveBeenCalled();
   });
 });

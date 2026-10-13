@@ -175,6 +175,7 @@ export class QueryContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
+  @ApiPropertyOptional({ description: 'Chỉ content đã có task dùng sản phẩm SKU này' }) @IsString() @IsOptional() product_sku?: string;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()
@@ -461,6 +462,7 @@ export class QueryEditorContentDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() search?: string;
   @ApiPropertyOptional({ description: 'Filter by month added, format YYYY-MM' }) @IsString() @IsOptional() month?: string;
+  @ApiPropertyOptional({ description: 'Chỉ content đã có task dùng sản phẩm SKU này' }) @IsString() @IsOptional() product_sku?: string;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1;
   @ApiPropertyOptional({ default: 50 }) @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 50;
 }

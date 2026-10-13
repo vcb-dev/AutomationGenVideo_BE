@@ -4,6 +4,8 @@ export const DEADLINE_CALENDAR_DAYS = 1;
 export const DEFAULT_TZ = "Asia/Ho_Chi_Minh";
 /** Tuyến nội dung duy nhất hệ thống tự chia task — khớp content_lines.name, không phân biệt hoa thường. */
 export const AUTO_ASSIGN_CONTENT_LINE_NAME = "A4";
+/** Dòng sản phẩm duy nhất được lấy để chia task tự động — khớp product_lines.name, không phân biệt hoa thường. */
+export const AUTO_ASSIGN_PRODUCT_LINE_NAME = "GMV";
 /** Giãn cách giao lại cùng 1 SP cho cùng 1 editor khi settings chưa có giá trị (khớp default cột auto_assign_settings.default_cooldown_days). */
 export const DEFAULT_COOLDOWN_DAYS = 5;
 /** Tuyến lập Kế hoạch ngày khi settings chưa có giá trị (khớp default cột auto_assign_settings.daily_plan_line_names). */

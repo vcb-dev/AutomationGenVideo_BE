@@ -11,8 +11,7 @@ describe('AiIntegrationService.getVoiceUsageStats', () => {
     const configService: any = {
       get: jest.fn((key: string, def?: string) => {
         if (key === 'AI_SERVICE_URL') return 'http://ai.test:8001';
-        if (key === 'MINIMAX_VND_PER_1K_CHARS') return '2600';
-        if (key === 'MINIMAX_VND_PER_CLONE') return '38000';
+        if (key === 'AI_SERVICE_URL_VOICE') return 'http://voice.test:8000';
         return def;
       }),
     };
@@ -111,6 +110,5 @@ describe('AiIntegrationService.getVoiceUsageStats', () => {
     expect(user2Stats).toBeDefined();
     expect(user2Stats.team).toBeNull();
     expect(user2Stats.clone_count).toBe(1);
-    expect(user2Stats.cost_vnd).toBe(38000);
   });
 });

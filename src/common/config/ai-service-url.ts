@@ -11,23 +11,41 @@
  */
 
 export const AI_SERVICE_URL_ENV = 'AI_SERVICE_URL';
+export const AI_SERVICE_URL_VOICE_ENV = 'AI_SERVICE_URL_VOICE';
 
 /** Đọc từ ConfigService (module NestJS đã inject sẵn). */
 export function resolveAiServiceUrl(config: { get<T = string>(key: string): T | undefined }): string {
-  return normalize(config.get<string>(AI_SERVICE_URL_ENV));
+  return normalize(
+    config.get<string>(AI_SERVICE_URL_ENV),
+    `Thiếu ${AI_SERVICE_URL_ENV} trong .env — xem .env.example. ` +
+      `Chạy local theo start-all.sh thì AI service nghe ở cổng 8001; bản Docker đặt PORT=8000.`,
+  );
+}
+
+/**
+ * URL GPU cho TTS/clone. Bắt buộc — không fallback MiniMax, không fallback AI_SERVICE_URL
+ * (Railway AI). Thiếu thì BE không khởi động để khỏi gọi nhầm API trả phí.
+ */
+export function resolveVoiceAiServiceUrl(config: { get<T = string>(key: string): T | undefined }): string {
+  return normalize(
+    config.get<string>(AI_SERVICE_URL_VOICE_ENV),
+    `Thiếu ${AI_SERVICE_URL_VOICE_ENV} — TTS/clone chỉ chạy GPU (RunPod), không dùng MiniMax. ` +
+      `Đặt URL HTTP port 8000 của pod, ví dụ https://<pod-id>-8000.proxy.runpod.net`,
+  );
 }
 
 /** Đọc thẳng process.env — dùng cho property khởi tạo lúc dựng class, chưa có ConfigService. */
 export function resolveAiServiceUrlFromEnv(): string {
-  return normalize(process.env[AI_SERVICE_URL_ENV]);
+  return normalize(
+    process.env[AI_SERVICE_URL_ENV],
+    `Thiếu ${AI_SERVICE_URL_ENV} trong .env — xem .env.example. ` +
+      `Chạy local theo start-all.sh thì AI service nghe ở cổng 8001; bản Docker đặt PORT=8000.`,
+  );
 }
 
-function normalize(raw: string | undefined): string {
+function normalize(raw: string | undefined, missingMessage: string): string {
   if (!raw || !raw.trim()) {
-    throw new Error(
-      `Thiếu ${AI_SERVICE_URL_ENV} trong .env — xem .env.example. ` +
-        `Chạy local theo start-all.sh thì AI service nghe ở cổng 8001; bản Docker đặt PORT=8000.`,
-    );
+    throw new Error(missingMessage);
   }
   // Bỏ dấu / cuối để nơi gọi luôn ghép được `${url}/api/...` mà không sinh dấu // đôi.
   return raw.trim().replace(/\/$/, '');

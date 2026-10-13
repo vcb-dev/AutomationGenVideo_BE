@@ -96,6 +96,15 @@ describe('pickProductsForEditor — chọn SP kho team cho 1 editor', () => {
     expect(pick({ pool: [product('p1'), product('p2', { priority_score: 3 })], need: 1 })).toEqual(['p2']);
   });
 
+  it('priority_score thắng "lâu chưa làm": SP điểm cao vừa làm (hết cooldown) vẫn đứng trước SP chưa từng làm', () => {
+    const ids = pick({
+      pool: [product('p1'), product('p2', { priority_score: 5 })],
+      need: 2,
+      lastAssigned: new Map([['p2', new Date('2026-10-01T10:00:00Z')]]),
+    });
+    expect(ids).toEqual(['p2', 'p1']);
+  });
+
   it('không lặp SP — kho ít hơn nhu cầu thì giao thiếu', () => {
     expect(pick({ pool: [product('p1'), product('p2')], need: 5 })).toEqual(['p1', 'p2']);
     expect(pick({ pool: [product('p1')], need: 0 })).toEqual([]);
@@ -419,9 +428,14 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
     expect(u1Products).not.toContain('p1');
     expect(u2Products).toHaveLength(1);
     expect(new Set(rows.map((r: any) => r.team_product_id)).size).toBe(3);
-    // Kho sản phẩm team = SP đang bật đúng brand
+    // Kho sản phẩm team = SP đang bật đúng brand, chỉ dòng GMV (SP push từ kho editor xét dòng của bản gốc)
+    const gmv = { name: { equals: 'GMV', mode: 'insensitive' } };
     expect(prisma.teamProduct.findMany.mock.calls[0][0].where).toEqual({
       team_id: 'team-1', is_active: true, brand_type: 'TRANG_SUC',
+      OR: [
+        { product_line: gmv },
+        { product_line_id: null, source_editor_product: { product_line: gmv } },
+      ],
     });
     expect(prisma.assignmentRun.update.mock.calls[0][0].data).toMatchObject({
       status: 'DONE', total_assigned: 3, total_skipped: 0,
@@ -464,7 +478,7 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
     expect(rows.filter((r: any) => r.assignee_id === 'u1').map((r: any) => r.team_product_id)).toEqual(['p2']);
   });
 
-  it('kho sản phẩm team trống → không tạo task, báo từng editor số video A4 cần làm', async () => {
+  it('kho sản phẩm team không có SP dòng GMV → không tạo task, báo từng editor số video A4 cần làm', async () => {
     const { service, prisma, tx } = buildService({ products: [] });
 
     const result = await service.runDailyAssignment(RUN_AT, true);
