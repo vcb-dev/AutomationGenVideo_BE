@@ -10,6 +10,7 @@ import { TaskComplianceService } from "../task-compliance.service";
 const DEADLINE = new Date("2026-09-30T10:00:00.000Z"); // 17:00 giờ VN
 const TEAM_UUID = "0f2a1b3c-0000-4000-8000-000000000001";
 const USER_UUID = "11111111-1111-4111-8111-111111111111";
+const LINK = [{ id: "l1", platform: "facebook", url: "https://fb.com/v/1" }];
 
 function task(id: string, extra: Record<string, any>) {
   return {
@@ -23,6 +24,7 @@ function task(id: string, extra: Record<string, any>) {
     deadline: DEADLINE,
     submitted_at: null,
     reviewed_at: null,
+    published_links: null,
     content_line: { name: "A1" },
     ...extra,
   };
@@ -72,6 +74,7 @@ function build() {
         task("a1-done", {
           status: "SUBMITTED",
           submitted_at: new Date("2026-09-30T09:00:00.000Z"),
+          published_links: LINK,
         }),
         task("a1-missing", {}),
         task("a4-done", {
@@ -81,6 +84,7 @@ function build() {
           run_id: "run-1",
           status: "APPROVED",
           reviewed_at: new Date("2026-09-30T09:30:00.000Z"),
+          published_links: LINK,
         }),
         task("a4-missing", {
           content_line_id: "cl-a4",
@@ -92,12 +96,19 @@ function build() {
     },
     dailyTaskCompliance: {
       createMany: jest.fn(async ({ data }: any) => {
-        createdSnapshots.push(...data);
+        createdSnapshots.push(
+          ...data.map((row: any, i: number) => ({ id: `s-${i}`, ...row })),
+        );
         return { count: data.length };
       }),
-      findMany: jest.fn(async () => [
-        { user_id: "u1", work_date: new Date("2026-09-30T00:00:00.000Z") },
-      ]),
+      findMany: jest.fn(async (args: any) =>
+        args.distinct
+          ? [{ user_id: "u1", work_date: new Date("2026-09-30T00:00:00.000Z") }]
+          : createdSnapshots,
+      ),
+      updateMany: jest.fn(async ({ where }: any) => ({
+        count: where.id.in.length,
+      })),
       count: jest.fn(async () => 0),
       groupBy: jest.fn(async () => []),
       aggregate: jest.fn(async () => ({
@@ -145,6 +156,14 @@ describe("TaskComplianceService.evaluatePastDays", () => {
         }),
       ]),
     );
+    expect(tx.dailyTaskCompliance.updateMany).toHaveBeenCalledWith({
+      where: {
+        user_id: "u1",
+        work_date: new Date("2026-09-30T00:00:00.000Z"),
+        notification_sent_at: null,
+      },
+      data: { notification_sent_at: expect.any(Date) },
+    });
     expect(tx.notification.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         user_id: "u1",
@@ -160,24 +179,69 @@ describe("TaskComplianceService.evaluatePastDays", () => {
     );
   });
 
-  it("task nộp sau deadline không được tính hoàn thành trong ngày", async () => {
+  it("nộp bù sau hạn vẫn tính hoàn thành khi có link, đã nộp mà chưa có link thì vẫn thiếu", async () => {
     const fixture = build();
-    fixture.prisma.task.findMany.mockResolvedValueOnce([
-      task("late", {
+    fixture.prisma.task.findMany.mockResolvedValue([
+      task("late-with-link", {
         status: "SUBMITTED",
-        submitted_at: new Date("2026-09-30T11:00:00.000Z"),
+        submitted_at: new Date("2026-10-02T11:00:00.000Z"),
+        published_links: LINK,
+      }),
+      task("on-time-no-link", {
+        status: "APPROVED",
+        submitted_at: new Date("2026-09-30T09:00:00.000Z"),
+        published_links: [],
       }),
     ]);
-    fixture.prisma.dailyTaskCompliance.findMany.mockResolvedValueOnce([]);
 
     await fixture.service.evaluatePastDays(
       DateTime.fromISO("2026-10-01T00:05:00", { zone: "Asia/Ho_Chi_Minh" }),
     );
 
+    expect(fixture.createdSnapshots).toHaveLength(1);
     expect(fixture.createdSnapshots[0]).toMatchObject({
+      expected_count: 2,
+      completed_count: 1,
+      missing_count: 1,
+    });
+  });
+
+  it("tính lại dòng đã chốt của 31 ngày gần nhất theo task hiện tại", async () => {
+    const { service, prisma } = build();
+    const old = {
+      id: "old",
+      user_id: "u1",
+      team_id: "team-1",
+      work_date: new Date("2026-09-30T00:00:00.000Z"),
+      content_line_id: "cl-a1",
+      source: "DAILY_PLAN",
       expected_count: 2,
       completed_count: 0,
       missing_count: 2,
+    };
+    prisma.dailyLinePlan.findMany.mockResolvedValueOnce([]);
+    prisma.dailyTaskCompliance.findMany.mockImplementation(async (args: any) =>
+      args.distinct ? [] : [old],
+    );
+    prisma.task.findMany.mockResolvedValue([
+      task("made-up-1", { status: "SUBMITTED", published_links: LINK }),
+      task("made-up-2", { status: "APPROVED", published_links: LINK }),
+    ]);
+
+    await service.evaluatePastDays(
+      DateTime.fromISO("2026-10-05T00:05:00", { zone: "Asia/Ho_Chi_Minh" }),
+    );
+
+    expect(prisma.dailyTaskCompliance.createMany).not.toHaveBeenCalled();
+    expect(prisma.dailyTaskCompliance.findMany.mock.calls[0][0].where).toEqual({
+      work_date: {
+        gte: new Date("2026-09-04T00:00:00.000Z"),
+        lt: new Date("2026-10-05T00:00:00.000Z"),
+      },
+    });
+    expect(prisma.dailyTaskCompliance.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["old"] } },
+      data: { completed_count: 2, missing_count: 0 },
     });
   });
 });
@@ -237,22 +301,25 @@ describe("TaskComplianceService.findHistory", () => {
       _count: { _all: 4 },
       _sum: { expected_count: 9, completed_count: 4, missing_count: 5 },
     }));
-    prisma.dailyTaskCompliance.findMany.mockReset().mockResolvedValueOnce([
-      line({}),
-      line({
-        id: "c-a4",
-        source: "AUTO_A4",
-        expected_count: 3,
-        completed_count: 1,
-        missing_count: 2,
-        content_line: { id: "cl-a4", name: "A4" },
-      }),
-      line({
-        id: "c-u2",
-        user_id: "u2",
-        user: { id: "u2", full_name: "Trần B", email: "b@x.vn" },
-      }),
-    ]);
+    prisma.dailyTaskCompliance.findMany
+      .mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        line({}),
+        line({
+          id: "c-a4",
+          source: "AUTO_A4",
+          expected_count: 3,
+          completed_count: 1,
+          missing_count: 2,
+          content_line: { id: "cl-a4", name: "A4" },
+        }),
+        line({
+          id: "c-u2",
+          user_id: "u2",
+          user: { id: "u2", full_name: "Trần B", email: "b@x.vn" },
+        }),
+      ]);
 
     const result = await service.findHistory(
       { id: "admin", roles: ["ADMIN"] },
@@ -260,7 +327,7 @@ describe("TaskComplianceService.findHistory", () => {
     );
 
     // Chỉ tải tuyến của 2 nhóm thuộc trang 1.
-    const rowWhere = prisma.dailyTaskCompliance.findMany.mock.calls[0][0].where;
+    const rowWhere = prisma.dailyTaskCompliance.findMany.mock.calls[1][0].where;
     expect(rowWhere.OR).toEqual([
       { user_id: "u1", work_date: SEP_30 },
       { user_id: "u2", work_date: SEP_30 },
@@ -291,6 +358,53 @@ describe("TaskComplianceService.findHistory", () => {
       "A4",
     ]);
     expect(result.data[1]).toMatchObject({ key: "u2|2026-09-30", missing_count: 1 });
+  });
+
+  it("tính lại số thiếu theo task hiện tại trước khi lọc: nộp bù có link thì hết thiếu, mất link thì thiếu lại", async () => {
+    const { service, prisma } = build();
+    const row = (id: string, userId: string, counts: [number, number]) => ({
+      ...line({ id, user_id: userId, user: { ...user, id: userId } }),
+      team_id: "team-1",
+      content_line_id: "cl-a1",
+      expected_count: counts[0],
+      completed_count: counts[1],
+      missing_count: counts[0] - counts[1],
+    });
+    const data = [row("made-up", "u1", [1, 0]), row("lost-link", "u2", [1, 1])];
+    fakeComplianceTable(prisma, data);
+    prisma.task.findMany.mockReset().mockResolvedValue([
+      task("late", {
+        status: "SUBMITTED",
+        submitted_at: new Date("2026-10-03T03:00:00.000Z"),
+        published_links: LINK,
+      }),
+      task("no-link", {
+        assignee_id: "u2",
+        status: "APPROVED",
+        submitted_at: new Date("2026-09-30T09:00:00.000Z"),
+      }),
+    ]);
+
+    const result = await service.findHistory(
+      { id: "admin", roles: ["ADMIN"] },
+      { from: "2026-09-01", to: "2026-09-30", page: 1, limit: 20 },
+    );
+
+    expect(prisma.task.findMany.mock.calls[0][0].where).toMatchObject({
+      status: { in: ["SUBMITTED", "APPROVED"] },
+      deadline: {
+        gte: new Date("2026-09-29T17:00:00.000Z"),
+        lt: new Date("2026-09-30T17:00:00.000Z"),
+      },
+    });
+    expect(result.data.map((d: any) => [d.key, d.missing_count])).toEqual([
+      ["u2|2026-09-30", 1],
+    ]);
+    expect(result.summary).toMatchObject({ person_days: 1, missing: 1 });
+    expect(data.map((r) => [r.id, r.completed_count, r.missing_count])).toEqual([
+      ["made-up", 1, 0],
+      ["lost-link", 0, 1],
+    ]);
   });
 });
 
@@ -328,10 +442,10 @@ describe("TaskComplianceService.findDayDetail", () => {
     };
   }
 
-  it("liệt kê task chưa nộp đúng hạn theo tuyến và số task chưa tạo của kế hoạch", async () => {
+  it("liệt kê task chưa hoàn thành theo tuyến, tình trạng link và số task chưa tạo của kế hoạch", async () => {
     const { service, prisma } = build();
     prisma.dailyTaskCompliance.findMany.mockReset().mockResolvedValueOnce([
-      snapshot({}),
+      snapshot({ expected_count: 4, completed_count: 1, missing_count: 3 }),
       snapshot({
         id: "c-a4",
         source: "AUTO_A4",
@@ -342,10 +456,11 @@ describe("TaskComplianceService.findDayDetail", () => {
         content_line: { id: "cl-a4", name: "A4" },
       }),
     ]);
-    prisma.task.findMany.mockReset().mockResolvedValueOnce([
+    prisma.task.findMany.mockReset().mockResolvedValue([
       detailTask("a1-done", {
         status: "SUBMITTED",
         submitted_at: new Date("2026-09-30T09:00:00.000Z"),
+        published_links: LINK,
         content: {
           title: null,
           source_team_content: {
@@ -357,8 +472,13 @@ describe("TaskComplianceService.findDayDetail", () => {
       detailTask("a1-late", {
         status: "SUBMITTED",
         submitted_at: new Date("2026-09-30T12:00:00.000Z"),
+        published_links: LINK,
         editor_content: { title: "Mở hộp máy xay" },
         team_product: { name: null, source_editor_product: { name: "Máy xay" } },
+      }),
+      detailTask("a1-no-link", {
+        status: "SUBMITTED",
+        submitted_at: new Date("2026-09-30T08:00:00.000Z"),
       }),
       detailTask("a4-missing", {
         content_line_id: "cl-a4",
@@ -371,9 +491,14 @@ describe("TaskComplianceService.findDayDetail", () => {
         run_id: "run-1",
         status: "APPROVED",
         reviewed_at: new Date("2026-09-30T09:30:00.000Z"),
+        published_links: LINK,
       }),
       // Task A4 tạo tay không thuộc chỉ tiêu A4 tự động.
-      detailTask("a4-manual", { content_line_id: "cl-a4" }),
+      detailTask("a4-manual", {
+        content_line_id: "cl-a4",
+        status: "APPROVED",
+        published_links: LINK,
+      }),
     ]);
 
     const result = await service.findDayDetail(
@@ -381,7 +506,7 @@ describe("TaskComplianceService.findDayDetail", () => {
       { date: "2026-09-30", user_id: "u1" },
     );
 
-    const taskWhere = prisma.task.findMany.mock.calls[0][0].where;
+    const taskWhere = prisma.task.findMany.mock.calls[1][0].where;
     expect(taskWhere).toMatchObject({
       status: { not: "CANCELLED" },
       team_id: { in: ["team-1"] },
@@ -396,19 +521,32 @@ describe("TaskComplianceService.findDayDetail", () => {
         },
       ],
     });
-    expect(result.summary).toEqual({ expected: 5, completed: 2, missing: 3 });
+    // A1 chốt 1/4, nay nộp bù có link thêm 1 → ghi lại 2/4; A4 không đổi nên không ghi.
+    expect(prisma.dailyTaskCompliance.updateMany.mock.calls).toEqual([
+      [
+        {
+          where: { id: { in: ["c-a1"] } },
+          data: { completed_count: 2, missing_count: 2 },
+        },
+      ],
+    ]);
+    expect(result.summary).toEqual({ expected: 6, completed: 3, missing: 3 });
 
     const [a1, a4] = result.lines;
-    expect(a1.tasks.map((t: any) => [t.id, t.on_time])).toEqual([
-      ["a1-late", false],
-      ["a1-done", true],
+    expect(a1).toMatchObject({ completed_count: 2, missing_count: 2 });
+    expect(
+      a1.tasks.map((t: any) => [t.id, t.on_time, t.has_link, t.completed]),
+    ).toEqual([
+      ["a1-no-link", true, false, false],
+      ["a1-done", true, true, true],
+      ["a1-late", false, true, true],
     ]);
-    expect(a1.tasks[0]).toMatchObject({
+    expect(a1.tasks[2]).toMatchObject({
       title: "Mở hộp máy xay",
       product_name: "Máy xay",
     });
     expect(a1.tasks[1].title).toBe("Review nồi chiên");
-    // Thiếu 2 nhưng chỉ 1 task trễ → 1 task chưa được tạo.
+    // Thiếu 2 nhưng chỉ 1 task chưa hoàn thành → 1 task chưa được tạo.
     expect(a1.untracked_missing).toBe(1);
 
     expect(a4.tasks.map((t: any) => t.id)).toEqual(["a4-missing", "a4-done"]);
@@ -488,6 +626,7 @@ function fakeComplianceTable(prisma: any, data: any[]) {
     if (!where) return true;
     if (where.AND) return where.AND.every((w: any) => matches(row, w));
     if (where.OR && !where.OR.some((w: any) => matches(row, w))) return false;
+    if (where.id && !where.id.in.includes(row.id)) return false;
     if (where.user_id && row.user_id !== where.user_id) return false;
     if (where.team_id && row.team_id !== where.team_id) return false;
     if (where.missing_count && !(row.missing_count > where.missing_count.gt))
@@ -525,6 +664,11 @@ function fakeComplianceTable(prisma: any, data: any[]) {
     const rows = sortBy(data.filter((r) => matches(r, args.where)), args.orderBy);
     const skip = args.skip ?? 0;
     return rows.slice(skip, args.take ? skip + args.take : undefined);
+  });
+  prisma.dailyTaskCompliance.updateMany = jest.fn(async (args: any) => {
+    const rows = data.filter((r) => matches(r, args.where));
+    for (const row of rows) Object.assign(row, args.data);
+    return { count: rows.length };
   });
   prisma.dailyTaskCompliance.groupBy = jest.fn(async (args: any) => {
     const groups = new Map<string, any>();
@@ -643,6 +787,7 @@ describe("TaskComplianceService.payrollSync", () => {
     dayTask("a1-done", lines.a1, {
       status: "SUBMITTED",
       submitted_at: new Date("2026-09-30T09:00:00.000Z"),
+      published_links: LINK,
       editor_content: { title: "Review nồi chiên" },
     }),
     dayTask("a1-late", lines.a1, {
@@ -655,17 +800,28 @@ describe("TaskComplianceService.payrollSync", () => {
       run_id: "run-1",
       status: "APPROVED",
       reviewed_at: new Date("2026-09-30T09:30:00.000Z"),
+      published_links: LINK,
     }),
     // Task A4 tạo tay không thuộc chỉ tiêu A4 tự động.
     dayTask("a4-manual", lines.a4),
     dayTask("a2-done-1", lines.a2, {
       status: "APPROVED",
       reviewed_at: new Date("2026-09-30T08:00:00.000Z"),
+      published_links: LINK,
     }),
     dayTask("a2-done-2", lines.a2, {
       status: "SUBMITTED",
       submitted_at: new Date("2026-09-30T08:30:00.000Z"),
+      published_links: LINK,
     }),
+    ...["a1-29-done-1", "a1-29-done-2"].map((id) =>
+      dayTask(id, lines.a1, {
+        status: "APPROVED",
+        deadline: new Date("2026-09-29T10:00:00.000Z"),
+        reviewed_at: new Date("2026-09-29T09:00:00.000Z"),
+        published_links: LINK,
+      }),
+    ),
     // Task của người khác cùng ngày/tuyến không được ghép nhầm.
     dayTask("b-a1-other-day", lines.a1, {
       assignee_id: "u2",
@@ -675,7 +831,10 @@ describe("TaskComplianceService.payrollSync", () => {
 
   function setup() {
     const fixture = build();
-    fakeComplianceTable(fixture.prisma, DATA);
+    fakeComplianceTable(
+      fixture.prisma,
+      DATA.map((row) => ({ ...row })),
+    );
     fixture.prisma.task.findMany.mockReset().mockResolvedValue(TASKS);
     return fixture;
   }
@@ -740,6 +899,8 @@ describe("TaskComplianceService.payrollSync", () => {
       deadline: "2026-09-30T10:00:00.000Z",
       submitted_at: "2026-09-30T12:00:00.000Z",
       on_time: false,
+      has_link: false,
+      completed: false,
     });
     // Người B không có task nào → toàn bộ phần thiếu là task chưa tạo.
     expect(result.records[2]).toMatchObject({ untracked_missing: 1, tasks: [] });
@@ -805,14 +966,14 @@ describe("TaskComplianceService.payrollSync", () => {
           l.id,
           l.missing_count,
           l.untracked_missing,
-          l.tasks.map((t) => [t.id, t.on_time]),
+          l.tasks.map((t) => [t.id, t.on_time, t.has_link, t.completed]),
         ]),
       ).toEqual(
         detail.lines.map((l) => [
           l.id,
           l.missing_count,
           l.untracked_missing,
-          l.tasks.map((t) => [t.id, t.on_time]),
+          l.tasks.map((t) => [t.id, t.on_time, t.has_link, t.completed]),
         ]),
       );
     }

@@ -10,6 +10,7 @@ import { DateTime } from "luxon";
 
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
+import { asPublishedLinks } from "../../../common/utils/task-published-links.util";
 import { dailyKpiDate } from "../../../utils/date.utils";
 import {
   QueryComplianceDayDto,
@@ -35,21 +36,17 @@ type SourceRow = {
   source: DailyTaskComplianceSource;
   expected: number;
   deadline: Date;
-  taskIds?: Set<string>;
 };
 
 type TaskForEvaluation = {
-  id: string;
   assignee_id: string | null;
   team_id: string;
   content_line_id: string | null;
-  task_type: string;
-  run_id: string | null;
   status: TaskStatus;
   deadline: Date | null;
   submitted_at: Date | null;
   reviewed_at: Date | null;
-  content_line: { name: string } | null;
+  published_links: unknown;
 };
 
 function dateOfDeadline(deadline: Date): string {
@@ -95,6 +92,17 @@ function submittedBy(
   return !!submittedAt && submittedAt.getTime() <= deadline.getTime();
 }
 
+function hasLink(task: Pick<TaskForEvaluation, "published_links">): boolean {
+  return asPublishedLinks(task.published_links).length > 0;
+}
+
+// Hoàn thành = đã nộp video và đã có link bài đăng. Không xét hạn chót nên nộp bù vẫn được tính.
+function isDone(
+  task: Pick<TaskForEvaluation, "status" | "published_links">,
+): boolean {
+  return COMPLETED_STATUSES.includes(task.status) && hasLink(task);
+}
+
 function toDateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
@@ -110,6 +118,7 @@ const TASK_DETAIL_SELECT = {
   deadline: true,
   submitted_at: true,
   reviewed_at: true,
+  published_links: true,
   editor_content: { select: { title: true } },
   team_content: {
     select: {
@@ -164,6 +173,22 @@ type SnapshotLine = {
   missing_count: number;
 };
 
+const COUNT_SELECT = {
+  id: true,
+  user_id: true,
+  team_id: true,
+  work_date: true,
+  content_line_id: true,
+  source: true,
+  expected_count: true,
+  completed_count: true,
+  missing_count: true,
+} satisfies Prisma.DailyTaskComplianceSelect;
+
+type CountRow = Prisma.DailyTaskComplianceGetPayload<{
+  select: typeof COUNT_SELECT;
+}>;
+
 function toTaskItem(task: TaskDetailRow, deadline: Date) {
   const globalTeamContent = task.content?.source_team_content;
   const globalTeamProduct = task.product?.source_team_product;
@@ -192,6 +217,8 @@ function toTaskItem(task: TaskDetailRow, deadline: Date) {
       (task.status === "APPROVED" ? task.reviewed_at : null),
     on_time:
       COMPLETED_STATUSES.includes(task.status) && submittedBy(task, deadline),
+    has_link: hasLink(task),
+    completed: isDone(task),
   };
 }
 
@@ -280,7 +307,8 @@ export class TaskComplianceService {
   /**
    * Chạy mỗi giờ ở phút 05. Chỉ chốt các ngày lịch đã kết thúc ở VN, nhờ vậy mọi tuyến trong cùng
    * ngày được ghi và cảnh báo cùng lúc. Quét bù 31 ngày để server ngừng một thời gian vẫn không mất
-   * lịch sử; unique key làm thao tác idempotent.
+   * lịch sử; unique key làm thao tác idempotent. Mỗi lần chạy cũng tính lại số thiếu của 31 ngày đó
+   * theo task hiện tại để nộp bù được ghi nhận cả khi không ai mở màn Còn thiếu.
    */
   @Cron("5 * * * *", { name: "daily-task-compliance", timeZone: VN_TZ })
   async cronEvaluate(): Promise<void> {
@@ -304,7 +332,7 @@ export class TaskComplianceService {
     const startDate = dailyKpiDate(start.toFormat("yyyy-MM-dd"));
     const todayDate = dailyKpiDate(today.toFormat("yyyy-MM-dd"));
 
-    const [plans, tasks] = await Promise.all([
+    const [plans, autoTasks] = await Promise.all([
       this.prisma.dailyLinePlan.findMany({
         where: { plan_date: { gte: startDate, lt: todayDate } },
         select: {
@@ -323,24 +351,19 @@ export class TaskComplianceService {
           assignee_id: { not: null },
           content_line_id: { not: null },
           status: { not: "CANCELLED" },
+          task_type: "AUTO",
+          run_id: { not: null },
         },
         select: {
-          id: true,
           assignee_id: true,
           team_id: true,
           content_line_id: true,
-          task_type: true,
-          run_id: true,
-          status: true,
           deadline: true,
-          submitted_at: true,
-          reviewed_at: true,
           content_line: { select: { name: true } },
         },
       }),
     ]);
 
-    const taskRows = tasks as TaskForEvaluation[];
     const sources = new Map<string, SourceRow>();
 
     for (const plan of plans) {
@@ -358,10 +381,8 @@ export class TaskComplianceService {
     }
 
     // A4 không có DailyLinePlan: chính các task AUTO do assignment run tạo ra là kế hoạch phải làm.
-    for (const task of taskRows) {
+    for (const task of autoTasks) {
       if (
-        task.task_type !== "AUTO" ||
-        !task.run_id ||
         !task.assignee_id ||
         !task.content_line_id ||
         !task.deadline ||
@@ -377,37 +398,18 @@ export class TaskComplianceService {
         source: "AUTO_A4",
         expected: 0,
         deadline: task.deadline,
-        taskIds: new Set(),
       };
       const key = sourceKey(seed);
       const row = sources.get(key) ?? seed;
       row.expected++;
-      row.taskIds!.add(task.id);
       if (task.deadline > row.deadline) row.deadline = task.deadline;
       sources.set(key, row);
     }
 
-    const tasksByPlanKey = new Map<string, TaskForEvaluation[]>();
-    for (const task of taskRows) {
-      const key = taskKey(task);
-      if (!key) continue;
-      if (!tasksByPlanKey.has(key)) tasksByPlanKey.set(key, []);
-      tasksByPlanKey.get(key)!.push(task);
-    }
-
+    // Lúc chốt chỉ cố định số phải làm; số hoàn thành do syncCounts điền ngay bên dưới.
     const snapshots: Prisma.DailyTaskComplianceCreateManyInput[] = [];
     for (const row of sources.values()) {
       if (row.expected <= 0) continue;
-      const candidates =
-        tasksByPlanKey.get(
-          [row.userId, row.teamId, row.workDate, row.contentLineId].join("|"),
-        ) ?? [];
-      const completed = candidates.filter((task) => {
-        if (!COMPLETED_STATUSES.includes(task.status)) return false;
-        if (row.source === "AUTO_A4" && !row.taskIds?.has(task.id))
-          return false;
-        return submittedBy(task, row.deadline);
-      }).length;
       snapshots.push({
         user_id: row.userId,
         team_id: row.teamId,
@@ -415,8 +417,8 @@ export class TaskComplianceService {
         content_line_id: row.contentLineId,
         source: row.source,
         expected_count: row.expected,
-        completed_count: completed,
-        missing_count: Math.max(0, row.expected - completed),
+        completed_count: 0,
+        missing_count: row.expected,
         deadline: row.deadline,
         evaluated_at: now.toJSDate(),
       });
@@ -428,6 +430,7 @@ export class TaskComplianceService {
           skipDuplicates: true,
         })
       : { count: 0 };
+    await this.refreshCounts({ work_date: { gte: startDate, lt: todayDate } });
     const notified = await this.notifyPendingShortfalls(
       startDate,
       todayDate,
@@ -453,11 +456,12 @@ export class TaskComplianceService {
     let notified = 0;
     for (const group of pending) {
       const result = await this.prisma.$transaction(async (tx) => {
+        // Đánh dấu mọi tuyến của ngày, kể cả tuyến đang đủ: số thiếu còn đổi theo task nên tuyến
+        // đủ có thể thiếu lại về sau, không đánh dấu thì người này bị báo lần hai cho cùng ngày.
         const claimed = await tx.dailyTaskCompliance.updateMany({
           where: {
             user_id: group.user_id,
             work_date: group.work_date,
-            missing_count: { gt: 0 },
             notification_sent_at: null,
           },
           data: { notification_sent_at: sentAt },
@@ -519,6 +523,98 @@ export class TaskComplianceService {
     return notified;
   }
 
+  private async refreshCounts(
+    where: Prisma.DailyTaskComplianceWhereInput,
+  ): Promise<void> {
+    await this.syncCounts(
+      await this.prisma.dailyTaskCompliance.findMany({
+        where,
+        select: COUNT_SELECT,
+      }),
+    );
+  }
+
+  /**
+   * Tính lại số hoàn thành/còn thiếu theo trạng thái task hiện tại và ghi lại các dòng đổi số (sửa
+   * luôn trên `rows`). Số phải làm giữ nguyên như lúc chốt. Ghép task theo cùng luật loadLineTasks.
+   */
+  private async syncCounts(rows: CountRow[]): Promise<void> {
+    if (!rows.length) return;
+    const dates = rows.map((row) => toDateOnly(row.work_date)).sort();
+    const from = DateTime.fromISO(dates[0], { zone: VN_TZ }).startOf("day");
+    const to = DateTime.fromISO(dates[dates.length - 1], { zone: VN_TZ })
+      .startOf("day")
+      .plus({ days: 1 });
+    const tasks = await this.prisma.task.findMany({
+      where: {
+        status: { in: COMPLETED_STATUSES },
+        assignee_id: { in: [...new Set(rows.map((row) => row.user_id))] },
+        team_id: { in: [...new Set(rows.map((row) => row.team_id))] },
+        content_line_id: {
+          in: [...new Set(rows.map((row) => row.content_line_id))],
+        },
+        deadline: { gte: from.toJSDate(), lt: to.toJSDate() },
+      },
+      select: {
+        assignee_id: true,
+        team_id: true,
+        content_line_id: true,
+        task_type: true,
+        run_id: true,
+        status: true,
+        deadline: true,
+        published_links: true,
+      },
+    });
+
+    const done = new Map<string, number>();
+    const bump = (key: string) => done.set(key, (done.get(key) ?? 0) + 1);
+    for (const task of tasks) {
+      const key = taskKey(task);
+      if (!key || !isDone(task)) continue;
+      bump(`${key}|DAILY_PLAN`);
+      if (task.task_type === "AUTO" && task.run_id) bump(`${key}|AUTO_A4`);
+    }
+
+    const changes = new Map<
+      string,
+      { ids: string[]; completed_count: number; missing_count: number }
+    >();
+    for (const row of rows) {
+      const completed =
+        done.get(
+          sourceKey({
+            userId: row.user_id,
+            teamId: row.team_id,
+            workDate: toDateOnly(row.work_date),
+            contentLineId: row.content_line_id,
+            source: row.source,
+          }),
+        ) ?? 0;
+      const missing = Math.max(0, row.expected_count - completed);
+      if (completed === row.completed_count && missing === row.missing_count)
+        continue;
+      row.completed_count = completed;
+      row.missing_count = missing;
+      const key = `${completed}|${missing}`;
+      if (!changes.has(key))
+        changes.set(key, {
+          ids: [],
+          completed_count: completed,
+          missing_count: missing,
+        });
+      changes.get(key)!.ids.push(row.id);
+    }
+    await Promise.all(
+      [...changes.values()].map(({ ids, ...counts }) =>
+        this.prisma.dailyTaskCompliance.updateMany({
+          where: { id: { in: ids } },
+          data: counts,
+        }),
+      ),
+    );
+  }
+
   /** Phạm vi theo vai trò, dùng chung cho danh sách và chi tiết ngày. */
   private scopeWhere(
     actor: Actor,
@@ -557,15 +653,19 @@ export class TaskComplianceService {
     const from = query.from ?? today.minus({ days: 29 }).toFormat("yyyy-MM-dd");
     const to = query.to ?? today.toFormat("yyyy-MM-dd");
 
-    const where: Prisma.DailyTaskComplianceWhereInput = {
+    const scope: Prisma.DailyTaskComplianceWhereInput = {
       ...this.scopeWhere(actor, query),
-      missing_count: { gt: 0 },
       work_date: {
         gte: dailyKpiDate(from),
         lt: dailyKpiDate(
           DateTime.fromISO(to).plus({ days: 1 }).toFormat("yyyy-MM-dd"),
         ),
       },
+    };
+    await this.refreshCounts(scope);
+    const where: Prisma.DailyTaskComplianceWhereInput = {
+      ...scope,
+      missing_count: { gt: 0 },
     };
 
     const page = query.page ?? 1;
@@ -685,8 +785,8 @@ export class TaskComplianceService {
   }
 
   /**
-   * Task của từng dòng snapshot, ghép theo đúng luật evaluatePastDays (A4 chỉ tính task AUTO có
-   * run_id) để danh sách khớp với con số đã chốt. Chi tiết ngày và payroll-sync dùng chung.
+   * Task của từng dòng snapshot, ghép theo đúng luật syncCounts (A4 chỉ tính task AUTO có run_id)
+   * để danh sách khớp với con số đã tính. Chi tiết ngày và payroll-sync dùng chung.
    */
   private async loadLineTasks(
     rows: SnapshotLine[],
@@ -738,10 +838,10 @@ export class TaskComplianceService {
         )
         .map((task) => toTaskItem(task, row.deadline))
         // Task chưa đạt lên đầu: đó là thứ người xem cần thấy trước.
-        .sort((a, b) => Number(a.on_time) - Number(b.on_time));
-      const notOnTime = items.filter((item) => !item.on_time).length;
+        .sort((a, b) => Number(a.completed) - Number(b.completed));
+      const notDone = items.filter((item) => !item.completed).length;
       result.set(row.id, {
-        untracked_missing: Math.max(0, row.missing_count - notOnTime),
+        untracked_missing: Math.max(0, row.missing_count - notDone),
         tasks: items,
       });
     }
@@ -750,8 +850,7 @@ export class TaskComplianceService {
 
   /**
    * Chi tiết một người trong một ngày: mọi tuyến đã chốt (kể cả tuyến đủ) kèm danh sách task. Số
-   * thiếu là bản chụp lúc hết hạn; task là trạng thái hiện tại nên có thể thấy task nộp bù sau đó.
-   * Ghép task theo đúng luật của evaluatePastDays để danh sách khớp với con số đã chốt.
+   * thiếu được tính lại theo trạng thái task hiện tại trước khi trả về.
    */
   async findDayDetail(actor: Actor, query: QueryComplianceDayDto) {
     const userId = query.user_id ?? actor.id;
@@ -784,6 +883,7 @@ export class TaskComplianceService {
       throw new NotFoundException("Không có dữ liệu nhiệm vụ của ngày này");
     }
 
+    await this.syncCounts(rows);
     const lineTasks = await this.loadLineTasks(rows);
     const lines = rows.map((row) => ({
       id: row.id,
@@ -813,8 +913,8 @@ export class TaskComplianceService {
 
   /**
    * Contract read-only cho VCB Salary. Summary/coverage dùng toàn bộ snapshot phù hợp bộ lọc, còn records
-   * chỉ phân trang các dòng thực sự thiếu task. Không gọi evaluatePastDays ở đây để request từ hệ thống
-   * ngoài không bao giờ tạo hoặc thay đổi dữ liệu nghiệp vụ.
+   * chỉ phân trang các dòng thực sự thiếu task. Không gọi evaluatePastDays hay syncCounts ở đây để request
+   * từ hệ thống ngoài không bao giờ tạo hoặc thay đổi dữ liệu nghiệp vụ — số liệu là của lần tính lại gần nhất.
    */
   async payrollSync(teamId: string, query: TaskCompliancePayrollSyncQueryDto) {
     const from = DateTime.fromISO(query.from, { zone: VN_TZ }).startOf("day");

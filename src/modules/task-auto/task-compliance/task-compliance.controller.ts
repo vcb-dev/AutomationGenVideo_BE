@@ -48,7 +48,7 @@ export class TaskComplianceController {
 
   @Get("day")
   @ApiOperation({
-    summary: "Chi tiết một người trong một ngày: từng tuyến thiếu bao nhiêu và task nào chưa nộp đúng hạn",
+    summary: "Chi tiết một người trong một ngày: từng tuyến thiếu bao nhiêu và task nào chưa nộp video hoặc chưa có link bài đăng",
   })
   @ApiNotFoundResponse({ description: "Không có dữ liệu hoặc không có quyền xem" })
   findDay(@Query() query: QueryComplianceDayDto, @Request() req: any) {
@@ -85,6 +85,8 @@ export class TaskCompliancePayrollSyncController {
     description:
       "Summary được tính trên toàn bộ snapshot trong khoảng ngày; records chỉ chứa các dòng có nhiệm vụ thiếu. " +
       "shortfall_summary, days[] (group_by=person_day) và tasks/untracked_missing của từng tuyến lấy từ cùng hàm với màn Nhiệm vụ còn thiếu nên số liệu trùng khớp. " +
+      "Một task tính là hoàn thành khi đã nộp video và có link bài đăng, kể cả nộp bù sau hạn chót, nên completed_on_time/completed_count/missing_count " +
+      "của 31 ngày gần nhất được tính lại mỗi giờ theo trạng thái task hiện tại. " +
       "Endpoint chỉ đọc và không kích hoạt đánh giá lại.",
   })
   @ApiOkResponse({
@@ -144,6 +146,8 @@ export class TaskCompliancePayrollSyncController {
                 deadline: "2026-09-15T10:00:00.000Z",
                 submitted_at: null,
                 on_time: false,
+                has_link: false,
+                completed: false,
               },
             ],
           },
