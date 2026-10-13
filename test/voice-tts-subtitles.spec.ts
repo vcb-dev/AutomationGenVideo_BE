@@ -26,7 +26,6 @@ describe('Voice TTS Subtitles (SRT) Integration', () => {
     const configService: any = {
       get: jest.fn((key: string, def?: string) => {
         if (key === 'AI_SERVICE_URL') return 'http://localhost:8001';
-        if (key === 'AI_SERVICE_URL_VOICE') return 'http://localhost:8000';
         return def;
       }),
     };

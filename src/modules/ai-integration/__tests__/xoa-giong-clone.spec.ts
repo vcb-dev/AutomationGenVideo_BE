@@ -5,18 +5,16 @@ import { AiIntegrationService } from '../ai-integration.service';
 /**
  * Chức năng: xoá giọng đã clone (DELETE ai/voice/:voiceId).
  *
- * BE chỉ là lớp proxy: gọi đúng AI_SERVICE_URL_VOICE (GPU), không gửi MiniMax key,
- * và không nuốt câu lỗi của AI service.
+ * BE chỉ là lớp proxy, nhưng có 3 điểm dễ sai và hậu quả thật: gọi nhầm sang
+ * AI_SERVICE_URL chung (tunnel máy local, thường tắt), quên gửi X-Minimax-Key
+ * (AI không có key trong .env nữa → xoá luôn thất bại), và nuốt mất câu lỗi của
+ * AI service khiến người dùng chỉ thấy "500".
  */
 describe('AiIntegrationService.deleteClonedVoice', () => {
   function buildService(configValues: Record<string, string> = {}) {
     // AI_SERVICE_URL không còn giá trị mặc định trong mã nguồn (xem common/config/ai-service-url),
     // nên test phải cấp — nếu không service dừng ngay ở constructor.
-    configValues = {
-      AI_SERVICE_URL: 'http://ai.test:8001',
-      AI_SERVICE_URL_VOICE: 'https://voice-ai.example.com',
-      ...configValues,
-    };
+    configValues = { AI_SERVICE_URL: 'http://ai.test:8001', ...configValues };
     const httpService: any = {
       post: jest.fn(() => of({ data: {} })),
       get: jest.fn(() => of({ data: {} })),
@@ -52,15 +50,15 @@ describe('AiIntegrationService.deleteClonedVoice', () => {
     );
   });
 
-  it('không gửi header MiniMax — GPU không cần key, có key trong env cũng bỏ qua', async () => {
+  it('gửi kèm X-Minimax-Key — AI service không còn giữ key trong .env của nó', async () => {
     const { service, httpService } = buildService({
+      AI_SERVICE_URL_VOICE: 'https://voice-ai.example.com',
       MINIMAX_API_KEY: 'sk-api-abc',
     });
 
     await service.deleteClonedVoice('v1');
 
-    const opts = httpService.delete.mock.calls[0][1] || {};
-    expect(opts.headers?.['X-Minimax-Key']).toBeUndefined();
+    expect(httpService.delete.mock.calls[0][1].headers).toEqual({ 'X-Minimax-Key': 'sk-api-abc' });
   });
 
   it('đặt timeout rộng hơn poll status — delete_voice bên AI có sẵn 3 lần thử x 30s', async () => {
