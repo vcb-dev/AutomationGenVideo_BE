@@ -11,6 +11,7 @@ import { findProductBySku, findTeamProductBySku, backfillTeamSourcesForNewTeamPr
 import { findSourceIdsBySearch } from '../../../common/utils/source-search.util'
 import { runOrNotFound } from '../../../common/utils/prisma-not-found.util'
 import { syncTaskContentLine } from '../../../common/utils/task-content-line-sync.util'
+import { listLinkedProducts, taskProductSkuWhere } from '../../../common/utils/content-product-link.util'
 import { OmsIntegrationService } from '../../oms-integration/oms-integration.service'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -647,12 +648,19 @@ export class TaskAutoTeamsService {
     return { success: true, message: 'Đã đẩy sản phẩm lên kho tổng', product }
   }
 
+  async listTeamContentLinkedProducts(teamId: string, brandType?: string, userRoles?: string[]) {
+    const scope = await this.teamScope(teamId, userRoles)
+    return listLinkedProducts(this.prisma, {
+      team_content: { is: { ...scope, ...(brandType ? { brand_type: brandType as any } : {}) } },
+    })
+  }
+
   async listTeamContents(
     teamId: string,
     brandType?: 'DO_DA' | 'TRANG_SUC',
     month?: string,
     classificationId?: string,
-    opts?: { search?: string; page?: number; limit?: number; content_line_id?: string; market?: string },
+    opts?: { search?: string; page?: number; limit?: number; content_line_id?: string; market?: string; product_sku?: string },
     userRoles?: string[],
   ) {
     const where: any = {
@@ -660,6 +668,7 @@ export class TaskAutoTeamsService {
       ...(brandType ? { brand_type: brandType } : {}),
       ...(classificationId ? { classification_id: classificationId } : {}),
       ...(opts?.market ? { market: opts.market } : {}),
+      ...(opts?.product_sku ? { tasks: { some: taskProductSkuWhere(opts.product_sku) } } : {}),
       ...this.teamMonthRange(month),
     }
     // Lọc theo tuyến — record "tham chiếu" từ kho cá nhân (source_editor_content_id) có thể

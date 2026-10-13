@@ -298,7 +298,7 @@ export class TaskAutoAssignService {
 
   /**
    * Mỗi editor có KPI tuyến A4 nhận đủ số task A4 còn thiếu cho ngày hiệu lực, mỗi task gắn 1 SP
-   * khác nhau từ Kho sản phẩm của team — KHÔNG gắn content, editor tự chọn content khi mở task.
+   * dòng GMV khác nhau từ Kho sản phẩm của team — KHÔNG gắn content, editor tự chọn content khi mở task.
    */
   private async assignTasksForTeam(
     teamId: string,
@@ -332,7 +332,7 @@ export class TaskAutoAssignService {
         ),
       );
       this.logger.log(
-        `Team ${teamId}: kho sản phẩm trống — ${editors.length} editor cần ${needed} task ${contentLine.name}, đã gửi thông báo`,
+        `Team ${teamId}: kho sản phẩm không có SP dòng GMV — ${editors.length} editor cần ${needed} task ${contentLine.name}, đã gửi thông báo`,
       );
       return { assigned: 0, skipped: needed };
     }

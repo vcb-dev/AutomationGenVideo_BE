@@ -22,6 +22,7 @@ import {
 import { findSourceIdsBySearch } from "../../../common/utils/source-search.util";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
 import { syncTaskContentLine } from "../../../common/utils/task-content-line-sync.util";
+import { listLinkedProducts, taskProductSkuWhere } from "../../../common/utils/content-product-link.util";
 import { ALL_TEAMS_ID, assertCanViewAllTeams } from "../../../common/utils/team-membership.util";
 import {
   CreateProductDto,
@@ -240,6 +241,12 @@ export class TaskAutoCatalogService {
 
   // ─── Contents (kho tổng) ─────────────────────────────────────────────────
 
+  listContentLinkedProducts(brandType?: string) {
+    return listLinkedProducts(this.prisma, {
+      content: { is: brandType ? { brand_type: brandType as any } : {} },
+    });
+  }
+
   async findAllContents(q: QueryContentDto) {
     const where: any = {};
     if (q.brand_type) where.brand_type = q.brand_type;
@@ -268,6 +275,7 @@ export class TaskAutoCatalogService {
       ];
     }
     if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
+    if (q.product_sku) where.tasks = { some: taskProductSkuWhere(q.product_sku) };
     Object.assign(where, this.monthRange(q.month));
 
     const page = q.page ?? 1;
@@ -1048,6 +1056,12 @@ export class TaskAutoCatalogService {
 
   // ─── Editor Contents (kho cá nhân) ───────────────────────────────────────
 
+  listEditorContentLinkedProducts(userId: string, brandType?: string) {
+    return listLinkedProducts(this.prisma, {
+      editor_content: { is: { user_id: userId, ...(brandType ? { brand_type: brandType as any } : {}) } },
+    });
+  }
+
   async findAllEditorContents(userId: string, q: QueryEditorContentDto) {
     const where: any = { user_id: userId };
     if (q.brand_type) where.brand_type = q.brand_type;
@@ -1063,6 +1077,7 @@ export class TaskAutoCatalogService {
         { body: { contains: q.search, mode: "insensitive" } },
         { code: { contains: q.search, mode: "insensitive" } },
       ];
+    if (q.product_sku) where.tasks = { some: taskProductSkuWhere(q.product_sku) };
     Object.assign(where, this.monthRange(q.month, "added_at"));
 
     const page = q.page ?? 1;

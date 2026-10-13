@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { TaskAutoCatalogService } from '../catalog.service';
+import { taskProductSkuWhere } from '../../../../common/utils/content-product-link.util';
 import {
   CreateContentDto,
   CreateTeamContentDto,
@@ -92,6 +93,71 @@ describe('TaskAutoCatalogService — sentinel __unassigned__ cho content_line_id
 
       expect(getWhere().content_line_id).toBe('line-a1');
     });
+  });
+});
+
+describe('TaskAutoCatalogService — lọc content theo sản phẩm (SKU)', () => {
+  const ref = (sku: string | null, name: string | null = null) => ({ sku, name, image_url: null });
+  const row = (over: Record<string, any>) => ({
+    content_id: null, team_content_id: null, editor_content_id: null,
+    editor_product: null, team_product: null, product: null,
+    ...over,
+  });
+
+  function build(taskRows: any[] = []) {
+    const prisma: any = {
+      content: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
+      editorContent: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
+      task: { findMany: jest.fn(async () => taskRows) },
+    };
+    return { service: new TaskAutoCatalogService(prisma, {} as any, {} as any, {} as any), prisma };
+  }
+
+  it('findAllContents + product_sku → chỉ lấy content có task dùng SKU đó', async () => {
+    const { service, prisma } = build();
+
+    await service.findAllContents({ product_sku: 'D0031' } as any);
+
+    expect(prisma.content.findMany.mock.calls[0][0].where.tasks).toEqual({ some: taskProductSkuWhere('D0031') });
+  });
+
+  it('findAllEditorContents + product_sku → lọc trong kho của đúng người đó', async () => {
+    const { service, prisma } = build();
+
+    await service.findAllEditorContents('user-1', { product_sku: 'D0031' } as any);
+
+    const where = prisma.editorContent.findMany.mock.calls[0][0].where;
+    expect(where.user_id).toBe('user-1');
+    expect(where.tasks).toEqual({ some: taskProductSkuWhere('D0031') });
+  });
+
+  it('so SKU không phân biệt hoa/thường và đi xuyên bản gốc của TeamProduct/Product', () => {
+    const where = taskProductSkuWhere(' d0031 ');
+    const eq = { equals: 'd0031', mode: 'insensitive' };
+
+    expect(where.OR).toEqual(expect.arrayContaining([
+      { editor_product: { sku: eq } },
+      { team_product: { sku: null, source_editor_product: { sku: eq } } },
+      { product: { sku: null, source_team_product: { sku: null, source_editor_product: { sku: eq } } } },
+    ]));
+  });
+
+  it('listContentLinkedProducts gom theo SKU, đếm content không trùng, xếp nhiều content trước', async () => {
+    const { service, prisma } = build([
+      row({ content_id: 'c1', editor_product: ref('D0031', 'Dây chuyền') }),
+      row({ content_id: 'c1', editor_product: ref('d0031') }),
+      row({ content_id: 'c2', team_product: { ...ref(null), source_editor_product: ref('D0031') } }),
+      row({ content_id: 'c3', product: { ...ref(null), source_team_product: { ...ref('B0030', 'Bông tai'), source_editor_product: null } } }),
+      row({ content_id: 'c4', editor_product: ref(null) }),
+    ]);
+
+    const result = await service.listContentLinkedProducts('DO_DA');
+
+    expect(prisma.task.findMany.mock.calls[0][0].where.AND[0]).toEqual({ content: { is: { brand_type: 'DO_DA' } } });
+    expect(result).toEqual([
+      { sku: 'D0031', name: 'Dây chuyền', image_url: null, content_count: 2 },
+      { sku: 'B0030', name: 'Bông tai', image_url: null, content_count: 1 },
+    ]);
   });
 });
 

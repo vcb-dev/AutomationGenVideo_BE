@@ -225,9 +225,20 @@ export class TaskAutoTeamsController {
     @Query("limit") limit?: string,
     @Query("content_line_id") contentLineId?: string,
     @Query("market") market?: string,
+    @Query("product_sku") productSku?: string,
   ) {
-    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market } : undefined;
+    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market, product_sku: productSku } : undefined;
     return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts, req.user.roles ?? []);
+  }
+
+  @Get("teams/:id/contents/linked-products")
+  @ApiOperation({ summary: "Sản phẩm đã gắn với content kho team (qua task) — option bộ lọc sản phẩm. id = \"all\" → mọi team (ADMIN/MANAGER)" })
+  listTeamContentLinkedProducts(
+    @Param("id") teamId: string,
+    @Request() req: any,
+    @Query("brand_type") brandType?: string,
+  ) {
+    return this.teams.listTeamContentLinkedProducts(teamId, brandType, req.user.roles ?? []);
   }
 
   @Get("teams/:id/contents/:teamContentId")
