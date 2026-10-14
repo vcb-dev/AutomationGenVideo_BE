@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ContentApprovalService } from '../../content-approval/content-approval.service';
 import { TaskAutoTasksService } from '../tasks.service';
 
@@ -1136,8 +1136,8 @@ describe('TaskAutoTasksService.review — dọn dẹp khi từ chối task', () 
 });
 
 describe('TaskAutoTasksService — published_links không bị ghi đè khi nhiều nơi cùng sửa', () => {
-  const FB = { id: 'l-fb', platform: 'Facebook', url: 'https://facebook.com/reel/1' };
-  const YT = { id: 'l-yt', platform: 'YouTube', url: 'https://youtube.com/watch?v=2' };
+  const FB = { id: 'l-fb', platform: 'Facebook', url: 'https://facebook.com/reel/1376370697349012' };
+  const YT = { id: 'l-yt', platform: 'YouTube', url: 'https://youtube.com/watch?v=dQw4w9WgXcQ' };
 
   function build(initialLinks: any[], fetchStatsForLink: jest.Mock) {
     let row: any = {
@@ -1164,6 +1164,7 @@ describe('TaskAutoTasksService — published_links không bị ghi đè khi nhi�
           return { count: 1 };
         }),
       },
+      $queryRaw: jest.fn(async () => []),
     };
     const contentWinPush: any = { pushWinningTasks: jest.fn(async () => undefined) };
     const service = new TaskAutoTasksService(
@@ -1242,5 +1243,129 @@ describe('TaskAutoTasksService — published_links không bị ghi đè khi nhi�
     await ctx.service.refreshPublishedLinkStats('task-1', FB.id, 'editor-1', []);
 
     expect(ctx.links()).toEqual([edited]);
+  });
+});
+
+describe('TaskAutoTasksService.updatePublishedLinks — soát link nộp', () => {
+  const REEL = 'https://www.facebook.com/reel/1376370697349012';
+  const TIKTOK = 'https://www.tiktok.com/@huyk.xuongchetac2/video/7610704678313037063';
+
+  function build(initialLinks: any[], otherTasks: any[] = []) {
+    let row: any = {
+      id: 'task-1',
+      status: 'APPROVED',
+      assignee_id: 'editor-1',
+      published_links: initialLinks,
+      updated_at: new Date(1),
+    };
+    const prisma: any = {
+      task: {
+        findUnique: jest.fn(async () => ({ ...row })),
+        updateMany: jest.fn(async ({ data }: any) => {
+          row = { ...row, ...data, updated_at: new Date(2) };
+          return { count: 1 };
+        }),
+      },
+      $queryRaw: jest.fn(async () => otherTasks),
+    };
+    const fetchStatsForLink = jest.fn(async () => ({ status: 'success', views: 1 }));
+    const service = new TaskAutoTasksService(
+      prisma,
+      {} as any,
+      {} as any,
+      { fetchStatsForLink } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    return {
+      prisma,
+      submit: (links: any[]) => service.updatePublishedLinks('task-1', { links }, 'editor-1', []),
+      urls: () => row.published_links.map((l: any) => l.url),
+    };
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('nhãn Instagram nhưng dán link TikTok → 400, không ghi', async () => {
+    const ctx = build([]);
+
+    await expect(ctx.submit([{ id: 'a', platform: 'Instagram', url: TIKTOK }])).rejects.toThrow(
+      /là link TikTok, không phải Instagram/,
+    );
+    expect(ctx.prisma.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('link trang Facebook thay vì 1 video → 400', async () => {
+    const ctx = build([]);
+
+    await expect(
+      ctx.submit([{ id: 'a', platform: 'Facebook', url: 'https://www.facebook.com/huykjewelry' }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('link sai lưu từ trước vẫn giữ nguyên, không chặn nộp thêm link mới', async () => {
+    const legacy = { id: 'old', platform: 'Instagram', url: TIKTOK };
+    const ctx = build([legacy]);
+
+    await ctx.submit([legacy, { id: 'new', platform: 'Facebook', url: REEL }]);
+
+    expect(ctx.urls()).toEqual([TIKTOK, REEL]);
+  });
+
+  it('cùng 1 video dán 2 dạng link trong 1 task → 400', async () => {
+    const ctx = build([{ id: 'a', platform: 'Facebook', url: REEL }]);
+
+    await expect(
+      ctx.submit([
+        { id: 'a', platform: 'Facebook', url: REEL },
+        { id: 'b', platform: 'Facebook', url: 'https://www.facebook.com/watch/?v=1376370697349012' },
+      ]),
+    ).rejects.toThrow(/trùng video với một link khác của task này/);
+  });
+
+  it('video đã nộp cho task khác (khác dạng link) → 409 kèm người nhận + hạn của task kia', async () => {
+    const ctx = build([], [
+      {
+        links: JSON.stringify([
+          { id: 'x', platform: 'Facebook', url: 'https://www.facebook.com/huykjewelry/videos/1376370697349012/' },
+        ]),
+        deadline: new Date('2026-10-12T10:00:00Z'),
+        assignee: 'Nguyễn Văn A',
+      },
+    ]);
+
+    const err = await ctx.submit([{ id: 'a', platform: 'Facebook', url: REEL }]).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(err.message).toMatch(/Nguyễn Văn A, hạn 12\/10\/2026/);
+    expect(ctx.prisma.$queryRaw.mock.calls[0]).toContainEqual(['%1376370697349012%']);
+    expect(ctx.prisma.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('task khác chỉ khớp thô chuỗi số (id video khác) → không chặn', async () => {
+    const ctx = build([], [
+      {
+        links: JSON.stringify([{ id: 'x', platform: 'Facebook', url: 'https://www.facebook.com/reel/91376370697349012' }]),
+        deadline: null,
+        assignee: 'Nguyễn Văn A',
+      },
+    ]);
+
+    await ctx.submit([{ id: 'a', platform: 'Facebook', url: REEL }]);
+
+    expect(ctx.urls()).toEqual([REEL]);
+  });
+
+  it('link share/r được giải về link reel thật rồi mới so trùng + lưu', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      text: async () => '<a href="https://m.facebook.com/reel/1376370697349012">xem</a>',
+    } as any);
+    const ctx = build([]);
+
+    await ctx.submit([{ id: 'a', platform: 'Facebook', url: 'https://www.facebook.com/share/r/1KyNyNv88v/' }]);
+
+    expect(ctx.prisma.$queryRaw.mock.calls[0]).toContainEqual(['%1376370697349012%']);
+    expect(ctx.urls()).toEqual([REEL]);
   });
 });
