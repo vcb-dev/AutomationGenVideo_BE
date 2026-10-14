@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   Logger,
   Optional,
 } from "@nestjs/common";
@@ -35,10 +36,21 @@ import {
 import { parseTeamIdFilter } from "../../../common/utils/team-membership.util";
 import {
   asPublishedLinks,
+  displayLink,
+  isShortVideoKey,
   mutateTaskPublishedLinks,
+  PublishedLinkEntry,
+  publishedLinkError,
   publishedLinkKey,
+  publishedVideoKey,
+  videoKeySearchToken,
   withFetchedStats,
 } from "../../../common/utils/task-published-links.util";
+import { resolveShortLink } from "../../../common/utils/resolve-short-link.util";
+import {
+  isFacebookShareLink,
+  resolveFacebookShareLink,
+} from "../../facebook-external-scraper/facebook-url.util";
 import { OmsIntegrationService } from "../../oms-integration/oms-integration.service";
 import { LarkWebhookNotifyService } from "../notifications/lark-webhook-notify.service";
 import { deadlineWindow } from "../../../utils/task-auto/deadline-window.util";
@@ -232,6 +244,22 @@ export function buildTrafficTrend(
       reporters: reportersInRange.size,
     },
   };
+}
+
+/**
+ * Link chia sẻ (facebook.com/share/r/…, fb.watch, vt.tiktok.com) mỗi lần bấm "Sao chép liên kết" ra một
+ * mã khác nhau cho cùng một video — giải về link thật để so trùng được. Giải không ra thì giữ link gốc.
+ */
+async function resolvePublishedLinkUrl(url: string): Promise<string> {
+  const key = publishedVideoKey(url);
+  if (!key || !isShortVideoKey(key)) return url;
+  const resolved = isFacebookShareLink(url)
+    ? await resolveFacebookShareLink(url)
+    : await resolveShortLink(url);
+  const resolvedKey = publishedVideoKey(resolved);
+  if (!resolvedKey || isShortVideoKey(resolvedKey)) return url;
+  const bare = resolved.split(/[?#]/)[0];
+  return publishedVideoKey(bare) === resolvedKey ? bare : resolved;
 }
 
 @Injectable()
@@ -1429,14 +1457,6 @@ export class TaskAutoTasksService {
       throw new ForbiddenException("Không có quyền nộp link cho task này");
     }
 
-    const links = dto.links
-      .map((l) => ({
-        id: l.id,
-        platform: l.platform.trim(),
-        url: l.url.trim(),
-      }))
-      .filter((l) => l.platform && l.url);
-
     // stats là dữ liệu do server tính (không nhận từ client) — chỉ giữ lại stats cũ
     // nếu link không đổi (cùng id, platform, url); link mới hoặc bị sửa url/platform
     // thì fetch lại ngay để hiển thị số liệu mới nhất cạnh link. Cào xong mới ghi, và lúc
@@ -1444,6 +1464,26 @@ export class TaskAutoTasksService {
     const oldByKey = new Map(
       asPublishedLinks(task.published_links).map((l) => [publishedLinkKey(l), l]),
     );
+    // Chỉ soát link mới/vừa sửa — link cũ lưu từ trước khi có luật này không chặn việc sửa link khác.
+    const isNew = (l: PublishedLinkEntry) => !oldByKey.has(publishedLinkKey(l));
+    const submitted = dto.links
+      .map((l) => ({
+        id: l.id,
+        platform: l.platform.trim(),
+        url: l.url.trim(),
+      }))
+      .filter((l) => l.platform && l.url);
+    for (const link of submitted.filter(isNew)) {
+      const error = publishedLinkError(link.platform, link.url);
+      if (error) throw new BadRequestException(error);
+    }
+    const links = await Promise.all(
+      submitted.map(async (l) =>
+        isNew(l) ? { ...l, url: await resolvePublishedLinkUrl(l.url) } : l,
+      ),
+    );
+    await this.assertVideosNotLinkedElsewhere(id, links, links.filter(isNew));
+
     const fetched = new Map<string, unknown>();
     await Promise.all(
       links
@@ -1464,6 +1504,47 @@ export class TaskAutoTasksService {
     });
     if (!result) throw new NotFoundException("Task not found");
     return this.findTaskDetail(id);
+  }
+
+  /** Mỗi video chỉ được nộp cho 1 task: chặn trùng trong chính task này và với mọi task khác. */
+  private async assertVideosNotLinkedElsewhere(
+    taskId: string,
+    links: PublishedLinkEntry[],
+    added: PublishedLinkEntry[],
+  ) {
+    const addedByKey = new Map<string, PublishedLinkEntry>();
+    for (const link of added) {
+      const key = publishedVideoKey(link.url);
+      if (!key) continue;
+      if (links.filter((l) => publishedVideoKey(l.url) === key).length > 1) {
+        throw new BadRequestException(
+          `Link "${displayLink(link.url)}" trùng video với một link khác của task này`,
+        );
+      }
+      addedByKey.set(key, link);
+    }
+    if (!addedByKey.size) return;
+
+    const patterns = [...addedByKey.keys()].map((k) => `%${videoKeySearchToken(k)}%`);
+    const rows = await this.prisma.$queryRaw<
+      { links: string; deadline: Date | null; assignee: string | null }[]
+    >`
+      SELECT t.published_links::text AS links, t.deadline, u.full_name AS assignee
+      FROM tasks t LEFT JOIN users u ON u.id::text = t.assignee_id
+      WHERE t.id <> ${taskId} AND t.published_links::text ILIKE ANY(${patterns}::text[])
+    `;
+    for (const row of rows) {
+      const taken = asPublishedLinks(JSON.parse(row.links))
+        .map((l) => addedByKey.get(publishedVideoKey(l.url) ?? ""))
+        .find(Boolean);
+      if (!taken) continue;
+      const deadline = row.deadline
+        ? `, hạn ${vietnamDateString(row.deadline).split("-").reverse().join("/")}`
+        : "";
+      throw new ConflictException(
+        `Video "${displayLink(taken.url)}" đã được nộp cho task khác (${row.assignee ?? "chưa có người nhận"}${deadline}) — mỗi video chỉ nộp cho 1 task, muốn chuyển thì gỡ link ở task kia trước`,
+      );
+    }
   }
 
   private async findTaskDetail(id: string) {
