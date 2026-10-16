@@ -30,14 +30,8 @@ export function slugForFileName(text: string | undefined, maxLength = 60): strin
 }
 
 /**
- * Lưu lại ẢNH GỐC người dùng thả vào tab Tạo ảnh sản phẩm lên Google Drive công ty — để sau này người dùng vào duyệt /
- * sửa nhãn (trang duyệt nhãn ở bag-detector-training) rồi mới cho model nhận diện túi học tiếp. Người dùng chốt 15/10:
- * người thả ảnh KHÔNG phải làm gì thêm, máy KHÔNG tự học từ kết quả của chính nó (đã thử 10/10: học nhãn tự gán làm
- * model kém đi 82,2% → 79,2%), chỉ lưu ảnh chờ duyệt.
- *
- * Chạy nền, không chờ: lỗi Drive / Drive chưa cấu hình chỉ ghi log, không làm hỏng lượt tạo ảnh. Ảnh trùng (cùng nội
- * dung) chỉ lưu một lần mỗi tiến trình — người dùng hay thả lại cùng ảnh khi thử nền khác.
- * Cây thư mục: <GOOGLE_DRIVE_FOLDER_ID>/<FOLDER_NAME>/<YYYY-MM-DD>/<tên SP>__<băm>.<đuôi> (resolveDatedFolder).
+ * Lưu ảnh gốc người dùng thả vào lên Drive công ty (<GOOGLE_DRIVE_FOLDER_ID>/<FOLDER_NAME>/<ngày>/) để duyệt nhãn rồi
+ * train model nhận diện. Chạy nền: lỗi Drive chỉ ghi log. Ảnh trùng chỉ lưu một lần mỗi tiến trình.
  */
 @Injectable()
 export class ProductImageTrainingArchiveService {

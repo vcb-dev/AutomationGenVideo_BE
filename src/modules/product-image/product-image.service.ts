@@ -33,10 +33,7 @@ import {
   usageFromAxiosError,
 } from './product-image-cost.util';
 
-/**
- * Kết quả bước nhận diện SP khi tách nền (AI service trả về) — model tự huấn luyện chạy trên AI, 0đ.
- * "skipped": model chưa chắc nên chưa cắt phần dính liền túi — FE cảnh báo có thể còn dính giá đỡ/đạo cụ.
- */
+/** Kết quả nhận diện SP khi tách nền; "skipped" = model chưa chắc, FE cảnh báo có thể còn dính giá đỡ. */
 export type CutoutDetection =
   | { status: 'applied'; source: 'model'; props_removed: number; model_reasons?: string[] }
   | { status: 'skipped'; source: 'model'; reason: string; model_reasons?: string[] };
@@ -47,34 +44,20 @@ export interface ProductImageUser {
 }
 
 /**
- * Tạo ảnh cho sản phẩm MỚI chưa về hàng (media chưa chụp được) — 2 chế độ:
- *
- * - Ghép background (0đ): AI service tách nền ảnh SP bằng rembg, trả PNG trong suốt; FE tự dán
- *   lên ảnh phòng bằng canvas để người dùng kéo/thu phóng và xem trước đúng ảnh xuất ra.
- * - Chị Nhạm cầm SP (tính phí Gemini mỗi lượt): AI service đưa ảnh chị Nhạm đang cầm SP cũ +
- *   ảnh SP mới cho Gemini thay SP.
- * - Đặt SP vào cảnh (tính phí Gemini mỗi lượt, tab "Tạo hàng loạt"): Gemini tự tách SP, đặt lên
- *   ảnh cảnh, khớp ánh sáng/phối cảnh — không phải chỉnh tay từng ảnh.
- *
- * BE chỉ orchestrate như ảnh thẻ: nhận file từ FE rồi chuyển tiếp dạng file multipart sang AI service, không lưu
- * ảnh. Mỗi lượt (thành công hay hỏng) được ghi vào product_image_generations kèm token/chi phí
- * AI báo về — nguồn của tab Chi phí. Không gọi thẳng Gemini — luồng bắt buộc FE → BE → AI.
+ * Tạo ảnh cho sản phẩm mới chưa về hàng: tách nền (0đ), đổi SP trên tay chị Nhạm (0đ), Gemini thay SP / đặt SP vào cảnh
+ * (tính phí). BE chỉ chuyển tiếp FE → AI, không lưu ảnh; mỗi lượt ghi vào product_image_generations cho tab Chi phí.
  */
 @Injectable()
 export class ProductImageService {
   private readonly logger = new Logger(ProductImageService.name);
 
-  /** Lần tách nền đầu tiên của mỗi worker AI phải nạp model rembg (và tự tải về nếu image chưa
-   * có sẵn) nên cho dư 120s; các lần sau chỉ vài giây. */
+  /** Lần tách nền đầu mỗi worker AI phải nạp model rembg nên cho dư. */
   static readonly CUTOUT_TIMEOUT_MS = 120_000;
 
-  /** Mọi chế độ Gemini. Cùng mốc ảnh thẻ (IdPhotoService.MERGE_OUTFIT_TIMEOUT_MS): AI service tự
-   * cắt lượt Gemini ở 75s (product_image_views.HELD_PRODUCT_TIMEOUT_SECONDS) để kịp trả lỗi rõ
-   * trước mốc này. */
+  /** Mọi chế độ Gemini — AI tự cắt ở 75s để kịp trả lỗi trước mốc này. */
   static readonly HELD_PRODUCT_TIMEOUT_MS = 90_000;
 
-  /** Đổi SP 0đ: AI tách nền SP mới (rembg) rồi chạy model người cầm SP + MobileSAM + LaMa trên CPU — đo ~10s/ảnh,
-   * lần đầu mỗi worker còn nạp ~300MB model nên cho dư như tách nền nhưng dài hơn. */
+  /** Đổi SP 0đ: ~10s/ảnh, lần đầu mỗi worker còn nạp model. */
   static readonly HELD_SWAP_TIMEOUT_MS = 180_000;
 
   constructor(
@@ -86,10 +69,7 @@ export class ProductImageService {
     @Optional() private readonly trainingArchive?: ProductImageTrainingArchiveService,
   ) {}
 
-  /**
-   * Tách nền: AI chạy rembg rồi model nhận diện tự huấn luyện để chỉ giữ đúng SP (bỏ giá trưng bày, đạo
-   * cụ) — toàn bộ trên AI service, 0đ; `usage` mang tên model đó với 0đ để tab Chi phí vẫn đếm lượt.
-   */
+  /** Tách nền 0đ (rembg + model nhận diện trên AI); `usage` 0đ để tab Chi phí vẫn đếm lượt. */
   async cutout(file: Express.Multer.File, user: ProductImageUser) {
     // Tên file người dùng thả (thường có mã SP + cm, vd TX018-25-...) — đặt tên ảnh lưu để duyệt nhãn dễ tra.
     void this.trainingArchive?.archive(file, { source: 'cutout', productName: file?.originalname?.replace(/\.[^.]+$/, '') });
@@ -160,11 +140,7 @@ export class ProductImageService {
     }, productName, user);
   }
 
-  /**
-   * Chị Nhạm cầm SP — ĐỔI SP 0đ: AI service tách nền SP mới, tìm SP cũ + bàn tay bằng model người cầm SP tự huấn
-   * luyện, xoá SP cũ (LaMa), đặt SP mới vào tay và dán tay lên trên. Không gọi Gemini; mỗi lượt vẫn ghi nhật ký
-   * (HELD_SWAP, 0đ) để tab Chi phí đếm lượt. Chạy lại không tốn gì → tự thử lại một lần khi kết nối bị AI đóng ngang.
-   */
+  /** Đổi SP trên ảnh chị Nhạm 0đ (model + SAM + LaMa trên AI); ghi nhật ký HELD_SWAP, tự thử lại một lần khi mất kết nối. */
   async heldSwap(
     personImage: Express.Multer.File | undefined,
     productImage: Express.Multer.File | undefined,
@@ -221,12 +197,7 @@ export class ProductImageService {
     };
   }
 
-  /**
-   * Chị Nhạm cầm SP — TỰ CHỌN TƯ THẾ 0đ: chỉ cần ảnh SP mới. AI service tách nền SP, chấm điểm các tư thế chị Nhạm dựng
-   * sẵn (thư viện tư thế trên AI) theo dáng SP rồi ghép vào vài tư thế hợp nhất — người dùng chọn ảnh ưng nhất. Một lượt
-   * ghi MỘT dòng HELD_SWAP 0đ (cùng việc đổi SP chị Nhạm, tab Chi phí đếm chung). Chạy lại không tốn gì → tự thử lại
-   * một lần khi kết nối bị AI đóng ngang.
-   */
+  /** Tự chọn tư thế chị Nhạm 0đ: chỉ cần ảnh SP + bề ngang cm; ghi một dòng HELD_SWAP, tự thử lại một lần khi mất kết nối. */
   async heldAuto(
     productImage: Express.Multer.File | undefined,
     input: { productName?: string; widthCm?: number },
@@ -284,11 +255,7 @@ export class ProductImageService {
     };
   }
 
-  /**
-   * Đặt SP vào ảnh cảnh (tab "Tạo hàng loạt") — FE gọi lần lượt từng SP với cùng một ảnh cảnh, mỗi
-   * lượt là một request ngắn như chế độ chị Nhạm nên không cần hàng đợi phía BE, và mỗi lượt được
-   * ghi chi phí riêng.
-   */
+  /** Đặt SP vào ảnh cảnh (tab "Tạo hàng loạt") — mỗi SP một request, ghi chi phí riêng. */
   async scenePlacement(
     productImage: Express.Multer.File | undefined,
     sceneImage: Express.Multer.File | undefined,
@@ -360,11 +327,7 @@ export class ProductImageService {
     };
   }
 
-  /**
-   * Một lượt gọi AI service. Token ký theo ĐÚNG người bấm (không dùng danh tính 'be-system'
-   * chung) — cùng lý do transcribeAiAuthHeaders: FE xác thực bằng cookie nên không có header
-   * Authorization nào để chuyển tiếp, và AI service cần biết ai tiêu tiền Gemini.
-   */
+  /** Một lượt gọi AI service — token ký theo đúng người bấm. */
   private async callAi<T>(
     path: string,
     body: AiFormFields,
@@ -426,11 +389,7 @@ export class ProductImageService {
   }
 }
 
-/**
- * Kết nối tới AI service bị đóng trước khi có phản hồi (ECONNRESET / "socket hang up"): gunicorn đóng kết
- * nối keep-alive rảnh đúng lúc BE dùng lại nó — đo 10/10: lỗi sau 15ms, AI không hề nhận request. Chỉ lượt
- * không tính phí (tách nền) mới tự thử lại; lượt Gemini không chắc AI chưa xử lý nên không tự gửi lại.
- */
+/** Kết nối keep-alive bị AI đóng trước khi có phản hồi — chỉ lượt 0đ mới tự thử lại. */
 export function isConnectionReset(err: any): boolean {
   return !err?.response && (err?.code === 'ECONNRESET' || /socket hang up/i.test(err?.message ?? ''));
 }
@@ -444,12 +403,7 @@ function requireProductName(raw: string | undefined): string {
   return productName;
 }
 
-/**
- * Đổi lỗi axios khi gọi AI service thành lỗi HTTP trả cho FE.
- *
- * 401/403 từ AI service là lỗi cấu hình máy chủ (JWT_SECRET hai bên lệch nhau), KHÔNG phải người
- * dùng hết phiên — trả nguyên 401/403 thì FE hiểu nhầm thành mất đăng nhập, nên đổi sang 502.
- */
+/** Lỗi axios khi gọi AI → lỗi HTTP cho FE. 401/403 từ AI là lỗi cấu hình (JWT_SECRET lệch) → 502. */
 export function toAiHttpException(err: any, timeoutMs: number): HttpException {
   const status: number | undefined = err?.response?.status;
   const aiMessage: string | undefined = err?.response?.data?.error_message || err?.response?.data?.detail;
@@ -468,8 +422,7 @@ export function toAiHttpException(err: any, timeoutMs: number): HttpException {
     );
   }
   if (status === HttpStatus.NOT_FOUND) {
-    // Trang 404 của Django là HTML, không có error_message — gần như luôn do AI service chưa
-    // deploy bản có endpoint này. Trả 404 thì FE tưởng chính route BE không tồn tại.
+    // 404 HTML của Django = AI chưa deploy endpoint này.
     return new HttpException(
       'AI service chưa có endpoint tạo ảnh sản phẩm (404) — AI service đã deploy bản mới chưa?',
       HttpStatus.BAD_GATEWAY,

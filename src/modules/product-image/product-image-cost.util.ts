@@ -1,12 +1,8 @@
 import { InternalServerErrorException } from '@nestjs/common';
 
 /**
- * Chi phí "Tạo ảnh sản phẩm": đọc khối `usage` AI service gửi về sau mỗi lượt, quy đổi VNĐ và
- * tổng hợp số liệu cho tab Chi phí. Thuần logic (không Prisma) để test được.
- *
- * Hai chỉ số chính lấy từ phương án tạo ảnh SP mới (mục 3–4):
- *  - số lượt tạo trung bình để ra 1 ảnh đạt = lượt tạo Gemini / số ảnh bấm "Đạt";
- *  - chi phí 1 ảnh đạt = tổng tiền Gemini / số ảnh đạt.
+ * Chi phí "Tạo ảnh sản phẩm": quy `usage` AI gửi về ra VNĐ và tổng hợp cho tab Chi phí (thuần logic, test được).
+ * Chỉ số chính: lượt tạo Gemini / ảnh đạt và tiền Gemini / ảnh đạt.
  */
 
 export const PRODUCT_IMAGE_MODE = {
@@ -69,10 +65,7 @@ export interface GenerationCost {
 
 const nonNegativeInt = (value: unknown) => Math.max(0, Math.round(Number(value) || 0));
 
-/**
- * Khối usage → các cột chi phí của một lượt. Không có usage (AI sập giữa chừng, BE hết giờ chờ)
- * thì dùng `fallback` — bên gọi biết rõ hơn lượt đó có thể đã tốn tiền hay chưa.
- */
+/** Khối usage → cột chi phí của một lượt; không có usage thì dùng `fallback`. */
 export function costFromAiUsage(
   usage: AiUsage | null | undefined,
   fallback: { cost_usd: number | null; cost_note: string },
@@ -96,10 +89,7 @@ export function costFromAiUsage(
 /** Mã lỗi Prisma "bảng không tồn tại" — gặp khi migration của bảng chưa được áp. */
 const PRISMA_TABLE_MISSING = 'P2021';
 
-/**
- * Lỗi DB khi đọc/ghi bảng product_image_generations → câu dễ hiểu cho người dùng. Chi tiết Prisma
- * (đường dẫn file, đoạn code, câu truy vấn) chỉ được ghi log, không đổ lên màn hình.
- */
+/** Lỗi DB bảng product_image_generations → câu dễ hiểu; chi tiết Prisma chỉ ghi log. */
 export function generationsDbError(err: unknown): InternalServerErrorException {
   if ((err as { code?: string } | null)?.code === PRISMA_TABLE_MISSING) {
     return new InternalServerErrorException(
@@ -124,11 +114,7 @@ export function aiUsageOf(error: unknown): AiUsage | null {
   return ((error as any)?.[AI_USAGE] as AiUsage | undefined) ?? null;
 }
 
-/**
- * Usage của một lượt gọi AI bị lỗi axios. AI trả lỗi có kèm `usage` (Gemini đã chạy hoặc đã từ
- * chối) → dùng nguyên; BE hết giờ chờ → AI/Gemini có thể vẫn đang chạy nên CHƯA BIẾT tiền; không
- * kết nối được AI → chắc chắn chưa gọi Gemini, 0đ. Còn lại trả null để bên gọi tự quyết.
- */
+/** Usage của lượt lỗi axios: AI có kèm usage → dùng; BE hết giờ chờ → chưa biết tiền; không tới được AI → 0đ. */
 export function usageFromAxiosError(err: any): AiUsage | null {
   const usage = err?.response?.data?.usage;
   if (usage && typeof usage === 'object') return usage;
@@ -147,11 +133,7 @@ export const UNKNOWN_COST = {
   cost_note: 'AI service không báo số token/chi phí của lượt này.',
 } as const;
 
-/**
- * Tách nền hỏng mà AI không báo `usage` (rembg, đầu vào, cấu hình): tách nền chạy hoàn toàn trên AI service
- * (rembg + model nhận diện tự huấn luyện), không gọi dịch vụ tính phí nào — luôn 0đ. BE hết giờ chờ thì
- * usageFromAxiosError đã trả "chưa biết" trước khi tới đây.
- */
+/** Tách nền hỏng mà AI không báo usage — tách nền luôn 0đ. */
 export const CUTOUT_FAILED_FREE = {
   cost_usd: 0,
   cost_note: 'Tách nền chạy trên AI service (rembg + model tự huấn luyện) — không tính phí.',
@@ -168,11 +150,7 @@ export const HELD_SWAP_FAILED_FREE = {
 /** Số lượt Gemini gần nhất dùng để ước tính — đủ san bằng chênh lệch token giữa các ảnh. */
 export const GEMINI_ESTIMATE_SAMPLE = 20;
 
-/**
- * Giá trung bình một lượt Gemini theo các lượt THẬT gần nhất (giá thật nằm ở biến
- * GEMINI_IMAGE_PRICES_JSON trên AI service, BE không biết đơn giá). Lượt 0đ là lượt Gemini từ chối
- * ngay (sai model, hết quota) — không phản ánh giá nên bỏ. Chưa có lượt nào thì trả null.
- */
+/** Giá trung bình một lượt Gemini theo các lượt thật gần nhất (bỏ lượt 0đ bị từ chối); chưa có → null. */
 export function estimateGeminiImageCost(costsUsd: readonly number[], rate: number | null) {
   const billed = costsUsd.filter((usd) => Number.isFinite(usd) && usd > 0);
   if (!billed.length) return { per_image_usd: null, per_image_vnd: null, sample_size: 0 };
@@ -202,11 +180,7 @@ export interface GenerationRow {
   created_at: Date;
 }
 
-/**
- * Lượt Gemini được tính là "một lần tạo": có ảnh, hoặc đã tiêu token, hoặc chưa biết có tốn tiền
- * không. Lượt Gemini từ chối ngay (model 404, hết quota...) không tốn gì thì không tính — nếu
- * không, lỗi cấu hình sẽ làm phình "số lượt để ra 1 ảnh đạt".
- */
+/** Lượt Gemini tính là "một lần tạo" khi có ảnh, đã tiêu token, hoặc chưa biết tiền — lượt từ chối ngay thì không. */
 export function isGeminiAttempt(row: GenerationRow): boolean {
   if (!GEMINI_MODES.includes(row.mode)) return false;
   return (
@@ -283,8 +257,7 @@ export function buildCostStats(
     const day = byDay.get(opts.toDay(row.created_at)) ?? emptyBucket();
     byDay.set(opts.toDay(row.created_at), day);
 
-    // Tách nền: tiền lượt Gemini nhận diện SP vào tổng/ngày/người, nhưng không phải "lượt tạo" của
-    // hai chỉ số lượt/ảnh đạt — ảnh tách nền không có nút "Đạt".
+    // Tách nền: tiền vào tổng, không tính là "lượt tạo" (không có nút "Đạt").
     if (row.mode === PRODUCT_IMAGE_MODE.CUTOUT) {
       if (row.status === GENERATION_STATUS.SUCCESS) {
         total.cutouts += 1;
