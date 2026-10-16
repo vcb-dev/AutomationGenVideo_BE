@@ -12,7 +12,7 @@ describe('FacebookOwnedPagesCronService — gia hạn token', () => {
 
   beforeEach(() => {
     aiClient = { refreshUserToken: jest.fn() };
-    service = new FacebookOwnedPagesCronService({} as any, {} as any, aiClient as any);
+    service = new FacebookOwnedPagesCronService({} as any, {} as any, aiClient as any, {} as any);
     logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
     errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
   });
