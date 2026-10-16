@@ -7,6 +7,8 @@ type ChannelWithRelations = {
   channel_id?: string | null;
   link_channel?: string | null;
   status?: string | null;
+  team_traffic?: string | null;
+  owner?: string | null;
   team_id?: string | null;
   owner_id?: string | null;
   created_at: Date;
@@ -24,8 +26,14 @@ export class ChannelResponseDto {
   @ApiPropertyOptional() status?: string | null;
   @ApiPropertyOptional() team_id?: string | null;
   @ApiPropertyOptional() owner_id?: string | null;
+  @ApiPropertyOptional() team_name?: string | null;
+  @ApiPropertyOptional() owner_name?: string | null;
   @ApiPropertyOptional() team?: { id: string; name: string } | null;
-  @ApiPropertyOptional() owner?: { id: string; full_name: string; email: string } | null;
+  @ApiPropertyOptional() owner?: {
+    id: string;
+    full_name: string;
+    email: string;
+  } | null;
   @ApiProperty() created_at: Date;
   @ApiProperty() updated_at: Date;
 
@@ -38,6 +46,8 @@ export class ChannelResponseDto {
     this.status = channel.status;
     this.team_id = channel.team_id;
     this.owner_id = channel.owner_id;
+    this.team_name = channel.team_traffic ?? channel.channel_team?.name ?? null;
+    this.owner_name = channel.owner ?? channel.channel_owner?.full_name ?? null;
     this.team = channel.channel_team ?? null;
     this.owner = channel.channel_owner ?? null;
     this.created_at = channel.created_at;

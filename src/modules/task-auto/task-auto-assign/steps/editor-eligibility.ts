@@ -2,41 +2,76 @@ import { DateTime } from "luxon";
 import {
   deriveDailyTarget,
   effectiveAssignmentDate,
-  dailyKpiDate,
 } from "../../../../utils/date.utils";
-import { EditorCapacity, WeightedAllocation } from "../types";
+import { deadlineWindow } from "../../../../utils/task-auto/deadline-window.util";
+import { A4EditorQuota, LineQuota } from "../types";
 import { PrismaService } from "@/common/prisma/prisma.service";
 
-export async function loadEligibleEditors(
+/**
+ * Chia `total` việc trong ngày cho các tuyến theo tỷ lệ phần KPI còn lại (phương pháp phần dư lớn
+ * nhất): mỗi tuyến nhận phần nguyên, số dư dành cho tuyến có phần lẻ lớn nhất (bằng nhau → tuyến còn
+ * nhiều hơn → id). Tuyến nhỏ (VD 0,5 việc/ngày) được xen kẽ ngày có ngày không, không ngày nào cũng 1.
+ */
+export function splitDailyTotal(
+  total: number,
+  lines: { id: string; remaining: number }[],
+): Map<string, number> {
+  const shares = new Map<string, number>();
+  const sum = lines.reduce((s, l) => s + l.remaining, 0);
+  if (total <= 0 || sum <= 0) return shares;
+  // Phần lẻ so bằng số nguyên (total × remaining mod sum) để không lệch do làm tròn số thực.
+  const parts = lines.map((l) => {
+    const whole = Math.floor((total * l.remaining) / sum);
+    return { ...l, whole, fraction: total * l.remaining - whole * sum };
+  });
+  let left = total - parts.reduce((s, p) => s + p.whole, 0);
+  const byFraction = [...parts].sort(
+    (a, b) => b.fraction - a.fraction || b.remaining - a.remaining || a.id.localeCompare(b.id),
+  );
+  const extra = new Set<string>();
+  for (const p of byFraction) {
+    if (left <= 0) break;
+    if (p.whole >= p.remaining) continue;
+    extra.add(p.id);
+    left--;
+  }
+  for (const p of parts) shares.set(p.id, p.whole + (extra.has(p.id) ? 1 : 0));
+  return shares;
+}
+
+/**
+ * Chỉ tiêu ngày theo từng tuyến trong `contentLineIds` của các editor 1 team (thành viên đang hoạt động,
+ * đã duyệt editor, có KPI tháng phân bổ cho tuyến đó > 0) — dùng chung cho chia task A4 và Kế hoạch ngày.
+ * Số việc trong ngày = TỔNG KPI còn lại mọi tuyến / số ngày lịch còn lại (làm tròn lên), rồi chia cho các
+ * tuyến theo splitDailyTotal — làm tròn lên riêng từng tuyến sẽ cộng lại vượt xa trung bình.
+ * Task đã có đếm theo HẠN CHÓT (deadlineWindow), không theo assigned_at, kể cả task tạo tay.
+ */
+export async function loadLineQuotas(
   prisma: PrismaService,
   teamId: string,
+  contentLineIds: string[],
   now: DateTime,
   month: string,
-  monthStart: Date,
-): Promise<EditorCapacity[]> {
+): Promise<LineQuota[]> {
+  if (!contentLineIds.length) return [];
   const members = await prisma.teamMember.findMany({
-    where: { team_id: teamId },
-    include: {
+    where: {
+      team_id: teamId,
+      user: {
+        is_active: true,
+        editor_approvals: { some: { status: "APPROVED" } },
+      },
+    },
+    select: {
       user: {
         select: {
           id: true,
-          is_active: true,
-          editor_approvals: {
-            where: { status: "APPROVED" },
-            select: { id: true },
-          },
           editor_kpis: {
             where: { month, team_id: teamId }, // KPI theo đúng team đang assign
             select: {
-              total_target: true,
-              product_gmv: true,
               allocations: {
-                select: {
-                  type: true,
-                  content_line_id: true,
-                  product_line_id: true,
-                  quantity: true,
-                },
+                where: { type: "CONTENT_LINE" }, // mọi tuyến — chỉ tiêu ngày chia trên tổng KPI
+                select: { content_line_id: true, quantity: true },
               },
             },
           },
@@ -45,171 +80,96 @@ export async function loadEligibleEditors(
     },
   });
 
-  const eligible = members
-    .map((m) => m.user)
-    .filter(
-      (u) =>
-        u.is_active &&
-        u.editor_approvals.length > 0 &&
-        u.editor_kpis[0]?.total_target > 0,
-    );
-
-  if (!eligible.length) return [];
-
-  const userIds = eligible.map((u) => u.id);
-  const todayStart = now.startOf("day").toJSDate();
-
-  // Đếm task theo team cụ thể → mỗi team assign độc lập, editor đa-team không bị ảnh hưởng chéo.
-  // Tính cả task tạo tay (EXTRA) — task giao tay cũng trừ vào quota ngày/tháng.
-  const [
-    monthlyTaskCounts,
-    todayTaskCounts,
-    monthlyByContentLine,
-    monthlyByProductLine,
-    manualDailyKpis,
-  ] = await Promise.all([
-    prisma.task.groupBy({
-      by: ["assignee_id"],
-      where: {
-        assignee_id: { in: userIds },
-        team_id: teamId,
-        assigned_at: { gte: monthStart },
-        status: { not: "CANCELLED" },
-      },
-      _count: { id: true },
-    }),
-    prisma.task.groupBy({
-      by: ["assignee_id"],
-      where: {
-        assignee_id: { in: userIds },
-        team_id: teamId,
-        assigned_at: { gte: todayStart },
-        status: { not: "CANCELLED" },
-      },
-      _count: { id: true },
-    }),
-    prisma.task.groupBy({
-      by: ["assignee_id", "content_line_id"],
-      where: {
-        assignee_id: { in: userIds },
-        team_id: teamId,
-        assigned_at: { gte: monthStart },
-        status: { not: "CANCELLED" },
-      },
-      _count: { id: true },
-    }),
-    prisma.task.groupBy({
-      by: ["assignee_id", "product_line_id"],
-      where: {
-        assignee_id: { in: userIds },
-        team_id: teamId,
-        assigned_at: { gte: monthStart },
-        status: { not: "CANCELLED" },
-      },
-      _count: { id: true },
-    }),
-    // KPI ngày set tay cho ngày hiệu lực (task giao hôm nay → làm ngày mai);
-    // target = 0 coi như chưa set nên lọc luôn ở query.
-    prisma.editorDailyKpi.findMany({
-      where: {
-        user_id: { in: userIds },
-        team_id: teamId,
-        date: dailyKpiDate(effectiveAssignmentDate(now).toFormat("yyyy-MM-dd")),
-        target: { gt: 0 },
-      },
-      select: { user_id: true, target: true },
-    }),
-  ]);
-
-  const monthlyTaskCountMap = new Map(
-    monthlyTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
-  );
-  const todayTaskCountMap = new Map(
-    todayTaskCounts.map((r) => [r.assignee_id!, r._count.id]),
-  );
-  const manualDailyTargetMap = new Map(
-    manualDailyKpis.map((r) => [r.user_id, r.target]),
-  );
-
-  // editorId -> (lineId -> count đã giao trong tháng)
-  const contentLineCountByEditor = new Map<string, Map<string, number>>();
-  for (const r of monthlyByContentLine) {
-    const editorId = r.assignee_id!;
-    if (!contentLineCountByEditor.has(editorId))
-      contentLineCountByEditor.set(editorId, new Map());
-    contentLineCountByEditor
-      .get(editorId)!
-      .set(r.content_line_id!, r._count.id);
+  // KPI tháng theo tuyến của từng editor có ít nhất 1 tuyến cần tính.
+  const wanted = new Set(contentLineIds);
+  const targetsByUser = new Map<string, Map<string, number>>();
+  for (const { user } of members) {
+    const byLine = targetsByUser.get(user.id) ?? new Map<string, number>();
+    for (const a of user.editor_kpis.flatMap((k) => k.allocations)) {
+      if (!a.content_line_id) continue;
+      byLine.set(a.content_line_id, (byLine.get(a.content_line_id) ?? 0) + a.quantity);
+    }
+    targetsByUser.set(user.id, byLine);
   }
-  const productLineCountByEditor = new Map<string, Map<string, number>>();
-  for (const r of monthlyByProductLine) {
-    const editorId = r.assignee_id!;
-    if (!productLineCountByEditor.has(editorId))
-      productLineCountByEditor.set(editorId, new Map());
-    productLineCountByEditor
-      .get(editorId)!
-      .set(r.product_line_id!, r._count.id);
+  for (const [userId, byLine] of targetsByUser) {
+    for (const [lineId, target] of byLine) if (target <= 0) byLine.delete(lineId);
+    if (![...byLine.keys()].some((lineId) => wanted.has(lineId))) targetsByUser.delete(userId);
+  }
+  if (!targetsByUser.size) return [];
+
+  // Ngày hiệu lực = ngày mai (task giao hôm nay → làm ngày mai), tháng KPI = tháng của ngày mai.
+  const dayStart = effectiveAssignmentDate(now);
+  const dayEnd = dayStart.plus({ days: 1 });
+  const monthStart = dayStart.startOf("month");
+  const monthEnd = monthStart.plus({ months: 1 });
+
+  const allLineIds = [...new Set([...targetsByUser.values()].flatMap((byLine) => [...byLine.keys()]))];
+  const tasks = await prisma.task.findMany({
+    where: {
+      assignee_id: { in: [...targetsByUser.keys()] },
+      team_id: teamId,
+      content_line_id: { in: allLineIds },
+      status: { not: "CANCELLED" },
+      ...deadlineWindow({ gte: monthStart.toJSDate(), lt: monthEnd.toJSDate() }),
+    },
+    select: { assignee_id: true, content_line_id: true, deadline: true, created_at: true },
+  });
+
+  const key = (userId: string, lineId: string) => `${userId}|${lineId}`;
+  const counts = new Map<string, { month: number; beforeDay: number; onDay: number }>();
+  for (const t of tasks) {
+    const k = key(t.assignee_id!, t.content_line_id!);
+    const c = counts.get(k) ?? { month: 0, beforeDay: 0, onDay: 0 };
+    const due = (t.deadline ?? t.created_at).getTime();
+    c.month++;
+    if (due < dayStart.toMillis()) c.beforeDay++;
+    else if (due < dayEnd.toMillis()) c.onDay++;
+    counts.set(k, c);
   }
 
-  const editors: EditorCapacity[] = [];
-
-  for (const u of eligible) {
-    const kpi = u.editor_kpis[0];
-    if (!kpi) continue;
-
-    const assignedThisMonth = monthlyTaskCountMap.get(u.id) ?? 0;
-    const assignedToday = todayTaskCountMap.get(u.id) ?? 0;
-    // dailyTarget must be based on state BEFORE today so it stays stable across multiple same-day runs
-    const assignedBeforeToday = Math.max(0, assignedThisMonth - assignedToday);
-    const remainingMonthly = Math.max(0, kpi.total_target - assignedThisMonth);
-    // KPI ngày set tay (nếu có) thay cho target dẫn xuất từ KPI tháng
-    const dailyTarget =
-      manualDailyTargetMap.get(u.id) ??
-      deriveDailyTarget(kpi.total_target, assignedBeforeToday, now);
-    // Only assign what's left of today's quota (handles multiple same-day runs correctly)
-    const remainingDaily = Math.max(
-      0,
-      Math.min(dailyTarget - assignedToday, remainingMonthly),
-    );
-    if (remainingDaily <= 0) continue;
-
-    const contentTypeWeights: WeightedAllocation[] = (kpi.allocations ?? [])
-      .filter((a) => a.type === "CONTENT_LINE" && a.content_line_id)
-      .map((a) => ({ key: a.content_line_id!, weight: a.quantity }))
-      .filter((i) => i.weight > 0);
-
-    const productTypeWeights: WeightedAllocation[] = (kpi.allocations ?? [])
-      .filter((a) => a.type === "PRODUCT_LINE" && a.product_line_id)
-      .map((a) => ({ key: a.product_line_id!, weight: a.quantity }))
-      .filter((i) => i.weight > 0);
-
-    const contentDoneByLine = contentLineCountByEditor.get(u.id) ?? new Map();
-    const contentLineRemaining = new Map(
-      contentTypeWeights.map((w) => [
-        w.key,
-        Math.max(0, w.weight - (contentDoneByLine.get(w.key) ?? 0)),
-      ]),
-    );
-
-    const productDoneByLine = productLineCountByEditor.get(u.id) ?? new Map();
-    const productLineRemaining = new Map(
-      productTypeWeights.map((w) => [
-        w.key,
-        Math.max(0, w.weight - (productDoneByLine.get(w.key) ?? 0)),
-      ]),
-    );
-
-    editors.push({
-      userId: u.id,
-      remainingDaily,
-      remainingMonthly,
-      productGmv: kpi.product_gmv ?? 0,
-      contentTypeWeights,
-      productTypeWeights,
-      contentLineRemaining,
-      productLineRemaining,
+  const quotas: LineQuota[] = [];
+  for (const [userId, byLine] of targetsByUser) {
+    // Phần KPI còn lại tính tới TRƯỚC ngày hiệu lực — giữ ổn định khi chạy nhiều lần trong ngày vì
+    // task vừa giao rơi vào onDay, không vào beforeDay.
+    const lines = [...byLine].map(([lineId, monthlyTarget]) => {
+      const c = counts.get(key(userId, lineId)) ?? { month: 0, beforeDay: 0, onDay: 0 };
+      return { id: lineId, monthlyTarget, c, remaining: Math.max(0, monthlyTarget - c.beforeDay) };
     });
+    const totalRemaining = lines.reduce((s, l) => s + l.remaining, 0);
+    const shares = splitDailyTotal(deriveDailyTarget(totalRemaining, 0, now), lines);
+    for (const { id: lineId, monthlyTarget, c } of lines) {
+      const dailyTarget = shares.get(lineId) ?? 0;
+      if (!wanted.has(lineId) || dailyTarget <= 0) continue;
+      const remainingMonthly = Math.max(0, monthlyTarget - c.month);
+      quotas.push({
+        userId,
+        contentLineId: lineId,
+        monthlyTarget,
+        assignedThisMonth: c.month,
+        dailyTarget,
+        onDay: c.onDay,
+        remainingToday: Math.max(0, Math.min(dailyTarget - c.onDay, remainingMonthly)),
+      });
+    }
   }
+  return quotas;
+}
 
-  return editors;
+/** Editor còn thiếu task tuyến `contentLineId` cho ngày hiệu lực — auto-assign tạo đủ phần thiếu. */
+export async function loadA4Editors(
+  prisma: PrismaService,
+  teamId: string,
+  contentLineId: string,
+  now: DateTime,
+  month: string,
+): Promise<A4EditorQuota[]> {
+  const quotas = await loadLineQuotas(prisma, teamId, [contentLineId], now, month);
+  return quotas
+    .filter((q) => q.remainingToday > 0)
+    .map(({ userId, monthlyTarget, assignedThisMonth, remainingToday }) => ({
+      userId,
+      monthlyTarget,
+      assignedThisMonth,
+      remainingToday,
+    }));
 }

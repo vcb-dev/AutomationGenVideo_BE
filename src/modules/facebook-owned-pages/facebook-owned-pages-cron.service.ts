@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookAiClientService } from './facebook-ai-client.service';
+import { FacebookConnectedPagesService } from './facebook-connected-pages.service';
 
 const VN_TZ = { timeZone: 'Asia/Ho_Chi_Minh' };
 
@@ -17,6 +18,7 @@ export class FacebookOwnedPagesCronService implements OnApplicationBootstrap {
     private readonly prisma: PrismaService,
     private readonly service: FacebookOwnedPagesService,
     private readonly aiClient: FacebookAiClientService,
+    private readonly connectedPages: FacebookConnectedPagesService,
   ) {}
 
   // Chạy TRƯỚC import 6h: import là bước duy nhất cần User Access Token, gia hạn xong
@@ -69,8 +71,11 @@ export class FacebookOwnedPagesCronService implements OnApplicationBootstrap {
   private async runImportPages(): Promise<void> {
     this.logger.log('═══ [IMPORT] Kiểm tra pages mới từ Facebook ═══');
     try {
-      const { created, updated, newPageIds } = await this.service.importManagedPages();
-      this.logger.log(`✅ [IMPORT] +${created} page mới, ~${updated} cập nhật`);
+      const { created, updated, newPageIds, connectedPages, failedAccounts } = await this.connectedPages.importAll();
+      this.logger.log(
+        `✅ [IMPORT] +${created} page mới, ~${updated} cập nhật (${connectedPages} page từ tài khoản kết nối Đăng bài MXH)` +
+          (failedAccounts.length ? ` — không lấy được page của: ${failedAccounts.join(', ')}` : ''),
+      );
 
       // Có page mới → tự trigger backfill riêng cho từng page (giống backfill_single_page_task.delay cũ)
       for (const pageId of newPageIds) {

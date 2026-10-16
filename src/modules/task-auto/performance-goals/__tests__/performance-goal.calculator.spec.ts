@@ -1,7 +1,7 @@
 import {
   calculateGoalProgress,
   calculateUnweightedOverall,
-} from "../performance-goal.calculator";
+} from "../../../../utils/task-auto/performance-goal.calculator";
 
 describe("performance goal calculator", () => {
   it("ưu tiên actual nhập tay và giữ tiến độ hiển thị vượt 100%", () => {

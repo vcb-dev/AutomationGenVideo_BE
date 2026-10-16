@@ -1,7 +1,7 @@
 import {
-  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, IsBoolean, ValidateIf, IsArray, ValidateNested,
+  IsString, IsOptional, IsEnum, IsIn, IsDateString, IsInt, Min, ValidateIf, IsArray, ValidateNested,
 } from 'class-validator'
-import { Transform, Type } from 'class-transformer'
+import { Type } from 'class-transformer'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 
 export enum TaskStatus {
@@ -84,6 +84,14 @@ export class QueryTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() reviewed_from?: string
   @ApiPropertyOptional() @IsString() @IsOptional() reviewed_to?: string
 
+  // Picker "Gắn vào video đã làm": chỉ video nộp TRƯỚC giờ đăng bài (ISO datetime, chính xác tới giây).
+  @ApiPropertyOptional() @IsDateString() @IsOptional() submitted_before?: string
+  // Mã tuyến nội dung (A1…A5) — so theo tên tuyến, không phân biệt hoa thường.
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line?: string
+  // Bộ lọc tuyến nội dung / dòng sản phẩm ở tab "Danh sách task" (theo id) — xem taskLineConditions().
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string
+
   // Cột "Quá hạn" ảo (Kanban): task đang xử lý (chưa duyệt/huỷ) có deadline đã qua.
   // Khi bật, bỏ qua deadline_from/to/date/month và cả `status` — xem tasks.service.ts findAll.
   @ApiPropertyOptional({ enum: ['true', 'false'] })
@@ -99,8 +107,9 @@ export class QueryTaskDto {
 
   // Kanban cần task vừa đổi cột (đổi status) nổi lên đầu danh sách thay vì kẹt theo created_at
   // như view bảng — mặc định giữ nguyên created_at để không đổi hành vi Table view hiện có.
-  @ApiPropertyOptional({ enum: ['created_at', 'updated_at'] })
-  @IsIn(['created_at', 'updated_at']) @IsOptional() sort?: 'created_at' | 'updated_at'
+  // submitted_at: picker "Gắn vào video đã làm" — video nộp gần giờ đăng bài nhất lên đầu.
+  @ApiPropertyOptional({ enum: ['created_at', 'updated_at', 'submitted_at'] })
+  @IsIn(['created_at', 'updated_at', 'submitted_at']) @IsOptional() sort?: 'created_at' | 'updated_at' | 'submitted_at'
 
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
@@ -123,6 +132,12 @@ export class QueryTaskHeaderCountsDto {
   @ApiPropertyOptional() @IsString() @IsOptional() deadline_to?: string
   @ApiPropertyOptional() @IsString() @IsOptional() pending_from?: string
   @ApiPropertyOptional() @IsString() @IsOptional() pending_to?: string
+  // Bộ lọc chung của màn Nhiệm vụ — áp cho tổng "N task" lẫn 2 badge chờ duyệt.
+  @ApiPropertyOptional() @IsString() @IsOptional() content_line_id?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string
+  // Khoảng ngày cho badge "Content chờ duyệt" — theo ngày gửi yêu cầu duyệt (YYYY-MM-DD, giờ VN).
+  @ApiPropertyOptional() @IsString() @IsOptional() approval_from?: string
+  @ApiPropertyOptional() @IsString() @IsOptional() approval_to?: string
   @ApiPropertyOptional({ enum: ['auto', 'extra'] })
   @IsIn(['auto', 'extra']) @IsOptional() task_type?: 'auto' | 'extra'
 }
@@ -148,61 +163,4 @@ export class UpdatePublishedLinksDto {
   @ApiProperty({ type: [PublishedLinkItemDto] })
   @IsArray() @ValidateNested({ each: true }) @Type(() => PublishedLinkItemDto)
   links: PublishedLinkItemDto[]
-}
-
-export class GenerateVideoScriptDto {
-  @ApiPropertyOptional() @IsString() @IsOptional() fileUrl?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() scriptText?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentTitle?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentLine?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() contentMarket?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productName?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productSku?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productPrice?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productMaterial?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productPriceSegment?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productLine?: string | null
-  @ApiPropertyOptional() @IsString() @IsOptional() productMarket?: string | null
-  @ApiPropertyOptional() @IsBoolean() @IsOptional() force?: boolean
-}
-
-export class UpdateVideoScriptTranslationDto {
-  @ApiProperty() @IsString() content: string
-  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
-}
-
-export class UpdateVideoScriptDto {
-  @ApiProperty() @IsString() content: string
-  @ApiPropertyOptional({ type: [String] }) @IsArray() @IsString({ each: true }) @IsOptional() hashtags?: string[]
-  @ApiPropertyOptional({ type: UpdateVideoScriptTranslationDto })
-  @ValidateNested() @Type(() => UpdateVideoScriptTranslationDto) @IsOptional()
-  translation?: UpdateVideoScriptTranslationDto
-}
-
-export class ReviewContentApprovalDto {
-  @ApiProperty({ enum: ['APPROVED', 'REJECTED'] })
-  @IsEnum(['APPROVED', 'REJECTED']) action: 'APPROVED' | 'REJECTED'
-
-  @ApiPropertyOptional() @IsString() @IsOptional() reject_reason?: string
-}
-
-export class QueryContentApprovalDto {
-  @ApiPropertyOptional({ enum: ['PENDING', 'APPROVED', 'REJECTED'] })
-  @IsIn(['PENDING', 'APPROVED', 'REJECTED']) @IsOptional() status?: 'PENDING' | 'APPROVED' | 'REJECTED'
-  @ApiPropertyOptional() @IsString() @IsOptional() team_id?: string
-  @ApiPropertyOptional() @IsString() @IsOptional() assignee_id?: string
-  @ApiPropertyOptional() @IsString() @IsOptional() search?: string
-
-  @ApiPropertyOptional({ default: 1 })
-  @Type(() => Number) @IsInt() @Min(1) @IsOptional() page?: number = 1
-
-  @ApiPropertyOptional({ default: 10 })
-  @Type(() => Number) @IsInt() @Min(1) @IsOptional() limit?: number = 10
-}
-
-export class TranslateVideoScriptDto {
-  @ApiPropertyOptional({
-    description: "Thị trường mục tiêu (vd 'Indonesia') — dùng để AI tự xác định ngôn ngữ khi task chưa từng có bản dịch nào",
-  })
-  @IsString() @IsOptional() market?: string | null
 }

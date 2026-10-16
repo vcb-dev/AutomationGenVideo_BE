@@ -32,7 +32,10 @@ export class FacebookOAuthStrategy {
       //
       // LƯU Ý: token đã cấp KHÔNG tự có thêm quyền. Phải kết nối lại tài khoản thì token mới
       // mang quyền mới.
-      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,business_management,instagram_basic,instagram_content_publish,instagram_manage_insights',
+      //
+      // `pages_read_user_content`: cào video page sở hữu (/{page}/feed) và kéo reactions/comments/shares
+      // đều cần nó — thiếu thì Graph trả (#10).
+      scope: 'public_profile,pages_show_list,pages_manage_posts,pages_read_engagement,pages_read_user_content,business_management,instagram_basic,instagram_content_publish,instagram_manage_insights',
       response_type: 'code',
       state,
     });

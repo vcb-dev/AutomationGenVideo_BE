@@ -1,6 +1,6 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ContentApprovalService } from '../../content-approval/content-approval.service';
 import { TaskAutoTasksService } from '../tasks.service';
-import { ContentApprovalService } from '../content-approval.service';
 
 /**
  * Gói test cho TaskAutoTasksService — phần create()/update()/remove()/submit()/review()/
@@ -421,6 +421,135 @@ describe('TaskAutoTasksService — ghi nhận assigned_by_id ở create()/update
 });
 
 /**
+ * Task AUTO (chia tự động theo KPI tuyến A4) được tạo chỉ với sản phẩm kho team, chưa có content —
+ * editor phải chọn được content sau. Sản phẩm/nguồn của task AUTO vẫn khoá.
+ */
+describe('TaskAutoTasksService.update — task AUTO chỉ cho đổi content', () => {
+  function buildService() {
+    const prisma: any = {
+      task: {
+        findUnique: jest.fn(async () => ({
+          task_type: 'AUTO', assignee_id: 'member-1', status: 'ASSIGNED', team_id: 'team-1',
+          editor_product_id: null, oms_product_id: null, oms_variant_id: null,
+        })),
+        update: jest.fn(async (args: any) => ({ id: 'task-1', ...args.data, team: { leader_id: null } })),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('assignee chọn content kho team cho task AUTO → lưu được', async () => {
+    const { service, prisma } = buildService();
+
+    await service.update(
+      'task-1',
+      { content_id: null, editor_content_id: null, team_content_id: 'tc-1' } as any,
+      'member-1',
+      ['MEMBER'],
+    );
+
+    const updateArgs = prisma.task.update.mock.calls[0][0];
+    expect(updateArgs.data.team_content_id).toBe('tc-1');
+    expect(updateArgs.data.content_id).toBeNull();
+  });
+
+  it('đổi sản phẩm hoặc nguồn của task AUTO → Forbidden, không ghi gì', async () => {
+    const { service, prisma } = buildService();
+
+    await expect(
+      service.update('task-1', { team_content_id: 'tc-1', team_product_id: 'tp-2' } as any, 'member-1', ['MEMBER']),
+    ).rejects.toThrow('chỉ cho phép đổi content');
+    await expect(
+      service.update('task-1', { source_outro_id: null } as any, 'leader-1', ['LEADER']),
+    ).rejects.toThrow('chỉ cho phép đổi content');
+    expect(prisma.task.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('TaskAutoTasksService.update — đổi content', () => {
+  const lineOf: Record<string, string | null> = { 'ec-old': 'line-A1', 'ec-new': 'line-A2', 'ec-noline': null };
+
+  function buildService(task: any, opts: { duplicate?: any } = {}) {
+    const prisma: any = {
+      editorContent: { findUnique: jest.fn(async ({ where }: any) => (where.id in lineOf ? { content_line_id: lineOf[where.id] } : null)) },
+      task: {
+        findUnique: jest.fn(async () => ({
+          assignee_id: 'member-1', status: 'IN_PROGRESS', team_id: 'team-1',
+          product_id: null, editor_product_id: 'ep-1', team_product_id: null, oms_product_id: null, oms_variant_id: null,
+          content_id: null, editor_content_id: 'ec-old', team_content_id: null,
+          ...task,
+        })),
+        findFirst: jest.fn(async () => opts.duplicate ?? null),
+        update: jest.fn(async (args: any) => ({ id: 'task-1', ...args.data, team: { leader_id: null } })),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  const pickEditorContent = (id: string) => ({ content_id: null, editor_content_id: id, team_content_id: null }) as any;
+
+  it('task tạo tay đang theo tuyến content cũ → tuyến đổi theo content mới', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    const updateArgs = prisma.task.update.mock.calls[0][0];
+    expect(updateArgs.data.editor_content_id).toBe('ec-new');
+    expect(updateArgs.data.content_line_id).toBe('line-A2');
+  });
+
+  it('task tạo tay đặt tuyến riêng (khác tuyến content cũ) → giữ nguyên tuyến', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A5' });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+
+  it('content mới chưa có tuyến → không xoá tuyến đang có của task', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' });
+
+    await service.update('task-1', pickEditorContent('ec-noline'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+
+  it('task AUTO đổi content khác tuyến → vẫn giữ tuyến A4 (đếm theo KPI)', async () => {
+    const { service, prisma } = buildService({
+      task_type: 'AUTO', content_line_id: 'line-A1', editor_product_id: null, team_product_id: 'tp-1',
+    });
+
+    await service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']);
+
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+    expect(prisma.editorContent.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('editor đã có task khác cùng cặp content + sản phẩm → BadRequest, không ghi gì', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' }, { duplicate: { id: 'task-2' } });
+
+    await expect(
+      service.update('task-1', pickEditorContent('ec-new'), 'member-1', ['MEMBER']),
+    ).rejects.toThrow('cặp content + sản phẩm');
+    expect(prisma.task.findFirst.mock.calls[0][0].where).toEqual({
+      assignee_id: 'member-1', id: { not: 'task-1' }, editor_content_id: 'ec-new', editor_product_id: 'ep-1',
+    });
+    expect(prisma.task.update).not.toHaveBeenCalled();
+  });
+
+  it('form Sửa gửi lại đúng content đang gắn (chỉ đổi deadline) → không kiểm trùng, không đụng tuyến', async () => {
+    const { service, prisma } = buildService({ task_type: 'EXTRA', content_line_id: 'line-A1' }, { duplicate: { id: 'task-2' } });
+
+    await service.update('task-1', { ...pickEditorContent('ec-old'), deadline: '2026-10-11' }, 'member-1', ['MEMBER']);
+
+    expect(prisma.task.findFirst).not.toHaveBeenCalled();
+    expect('content_line_id' in prisma.task.update.mock.calls[0][0].data).toBe(false);
+  });
+});
+
+/**
  * remove() (xoá task) — trước đây chặn xoá task IN_PROGRESS. Giờ được xoá ở mọi trạng thái, kể cả
  * IN_PROGRESS. Luật phân quyền: ADMIN/MANAGER xoá được mọi task; LEADER xoá được task của team mình
  * quản lý; thành viên thường (không có role đặc quyền) chỉ xoá được task do chính mình đảm nhận
@@ -595,6 +724,73 @@ describe('TaskAutoTasksService.remove — xoá task ở mọi trạng thái, the
  * getHeaderCounts() trả total/submittedTotal; ContentApprovalService.countPending() trả riêng số
  * content chờ duyệt (khác bảng nên tách service) — controller gộp cả 2 bằng Promise.all.
  */
+/** Picker "Gắn vào video đã làm": chỉ video nộp TRƯỚC giờ đăng bài (chính xác tới giây) + đúng tuyến, gần nhất lên đầu. */
+describe('TaskAutoTasksService.findAll — lọc video đã làm trước giờ đăng bài', () => {
+  function build() {
+    const prisma: any = {
+      task: {
+        findMany: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('submitted_before + content_line + sort submitted_at', async () => {
+    const { service, prisma } = build();
+
+    await service.findAll({
+      status: 'APPROVED',
+      assignee_id: 'user-1',
+      submitted_before: '2026-09-25T12:26:06.000Z',
+      content_line: ' a3 ',
+      sort: 'submitted_at',
+    } as any);
+
+    const args = prisma.task.findMany.mock.calls[0][0];
+    expect(args.where).toMatchObject({
+      status: 'APPROVED',
+      assignee_id: 'user-1',
+      submitted_at: { lte: new Date('2026-09-25T12:26:06.000Z') },
+      content_line: { name: { equals: 'a3', mode: 'insensitive' } },
+    });
+    expect(args.orderBy).toEqual([{ submitted_at: 'desc' }]);
+    expect(prisma.task.count.mock.calls[0][0].where).toEqual(args.where);
+  });
+
+  it('lọc tuyến nội dung + dòng sản phẩm (dòng SP suy qua sản phẩm gắn trên task khi task chưa có)', async () => {
+    const { service, prisma } = build();
+
+    await service.findAll({ content_line_id: 'cl-a4', product_line_id: 'pl-gmv' } as any);
+
+    expect(prisma.task.findMany.mock.calls[0][0].where.AND).toEqual([
+      { content_line_id: 'cl-a4' },
+      {
+        OR: [
+          { product_line_id: 'pl-gmv' },
+          {
+            product_line_id: null,
+            OR: [
+              { product: { product_line_id: 'pl-gmv' } },
+              { editor_product: { product_line_id: 'pl-gmv' } },
+              { team_product: { product_line_id: 'pl-gmv' } },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('danh sách kèm tuyến nội dung để FE lọc sẵn tuyến khi gắn link', async () => {
+    const { service, prisma } = build();
+
+    await service.findAll({} as any);
+
+    expect(prisma.task.findMany.mock.calls[0][0].include.content_line).toEqual({ select: { id: true, name: true } });
+  });
+});
+
 describe('TaskAutoTasksService.getHeaderCounts', () => {
   function build() {
     const countCalls: any[] = [];
@@ -609,6 +805,20 @@ describe('TaskAutoTasksService.getHeaderCounts', () => {
     const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     return { service, countCalls };
   }
+
+  it('bộ lọc chung tuyến nội dung / dòng sản phẩm áp cho cả tổng "N task" lẫn badge Video chờ duyệt', async () => {
+    const { service, countCalls } = build();
+
+    await service.getHeaderCounts({
+      content_line_id: 'cl-a1', product_line_id: 'pl-traffic', deadline_from: '2026-09-01', pending_from: '2026-09-01',
+    } as any);
+
+    expect(countCalls[0].where.AND).toHaveLength(3);
+    expect(countCalls[0].where.AND[1]).toEqual({ content_line_id: 'cl-a1' });
+    expect(countCalls[1].where.status).toBe('SUBMITTED');
+    expect(countCalls[1].where.AND).toHaveLength(3);
+    expect(countCalls[1].where.AND[1]).toEqual({ content_line_id: 'cl-a1' });
+  });
 
   it('không truyền gì → total đếm toàn bộ, submittedTotal luôn khoá status SUBMITTED', async () => {
     const { service, countCalls } = build();
@@ -678,6 +888,85 @@ describe('TaskAutoTasksService.getHeaderCounts', () => {
   });
 });
 
+/**
+ * findAll() — where dựng bằng buildTaskListWhere() (utils/task-auto/task-list-query.util, dùng
+ * chung với file export). Khoảng ngày theo hạn chót dùng chung buildDeadlineRangeAnd() với
+ * getHeaderCounts() để danh sách và tổng "N task" ở header không lệch nhau.
+ */
+describe('TaskAutoTasksService.findAll — where danh sách task', () => {
+  function build() {
+    const prisma: any = {
+      task: {
+        findMany: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+      },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const whereOf = () => prisma.task.findMany.mock.calls[0][0].where;
+    return { service, prisma, whereOf };
+  }
+
+  it('overdue=true: bỏ qua status/khoảng ngày, chỉ lấy task chưa xong có deadline đã qua', async () => {
+    const { service, whereOf } = build();
+
+    await service.findAll({
+      overdue: 'true',
+      status: 'SUBMITTED',
+      deadline_from: '2026-09-01',
+      deadline_to: '2026-09-30',
+      team_id: 'team-1',
+    } as any);
+
+    const where = whereOf();
+    expect(where.status).toBeUndefined();
+    expect(where.team_id).toBe('team-1');
+    expect(where.AND).toHaveLength(2);
+    expect(where.AND[0].deadline.lt).toBeInstanceOf(Date);
+    expect(where.AND[1]).toEqual({ status: { notIn: ['APPROVED', 'CANCELLED'] } });
+  });
+
+  it('deadline_date: lọc theo ngày VN, task chưa có deadline thì theo ngày tạo; exclude_overdue loại task trễ hạn', async () => {
+    const { service, whereOf } = build();
+
+    await service.findAll({ deadline_date: '2026-09-15', exclude_overdue: 'true', status: 'IN_PROGRESS' } as any);
+
+    const where = whereOf();
+    const dayStart = new Date('2026-09-15T00:00:00+07:00');
+    const dayEnd = new Date('2026-09-15T23:59:59.999+07:00');
+    expect(where.status).toBe('IN_PROGRESS');
+    expect(where.AND[0]).toEqual({
+      OR: [
+        { deadline: { gte: dayStart, lte: dayEnd } },
+        { deadline: null, created_at: { gte: dayStart, lte: dayEnd } },
+      ],
+    });
+    expect(where.AND[1].OR).toEqual([
+      { deadline: null },
+      { deadline: { gte: expect.any(Date) } },
+      { status: { in: ['APPROVED', 'CANCELLED'] } },
+    ]);
+  });
+
+  it('deadline_from/to: cùng điều kiện khoảng ngày với tổng "N task" của getHeaderCounts()', async () => {
+    const { service, prisma, whereOf } = build();
+    const q = { deadline_from: '2026-09-01', deadline_to: '2026-09-30' } as any;
+
+    await service.findAll(q);
+    await service.getHeaderCounts(q);
+
+    const headerTotalWhere = prisma.task.count.mock.calls[1][0].where;
+    expect(whereOf().AND).toEqual(headerTotalWhere.AND);
+    expect(whereOf().AND).toEqual([
+      {
+        OR: [
+          { deadline: { gte: new Date('2026-09-01T00:00:00+07:00'), lte: new Date('2026-09-30T23:59:59.999+07:00') } },
+          { deadline: null, created_at: { gte: new Date('2026-09-01T00:00:00+07:00'), lte: new Date('2026-09-30T23:59:59.999+07:00') } },
+        ],
+      },
+    ]);
+  });
+});
+
 describe('ContentApprovalService.countPending', () => {
   function build() {
     const countCalls: any[] = [];
@@ -713,6 +1002,20 @@ describe('ContentApprovalService.countPending', () => {
         assignee_id: 'user-1',
         content: { title: { contains: 'abc', mode: 'insensitive' } },
       },
+    });
+  });
+
+  it('bộ lọc chung: tuyến / dòng SP theo task + khoảng ngày gửi duyệt theo giờ VN', async () => {
+    const { service, countCalls } = build();
+
+    await service.countPending({ content_line_id: 'cl-a2', product_line_id: 'pl-gmv', date_from: '2026-09-01', date_to: '2026-09-28' });
+
+    const where = countCalls[0].where;
+    expect(where.task.AND[0]).toEqual({ content_line_id: 'cl-a2' });
+    expect(where.task.AND[1].OR[0]).toEqual({ product_line_id: 'pl-gmv' });
+    expect(where.created_at).toEqual({
+      gte: new Date('2026-08-31T17:00:00.000Z'),
+      lt: new Date('2026-09-28T17:00:00.000Z'),
     });
   });
 });
@@ -829,5 +1132,240 @@ describe('TaskAutoTasksService.review — dọn dẹp khi từ chối task', () 
     expect(prisma.task.update.mock.calls[0][0].data).not.toHaveProperty('result_url');
     expect(prisma.socialPost.updateMany).not.toHaveBeenCalled();
     expect(videoService.uploadPendingToDrive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TaskAutoTasksService — published_links không bị ghi đè khi nhiều nơi cùng sửa', () => {
+  const FB = { id: 'l-fb', platform: 'Facebook', url: 'https://facebook.com/reel/1376370697349012' };
+  const YT = { id: 'l-yt', platform: 'YouTube', url: 'https://youtube.com/watch?v=dQw4w9WgXcQ' };
+
+  function build(initialLinks: any[], fetchStatsForLink: jest.Mock) {
+    let row: any = {
+      id: 'task-1',
+      status: 'APPROVED',
+      assignee_id: 'editor-1',
+      published_links: initialLinks,
+      updated_at: new Date(1),
+    };
+    let tick = 1;
+    const prisma: any = {
+      task: {
+        // Cron đọc bản chụp lúc bắt đầu.
+        findMany: jest.fn(async () => [{ id: row.id, published_links: row.published_links }]),
+        findUnique: jest.fn(async () => ({ ...row })),
+        // update thường ghi đè không điều kiện — đường ghi cũ, giữ để test bắt được nếu bị dùng lại.
+        update: jest.fn(async ({ data }: any) => {
+          row = { ...row, ...data, updated_at: new Date(++tick) };
+          return { ...row };
+        }),
+        updateMany: jest.fn(async ({ where, data }: any) => {
+          if (row.updated_at.getTime() !== where.updated_at.getTime()) return { count: 0 };
+          row = { ...row, ...data, updated_at: new Date(++tick) };
+          return { count: 1 };
+        }),
+      },
+      $queryRaw: jest.fn(async () => []),
+    };
+    const contentWinPush: any = { pushWinningTasks: jest.fn(async () => undefined) };
+    const service = new TaskAutoTasksService(
+      prisma,
+      {} as any,
+      {} as any,
+      { fetchStatsForLink } as any,
+      {} as any,
+      contentWinPush,
+      {} as any,
+    );
+    return {
+      service,
+      /** User nộp/sửa link xen vào — Prisma @updatedAt đổi updated_at. */
+      userWrites: (links: any[]) => {
+        row = { ...row, published_links: links, updated_at: new Date(++tick) };
+      },
+      links: () => row.published_links,
+    };
+  }
+
+  it('cron: link user nộp thêm trong lúc cron đang cào vẫn còn, link cũ nhận số liệu mới', async () => {
+    let ctx: ReturnType<typeof build>;
+    const fetchStatsForLink = jest.fn(async () => {
+      ctx.userWrites([FB, YT]);
+      return { status: 'success', views: 9 };
+    });
+    ctx = build([FB], fetchStatsForLink);
+
+    await ctx.service.refreshMonthlyPublishedLinkStats();
+
+    expect(ctx.links()).toEqual([{ ...FB, stats: { status: 'success', views: 9 } }, YT]);
+  });
+
+  it('cron: link user xoá trong lúc cron đang cào không bị cron ghi lại', async () => {
+    let ctx: ReturnType<typeof build>;
+    const fetchStatsForLink = jest.fn(async () => {
+      ctx.userWrites([]);
+      return { status: 'success', views: 9 };
+    });
+    ctx = build([FB], fetchStatsForLink);
+
+    await ctx.service.refreshMonthlyPublishedLinkStats();
+
+    expect(ctx.links()).toEqual([]);
+  });
+
+  it('updatePublishedLinks: link không đổi lấy số liệu mới nhất trong DB (cron vừa cào xong trong lúc user lưu)', async () => {
+    let ctx: ReturnType<typeof build>;
+    const fetchStatsForLink = jest.fn(async () => {
+      // Đang cào link mới YT thì cron ghi số mới cho FB.
+      ctx.userWrites([{ ...FB, stats: { views: 200 } }]);
+      return { views: 7 };
+    });
+    ctx = build([{ ...FB, stats: { views: 100 } }], fetchStatsForLink);
+
+    await ctx.service.updatePublishedLinks('task-1', { links: [FB, YT] }, 'editor-1', []);
+
+    expect(fetchStatsForLink).toHaveBeenCalledTimes(1);
+    expect(fetchStatsForLink).toHaveBeenCalledWith('YouTube', YT.url);
+    expect(ctx.links()).toEqual([
+      { ...FB, stats: { views: 200 } },
+      { ...YT, stats: { views: 7 } },
+    ]);
+  });
+
+  it('refreshPublishedLinkStats: user sửa url trong lúc đang cào → không gắn số liệu của url cũ', async () => {
+    const edited = { ...FB, url: 'https://facebook.com/reel/moi' };
+    let ctx: ReturnType<typeof build>;
+    const fetchStatsForLink = jest.fn(async () => {
+      ctx.userWrites([edited]);
+      return { views: 9 };
+    });
+    ctx = build([FB], fetchStatsForLink);
+
+    await ctx.service.refreshPublishedLinkStats('task-1', FB.id, 'editor-1', []);
+
+    expect(ctx.links()).toEqual([edited]);
+  });
+});
+
+describe('TaskAutoTasksService.updatePublishedLinks — soát link nộp', () => {
+  const REEL = 'https://www.facebook.com/reel/1376370697349012';
+  const TIKTOK = 'https://www.tiktok.com/@huyk.xuongchetac2/video/7610704678313037063';
+
+  function build(initialLinks: any[], otherTasks: any[] = []) {
+    let row: any = {
+      id: 'task-1',
+      status: 'APPROVED',
+      assignee_id: 'editor-1',
+      published_links: initialLinks,
+      updated_at: new Date(1),
+    };
+    const prisma: any = {
+      task: {
+        findUnique: jest.fn(async () => ({ ...row })),
+        updateMany: jest.fn(async ({ data }: any) => {
+          row = { ...row, ...data, updated_at: new Date(2) };
+          return { count: 1 };
+        }),
+      },
+      $queryRaw: jest.fn(async () => otherTasks),
+    };
+    const fetchStatsForLink = jest.fn(async () => ({ status: 'success', views: 1 }));
+    const service = new TaskAutoTasksService(
+      prisma,
+      {} as any,
+      {} as any,
+      { fetchStatsForLink } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    return {
+      prisma,
+      submit: (links: any[]) => service.updatePublishedLinks('task-1', { links }, 'editor-1', []),
+      urls: () => row.published_links.map((l: any) => l.url),
+    };
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('nhãn Instagram nhưng dán link TikTok → 400, không ghi', async () => {
+    const ctx = build([]);
+
+    await expect(ctx.submit([{ id: 'a', platform: 'Instagram', url: TIKTOK }])).rejects.toThrow(
+      /là link TikTok, không phải Instagram/,
+    );
+    expect(ctx.prisma.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('link trang Facebook thay vì 1 video → 400', async () => {
+    const ctx = build([]);
+
+    await expect(
+      ctx.submit([{ id: 'a', platform: 'Facebook', url: 'https://www.facebook.com/huykjewelry' }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('link sai lưu từ trước vẫn giữ nguyên, không chặn nộp thêm link mới', async () => {
+    const legacy = { id: 'old', platform: 'Instagram', url: TIKTOK };
+    const ctx = build([legacy]);
+
+    await ctx.submit([legacy, { id: 'new', platform: 'Facebook', url: REEL }]);
+
+    expect(ctx.urls()).toEqual([TIKTOK, REEL]);
+  });
+
+  it('cùng 1 video dán 2 dạng link trong 1 task → 400', async () => {
+    const ctx = build([{ id: 'a', platform: 'Facebook', url: REEL }]);
+
+    await expect(
+      ctx.submit([
+        { id: 'a', platform: 'Facebook', url: REEL },
+        { id: 'b', platform: 'Facebook', url: 'https://www.facebook.com/watch/?v=1376370697349012' },
+      ]),
+    ).rejects.toThrow(/trùng video với một link khác của task này/);
+  });
+
+  it('video đã nộp cho task khác (khác dạng link) → 409 kèm người nhận + hạn của task kia', async () => {
+    const ctx = build([], [
+      {
+        links: JSON.stringify([
+          { id: 'x', platform: 'Facebook', url: 'https://www.facebook.com/huykjewelry/videos/1376370697349012/' },
+        ]),
+        deadline: new Date('2026-10-12T10:00:00Z'),
+        assignee: 'Nguyễn Văn A',
+      },
+    ]);
+
+    const err = await ctx.submit([{ id: 'a', platform: 'Facebook', url: REEL }]).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(err.message).toMatch(/Nguyễn Văn A, hạn 12\/10\/2026/);
+    expect(ctx.prisma.$queryRaw.mock.calls[0]).toContainEqual(['%1376370697349012%']);
+    expect(ctx.prisma.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('task khác chỉ khớp thô chuỗi số (id video khác) → không chặn', async () => {
+    const ctx = build([], [
+      {
+        links: JSON.stringify([{ id: 'x', platform: 'Facebook', url: 'https://www.facebook.com/reel/91376370697349012' }]),
+        deadline: null,
+        assignee: 'Nguyễn Văn A',
+      },
+    ]);
+
+    await ctx.submit([{ id: 'a', platform: 'Facebook', url: REEL }]);
+
+    expect(ctx.urls()).toEqual([REEL]);
+  });
+
+  it('link share/r được giải về link reel thật rồi mới so trùng + lưu', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      text: async () => '<a href="https://m.facebook.com/reel/1376370697349012">xem</a>',
+    } as any);
+    const ctx = build([]);
+
+    await ctx.submit([{ id: 'a', platform: 'Facebook', url: 'https://www.facebook.com/share/r/1KyNyNv88v/' }]);
+
+    expect(ctx.prisma.$queryRaw.mock.calls[0]).toContainEqual(['%1376370697349012%']);
+    expect(ctx.urls()).toEqual([REEL]);
   });
 });

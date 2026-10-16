@@ -313,6 +313,29 @@ export class WorkReportService implements OnModuleInit {
         return 'Đã lưu báo cáo, nhưng tài khoản của bạn chưa thuộc team nào nên số liệu sẽ KHÔNG hiện trong báo cáo team và hiệu suất. Liên hệ quản trị viên để được gán team.';
     }
 
+    /**
+     * Sửa báo cáo traffic/doanh thu đã nộp: chỉ trong NGÀY NỘP (reportDate = hôm nay giờ VN).
+     * Ngày đã qua giữ nguyên số cũ — cùng luật với nút "Sửa báo cáo" bên FE, BE chặn lại lần nữa
+     * để không ai gọi thẳng API mà sửa được lịch sử.
+     */
+    private isEditableReportDate(reportDate?: string): boolean {
+        return !reportDate || reportDate === this.toVietnamDateKey(new Date());
+    }
+
+    /**
+     * Điều kiện xoá khi ghi đè báo cáo đã nộp: đúng người, đúng ngày, đúng team của bản cũ, và CHỈ
+     * dòng nhập tay (id `local_*` do submitTrafficReport/submitRevenueReport tạo). Dòng Sapo đồng bộ
+     * vào revenue_reports không có tiền tố này nên không bao giờ bị xoá theo.
+     */
+    private buildReplaceWhere(bounds: { start: Date; end: Date }, identity: any, team: string | null) {
+        return {
+            date: { gte: bounds.start, lte: bounds.end },
+            ...identity,
+            team,
+            id: { startsWith: 'local_' },
+        };
+    }
+
     async submitTrafficReport(payload: any) {
         const { email, name, traffic, channels, platformEvidences, reportDate, team: payloadTeam } = payload;
         const normalizedSubmitterEmail = (email || '').trim().toLowerCase();
@@ -369,11 +392,17 @@ export class WorkReportService implements OnModuleInit {
             : (name && String(name).trim())
                 ? { name: { equals: String(name).trim(), mode: 'insensitive' as any } }
                 : null;
+        // Có giá trị = đang sửa báo cáo đã nộp (FE gửi replaceExisting sau khi bấm "Sửa báo cáo"):
+        // ghi đè các dòng cũ của team này thay vì từ chối.
+        let replaceTeam: string | null | undefined;
         if (duplicateWhereIdentity) {
             const existingTraffic = await this.prisma.trafficReport.findFirst({
                 where: {
                     date: { gte: bounds.start, lte: bounds.end },
                     ...duplicateWhereIdentity,
+                    // Người nhiều team: so với bản đã nộp CỦA ĐÚNG team này. Trước đây chỉ so với dòng
+                    // mới nhất, nên nộp A → B → A lần nữa lọt qua và tạo trùng dòng của team A.
+                    ...(payloadTeam && String(payloadTeam).trim() ? { team: String(payloadTeam).trim() } : {}),
                 },
                 orderBy: { created_at: 'desc' },
             });
@@ -381,9 +410,13 @@ export class WorkReportService implements OnModuleInit {
                 // For multi-team users: allow submitting for a different team on the same day
                 if (payloadTeam && String(payloadTeam).trim() && existingTraffic.team !== String(payloadTeam).trim()) {
                     // Different team — allow submission to continue
+                } else if (payload.replaceExisting === true && this.isEditableReportDate(reportDate)) {
+                    replaceTeam = existingTraffic.team ?? null;
                 } else {
                     return {
-                        message: 'Bạn đã báo cáo traffic cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
+                        message: payload.replaceExisting === true
+                            ? 'Chỉ sửa được báo cáo trong ngày nộp. Báo cáo ngày đã qua giữ nguyên số cũ.'
+                            : 'Bạn đã báo cáo traffic cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
                         alreadySubmitted: true,
                         existingRecordDate: existingTraffic.created_at || existingTraffic.date,
                         recordIds: [],
@@ -465,7 +498,16 @@ export class WorkReportService implements OnModuleInit {
 
         try {
             // Batch insert all rows in a single round-trip
-            if (recordsToCreate.length > 0) {
+            if (recordsToCreate.length > 0 && replaceTeam !== undefined) {
+                // Xoá + ghi trong một transaction: lỗi giữa chừng thì giữ nguyên bản cũ, không bao giờ
+                // để ngày đó trống. Không có dòng hợp lệ (savedNothing) thì không chạm vào bản cũ.
+                await this.prisma.$transaction([
+                    this.prisma.trafficReport.deleteMany({
+                        where: this.buildReplaceWhere(bounds, duplicateWhereIdentity, replaceTeam),
+                    }),
+                    this.prisma.trafficReport.createMany({ data: recordsToCreate, skipDuplicates: true }),
+                ]);
+            } else if (recordsToCreate.length > 0) {
                 await this.prisma.trafficReport.createMany({
                     data: recordsToCreate,
                     skipDuplicates: true,
@@ -488,7 +530,10 @@ export class WorkReportService implements OnModuleInit {
             }
 
             return {
-                message: `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
+                message: replaceTeam !== undefined
+                    ? 'Đã cập nhật báo cáo traffic.'
+                    : `Traffic report submitted successfully. Created ${recordsToCreate.length} records.`,
+                ...(replaceTeam !== undefined ? { updated: true } : {}),
                 recordIds: recordsToCreate.map(r => r.id),
                 warning: this.buildTeamlessWarning(team)
             };
@@ -546,20 +591,27 @@ export class WorkReportService implements OnModuleInit {
             : (name && String(name).trim())
                 ? { name: { equals: String(name).trim(), mode: 'insensitive' as any } }
                 : null;
+        // Sửa báo cáo đã nộp — xem ghi chú ở submitTrafficReport.
+        let replaceTeam: string | null | undefined;
         if (duplicateWhereIdentity) {
             const existingRevenue = await this.prisma.revenueReport.findFirst({
                 where: {
                     date: { gte: bounds.start, lte: bounds.end },
                     ...duplicateWhereIdentity,
+                    ...(payloadTeam && String(payloadTeam).trim() ? { team: String(payloadTeam).trim() } : {}),
                 },
                 orderBy: { created_at: 'desc' },
             });
             if (existingRevenue) {
                 if (payloadTeam && String(payloadTeam).trim() && existingRevenue.team !== String(payloadTeam).trim()) {
                     // Khác team — cho phép tiếp tục nộp
+                } else if (payload.replaceExisting === true && this.isEditableReportDate(reportDate)) {
+                    replaceTeam = existingRevenue.team ?? null;
                 } else {
                     return {
-                        message: 'Bạn đã báo cáo doanh thu cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
+                        message: payload.replaceExisting === true
+                            ? 'Chỉ sửa được báo cáo trong ngày nộp. Báo cáo ngày đã qua giữ nguyên số cũ.'
+                            : 'Bạn đã báo cáo doanh thu cho ngày này rồi. Hệ thống giữ dữ liệu đã báo cáo.',
                         alreadySubmitted: true,
                         existingRecordDate: existingRevenue.created_at || existingRevenue.date,
                         recordIds: [],
@@ -632,7 +684,14 @@ export class WorkReportService implements OnModuleInit {
         }
 
         try {
-            if (recordsToCreate.length > 0) {
+            if (recordsToCreate.length > 0 && replaceTeam !== undefined) {
+                await this.prisma.$transaction([
+                    this.prisma.revenueReport.deleteMany({
+                        where: this.buildReplaceWhere(bounds, duplicateWhereIdentity, replaceTeam),
+                    }),
+                    this.prisma.revenueReport.createMany({ data: recordsToCreate, skipDuplicates: true }),
+                ]);
+            } else if (recordsToCreate.length > 0) {
                 await this.prisma.revenueReport.createMany({
                     data: recordsToCreate,
                     skipDuplicates: true,
@@ -642,7 +701,10 @@ export class WorkReportService implements OnModuleInit {
             this.invalidateActivityCache();
 
             return {
-                message: `Revenue report submitted successfully. Created ${recordsToCreate.length} records.`,
+                message: replaceTeam !== undefined && recordsToCreate.length > 0
+                    ? 'Đã cập nhật báo cáo doanh thu.'
+                    : `Revenue report submitted successfully. Created ${recordsToCreate.length} records.`,
+                ...(replaceTeam !== undefined && recordsToCreate.length > 0 ? { updated: true } : {}),
                 recordIds: recordsToCreate.map(r => r.id),
                 warning: this.buildTeamlessWarning(team)
             };
@@ -3721,7 +3783,9 @@ export class WorkReportService implements OnModuleInit {
                     const ck = `channel_${p}`;
                     const ek = `evidence_${p}`;
                     const val = Number(rec[tk] || 0);
-                    if (val > 0) {
+                    // Giữ cả dòng nhập số 0 (cột khác null): form "Sửa báo cáo" dựng lại từ details,
+                    // bỏ dòng 0 thì gửi lại sẽ ghi đè mất nền tảng người dùng đã báo cáo 0.
+                    if (rec[tk] !== null && rec[tk] !== undefined) {
                         let ev = [];
                         try { if (rec[ek]) ev = JSON.parse(rec[ek]); } catch (e) { }
                         details.push({ platform: p, channel: rec[ck] || '', value: val, evidences: (Array.isArray(ev) ? ev : []).filter(e => e) });
@@ -3806,7 +3870,8 @@ export class WorkReportService implements OnModuleInit {
                     const rk = `revenue_${p}`;
                     const ck = `channel_${p}`;
                     const val = Number(rec[rk] || 0);
-                    if (val > 0) {
+                    // Giữ cả dòng 0 — xem ghi chú ở buildDetails.
+                    if (rec[rk] !== null && rec[rk] !== undefined) {
                         revenueDetails.push({ platform: p, channel: rec[ck] || '', value: val });
                     }
                 });

@@ -1,4 +1,4 @@
-import { TaskAutoTasksService } from '../tasks.service';
+import { TaskAutoTasksService, buildTrafficTrend } from '../tasks.service';
 
 /**
  * getGlobalDashboard (qua getDashboard cho ADMIN/MANAGER) — bug gốc: breakdown theo trạng thái
@@ -46,7 +46,8 @@ describe('TaskAutoTasksService.getDashboard (ADMIN/MANAGER) — global dashboard
 
     await service.getDashboard('admin-1', ['ADMIN'], '2026-01-05', '2026-01-10');
 
-    const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
+    // Ngày lịch VN (00:00 VN = 17:00Z hôm trước) — bất kể máy chạy test ở timezone nào.
+    const expectedRange = { gte: new Date('2026-01-04T17:00:00Z'), lt: new Date('2026-01-10T17:00:00Z') };
     const statusCall = prisma.task.groupBy.mock.calls.find((c: any[]) => c[0].by[0] === 'status');
     expect(statusCall[0].where).toEqual({
       AND: [
@@ -197,6 +198,8 @@ describe('TaskAutoTasksService.getDashboard — leader lead nhiều team', () =>
       video_by_line: [],
       product_by_category: [],
       content_by_classification: [],
+      member_options: [],
+      focus_member: null,
     });
   });
 
@@ -269,7 +272,8 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2026-01-05', '2026-01-10');
 
-    const expectedRange = { gte: new Date(2026, 0, 5), lt: new Date(2026, 0, 11) };
+    // Ngày lịch VN (00:00 VN = 17:00Z hôm trước) — bất kể máy chạy test ở timezone nào.
+    const expectedRange = { gte: new Date('2026-01-04T17:00:00Z'), lt: new Date('2026-01-10T17:00:00Z') };
 
     // Task đã duyệt của cả team (KPI completed) — APPROVED + deadline trong kỳ.
     expect(prisma.task.count).toHaveBeenCalledWith(
@@ -360,8 +364,8 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18', undefined, undefined, undefined, true);
 
-    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
-    const month = { gte: new Date(2025, 2, 1), lt: new Date(2025, 3, 1) };
+    const day = { gte: new Date('2025-03-17T17:00:00Z'), lt: new Date('2025-03-18T17:00:00Z') };
+    const month = { gte: new Date('2025-02-28T17:00:00Z'), lt: new Date('2025-03-31T17:00:00Z') };
 
     // Traffic + doanh thu: cả tháng 3 chứ không phải riêng ngày 18.
     expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
@@ -379,12 +383,83 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
       }),
     );
     // Mục tiêu KPI ngày (fallback): cùng cửa sổ deadline ngày đó, chỉ khác là chưa lọc APPROVED.
+    expect(prisma.task.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { notIn: ['CANCELLED'] }, ...win(day) }),
+        select: { assignee_id: true, deadline: true, created_at: true },
+      }),
+    );
+  });
+
+  // Tab "Thống kê theo ngày" chọn khoảng nhiều ngày (nút "Tuần này"/"Tuần 2"...): KPI ngày không còn
+  // quy về hôm nay mà cộng chỉ tiêu TỪNG ngày trong khoảng — ngày set tay lấy số set tay (cộng các
+  // team), ngày chưa set fallback số task có deadline ngày đó.
+  it('pin_traffic_month + khoảng nhiều ngày → KPI ngày cộng từng ngày trong khoảng (set tay ưu tiên hơn fallback)', async () => {
+    const { service, prisma } = build();
+    const at = (iso: string) => new Date(iso);
+    // 10/3: set tay 2 team (3 + 2) dù có 4 task → 5. 11/3: chưa set → 2 task (1 task chưa có deadline,
+    // tạo ngày 11). 12/3: set tay 6, không task nào → 6.
+    prisma.editorDailyKpi.findMany.mockResolvedValue([
+      { user_id: 'u1', date: at('2025-03-10T00:00:00Z'), target: 3 },
+      { user_id: 'u1', date: at('2025-03-10T00:00:00Z'), target: 2 },
+      { user_id: 'u1', date: at('2025-03-12T00:00:00Z'), target: 6 },
+    ]);
+    prisma.task.findMany.mockImplementation(async (args: any) =>
+      args.select?.deadline && args.select?.assignee_id
+        ? [
+            ...Array.from({ length: 4 }, () => ({ assignee_id: 'u1', deadline: at('2025-03-10T05:00:00Z'), created_at: at('2025-03-01T00:00:00Z') })),
+            // 23:30 ngày 10/3 UTC = 06:30 ngày 11/3 giờ VN.
+            { assignee_id: 'u1', deadline: at('2025-03-10T23:30:00Z'), created_at: at('2025-03-01T00:00:00Z') },
+            { assignee_id: 'u1', deadline: null, created_at: at('2025-03-11T03:00:00Z') },
+          ]
+        : [],
+    );
+
+    const result: any = await service.getDashboard(
+      'leader-1', ['LEADER'], '2025-03-10', '2025-03-16', undefined, undefined, undefined, true,
+    );
+
+    const week = { gte: new Date('2025-03-09T17:00:00Z'), lt: new Date('2025-03-16T17:00:00Z') };
+    expect(prisma.editorDailyKpi.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          date: { gte: new Date('2025-03-10T00:00:00Z'), lte: new Date('2025-03-16T00:00:00Z') },
+        }),
+      }),
+    );
+    expect(prisma.task.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { notIn: ['CANCELLED'] }, ...win(week) }),
+        select: { assignee_id: true, deadline: true, created_at: true },
+      }),
+    );
+    // Đã làm = task duyệt có deadline trong cả tuần, không phải hôm nay.
     expect(prisma.task.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ['assignee_id'],
-        where: expect.objectContaining({ status: { notIn: ['CANCELLED'] }, ...win(day) }),
+        where: expect.objectContaining({ status: 'APPROVED', ...win(week) }),
       }),
     );
+    expect(prisma.contentCreatorDailyKpi.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          date: { gte: new Date('2025-03-10T00:00:00Z'), lte: new Date('2025-03-16T00:00:00Z') },
+        }),
+      }),
+    );
+    expect(result.members[0].kpi_day_target).toBe(5 + 2 + 6);
+  });
+
+  it('khoảng nhiều ngày nhưng KHÔNG bật pin_traffic_month (trang Tổng quan) → KPI ngày vẫn là hôm nay', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('leader-1', ['LEADER'], '2025-03-10', '2025-03-16');
+
+    const week = { gte: new Date('2025-03-09T17:00:00Z'), lt: new Date('2025-03-16T17:00:00Z') };
+    const fallbackCall = prisma.task.findMany.mock.calls.find((c: any[]) => c[0].select?.deadline);
+    expect(fallbackCall[0].where).not.toEqual(expect.objectContaining(win(week)));
+    const kpiCall = prisma.editorDailyKpi.findMany.mock.calls[0][0];
+    expect(kpiCall.where.date.gte).toEqual(kpiCall.where.date.lte);
   });
 
   it('không bật pin_traffic_month → traffic/doanh thu vẫn bám theo khoảng ngày như cũ', async () => {
@@ -392,9 +467,29 @@ describe('TaskAutoTasksService.getDashboard — leader dashboard theo bộ lọc
 
     await service.getDashboard('leader-1', ['LEADER'], '2025-03-18', '2025-03-18');
 
-    const day = { gte: new Date(2025, 2, 18), lt: new Date(2025, 2, 19) };
+    const day = { gte: new Date('2025-03-17T17:00:00Z'), lt: new Date('2025-03-18T17:00:00Z') };
     expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ date: day }) }),
+    );
+  });
+
+  // Bug 1/10/2026: prod chạy UTC → 00:00 ngày 1 giờ VN là 17:00Z ngày cuối tháng trước; tính tháng
+  // bằng getMonth() của server thì "ngày 1" bị gán sang tháng trước. Chạy thêm `TZ=UTC npx jest`.
+  it('ngày đầu tháng → task ngày đó theo giờ VN, traffic theo ĐÚNG tháng mới (không lùi về tháng trước)', async () => {
+    const { service, prisma } = build();
+
+    await service.getDashboard('leader-1', ['LEADER'], '2026-10-01', '2026-10-01', undefined, undefined, undefined, true);
+
+    const day = { gte: new Date('2026-09-30T17:00:00Z'), lt: new Date('2026-10-01T17:00:00Z') };
+    const october = { gte: new Date('2026-09-30T17:00:00Z'), lt: new Date('2026-10-31T17:00:00Z') };
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['assignee_id'],
+        where: expect.objectContaining({ status: 'APPROVED', ...win(day) }),
+      }),
+    );
+    expect(prisma.trafficReport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ date: october }) }),
     );
   });
 });
@@ -1005,8 +1100,8 @@ describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng 
     expect(res.rows[0]).toMatchObject({ date: '2026-08-31', fb: 10 });
 
     const where = prisma.trafficReport.findMany.mock.calls[0][0].where;
-    expect(where.date.gte).toEqual(new Date(new Date(2026, 7, 1).getTime() - 86_400_000));
-    expect(where.date.lt).toEqual(new Date(new Date(2026, 8, 1).getTime() + 86_400_000));
+    expect(where.date.gte).toEqual(new Date('2026-07-30T17:00:00Z'));
+    expect(where.date.lt).toEqual(new Date('2026-09-01T17:00:00Z'));
     expect(where.email).toBeUndefined();
   });
 
@@ -1313,5 +1408,278 @@ describe('TaskAutoTasksService — video_by_line kèm target theo tuyến nội 
       { deadline: { gte: expect.any(Date), lt: expect.any(Date) } },
       { deadline: null, created_at: { gte: expect.any(Date), lt: expect.any(Date) } },
     ]);
+  });
+});
+
+/**
+ * Dropdown "Thành viên" cho LEADER ở trang Tổng quan — `assignee_id` thu hẹp mọi số liệu về 1 người,
+ * nhưng CHỈ khi người đó là thành viên active của (các) team leader đang lead; id lạ bị bỏ qua (vẫn
+ * trả số liệu cả team) để leader không xem được dữ liệu người team khác.
+ */
+describe('TaskAutoTasksService — leader lọc 1 thành viên (assignee_id)', () => {
+  function member(userId: string, name: string) {
+    return {
+      user_id: userId,
+      is_content_creator: false,
+      user: { id: userId, full_name: name, email: `${userId}@x.com`, roles: ['MEMBER'] },
+    };
+  }
+
+  function build() {
+    const teamsLed = [
+      { id: 't-1', name: 'Team X', members: [member('u-b', 'Bình'), member('u-a', 'An')] },
+    ];
+    const prisma: any = {
+      team: { findMany: jest.fn(async () => teamsLed) },
+      teamMember: {
+        findFirst: jest.fn(async (args: any) =>
+          args.where.user_id === 'u-a' ? { user_id: 'u-a' } : null,
+        ),
+      },
+      task: {
+        groupBy: jest.fn(async () => []),
+        count: jest.fn(async () => 0),
+        findMany: jest.fn(async () => []),
+      },
+      editorKpi: { findMany: jest.fn(async () => []) },
+      trafficReport: { findMany: jest.fn(async () => []) },
+      revenueReport: { groupBy: jest.fn(async () => []) },
+      contentLine: { findMany: jest.fn(async () => []) },
+      editorDailyKpi: { findMany: jest.fn(async () => []) },
+      productLine: { findMany: jest.fn(async () => []) },
+      contentCreatorKpi: { findMany: jest.fn(async () => []) },
+      editorApproval: { findMany: jest.fn(async () => []) },
+      teamContent: { groupBy: jest.fn(async () => []) },
+      contentCreatorDailyKpi: { findMany: jest.fn(async () => []) },
+      teamPushRequest: { groupBy: jest.fn(async () => []) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  const allTaskWheres = (prisma: any) =>
+    [
+      ...prisma.task.count.mock.calls,
+      ...prisma.task.groupBy.mock.calls,
+      ...prisma.task.findMany.mock.calls,
+    ].map((c: any[]) => c[0]?.where ?? {});
+
+  it('thành viên thuộc team → số liệu cấp team thêm assignee_id, số liệu theo người chỉ còn người đó', async () => {
+    const { service, prisma } = build();
+
+    const result: any = await service.getDashboard(
+      'leader-1', ['LEADER'], '2026-10-01', '2026-10-03', undefined, undefined, 'u-a',
+    );
+
+    // Phân bố trạng thái + KPI hoàn thành cả "team" giờ chỉ đếm task của u-a, vẫn giữ team_id.
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['status'],
+        where: expect.objectContaining({ team_id: { in: ['t-1'] }, assignee_id: 'u-a' }),
+      }),
+    );
+    expect(prisma.task.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ team_id: { in: ['t-1'] }, assignee_id: 'u-a', status: 'APPROVED' }),
+      }),
+    );
+    // Video theo tuyến nội dung
+    expect(prisma.task.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['content_line_id'],
+        where: expect.objectContaining({ assignee_id: 'u-a' }),
+      }),
+    );
+    // Không query nào còn đếm task của người khác trong team.
+    for (const where of allTaskWheres(prisma)) {
+      expect(JSON.stringify(where)).not.toContain('u-b');
+    }
+    // KPI tháng chỉ của u-a.
+    expect(prisma.editorKpi.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ user_id: { in: ['u-a'] } }) }),
+    );
+
+    expect(result.members.map((m: any) => m.user_id)).toEqual(['u-a']);
+    expect(result.focus_member).toEqual({ user_id: 'u-a', full_name: 'An' });
+    // Dropdown vẫn đủ cả team (xếp theo tên), số thành viên team không co lại.
+    expect(result.member_options).toEqual([
+      { user_id: 'u-a', full_name: 'An' },
+      { user_id: 'u-b', full_name: 'Bình' },
+    ]);
+    expect(result.team.member_count).toBe(2);
+  });
+
+  it('assignee_id không thuộc team mình lead → bỏ qua, vẫn trả số liệu cả team', async () => {
+    const { service, prisma } = build();
+
+    const result: any = await service.getDashboard(
+      'leader-1', ['LEADER'], '2026-10-01', '2026-10-03', undefined, undefined, 'u-other-team',
+    );
+
+    for (const where of allTaskWheres(prisma)) {
+      expect(JSON.stringify(where)).not.toContain('u-other-team');
+    }
+    expect(result.focus_member).toBeNull();
+    expect(result.members.map((m: any) => m.user_id).sort()).toEqual(['u-a', 'u-b']);
+  });
+
+  it('product-video-stats: leader lọc thành viên team mình → thêm assignee_id; id lạ → giữ cả team', async () => {
+    const { service, prisma } = build();
+
+    await service.getProductVideoStatsForRole('leader-1', ['LEADER'], '2026-10-01', '2026-10-03', undefined, 'u-a');
+    expect(prisma.task.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ team_id: { in: ['t-1'] }, assignee_id: 'u-a' }),
+      }),
+    );
+
+    prisma.task.findMany.mockClear();
+    await service.getProductVideoStatsForRole('leader-1', ['LEADER'], '2026-10-01', '2026-10-03', undefined, 'u-x');
+    const where = prisma.task.findMany.mock.calls[0][0].where;
+    expect(where.team_id).toEqual({ in: ['t-1'] });
+    expect(where).not.toHaveProperty('assignee_id');
+  });
+});
+
+/**
+ * Biểu đồ "Traffic theo ngày" ở Tổng quan — số báo cáo tay là LUỸ KẾ TỪ ĐẦU THÁNG, nên phát sinh
+ * của 1 ngày = luỹ kế hôm đó − luỹ kế lần báo cáo trước trong cùng tháng.
+ */
+describe('buildTrafficTrend — phát sinh mỗi ngày từ số luỹ kế tháng', () => {
+  const stream = (person: string, values: Record<string, number>) => ({
+    person,
+    byDay: new Map(Object.entries(values)),
+  });
+
+  it('phát sinh = chênh luỹ kế; người không nộp hôm đó giữ số cũ trong luỹ kế', () => {
+    const { days, summary } = buildTrafficTrend(
+      [
+        stream('a', { '2026-09-01': 100, '2026-09-02': 250, '2026-09-03': 300 }),
+        stream('b', { '2026-09-01': 40, '2026-09-03': 100 }),
+      ],
+      '2026-09-01', '2026-09-01', '2026-09-03',
+    );
+
+    expect(days).toEqual([
+      { date: '2026-09-01', daily: 140, cumulative: 140, reporters: 2, catch_up: 0 },
+      { date: '2026-09-02', daily: 150, cumulative: 290, reporters: 1, catch_up: 0 },
+      // b bỏ trống 02/09 → 60 của b hôm 03/09 là số dồn 2 ngày.
+      { date: '2026-09-03', daily: 110, cumulative: 400, reporters: 2, catch_up: 60 },
+    ]);
+    expect(summary).toEqual({ daily_sum: 400, latest_cumulative: 400, reported_days: 3, reporters: 2 });
+  });
+
+  it('kỳ bắt đầu giữa tháng vẫn trừ đúng luỹ kế hôm trước; ngày không ai nộp → null', () => {
+    const { days, summary } = buildTrafficTrend(
+      [stream('a', { '2026-09-10': 1000, '2026-09-11': 1200, '2026-09-13': 1500 })],
+      '2026-09-01', '2026-09-11', '2026-09-13',
+    );
+
+    expect(days).toEqual([
+      { date: '2026-09-11', daily: 200, cumulative: 1200, reporters: 1, catch_up: 0 },
+      { date: '2026-09-12', daily: null, cumulative: null, reporters: 0, catch_up: 0 },
+      { date: '2026-09-13', daily: 300, cumulative: 1500, reporters: 1, catch_up: 300 },
+    ]);
+    expect(summary.daily_sum).toBe(500);
+  });
+
+  it('sang tháng mới luỹ kế về 0; nhập giảm (sửa số) không tạo phát sinh âm', () => {
+    const { days } = buildTrafficTrend(
+      [stream('a', { '2026-09-29': 900, '2026-09-30': 800, '2026-10-01': 50 })],
+      '2026-09-01', '2026-09-29', '2026-10-01',
+    );
+
+    expect(days.map((d) => d.daily)).toEqual([900, 0, 50]);
+    expect(days.map((d) => d.cumulative)).toEqual([900, 800, 50]);
+  });
+});
+
+describe('TaskAutoTasksService.getTrafficTrendForRole — phạm vi theo role', () => {
+  const TEAMS = [
+    {
+      id: 't-k3', name: 'Team K3', leader_id: 'leader-1',
+      members: [
+        { user: { id: 'u-a', email: 'a@x.com', full_name: 'An', is_active: true } },
+        { user: { id: 'u-b', email: 'b@x.com', full_name: 'Bình', is_active: true } },
+      ],
+    },
+    {
+      id: 't-k4', name: 'Team K4', leader_id: 'leader-2',
+      members: [{ user: { id: 'u-c', email: 'c@x.com', full_name: 'Chi', is_active: true } }],
+    },
+  ];
+  const day = (d: string) => new Date(`${d}T05:00:00Z`);
+  const ROWS = [
+    { email: 'a@x.com', name: 'An', team: 'Team K3', date: day('2026-09-01'), total_traffic: 100n },
+    { email: 'a@x.com', name: 'An', team: 'Team K3', date: day('2026-09-02'), total_traffic: 300n },
+    { email: 'B@x.com', name: 'Bình', team: 'Team K3', date: day('2026-09-02'), total_traffic: 50n },
+    // Tên team trên báo cáo không khớp Team nào → theo team người đó đang là thành viên.
+    { email: 'c@x.com', name: 'Chi', team: 'k4 cũ', date: day('2026-09-02'), total_traffic: 70n },
+  ];
+
+  function build(opts: { self?: any } = {}) {
+    const prisma: any = {
+      team: { findMany: jest.fn(async () => TEAMS) },
+      user: { findUnique: jest.fn(async () => opts.self ?? null) },
+      trafficReport: { findMany: jest.fn(async () => ROWS) },
+    };
+    const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-09-02T10:00:00Z')));
+  afterEach(() => jest.useRealTimers());
+
+  it('ADMIN toàn hệ thống → tổng + tách theo team; ngày cuối không vượt quá hôm nay', async () => {
+    const { service, prisma } = build();
+
+    const res: any = await service.getTrafficTrendForRole('admin', ['ADMIN'], '2026-09-01', '2026-09-30');
+
+    expect(res.range).toEqual({ from: '2026-09-01', to: '2026-09-02' });
+    expect(res.breakdown_kind).toBe('team');
+    expect(res.days.map((d: any) => d.daily)).toEqual([100, 320]);
+    expect(res.breakdown.map((b: any) => [b.id, b.label, b.daily_sum])).toEqual([
+      ['t-k3', 'Team K3', 350],
+      ['t-k4', 'Team K4', 70],
+    ]);
+    const where = prisma.trafficReport.findMany.mock.calls[0][0].where;
+    expect(where.date.gte).toEqual(new Date('2026-08-31T17:00:00Z'));
+    expect(where.email).toBeUndefined();
+  });
+
+  it('ADMIN lọc 1 team → chỉ báo cáo team đó, tách theo thành viên', async () => {
+    const { service } = build();
+
+    const res: any = await service.getTrafficTrendForRole('admin', ['ADMIN'], '2026-09-01', '2026-09-02', 't-k3');
+
+    expect(res.breakdown_kind).toBe('member');
+    expect(res.summary.daily_sum).toBe(350);
+    expect(res.breakdown.map((b: any) => [b.id, b.label, b.daily])).toEqual([
+      ['u-a', 'An', [100, 200]],
+      ['u-b', 'Bình', [null, 50]],
+    ]);
+    // Đường nhỏ cạnh từng thành viên vẽ luỹ kế tháng, cùng cách xem với biểu đồ chính.
+    expect(res.breakdown.map((b: any) => b.cumulative)).toEqual([[100, 300], [null, 50]]);
+  });
+
+  it('LEADER chỉ thấy team mình lead; assignee_id ngoài team bị bỏ qua', async () => {
+    const { service, prisma } = build();
+
+    const res: any = await service.getTrafficTrendForRole('leader-1', ['LEADER'], '2026-09-01', '2026-09-02', 't-k4', 'u-c');
+
+    expect(res.breakdown_kind).toBe('member');
+    expect(res.breakdown.map((b: any) => b.label)).toEqual(['An', 'Bình']);
+    expect(prisma.trafficReport.findMany.mock.calls[0][0].where.email).toBeUndefined();
+  });
+
+  it('MEMBER → chỉ truy vấn email của chính mình, không tách', async () => {
+    const { service, prisma } = build({ self: { email: 'A@x.com' } });
+
+    const res: any = await service.getTrafficTrendForRole('u-a', ['MEMBER'], '2026-09-01', '2026-09-02', 't-k4', 'u-c');
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'u-a' } }));
+    expect(prisma.trafficReport.findMany.mock.calls[0][0].where.email).toEqual({ equals: 'a@x.com', mode: 'insensitive' });
+    expect(res.breakdown_kind).toBeNull();
+    expect(res.breakdown).toEqual([]);
   });
 });
