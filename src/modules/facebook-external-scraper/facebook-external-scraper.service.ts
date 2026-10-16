@@ -1,11 +1,20 @@
 import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   FacebookExternalAiClientService,
   ParsedFanpageProfile,
   ParsedFacebookReel,
 } from './facebook-external-ai-client.service';
-import { cleanFacebookUrl, extractHandleFromUrl, fetchFacebookPageMeta } from './facebook-url.util';
+import {
+  cleanFacebookUrl,
+  extractFacebookPageNumericId,
+  extractHandleFromUrl,
+  fetchFacebookPageMeta,
+  isFacebookPageHandle,
+  isFacebookPageShareLink,
+  resolveFacebookPageInput,
+} from './facebook-url.util';
 import { normalizeTargetCount } from '../../common/utils/target-count.util';
 import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
 
@@ -15,6 +24,28 @@ const STALE_LOCK_MINUTES = 30;
 // Kênh vẫn được giữ lại để user không mất công thêm lại, nhưng phải hiện rõ là chưa
 // lấy được dữ liệu thật — trước đây trường hợp này báo 'completed' như cào thành công.
 const FALLBACK_SCRAPE_ERROR = 'Chưa lấy được dữ liệu từ RapidAPI — đang hiển thị thông tin tạm từ URL';
+
+const PAGE_SHARE_LINK_ERROR =
+  'Link chia sẻ (facebook.com/share/...) không đọc được tên page. Hãy mở link đó rồi copy URL trên thanh địa chỉ (vd: facebook.com/tenpage).';
+const NOT_A_PAGE_URL_ERROR =
+  'Không lấy được page từ link này. Hãy dán link trang Facebook (vd: facebook.com/tenpage, facebook.com/p/Ten-123... hoặc facebook.com/profile.php?id=...).';
+
+interface FanpageUrlIdentity {
+  cleanUrl: string;
+  /** Tên rút gọn của page — '' với page chỉ có ID số. */
+  handle: string;
+  /** ID số trong URL của page không có tên rút gọn (/p/..., /people/..., profile.php?id=). */
+  numericId: string;
+}
+
+// Định danh page từ URL người dùng dán. null = URL không trỏ tới một page.
+function parseFanpageUrl(url: string): FanpageUrlIdentity | null {
+  const cleanUrl = cleanFacebookUrl(url);
+  const handle = extractHandleFromUrl(cleanUrl);
+  const numericId = handle ? '' : extractFacebookPageNumericId(cleanUrl);
+  if (!handle && !numericId) return null;
+  return { cleanUrl, handle, numericId };
+}
 
 // Toàn bộ logic ghi DB port từ AI (rapidapi_facebook.py::_upsert_fanpage/ingest_reels_data/
 // save_profile_to_db đã xóa + scraper_views.py::fanpage_toggle/trigger_scrape_reels/
@@ -57,6 +88,16 @@ export class FacebookExternalScraperService {
     return { created: true };
   }
 
+  // Cùng một page dán bằng nhiều dạng link (tên rút gọn, /p/<Tên>-<id>/, profile.php?id=)
+  // phải khớp về một bản ghi: AI ghi đè page_url bằng URL chuẩn Facebook trả về, còn
+  // profile_id là ID thật của page.
+  private findFanpageByIdentity(identity: FanpageUrlIdentity) {
+    const or: Prisma.ScraperFanpageWhereInput[] = [{ page_url: identity.cleanUrl }];
+    if (identity.handle) or.push({ handle: identity.handle });
+    if (identity.numericId) or.push({ profile_id: identity.numericId });
+    return this.prisma.scraperFanpage.findFirst({ where: { OR: or } });
+  }
+
   // Khớp _upsert_fanpage cũ: nếu profile_id thật đã tồn tại ở 1 fanpage khác (placeholder
   // "graduate" thành trùng với page đã có) → xóa fanpage hiện tại (placeholder), dùng page
   // thật. Nếu chưa tồn tại và fanpage hiện tại là placeholder → ghi đè profile_id thật vào.
@@ -83,7 +124,7 @@ export class FacebookExternalScraperService {
     if (isFallback) {
       const data: any = { is_visible_on_ui: true };
       if (!current.name && profile.name) data.name = profile.name;
-      if (!current.handle && profile.handle) data.handle = profile.handle;
+      if (!current.handle && isFacebookPageHandle(profile.handle)) data.handle = profile.handle;
       if (!current.avatar_url && profile.avatar_url) data.avatar_url = profile.avatar_url;
       if (current.followers_count <= 0n && profile.followers_count > 0) {
         data.followers_count = BigInt(profile.followers_count);
@@ -110,7 +151,8 @@ export class FacebookExternalScraperService {
     const data: any = { is_visible_on_ui: true };
     if (profile.name) data.name = profile.name;
     if (profile.page_url) data.page_url = profile.page_url;
-    if (profile.handle) data.handle = profile.handle;
+    // AI bản cũ trả handle 'p' cho page dạng facebook.com/p/<Tên>-<id>/ — không ghi.
+    if (isFacebookPageHandle(profile.handle)) data.handle = profile.handle;
     if (profile.avatar_url) data.avatar_url = profile.avatar_url;
     if (profile.is_verified !== null && profile.is_verified !== undefined) data.is_verified = profile.is_verified;
     if (profile.followers_count > 0) data.followers_count = BigInt(profile.followers_count);
@@ -327,17 +369,14 @@ export class FacebookExternalScraperService {
     numOfPosts?: number,
     classification?: { channel_type?: string; product_lines?: string[] },
   ): Promise<any> {
-    const cleanUrl = cleanFacebookUrl(url);
-    const handle = extractHandleFromUrl(cleanUrl);
-
-    if (!handle && !cleanUrl.includes('profile.php')) {
-      throw new HttpException({ error: 'Không thể trích xuất tên page từ URL.' }, HttpStatus.BAD_REQUEST);
+    const identity = parseFanpageUrl(url);
+    if (!identity) {
+      const error = isFacebookPageShareLink(url) ? PAGE_SHARE_LINK_ERROR : NOT_A_PAGE_URL_ERROR;
+      throw new HttpException({ error }, HttpStatus.BAD_REQUEST);
     }
+    const { cleanUrl, handle } = identity;
 
-    let fp = handle ? await this.prisma.scraperFanpage.findFirst({ where: { handle } }) : null;
-    if (!fp) {
-      fp = await this.prisma.scraperFanpage.findFirst({ where: { page_url: cleanUrl } });
-    }
+    let fp = await this.findFanpageByIdentity(identity);
 
     if (fp) {
       if (classification?.channel_type || classification?.product_lines) {
@@ -703,15 +742,16 @@ export class FacebookExternalScraperService {
       }
 
       try {
-        const cleanUrl = cleanFacebookUrl(trimmed);
-        const handle = extractHandleFromUrl(cleanUrl);
-
-        if (!handle && !cleanUrl.includes('profile.php')) {
-          skipped_urls.push({ url: trimmed, reason: 'URL không đúng định dạng Facebook Page' });
+        const resolved = await resolveFacebookPageInput(trimmed);
+        const identity = parseFanpageUrl(resolved);
+        if (!identity) {
+          const reason = isFacebookPageShareLink(resolved) ? PAGE_SHARE_LINK_ERROR : 'URL không đúng định dạng Facebook Page';
+          skipped_urls.push({ url: trimmed, reason });
           continue;
         }
+        const { cleanUrl, handle } = identity;
 
-        const dedupeKey = handle || cleanUrl;
+        const dedupeKey = handle || identity.numericId;
         if (seenInBatch.has(dedupeKey)) {
           skipped_urls.push({ url: trimmed, reason: 'Trùng lặp trong danh sách gửi lên' });
           continue;
@@ -719,10 +759,7 @@ export class FacebookExternalScraperService {
         seenInBatch.add(dedupeKey);
 
         // Kiểm tra đã tồn tại trong DB chưa
-        let existing = handle ? await this.prisma.scraperFanpage.findFirst({ where: { handle } }) : null;
-        if (!existing) {
-          existing = await this.prisma.scraperFanpage.findFirst({ where: { page_url: cleanUrl } });
-        }
+        const existing = await this.findFanpageByIdentity(identity);
 
         if (existing) {
           skipped_urls.push({ url: trimmed, reason: `Đã có trong hệ thống (${existing.name || handle})` });

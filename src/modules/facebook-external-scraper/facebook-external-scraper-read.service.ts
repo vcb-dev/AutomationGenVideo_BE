@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { preferHostedImage } from '../../common/utils/hosted-thumbnail-url.util';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
@@ -40,7 +41,7 @@ export class FacebookExternalScraperReadService {
       name: p.name,
       handle: p.handle,
       page_url: p.page_url,
-      avatar_url: p.avatar_drive_url || p.avatar_url,
+      avatar_url: preferHostedImage(p.avatar_drive_url, p.avatar_url),
       is_verified: p.is_verified,
       followers_count: Number(p.followers_count),
       likes_count: Number(p.likes_count),
@@ -209,7 +210,7 @@ export class FacebookExternalScraperReadService {
         content: r.content,
         hashtags: r.hashtags,
         video_url: r.video_url,
-        thumbnail_url: r.thumbnail_drive_url || r.thumbnail_url,
+        thumbnail_url: preferHostedImage(r.thumbnail_drive_url, r.thumbnail_url),
         duration_seconds: r.duration_seconds,
         has_audio: r.has_audio,
         date_posted: r.date_posted,
@@ -222,7 +223,7 @@ export class FacebookExternalScraperReadService {
               id: Number(r.fanpage_id),
               name: r.fanpage_name,
               handle: r.fanpage_handle,
-              avatar_url: r.fanpage_avatar_drive_url || r.fanpage_avatar_url,
+              avatar_url: preferHostedImage(r.fanpage_avatar_drive_url, r.fanpage_avatar_url),
             }
           : null,
       })),
