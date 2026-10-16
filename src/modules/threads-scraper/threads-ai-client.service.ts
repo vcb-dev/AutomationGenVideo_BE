@@ -31,6 +31,8 @@ export interface ParsedThreadsPost {
   author_username: string;
   author_name: string;
   author_avatar: string;
+  /** Tag chủ đề của bài ("người đăng > trang sức"), '' nếu không gắn tag hoặc nguồn không trả tag. */
+  topic_tag?: string;
   is_vietnamese?: boolean;
 }
 
@@ -71,6 +73,22 @@ export class ThreadsAiClientService {
       `${this.aiServiceUrl}/api/scraper/threads/fetch/search-top/`,
       { query, count },
       { headers: this.authHeaders(), timeout: 300_000 },
+    );
+    return data;
+  }
+
+  // Bảng tin của TAG CHỦ ĐỀ (qua actor Apify bên AI) — tính phí theo bài, AI chặn đúng `count`.
+  async searchTag(
+    tag: string,
+    count: number,
+  ): Promise<{
+    tag: string;
+    posts: ParsedThreadsPost[];
+  }> {
+    const { data } = await axios.post(
+      `${this.aiServiceUrl}/api/scraper/threads/fetch/search-tag/`,
+      { tag, count },
+      { headers: this.authHeaders(), timeout: 360_000 },
     );
     return data;
   }

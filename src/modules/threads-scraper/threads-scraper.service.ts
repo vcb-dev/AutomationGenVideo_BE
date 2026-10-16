@@ -4,6 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { DEFAULT_TARGET_COUNT } from '../../common/utils/target-count.util';
 import { extractThreadsUsername } from '../../common/utils/channel-url.util';
 import { DeleteChannelResult, buildDeleteChannelResult } from '../../common/utils/delete-channel.util';
+import { readAiServiceError } from '../../common/utils/ai-service-error.util';
 import {
   ThreadsAiClientService,
   ParsedThreadsFullProfile,
@@ -13,6 +14,11 @@ import {
 export const TOGGLE_FIELDS = ['is_bookmarked', 'is_tracked', 'is_owned'] as const;
 export type ThreadsToggleField = (typeof TOGGLE_FIELDS)[number];
 export const MANAGED_TOGGLE_FIELDS: readonly ThreadsToggleField[] = ['is_tracked', 'is_owned'];
+
+/** '#Trang  Sức ' → 'trang sức' — khớp normalize_tag bên AI; tag Threads không phân biệt hoa thường. */
+export function normalizeTopicTag(tag: string): string {
+  return (tag || '').trim().replace(/^#+/, '').split(/\s+/).filter(Boolean).join(' ').toLowerCase();
+}
 
 @Injectable()
 export class ThreadsScraperService {
@@ -88,6 +94,9 @@ export class ThreadsScraperService {
       reposts_count: BigInt(p.reposts_count || 0),
       quotes_count: BigInt(p.quotes_count || 0),
       date_posted: new Date(p.date_posted),
+      // Chỉ ghi khi nguồn có trả tag: TikHub (cào theo kênh) không bao giờ trả tag, ghi '' sẽ xoá
+      // mất tag đã biết từ lần tìm theo tag / từ khoá trước.
+      ...(p.topic_tag ? { topic_tag: p.topic_tag } : {}),
     };
 
     if (existing) {
@@ -265,6 +274,7 @@ export class ThreadsScraperService {
                   author_username: p.profile.username,
                   author_name: p.profile.name || p.profile.username,
                   author_avatar: p.profile.avatar_url || '',
+                  topic_tag: p.topic_tag,
                   is_vietnamese: /[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]/i.test(p.text || ''),
                 })),
               };
@@ -344,9 +354,44 @@ export class ThreadsScraperService {
         author_username: p.profile.username,
         author_name: p.profile.name || p.profile.username,
         author_avatar: p.profile.avatar_url || '',
+        topic_tag: p.topic_tag,
         is_vietnamese: /[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]/i.test(p.text || ''),
       })),
     };
+  }
+
+  // Bảng tin của TAG CHỦ ĐỀ ("người đăng > trang sức") — làm THÊM, searchHotPosts (từ khoá) giữ nguyên.
+  // Lấy cả bài gắn tag mà nội dung không nhắc chữ đó. Không lọc theo ngày: nguồn tính phí theo
+  // bài và trả bài nổi không theo thứ tự thời gian — lọc sau khi đã trả tiền là mua rồi vứt.
+  async searchTagPosts(tag: string, count: number): Promise<{ tag: string; posts: ParsedThreadsPost[] }> {
+    const cleanTag = normalizeTopicTag(tag);
+    if (!cleanTag) {
+      throw new HttpException('Tag chủ đề không được để trống', HttpStatus.BAD_REQUEST);
+    }
+
+    let res: { tag: string; posts: ParsedThreadsPost[] };
+    try {
+      res = await this.aiClient.searchTag(cleanTag, count);
+    } catch (err: any) {
+      // Thiếu biến APIFY_ACTOR_THREADS_TAG / Apify lỗi: hiện nguyên câu AI báo, không nuốt.
+      const aiErr = readAiServiceError(err);
+      if (aiErr) throw new HttpException(aiErr.error, aiErr.status);
+      throw err;
+    }
+
+    const posts = (Array.isArray(res?.posts) ? res.posts : []).map((p) => ({
+      ...p,
+      topic_tag: p.topic_tag || cleanTag,
+    }));
+
+    try {
+      await this.ingestHotPosts(posts);
+      this.logger.log(`Lưu ${posts.length} bài Threads của tag "${cleanTag}" vào kho`);
+    } catch (ingestErr: any) {
+      this.logger.warn(`Lỗi khi lưu bài theo tag "${cleanTag}": ${ingestErr.message}`);
+    }
+
+    return { tag: res?.tag || cleanTag, posts };
   }
 
   async ingestHotPosts(posts: ParsedThreadsPost[]): Promise<{ saved_count: number }> {

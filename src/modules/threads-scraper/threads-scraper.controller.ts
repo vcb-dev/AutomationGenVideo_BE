@@ -110,6 +110,19 @@ export class ThreadsScraperController {
     return this.service.searchHotPosts(query, count, { mode: body.mode, days: body.days });
   }
 
+  // Bảng tin của tag chủ đề — tính phí theo bài (Apify), nên chỉ ADMIN/LEADER như các thao tác
+  // cào tốn tiền ở nền tảng khác.
+  @Post('search/tag')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  async searchTag(@Body() body: { tag?: string; count?: number }) {
+    const tag = (body.tag || '').trim();
+    if (!tag) {
+      throw new HttpException('Tag chủ đề không được để trống', HttpStatus.BAD_REQUEST);
+    }
+    return this.service.searchTagPosts(tag, normalizeTargetCount(body.count));
+  }
+
   @Post('posts/ingest-hot')
   async ingestHotPosts(
     @Body() body: { posts?: any[] },
@@ -125,9 +138,11 @@ export class ThreadsScraperController {
     @Query('sort_by') sortBy?: 'date' | 'likes' | 'views' | 'replies',
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('topic_tag') topicTag?: string,
   ) {
     return this.readService.listAllPosts({
       search,
+      topic_tag: topicTag,
       media_type: mediaType,
       sort_by: sortBy,
       page: page ? parseInt(page, 10) : undefined,
