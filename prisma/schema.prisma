@@ -4718,13 +4718,13 @@ enum IdPhotoStatus {
 //  TẠO ẢNH SẢN PHẨM (Tiện ích) — nhật ký từng lượt để tính chi phí
 // ─────────────────────────────────────────────
 
-/// Mỗi lượt bấm ở Tiện ích → Tạo ảnh sản phẩm: tách nền (0đ) hoặc Gemini thay SP trên tay chị Nhạm
-/// (tính phí). Nguồn của tab Chi phí: tổng tiền, số lượt, số ảnh "Đạt", chi phí cho 1 ảnh đạt.
+/// Mỗi lượt bấm ở Tiện ích → Tạo ảnh sản phẩm: tách nền (0đ) hoặc Gemini thay SP trên tay chị Nhạm /
+/// đặt SP vào ảnh cảnh (tính phí). Nguồn của tab Chi phí: tổng tiền, số lượt, số ảnh "Đạt", chi phí cho 1 ảnh đạt.
 /// Không lưu ảnh. Không khoá ngoại tới users: xoá người dùng vẫn giữ lịch sử chi phí.
 model ProductImageGeneration {
   id            String    @id @default(uuid())
   user_id       String    @db.Uuid
-  /// CUTOUT | HELD_PRODUCT
+  /// CUTOUT | HELD_PRODUCT | SCENE_PLACEMENT
   mode          String    @db.VarChar(20)
   /// SUCCESS | FAILED
   status        String    @db.VarChar(10)
@@ -4737,7 +4737,7 @@ model ProductImageGeneration {
   cost_note     String?   @db.VarChar(300)
   error_message String?   @db.VarChar(500)
   duration_ms   Int       @default(0)
-  /// Người dùng bấm "Đạt" — ảnh dùng được làm content (chỉ lượt HELD_PRODUCT thành công)
+  /// Người dùng bấm "Đạt" — ảnh dùng được làm content (chỉ lượt Gemini thành công)
   approved_at   DateTime?
   approved_by   String?   @db.Uuid
   created_at    DateTime  @default(now())

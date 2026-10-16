@@ -5,15 +5,18 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { vietnamDateString } from '../../utils/date.utils';
 import { buildVoiceUsageDateRange } from '../ai-integration/voice-usage-range';
 import {
+  GEMINI_ESTIMATE_SAMPLE,
+  GEMINI_MODES,
   GENERATION_STATUS,
   GenerationCost,
   GenerationStatus,
-  PRODUCT_IMAGE_MODE,
   ProductImageMode,
   USD_VND_RATE_ENV,
   buildCostStats,
+  estimateGeminiImageCost,
   generationsDbError,
   parseUsdVndRate,
+  tryParseUsdVndRate,
 } from './product-image-cost.util';
 
 export interface GenerationRecord extends GenerationCost {
@@ -90,7 +93,7 @@ export class ProductImageGenerationsService {
       }),
     );
     if (!row) throw new NotFoundException('Không tìm thấy lượt tạo ảnh này');
-    if (row.mode !== PRODUCT_IMAGE_MODE.HELD_PRODUCT || row.status !== GENERATION_STATUS.SUCCESS) {
+    if (!GEMINI_MODES.includes(row.mode) || row.status !== GENERATION_STATUS.SUCCESS) {
       throw new BadRequestException('Chỉ ảnh Gemini tạo thành công mới đánh dấu "Đạt" được');
     }
     const canApproveAny = (user.roles ?? []).some((r) => APPROVE_ANY_ROLES.includes(r));
@@ -105,6 +108,22 @@ export class ProductImageGenerationsService {
       }),
     );
     return { id: updated.id, approved: updated.approved_at !== null, approvedAt: updated.approved_at };
+  }
+
+  /** Giá ước tính 1 ảnh Gemini cho hộp xác nhận lô — mọi tài khoản đều xem được (không lộ ai tiêu bao nhiêu). */
+  async getGeminiEstimate() {
+    // Thiếu tỷ giá không chặn việc tạo ảnh: vẫn trả giá USD, VNĐ để null kèm lý do.
+    const { rate, note } = tryParseUsdVndRate(this.configService.get<string>(USD_VND_RATE_ENV));
+    const rows = await this.db('Đọc giá ước tính Gemini', () =>
+      this.prisma.productImageGeneration.findMany({
+        where: { mode: { in: [...GEMINI_MODES] }, cost_usd: { gt: 0 } },
+        orderBy: { created_at: 'desc' },
+        take: GEMINI_ESTIMATE_SAMPLE,
+        select: { cost_usd: true },
+      }),
+    );
+    const estimate = estimateGeminiImageCost(rows.map((r) => Number(r.cost_usd)), rate);
+    return { ...estimate, note: estimate.per_image_usd !== null && rate === null ? note : null };
   }
 
   async getCostStats(dateFrom?: string, dateTo?: string) {

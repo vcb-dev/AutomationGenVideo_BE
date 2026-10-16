@@ -14,6 +14,7 @@ import { ProductImageController } from '../src/modules/product-image/product-ima
 import { ProductImageService } from '../src/modules/product-image/product-image.service';
 import { ProductImageGenerationsService } from '../src/modules/product-image/product-image-generations.service';
 import {
+  CUTOUT_FAILED_FREE,
   GenerationRow,
   buildCostStats,
   costFromAiUsage,
@@ -155,17 +156,31 @@ describe('Ghi nhận từng lượt khi tạo ảnh', () => {
     expect(generations.record).not.toHaveBeenCalled();
   });
 
-  it('tách nền: ghi CUTOUT 0đ kèm model rembg; hỏng thì ghi FAILED', async () => {
+  it('tách nền: ghi CUTOUT 0đ kèm tên model nhận diện tự huấn luyện; hỏng không kèm usage cũng 0đ', async () => {
     const file = { buffer: Buffer.from('x'), mimetype: 'image/png' } as Express.Multer.File;
-    const ok = makeService(jest.fn(() => of({ data: { success: true, cutout_image_base64: 'UE5H', width: 1, height: 1, model: 'isnet-general-use' } })));
-    await ok.service.cutout(file, USER);
+    const modelUsage = { model: 'bag-detector-run-1009-1442', input_tokens: 0, output_tokens: 0, cost_usd: 0, cost_note: null };
+    const ok = makeService(jest.fn(() => of({ data: { success: true, cutout_image_base64: 'UE5H', width: 1, height: 1, usage: modelUsage } })));
+    const result = await ok.service.cutout(file, USER);
     expect(ok.generations.record).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'CUTOUT', status: 'SUCCESS', model: 'isnet-general-use', cost_usd: 0,
+      mode: 'CUTOUT', status: 'SUCCESS', model: 'bag-detector-run-1009-1442', input_tokens: 0, output_tokens: 0, cost_usd: 0,
+    }));
+    expect(result.cost).toEqual({ usd: 0, vnd: 0, note: null });
+
+    // AI trả lỗi không kèm usage (rembg, đầu vào, cấu hình) → vẫn 0đ, ghi rõ vì sao không tính phí.
+    const before = makeService(jest.fn(() => throwError(() => ({ response: { status: 400, data: { error_message: 'Ảnh sản phẩm hỏng' } } }))));
+    await expect(before.service.cutout(file, USER)).rejects.toMatchObject({ status: 400 });
+    expect(before.generations.record).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'CUTOUT', status: 'FAILED', cost_usd: 0, cost_note: CUTOUT_FAILED_FREE.cost_note,
     }));
 
-    const bad = makeService(jest.fn(() => throwError(() => ({ response: { status: 400, data: { error_message: 'Không tìm thấy sản phẩm' } } }))));
-    await expect(bad.service.cutout(file, USER)).rejects.toMatchObject({ status: 400 });
-    expect(bad.generations.record).toHaveBeenCalledWith(expect.objectContaining({ mode: 'CUTOUT', status: 'FAILED', cost_usd: 0 }));
+    // AI lỗi sau khi đã nạp model (kèm usage) → ghi đúng usage đó.
+    const after = makeService(jest.fn(() =>
+      throwError(() => ({ response: { status: 400, data: { error_message: 'Không tìm thấy sản phẩm trong ảnh', usage: modelUsage } } })),
+    ));
+    await expect(after.service.cutout(file, USER)).rejects.toMatchObject({ status: 400 });
+    expect(after.generations.record).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'CUTOUT', status: 'FAILED', model: 'bag-detector-run-1009-1442', cost_usd: 0,
+    }));
   });
 
   it('ghi nhật ký hỏng (vd DB) không làm hỏng lượt tạo ảnh — record trả null', async () => {

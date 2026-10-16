@@ -9,8 +9,18 @@ import { InternalServerErrorException } from '@nestjs/common';
  *  - chi phí 1 ảnh đạt = tổng tiền Gemini / số ảnh đạt.
  */
 
-export const PRODUCT_IMAGE_MODE = { CUTOUT: 'CUTOUT', HELD_PRODUCT: 'HELD_PRODUCT' } as const;
+export const PRODUCT_IMAGE_MODE = {
+  CUTOUT: 'CUTOUT',
+  HELD_PRODUCT: 'HELD_PRODUCT',
+  /** Gemini đặt SP vào ảnh cảnh — chế độ của tab "Tạo hàng loạt". */
+  SCENE_PLACEMENT: 'SCENE_PLACEMENT',
+  /** Tab "Chị Nhạm cầm SP" — đổi SP bằng model tự huấn luyện + SAM + LaMa trên AI service, 0đ (không có nút "Đạt"). */
+  HELD_SWAP: 'HELD_SWAP',
+} as const;
 export type ProductImageMode = (typeof PRODUCT_IMAGE_MODE)[keyof typeof PRODUCT_IMAGE_MODE];
+
+/** Các chế độ gọi Gemini (tính phí, có nút "Đạt"); còn lại là 0đ (tách nền, đổi SP bằng model tự huấn luyện). */
+export const GEMINI_MODES: readonly string[] = [PRODUCT_IMAGE_MODE.HELD_PRODUCT, PRODUCT_IMAGE_MODE.SCENE_PLACEMENT];
 
 export const GENERATION_STATUS = { SUCCESS: 'SUCCESS', FAILED: 'FAILED' } as const;
 export type GenerationStatus = (typeof GENERATION_STATUS)[keyof typeof GENERATION_STATUS];
@@ -137,9 +147,41 @@ export const UNKNOWN_COST = {
   cost_note: 'AI service không báo số token/chi phí của lượt này.',
 } as const;
 
-/** Tách nền chạy rembg trên máy chủ công ty — không tốn phí API. */
-export function freeCost(model: string | null | undefined): GenerationCost {
-  return { model: model ? String(model).slice(0, 100) : null, input_tokens: 0, output_tokens: 0, cost_usd: 0, cost_note: null };
+/**
+ * Tách nền hỏng mà AI không báo `usage` (rembg, đầu vào, cấu hình): tách nền chạy hoàn toàn trên AI service
+ * (rembg + model nhận diện tự huấn luyện), không gọi dịch vụ tính phí nào — luôn 0đ. BE hết giờ chờ thì
+ * usageFromAxiosError đã trả "chưa biết" trước khi tới đây.
+ */
+export const CUTOUT_FAILED_FREE = {
+  cost_usd: 0,
+  cost_note: 'Tách nền chạy trên AI service (rembg + model tự huấn luyện) — không tính phí.',
+} as const;
+
+/** Như CUTOUT_FAILED_FREE cho lượt đổi SP 0đ hỏng (HELD_SWAP): toàn bộ chạy trên AI service, không gọi dịch vụ tính phí. */
+export const HELD_SWAP_FAILED_FREE = {
+  cost_usd: 0,
+  cost_note: 'Đổi SP chạy trên AI service (model người cầm SP tự huấn luyện + SAM + LaMa) — không tính phí.',
+} as const;
+
+// ─── Ước tính giá một ảnh Gemini (hộp xác nhận của tab Tạo tự động) ─────────
+
+/** Số lượt Gemini gần nhất dùng để ước tính — đủ san bằng chênh lệch token giữa các ảnh. */
+export const GEMINI_ESTIMATE_SAMPLE = 20;
+
+/**
+ * Giá trung bình một lượt Gemini theo các lượt THẬT gần nhất (giá thật nằm ở biến
+ * GEMINI_IMAGE_PRICES_JSON trên AI service, BE không biết đơn giá). Lượt 0đ là lượt Gemini từ chối
+ * ngay (sai model, hết quota) — không phản ánh giá nên bỏ. Chưa có lượt nào thì trả null.
+ */
+export function estimateGeminiImageCost(costsUsd: readonly number[], rate: number | null) {
+  const billed = costsUsd.filter((usd) => Number.isFinite(usd) && usd > 0);
+  if (!billed.length) return { per_image_usd: null, per_image_vnd: null, sample_size: 0 };
+  const usd = billed.reduce((sum, value) => sum + value, 0) / billed.length;
+  return {
+    per_image_usd: Math.round(usd * 1e6) / 1e6,
+    per_image_vnd: rate === null ? null : Math.round(usd * rate),
+    sample_size: billed.length,
+  };
 }
 
 // ─── Thống kê ──────────────────────────────────────────────────────────────
@@ -166,7 +208,7 @@ export interface GenerationRow {
  * không, lỗi cấu hình sẽ làm phình "số lượt để ra 1 ảnh đạt".
  */
 export function isGeminiAttempt(row: GenerationRow): boolean {
-  if (row.mode !== PRODUCT_IMAGE_MODE.HELD_PRODUCT) return false;
+  if (!GEMINI_MODES.includes(row.mode)) return false;
   return (
     row.status === GENERATION_STATUS.SUCCESS ||
     row.input_tokens > 0 ||
@@ -193,10 +235,15 @@ interface Bucket {
   success: number;
   approved: number;
   cutouts: number;
+  /** Lượt đổi SP 0đ (HELD_SWAP) thành công — không phải "lượt tạo" Gemini, không vào chỉ số lượt/ảnh đạt. */
+  swaps: number;
+  /** Tổng tiền mọi lượt (Gemini tạo ảnh + Gemini nhận diện khi tách nền). */
   usd: number;
+  /** Riêng tiền Gemini TẠO ẢNH — mẫu số của chi phí / lượt và chi phí / 1 ảnh đạt. */
+  generateUsd: number;
 }
 
-const emptyBucket = (): Bucket => ({ attempts: 0, success: 0, approved: 0, cutouts: 0, usd: 0 });
+const emptyBucket = (): Bucket => ({ attempts: 0, success: 0, approved: 0, cutouts: 0, swaps: 0, usd: 0, generateUsd: 0 });
 
 export function buildCostStats(
   rows: GenerationRow[],
@@ -211,6 +258,7 @@ export function buildCostStats(
   const total = emptyBucket();
   let failed = 0;
   let cutoutFailed = 0;
+  let swapFailed = 0;
   let unpriced = 0;
   let inputTokens = 0;
   let outputTokens = 0;
@@ -224,21 +272,7 @@ export function buildCostStats(
     const user = byUser.get(row.user_id) ?? emptyBucket();
     byUser.set(row.user_id, user);
 
-    if (row.mode === PRODUCT_IMAGE_MODE.CUTOUT) {
-      if (row.status === GENERATION_STATUS.SUCCESS) {
-        total.cutouts += 1;
-        user.cutouts += 1;
-      } else {
-        cutoutFailed += 1;
-      }
-      continue;
-    }
-
     const usd = row.cost_usd ?? 0;
-    const attempt = isGeminiAttempt(row);
-    const success = row.status === GENERATION_STATUS.SUCCESS;
-    const approved = success && row.approved_at !== null;
-    if (!success) failed += 1;
     if (row.cost_usd === null) {
       unpriced += 1;
       const note = row.cost_note || 'Không rõ lý do';
@@ -246,30 +280,60 @@ export function buildCostStats(
     }
     inputTokens += row.input_tokens;
     outputTokens += row.output_tokens;
+    const day = byDay.get(opts.toDay(row.created_at)) ?? emptyBucket();
+    byDay.set(opts.toDay(row.created_at), day);
+
+    // Tách nền: tiền lượt Gemini nhận diện SP vào tổng/ngày/người, nhưng không phải "lượt tạo" của
+    // hai chỉ số lượt/ảnh đạt — ảnh tách nền không có nút "Đạt".
+    if (row.mode === PRODUCT_IMAGE_MODE.CUTOUT) {
+      if (row.status === GENERATION_STATUS.SUCCESS) {
+        total.cutouts += 1;
+        user.cutouts += 1;
+      } else {
+        cutoutFailed += 1;
+      }
+      for (const bucket of [total, day, user]) bucket.usd += usd;
+      continue;
+    }
+    // Đổi SP 0đ: đếm riêng, không lẫn vào lượt tạo/ảnh đạt của Gemini (không có nút "Đạt").
+    if (row.mode === PRODUCT_IMAGE_MODE.HELD_SWAP) {
+      if (row.status === GENERATION_STATUS.SUCCESS) {
+        total.swaps += 1;
+        user.swaps += 1;
+      } else {
+        swapFailed += 1;
+      }
+      for (const bucket of [total, day, user]) bucket.usd += usd;
+      continue;
+    }
+
+    const attempt = isGeminiAttempt(row);
+    const success = row.status === GENERATION_STATUS.SUCCESS;
+    const approved = success && row.approved_at !== null;
+    if (!success) failed += 1;
 
     const key = productKey(row.product_name);
     const product = byProduct.get(key) ?? { ...emptyBucket(), label: row.product_name?.trim() || UNNAMED_PRODUCT_LABEL };
     byProduct.set(key, product);
-    const day = byDay.get(opts.toDay(row.created_at)) ?? emptyBucket();
-    byDay.set(opts.toDay(row.created_at), day);
 
     for (const bucket of [total, product, day, user]) {
       if (attempt) bucket.attempts += 1;
       if (success) bucket.success += 1;
       if (approved) bucket.approved += 1;
       bucket.usd += usd;
+      bucket.generateUsd += usd;
     }
   }
 
   const perApproved = (b: Bucket) =>
-    b.approved > 0 ? { ...money(b.usd / b.approved), attempts: ratio(b.attempts, b.approved) } : null;
+    b.approved > 0 ? { ...money(b.generateUsd / b.approved), attempts: ratio(b.attempts, b.approved) } : null;
 
   return {
     pricing: {
       usd_vnd_rate: opts.rate,
       note:
         'Ước tính theo số token Gemini trả về × đơn giá model (GEMINI_IMAGE_PRICES_JSON trên AI service). ' +
-        'Tách nền chạy trên máy chủ công ty, không tốn phí API.',
+        'Tách nền: rembg chạy trên máy chủ công ty (0đ) + một lượt Gemini đọc ảnh để nhận diện đúng sản phẩm.',
     },
     totals: {
       ...money(total.usd),
@@ -282,7 +346,11 @@ export function buildCostStats(
       output_tokens: outputTokens,
       cutouts: total.cutouts,
       cutout_failed: cutoutFailed,
-      per_attempt: total.attempts > 0 ? money(total.usd / total.attempts) : null,
+      swaps: total.swaps,
+      swap_failed: swapFailed,
+      /** Tiền Gemini nhận diện SP của các lượt tách nền (nằm trong tổng ở trên). */
+      cutout_cost: money(total.usd - total.generateUsd),
+      per_attempt: total.attempts > 0 ? money(total.generateUsd / total.attempts) : null,
       per_approved: perApproved(total),
     },
     by_day: [...byDay.entries()]
@@ -305,9 +373,10 @@ export function buildCostStats(
         attempts: b.attempts,
         approved: b.approved,
         cutouts: b.cutouts,
+        swaps: b.swaps,
         ...money(b.usd),
       }))
-      .sort((a, b) => b.cost_usd - a.cost_usd || b.attempts + b.cutouts - (a.attempts + a.cutouts)),
+      .sort((a, b) => b.cost_usd - a.cost_usd || b.attempts + b.cutouts + b.swaps - (a.attempts + a.cutouts + a.swaps)),
     unpriced_notes: [...unpricedNotes.entries()].map(([note, count]) => ({ note, count })),
     recent: rows.slice(0, opts.recentLimit).map((row) => ({
       id: row.id,

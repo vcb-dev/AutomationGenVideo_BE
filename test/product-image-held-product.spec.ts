@@ -13,6 +13,7 @@ import { validate } from 'class-validator';
 import { of, throwError } from 'rxjs';
 import { ProductImageController } from '../src/modules/product-image/product-image.controller';
 import { ProductImageService, toAiHttpException } from '../src/modules/product-image/product-image.service';
+import { formFields } from './helpers/ai-form-fields';
 import { HeldProductDto, HELD_PRODUCT_NOTE_MAX_LENGTH } from '../src/modules/product-image/dto/held-product.dto';
 
 const USER = { id: 'user-2', email: 'content@vcb.test' };
@@ -40,10 +41,10 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
 
     const [url, body, config] = post.mock.calls[0] as any[];
     expect(url).toBe('http://ai:8000/api/ai/product-image/held-product/');
-    expect(body).toEqual({
-      person_image_base64: Buffer.from('person-bytes').toString('base64'),
+    expect(formFields(body)).toEqual({
+      person_image: { file: 'person-bytes', contentType: 'image/jpeg' },
       person_mime_type: 'image/jpeg',
-      product_image_base64: Buffer.from('product-bytes').toString('base64'),
+      product_image: { file: 'product-bytes', contentType: 'image/png' },
       product_mime_type: 'image/png',
       note: 'hộp cao 30cm',
     });
@@ -55,7 +56,7 @@ describe('Tạo ảnh sản phẩm — chị Nhạm cầm sản phẩm (Gemini)'
   it('ghi chú rỗng thì không gửi trường note', async () => {
     const post = jest.fn(() => of({ data: { success: true, image_base64: 'UE5H', mime_type: 'image/png' } }));
     await makeService(post).heldProduct(PERSON, PRODUCT, { note: '   ', productName: 'Nhẫn Kim Vũ' }, USER);
-    expect((post.mock.calls[0] as any[])[1].note).toBeUndefined();
+    expect(formFields((post.mock.calls[0] as any[])[1])).not.toHaveProperty('note');
   });
 
   it('thiếu ảnh nào thì 400 nêu đúng ảnh đó, không gọi AI (không tốn lượt Gemini)', async () => {

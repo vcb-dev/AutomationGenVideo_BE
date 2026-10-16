@@ -6,6 +6,8 @@ import { getRuntimeJwtSecret } from '../auth/jwt-secret.util';
 import { ProductImageController } from './product-image.controller';
 import { ProductImageService } from './product-image.service';
 import { ProductImageGenerationsService } from './product-image-generations.service';
+import { ProductImageTrainingArchiveService } from './product-image-training-archive.service';
+import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { ProductImageGenerationsService } from './product-image-generations.serv
     }),
   ],
   controllers: [ProductImageController],
-  providers: [ProductImageService, ProductImageGenerationsService],
+  // GoogleDriveStorageService không phụ thuộc gì (đọc env lúc dùng) — khai thẳng như task-auto/video.module.
+  providers: [ProductImageService, ProductImageGenerationsService, ProductImageTrainingArchiveService, GoogleDriveStorageService],
 })
 export class ProductImageModule {}
