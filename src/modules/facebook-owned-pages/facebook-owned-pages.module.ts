@@ -8,6 +8,7 @@ import { FacebookOwnedPagesService } from './facebook-owned-pages.service';
 import { FacebookOwnedPagesReadService } from './facebook-owned-pages-read.service';
 import { FacebookAiClientService } from './facebook-ai-client.service';
 import { FacebookOwnedPagesCronService } from './facebook-owned-pages-cron.service';
+import { PublishedVideosRefreshService } from './published-videos-refresh.service';
 import { FacebookConnectedPagesService } from './facebook-connected-pages.service';
 import { CryptoService } from '../social-publishing/crypto/crypto.service';
 
@@ -30,11 +31,12 @@ import { CryptoService } from '../social-publishing/crypto/crypto.service';
     FacebookOwnedPagesReadService,
     FacebookAiClientService,
     FacebookOwnedPagesCronService,
+    PublishedVideosRefreshService,
     FacebookConnectedPagesService,
     CryptoService,
   ],
   // FacebookAiClientService được export để module owned-video-weekly-report làm mới chỉ số cho
   // đúng lô video sắp báo cáo (fetchMetricsRefresh) mà không phải dựng lại client riêng.
-  exports: [FacebookOwnedPagesService, FacebookAiClientService],
+  exports: [FacebookOwnedPagesService, FacebookAiClientService, FacebookOwnedPagesReadService],
 })
 export class FacebookOwnedPagesModule {}

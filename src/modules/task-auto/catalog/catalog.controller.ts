@@ -173,6 +173,12 @@ export class TaskAutoCatalogController {
     return this.catalog.findAllContents(q);
   }
 
+  @Get("contents/linked-products")
+  @ApiOperation({ summary: "Sản phẩm đã gắn với content kho tổng (qua task) — option bộ lọc sản phẩm" })
+  getContentLinkedProducts(@Query("brand_type") brandType?: string) {
+    return this.catalog.listContentLinkedProducts(brandType);
+  }
+
   @Get("contents/:id")
   @ApiOperation({ summary: "Get content detail" })
   getContent(@Param("id") id: string) {

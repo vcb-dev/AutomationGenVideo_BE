@@ -28,7 +28,7 @@ function createPrismaMock(posts: PostRow[] = []) {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     socialAccount: { findFirst: jest.fn(), findUnique: jest.fn() },
-    task: { findUnique: jest.fn(), update: jest.fn() },
+    task: { findUnique: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
   };
 }
 
@@ -523,15 +523,15 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
 
     it('đăng thành công cho post gắn task → tự thêm link vào published_links', async () => {
       const prisma = createPrismaMock();
-      prisma.task.findUnique.mockResolvedValue({ published_links: [] });
+      prisma.task.findUnique.mockResolvedValue({ published_links: [], updated_at: new Date(0) });
       const { service, publishService } = createService(prisma);
       publishService.executeScheduled.mockResolvedValue({ postId: 'fb_123' });
 
       await (service as any).executePost(basePost({ task_id: 'task-1' }));
       await flush();
 
-      expect(prisma.task.update).toHaveBeenCalledWith({
-        where: { id: 'task-1' },
+      expect(prisma.task.updateMany).toHaveBeenCalledWith({
+        where: { id: 'task-1', updated_at: new Date(0) },
         data: {
           published_links: [
             expect.objectContaining({ platform: 'Facebook', url: 'https://www.facebook.com/fb_123' }),
@@ -551,7 +551,7 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
       await (service as any).executePost(basePost({ task_id: 'task-1' }));
       await flush();
 
-      expect(prisma.task.update).not.toHaveBeenCalled();
+      expect(prisma.task.updateMany).not.toHaveBeenCalled();
     });
 
     it('post không gắn task_id → không đụng tới bảng task', async () => {
@@ -562,7 +562,7 @@ describe('ScheduleService — giữ chỗ và chạy lại', () => {
       await flush();
 
       expect(prisma.task.findUnique).not.toHaveBeenCalled();
-      expect(prisma.task.update).not.toHaveBeenCalled();
+      expect(prisma.task.updateMany).not.toHaveBeenCalled();
     });
   });
 });

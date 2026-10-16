@@ -27,10 +27,17 @@ export class CreateChannelDto {
   @IsOptional()
   status?: string;
 
-  @ApiPropertyOptional({ description: "ID của User sở hữu kênh (FK → users.id)" })
+  @ApiPropertyOptional({
+    description: "ID của User cầm kênh (FK → users.id). Chỉ ADMIN/MANAGER được chọn khi tạo; role khác luôn tự gán = người tạo",
+  })
   @IsUUID()
   @IsOptional()
   owner_id?: string;
 
-  // team_id KHÔNG nhận từ client — tự động gán từ req.user.team
+  @ApiPropertyOptional({
+    description: "ID team của kênh (FK → teams.id). Chỉ ADMIN/MANAGER được chọn khi tạo; role khác luôn tự gán team của người tạo",
+  })
+  @IsUUID()
+  @IsOptional()
+  team_id?: string;
 }

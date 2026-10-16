@@ -131,9 +131,10 @@ export class TaskAutoTeamsController {
   // ── Team Products ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/products")
-  @ApiOperation({ summary: "List products in team inventory (standalone)" })
+  @ApiOperation({ summary: "List products in team inventory (standalone). id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamProducts(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
@@ -145,7 +146,7 @@ export class TaskAutoTeamsController {
     // Không truyền page → service trả mảng đầy đủ như cũ (tương thích ngược cho các nơi
     // cần lấy hết, vd dropdown chọn sản phẩm khi tạo task).
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, product_line_id: productLineId } : undefined;
-    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId, opts);
+    return this.teams.listTeamProducts(teamId, brandType as any, month, classificationId, opts, req.user.roles ?? []);
   }
 
   @Post("teams/:id/products")
@@ -212,9 +213,10 @@ export class TaskAutoTeamsController {
   // ── Team Contents ─────────────────────────────────────────────────────────
 
   @Get("teams/:id/contents")
-  @ApiOperation({ summary: "List contents in team storage (standalone)" })
+  @ApiOperation({ summary: "List contents in team storage (standalone). id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamContents(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("month") month?: string,
     @Query("classification_id") classificationId?: string,
@@ -223,9 +225,20 @@ export class TaskAutoTeamsController {
     @Query("limit") limit?: string,
     @Query("content_line_id") contentLineId?: string,
     @Query("market") market?: string,
+    @Query("product_sku") productSku?: string,
   ) {
-    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market } : undefined;
-    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts);
+    const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, content_line_id: contentLineId, market, product_sku: productSku } : undefined;
+    return this.teams.listTeamContents(teamId, brandType as any, month, classificationId, opts, req.user.roles ?? []);
+  }
+
+  @Get("teams/:id/contents/linked-products")
+  @ApiOperation({ summary: "Sản phẩm đã gắn với content kho team (qua task) — option bộ lọc sản phẩm. id = \"all\" → mọi team (ADMIN/MANAGER)" })
+  listTeamContentLinkedProducts(
+    @Param("id") teamId: string,
+    @Request() req: any,
+    @Query("brand_type") brandType?: string,
+  ) {
+    return this.teams.listTeamContentLinkedProducts(teamId, brandType, req.user.roles ?? []);
   }
 
   @Get("teams/:id/contents/:teamContentId")
@@ -286,9 +299,10 @@ export class TaskAutoTeamsController {
   // ── Team Sources ──────────────────────────────────────────────────────────
 
   @Get("teams/:id/sources")
-  @ApiOperation({ summary: "List sources in team inventory" })
+  @ApiOperation({ summary: "List sources in team inventory. id = \"all\" → mọi team (ADMIN/MANAGER)" })
   listTeamSources(
     @Param("id") teamId: string,
+    @Request() req: any,
     @Query("brand_type") brandType?: string,
     @Query("product_id") productId?: string,
     @Query("team_product_id") teamProductId?: string,
@@ -300,7 +314,7 @@ export class TaskAutoTeamsController {
     @Query("added_by_id") addedById?: string,
   ) {
     const opts = page ? { search, page: Number(page), limit: limit ? Number(limit) : undefined, type, added_by_id: addedById } : undefined;
-    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month, opts);
+    return this.teams.listTeamSources(teamId, brandType as any, productId, teamProductId, month, opts, req.user.roles ?? []);
   }
 
   @Post("teams/:id/sources")
@@ -417,10 +431,32 @@ export class TaskAutoTeamsController {
     );
   }
 
+  @Get("traffic-trend")
+  @ApiOperation({
+    summary:
+      "Traffic theo từng ngày từ lịch sử báo cáo tay (biểu đồ đường ở Tổng quan): phát sinh mỗi ngày + luỹ kế tháng, kèm tách theo team (toàn hệ thống) hoặc theo thành viên (1 team). Phạm vi theo role như /product-video-stats. Không truyền date_from/date_to → tháng hiện tại.",
+  })
+  getTrafficTrend(
+    @Request() req: any,
+    @Query("date_from") dateFrom?: string,
+    @Query("date_to") dateTo?: string,
+    @Query("team_id") teamId?: string,
+    @Query("assignee_id") assigneeId?: string,
+  ) {
+    return this.tasks.getTrafficTrendForRole(
+      req.user.id,
+      req.user.roles ?? [],
+      dateFrom,
+      dateTo,
+      teamId,
+      assigneeId,
+    );
+  }
+
   @Get("dashboard")
   @ApiOperation({
     summary:
-      "Dashboard summary stats. team_id/assignee_id chỉ có tác dụng với ADMIN/MANAGER (global dashboard) — khoan sâu về 1 team/1 thành viên cụ thể, bị bỏ qua ở LEADER/MEMBER vì 2 nhánh đó đã tự khoanh phạm vi theo JWT.",
+      "Dashboard summary stats. ADMIN/MANAGER: team_id/assignee_id khoan sâu về 1 team/1 thành viên. LEADER: chỉ assignee_id, và chỉ khi người đó thuộc team mình lead (id lạ bị bỏ qua). MEMBER: bỏ qua cả 2 (luôn là chính mình).",
   })
   getDashboard(
     @Request() req: any,
@@ -446,7 +482,7 @@ export class TaskAutoTeamsController {
   @Get("product-video-stats")
   @ApiOperation({
     summary:
-      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
+      "Video/sản phẩm theo dòng sản phẩm — tách riêng khỏi /dashboard để load độc lập. Tự khoanh phạm vi theo role (ADMIN/MANAGER: toàn hệ thống, có thể lọc team_id/assignee_id; LEADER: (các) team đang lead, có thể lọc assignee_id là thành viên team mình; MEMBER: chính mình), theo bộ lọc ngày date_from/date_to (không truyền = không giới hạn ngày).",
   })
   getProductVideoStats(
     @Request() req: any,

@@ -1,13 +1,9 @@
 import { DateTime } from "luxon";
-import { ProductPoolItem } from "../types";
+import { TeamProductCandidate } from "../types";
 
-// Trần cửa sổ lookback truy vấn lịch sử cooldown — chặn query quét quá xa nếu ai đó
+// Trần cửa sổ lookback truy vấn lịch sử giao SP — chặn query quét quá xa nếu ai đó
 // lỡ set cooldown_days rất lớn (per-product override hoặc default_cooldown_days).
 export const MAX_COOLDOWN_LOOKBACK_DAYS = 60;
-
-export function productKeyOf(product: Pick<ProductPoolItem, "source" | "id">): string {
-  return `${product.source}:${product.id}`;
-}
 
 export function effectiveCooldownDays(
   override: number | null | undefined,
@@ -22,17 +18,19 @@ export function effectiveCooldownDays(
  * cooldown_days=1 nghĩa là "không giao lại ở ngày kế tiếp", tự do lại từ ngày thứ 3.
  */
 export function isOnCooldown(
-  product: ProductPoolItem,
-  lastAssignedByProduct: Map<string, Date>,
+  product: Pick<TeamProductCandidate, "cooldown_days">,
+  lastAssigned: Date | undefined,
   defaultDays: number,
   today: DateTime,
 ): boolean {
   const days = effectiveCooldownDays(product.cooldown_days, defaultDays);
-  if (days <= 0) return false;
-  const last = lastAssignedByProduct.get(productKeyOf(product));
-  if (!last) return false;
-  const daysSince = today
+  if (days <= 0 || !lastAssigned) return false;
+  return calendarDaysSince(lastAssigned, today) < days;
+}
+
+/** Số NGÀY LỊCH (theo múi giờ của `today`) từ `last` tới `today` — cùng ngày = 0. */
+export function calendarDaysSince(last: Date, today: DateTime): number {
+  return today
     .startOf("day")
-    .diff(DateTime.fromJSDate(last).startOf("day"), "days").days;
-  return daysSince < days;
+    .diff(DateTime.fromJSDate(last).setZone(today.zone).startOf("day"), "days").days;
 }

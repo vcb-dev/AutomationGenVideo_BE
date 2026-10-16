@@ -19,7 +19,11 @@ import {
   backfillSourcesForNewGlobalProduct,
   backfillEditorSourcesForNewEditorProduct,
 } from "../../../common/utils/catalog-link.util";
+import { findSourceIdsBySearch } from "../../../common/utils/source-search.util";
 import { runOrNotFound } from "../../../common/utils/prisma-not-found.util";
+import { syncTaskContentLine } from "../../../common/utils/task-content-line-sync.util";
+import { listLinkedProducts, taskProductSkuWhere } from "../../../common/utils/content-product-link.util";
+import { ALL_TEAMS_ID, assertCanViewAllTeams } from "../../../common/utils/team-membership.util";
 import {
   CreateProductDto,
   UpdateProductDto,
@@ -237,6 +241,12 @@ export class TaskAutoCatalogService {
 
   // ─── Contents (kho tổng) ─────────────────────────────────────────────────
 
+  listContentLinkedProducts(brandType?: string) {
+    return listLinkedProducts(this.prisma, {
+      content: { is: brandType ? { brand_type: brandType as any } : {} },
+    });
+  }
+
   async findAllContents(q: QueryContentDto) {
     const where: any = {};
     if (q.brand_type) where.brand_type = q.brand_type;
@@ -265,6 +275,7 @@ export class TaskAutoCatalogService {
       ];
     }
     if (q.team_id) where.team_contents = { some: { team_id: q.team_id } };
+    if (q.product_sku) where.tasks = { some: taskProductSkuWhere(q.product_sku) };
     Object.assign(where, this.monthRange(q.month));
 
     const page = q.page ?? 1;
@@ -405,12 +416,31 @@ export class TaskAutoCatalogService {
       if (exists && exists.id !== id)
         throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
     }
+    // Đổi tuyến content → kéo tuyến mới sang task đã tạo từ content này (xem syncTaskContentLine).
     return runOrNotFound(
       () =>
-        this.prisma.content.update({
-          where: { id },
-          data: dto as any,
-          include: { content_line: true, classification: true },
+        this.prisma.$transaction(async (tx) => {
+          const before =
+            dto.content_line_id !== undefined
+              ? await tx.content.findUnique({
+                  where: { id },
+                  select: { content_line_id: true },
+                })
+              : null;
+          const updated = await tx.content.update({
+            where: { id },
+            data: dto as any,
+            include: { content_line: true, classification: true },
+          });
+          if (before)
+            await syncTaskContentLine(
+              tx,
+              "content_id",
+              id,
+              before.content_line_id,
+              updated.content_line_id,
+            );
+          return updated;
         }),
       "Content not found",
     );
@@ -665,11 +695,8 @@ export class TaskAutoCatalogService {
     if (q.product_id) where.product_id = q.product_id;
     if (q.added_by_id) where.added_by_id = q.added_by_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
-    if (q.search)
-      where.OR = [
-        { name: { contains: q.search, mode: "insensitive" } },
-        { link: { contains: q.search, mode: "insensitive" } },
-      ];
+    const searchIds = await findSourceIdsBySearch(this.prisma, "global", q.search);
+    if (searchIds) where.id = { in: searchIds };
     Object.assign(where, this.monthRange(q.month));
 
     const page = q.page ?? 1;
@@ -1029,6 +1056,12 @@ export class TaskAutoCatalogService {
 
   // ─── Editor Contents (kho cá nhân) ───────────────────────────────────────
 
+  listEditorContentLinkedProducts(userId: string, brandType?: string) {
+    return listLinkedProducts(this.prisma, {
+      editor_content: { is: { user_id: userId, ...(brandType ? { brand_type: brandType as any } : {}) } },
+    });
+  }
+
   async findAllEditorContents(userId: string, q: QueryEditorContentDto) {
     const where: any = { user_id: userId };
     if (q.brand_type) where.brand_type = q.brand_type;
@@ -1044,6 +1077,7 @@ export class TaskAutoCatalogService {
         { body: { contains: q.search, mode: "insensitive" } },
         { code: { contains: q.search, mode: "insensitive" } },
       ];
+    if (q.product_sku) where.tasks = { some: taskProductSkuWhere(q.product_sku) };
     Object.assign(where, this.monthRange(q.month, "added_at"));
 
     const page = q.page ?? 1;
@@ -1152,7 +1186,7 @@ export class TaskAutoCatalogService {
     });
   }
 
-  /** Lean ownership check — chỉ SELECT user_id (+ status khi cần) thay vì tải cả EditorContent. */
+  /** Lean ownership check — chỉ SELECT user_id (+ status/content_line_id khi cần) thay vì tải cả EditorContent. */
   private async getEditorContentOwnership(
     id: string,
     requesterId: string,
@@ -1161,7 +1195,7 @@ export class TaskAutoCatalogService {
     const isPrivileged = roles.some((r) => ["ADMIN", "MANAGER"].includes(r));
     const ec = await this.prisma.editorContent.findUnique({
       where: { id },
-      select: { user_id: true, status: true },
+      select: { user_id: true, status: true, content_line_id: true },
     });
     if (!ec) throw new NotFoundException("EditorContent not found");
     if (!isPrivileged && ec.user_id !== requesterId)
@@ -1177,7 +1211,7 @@ export class TaskAutoCatalogService {
     requesterId: string,
     roles: string[],
   ) {
-    await this.getEditorContentOwnership(id, requesterId, roles);
+    const ec = await this.getEditorContentOwnership(id, requesterId, roles);
     if (dto.code) {
       const exists = await this.prisma.editorContent.findUnique({
         where: { code: dto.code },
@@ -1185,10 +1219,22 @@ export class TaskAutoCatalogService {
       if (exists && exists.id !== id)
         throw new ConflictException(`Mã content "${dto.code}" đã tồn tại`);
     }
-    return this.prisma.editorContent.update({
-      where: { id },
-      data: dto as any,
-      include: { content_line: true, classification: true },
+    // Đổi tuyến content → kéo tuyến mới sang task đã tạo từ content này (xem syncTaskContentLine).
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.editorContent.update({
+        where: { id },
+        data: dto as any,
+        include: { content_line: true, classification: true },
+      });
+      if (dto.content_line_id !== undefined)
+        await syncTaskContentLine(
+          tx,
+          "editor_content_id",
+          id,
+          ec.content_line_id,
+          updated.content_line_id,
+        );
+      return updated;
     });
   }
 
@@ -1209,11 +1255,8 @@ export class TaskAutoCatalogService {
     if (q.product_id) where.product_id = q.product_id;
     if (q.editor_product_id) where.editor_product_id = q.editor_product_id;
     if (q.is_active !== undefined) where.is_active = q.is_active;
-    if (q.search)
-      where.OR = [
-        { name: { contains: q.search, mode: "insensitive" } },
-        { link: { contains: q.search, mode: "insensitive" } },
-      ];
+    const searchIds = await findSourceIdsBySearch(this.prisma, "editor", q.search, userId);
+    if (searchIds) where.id = { in: searchIds };
     Object.assign(where, this.monthRange(q.month, "added_at"));
 
     const page = q.page ?? 1;
@@ -1761,19 +1804,25 @@ export class TaskAutoCatalogService {
     userRoles: string[],
     opts?: { page?: number; limit?: number },
   ) {
-    const team = await this.prisma.team.findUnique({ where: { id: teamId } });
-    if (!team) throw new NotFoundException("Team not found");
-    if (!this.canPushDirectly(team, userId, userRoles))
-      throw new ForbiddenException(
-        "Chỉ leader hoặc quản lý mới xem được yêu cầu duyệt của team",
-      );
+    // teamId = ALL_TEAMS_ID → yêu cầu của mọi team (chỉ ADMIN/MANAGER), không lọc team_id.
+    const isAllTeams = teamId === ALL_TEAMS_ID;
+    if (isAllTeams) {
+      assertCanViewAllTeams(userRoles);
+    } else {
+      const team = await this.prisma.team.findUnique({ where: { id: teamId } });
+      if (!team) throw new NotFoundException("Team not found");
+      if (!this.canPushDirectly(team, userId, userRoles))
+        throw new ForbiddenException(
+          "Chỉ leader hoặc quản lý mới xem được yêu cầu duyệt của team",
+        );
+    }
 
     // Không truyền page → giữ hành vi cũ (mảng đầy đủ) — cùng convention với
     // teams.service.ts listTeamProducts/Contents/Sources.
     const page = opts?.page;
     const limit = opts?.limit ?? 50;
     return this.prisma.teamPushRequest.findMany({
-      where: { team_id: teamId, ...(status ? { status: status as any } : {}) },
+      where: { ...(isAllTeams ? {} : { team_id: teamId }), ...(status ? { status: status as any } : {}) },
       include: this.pushRequestInclude,
       orderBy: { created_at: "desc" },
       skip: page ? (page - 1) * limit : undefined,

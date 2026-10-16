@@ -7,7 +7,7 @@
  * cào — đã từng xảy ra.
  *
  * Bộ mẫu ở đây phải KHỚP với 2 bản phía client:
- *   - AutomationGenVideo_FE/src/app/dashboard/video-library/page.tsx (extractVideoId)
+ *   - AutomationGenVideo_FE/src/lib/video-links.ts (extractVideoId)
  *   - public/extensions/vcb-video-downloader/content.js (detectVideoRef)
  * Sửa một chỗ thì sửa cả ba, nếu không cùng một video sẽ có 2 mã khác nhau.
  */
@@ -29,6 +29,10 @@ const VIDEO_ID_PATTERNS: Array<{ platform: string; host: RegExp; patterns: RegEx
     patterns: [/\/reels?\/([\w-]{5,})/, /\/p\/([\w-]{5,})/, /\/tv\/([\w-]{5,})/] },
   { platform: 'facebook', host: /facebook\.com|fb\.watch/,
     patterns: [/\/videos\/(?:[^/]+\/)?(\d{6,})/, /\/reel\/(\d{6,})/, /[?&]v=(\d{6,})/] },
+  // Mã = mã BÀI VIẾT (base36). Link v.redd.it/<mã> chứa mã MEDIA, không phải mã bài — coi là
+  // link rút gọn, giải về link bài trước (resolve-short-link.util.ts).
+  { platform: 'reddit', host: /reddit\.com|redd\.it/,
+    patterns: [/\/comments\/([a-z0-9]{4,10})/i, /\/\/(?:www\.)?redd\.it\/([a-z0-9]{4,10})/i] },
 ];
 
 /** '' nghĩa là link không trỏ vào một video cụ thể (vd link trang cá nhân). */
@@ -46,7 +50,7 @@ export function extractVideoId(url: string): string {
   return '';
 }
 
-/** '' nghĩa là không thuộc 8 nền tảng hệ thống hỗ trợ. */
+/** '' nghĩa là không thuộc các nền tảng hệ thống hỗ trợ. */
 export function detectPlatformFromUrl(url: string): string {
   const u = (url || '').trim();
   if (!u) return '';

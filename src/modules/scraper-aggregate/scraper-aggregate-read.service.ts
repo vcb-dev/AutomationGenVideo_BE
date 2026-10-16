@@ -1,11 +1,136 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { marketFilter, contentLineFilter, hashtagFilter, channelFilter } from './content-filters';
+import {
+  marketFilter,
+  contentLineFilter,
+  hashtagFilter,
+  channelFilter,
+  channelInFilter,
+  channelScope,
+  ChannelScope,
+  OwnedProfile,
+  OwnerScopePlatform,
+} from './content-filters';
+import { UNCLASSIFIED_FILTER } from '../../utils/task-auto/published-link-win-fail.util';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 function parseIntOrDefault(val: any, def?: number): number | undefined {
   const n = parseInt(val, 10);
   return Number.isFinite(n) ? n : def;
+}
+
+/*
+ * Phân loại nội dung cho video Facebook nội bộ. Bảng video không có cột phân loại — chỉ suy qua task
+ * đã gắn video (đọc phân loại hiện tại của content lúc query), theo thứ tự ưu tiên:
+ * 1. task_video_matches MATCHED — theo post_id.
+ * 2. Task.published_links — theo id video trong URL; nhiều task cùng dán 1 video thì task tạo gần nhất thắng.
+ * Video không nối được task nào = "chưa phân loại".
+ */
+
+export interface VideoClassification {
+  id: string;
+  name: string;
+}
+
+const VIDEO_ID_IN_URL = /\/(?:reel|videos)\/(\d+)/;
+/** Cùng mẫu cho Postgres — substring() trả nhóm bắt đầu tiên, (?:) không tính là nhóm. */
+const VIDEO_ID_IN_URL_SQL = '/(?:reel|videos)/([0-9]+)';
+
+export function facebookVideoIdFromUrl(url: string | null | undefined): string | null {
+  return (url || '').match(VIDEO_ID_IN_URL)?.[1] ?? null;
+}
+
+export interface FacebookVideoClassificationIndex {
+  byPostId: Map<string, VideoClassification>;
+  byVideoId: Map<string, VideoClassification>;
+}
+
+/** Dòng trùng khoá thì dòng ĐẦU thắng — caller sắp sẵn thứ tự ưu tiên. */
+export function buildFacebookVideoClassificationIndex(
+  matched: Array<{ post_id: string; id: string; name: string }>,
+  linked: Array<{ video_id: string; id: string; name: string }>,
+): FacebookVideoClassificationIndex {
+  const byPostId = new Map<string, VideoClassification>();
+  for (const r of matched) {
+    if (!byPostId.has(r.post_id)) byPostId.set(r.post_id, { id: r.id, name: r.name });
+  }
+  const byVideoId = new Map<string, VideoClassification>();
+  for (const r of linked) {
+    if (r.video_id && !byVideoId.has(r.video_id)) byVideoId.set(r.video_id, { id: r.id, name: r.name });
+  }
+  return { byPostId, byVideoId };
+}
+
+export function facebookVideoClassification(
+  index: FacebookVideoClassificationIndex,
+  postId: string,
+  url: string | null | undefined,
+): VideoClassification | null {
+  const viaMatch = index.byPostId.get(postId);
+  if (viaMatch) return viaMatch;
+  const videoId = facebookVideoIdFromUrl(url);
+  return (videoId && index.byVideoId.get(videoId)) || null;
+}
+
+/**
+ * Điều kiện SQL lọc theo phân loại, theo ĐÚNG thứ tự ưu tiên của facebookVideoClassification()
+ * (đường published_links chỉ áp khi post_id không có trong task_video_matches) — video lọc ra
+ * luôn mang đúng nhãn đang lọc. Bỏ trống filter → null (không lọc).
+ */
+export function facebookClassificationFilter(
+  index: FacebookVideoClassificationIndex,
+  filter: string,
+  cotPostId: Prisma.Sql,
+  cotUrl: Prisma.Sql,
+): Prisma.Sql | null {
+  const f = (filter || '').trim();
+  if (!f) return null;
+
+  const videoIdExpr = Prisma.sql`COALESCE(substring(${cotUrl} from ${VIDEO_ID_IN_URL_SQL}), '')`;
+  const inList = (expr: Prisma.Sql, ids: string[]) =>
+    ids.length ? Prisma.sql`${expr} = ANY(${ids}::text[])` : Prisma.sql`FALSE`;
+  const matchedPostIds = [...index.byPostId.keys()];
+
+  if (f === UNCLASSIFIED_FILTER) {
+    return Prisma.sql`NOT (${inList(cotPostId, matchedPostIds)} OR ${inList(videoIdExpr, [...index.byVideoId.keys()])})`;
+  }
+
+  const postIds = matchedPostIds.filter((p) => index.byPostId.get(p)!.id === f);
+  const videoIds = [...index.byVideoId].filter(([, c]) => c.id === f).map(([v]) => v);
+  return Prisma.sql`(${inList(cotPostId, postIds)} OR (${inList(videoIdExpr, videoIds)} AND NOT ${inList(cotPostId, matchedPostIds)}))`;
+}
+
+/** Hai câu rẻ (chỉ quét tasks + task_video_matches, không đụng bảng video ~30K dòng). */
+async function loadFacebookVideoClassificationIndex(
+  prisma: Prisma.TransactionClient,
+): Promise<FacebookVideoClassificationIndex> {
+  // Mỗi task chỉ set đúng 1 trong 3 content_id / team_content_id / editor_content_id.
+  const classificationOfTask = Prisma.sql`
+    LEFT JOIN contents c ON c.id = t.content_id
+    LEFT JOIN team_contents tc ON tc.id = t.team_content_id
+    LEFT JOIN editor_contents ec ON ec.id = t.editor_content_id
+    JOIN content_classifications cc ON cc.id = COALESCE(c.classification_id, tc.classification_id, ec.classification_id)
+  `;
+  const [matched, linked] = await Promise.all([
+    prisma.$queryRaw<{ post_id: string; id: string; name: string }[]>`
+      SELECT m.post_id, cc.id, cc.name
+      FROM task_video_matches m
+      JOIN tasks t ON t.id = m.task_id
+      ${classificationOfTask}
+      WHERE m.platform = 'FACEBOOK' AND m.status = 'MATCHED'
+    `,
+    prisma.$queryRaw<{ video_id: string; id: string; name: string }[]>`
+      SELECT substring(l->>'url' from ${VIDEO_ID_IN_URL_SQL}) AS video_id, cc.id, cc.name
+      FROM tasks t
+      ${classificationOfTask}
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(t.published_links) = 'array' THEN t.published_links ELSE '[]'::jsonb END
+      ) l
+      WHERE upper(l->>'platform') = 'FACEBOOK'
+      ORDER BY t.created_at DESC
+    `,
+  ]);
+  return buildFacebookVideoClassificationIndex(matched, linked);
 }
 
 export interface UnifiedItem {
@@ -354,6 +479,14 @@ export class ScraperAggregateReadService {
     channel?: string;
     /** Hashtag bất kỳ, có hoặc không có dấu # đều được */
     hashtag?: string;
+    /** User id người cầm kênh — chỉ lấy video từ các kênh người đó cầm (ghép qua huyk_channels). */
+    owner_id?: string;
+    /** Team id — chỉ lấy video từ các kênh của team (ghép qua huyk_channels). */
+    team_id?: string;
+    /** Phân loại nội dung (uuid, hoặc 'none' = chưa phân loại) — chỉ Facebook, xem facebookVideoClassification. */
+    classification_id?: string;
+    /** '1' → mỗi video kèm `content_classification` (FB; nền tảng khác luôn null). */
+    with_classification?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
@@ -367,6 +500,22 @@ export class ScraperAggregateReadService {
     const contentLine = (params.content_line || '').trim();
     const channel = (params.channel || '').trim();
     const hashtag = (params.hashtag || '').trim();
+    const ownerId = (params.owner_id || '').trim();
+    const teamId = (params.team_id || '').trim();
+    const ownerScope = ownerId || teamId ? await this.loadChannelScope({ ownerId, teamId }) : null;
+    const classificationId = (params.classification_id || '').trim();
+    const fbClassifications =
+      classificationId || params.with_classification === '1'
+        ? await loadFacebookVideoClassificationIndex(this.prisma)
+        : null;
+    const onlyFacebook = !!classificationId && classificationId !== UNCLASSIFIED_FILTER;
+    /**
+     * Lọc theo người cầm / team: nền tảng không có kênh nào trong phạm vi thì bỏ hẳn nhánh, khỏi
+     * query thừa. Tương tự với nhánh không phải Facebook khi đang lọc 1 phân loại cụ thể.
+     */
+    const inOwnerScope = (p: OwnerScopePlatform | 'douyin' | 'xiaohongshu'): boolean =>
+      (!onlyFacebook || p === 'facebook') &&
+      (!ownerScope || (p !== 'douyin' && p !== 'xiaohongshu' && ownerScope.keys[p].length > 0));
 
     /** Hai bộ lọc thị trường và tuyến nội dung dựa vào chữ, mà mỗi nhánh gọi cột chữ và cột kênh một tên khác nhau. */
     function filterByKeyword(cotChu: Prisma.Sql, cotHashtag?: Prisma.Sql, cotKenh?: Prisma.Sql): Prisma.Sql[] {
@@ -381,9 +530,12 @@ export class ScraperAggregateReadService {
     }
 
     /** Cột định danh kênh khác tên ở từng nhánh nên phải truyền vào. */
-    function filterByChannel(cotKenh: Prisma.Sql): Prisma.Sql[] {
+    function filterByChannel(cotKenh: Prisma.Sql, p?: OwnerScopePlatform): Prisma.Sql[] {
+      const c: Prisma.Sql[] = [];
       const dk = channelFilter(cotKenh, channel);
-      return dk ? [dk] : [];
+      if (dk) c.push(dk);
+      if (ownerScope) c.push(channelInFilter(cotKenh, p ? ownerScope.keys[p] : []));
+      return c;
     }
 
     // Douyin/Xiaohongshu không có field view/play thật (TikHub không trả về) —
@@ -400,44 +552,44 @@ export class ScraperAggregateReadService {
 
     const branches: Prisma.Sql[] = [];
 
-    if (!platform || platform === 'tiktok') {
+    if ((!platform || platform === 'tiktok') && inOwnerScope('tiktok')) {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`v.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.description`, null, q));
       conditions.push(...filterByKeyword(Prisma.sql`v.description`, Prisma.sql`v.hashtags`, Prisma.sql`p.username`));
-      conditions.push(...filterByChannel(Prisma.sql`p.username`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`, 'tiktok'));
       branches.push(Prisma.sql`
         SELECT 'tiktok' AS platform, v.video_id AS post_id, v.url, v.description,
                COALESCE(v.cover_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
                v.play_count, v.digg_count AS likes_count, v.comment_count AS comments_count, v.date_posted,
                COALESCE(p.nickname, '') AS author_name, COALESCE(p.avatar_url, '') AS author_avatar,
-               COALESCE(p.username, '') AS author_username
+               COALESCE(p.username, '') AS author_username, NULL::text AS video_url
         FROM scraper_tiktok_profile_videos v
         JOIN scraper_tiktok_profiles p ON p.id = v.profile_id
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
-    if (!platform || platform === 'instagram') {
+    if ((!platform || platform === 'instagram') && inOwnerScope('instagram')) {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`r.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`r.play_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`r.description`, null, q));
       conditions.push(...filterByKeyword(Prisma.sql`r.description`, Prisma.sql`r.hashtags`, Prisma.sql`p.username`));
-      conditions.push(...filterByChannel(Prisma.sql`p.username`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`, 'instagram'));
       branches.push(Prisma.sql`
         SELECT 'instagram' AS platform, r.post_id, r.url, r.description,
                COALESCE(NULLIF(r.thumbnail_drive_url, ''), r.thumbnail_url, '') AS thumbnail_url,
                r.duration_seconds::double precision AS duration_seconds, r.play_count,
                r.likes_count, r.comments_count, r.date_posted,
                COALESCE(p.username, '') AS author_name, COALESCE(p.avatar_url, '') AS author_avatar,
-               COALESCE(p.username, '') AS author_username
+               COALESCE(p.username, '') AS author_username, NULL::text AS video_url
         FROM scraper_instagram_reels r
         JOIN scraper_instagram_profiles p ON p.id = r.profile_id
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
-    if ((!platform || platform === 'douyin') && canHaveViews) {
+    if ((!platform || platform === 'douyin') && canHaveViews && inOwnerScope('douyin')) {
       const conditions = [
         Prisma.sql`v.search_keyword IN (SELECT '@' || dp.username FROM scraper_douyin_profiles dp WHERE dp.is_owned = true AND dp.username <> '')`,
         ...dateCond(Prisma.sql`v.date_posted`),
@@ -450,13 +602,13 @@ export class ScraperAggregateReadService {
                COALESCE(v.preview_image, '') AS thumbnail_url, v.video_duration::double precision AS duration_seconds,
                0::bigint AS play_count, v.digg_count AS likes_count, v.comment_count AS comments_count, v.date_posted,
                v.author_display_name AS author_name, COALESCE(v.author_avatar, '') AS author_avatar,
-               v.author_username AS author_username
+               v.author_username AS author_username, NULL::text AS video_url
         FROM scraper_douyin_videos v
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
-    if ((!platform || platform === 'xiaohongshu') && canHaveViews) {
+    if ((!platform || platform === 'xiaohongshu') && canHaveViews && inOwnerScope('xiaohongshu')) {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`v.date_posted`)];
       if (q) {
         conditions.push(
@@ -477,40 +629,50 @@ export class ScraperAggregateReadService {
                COALESCE(NULLIF(v.thumbnail_drive_url, ''), v.thumbnail_url, '') AS thumbnail_url,
                v.duration_seconds::double precision AS duration_seconds,
                0::bigint AS play_count, v.liked_count AS likes_count, v.comments_count, v.date_posted,
-               v.author_name, COALESCE(v.author_avatar, '') AS author_avatar, v.author_id AS author_username
+               v.author_name, COALESCE(v.author_avatar, '') AS author_avatar, v.author_id AS author_username,
+               NULL::text AS video_url
         FROM scraper_xiaohongshu_videos v
         JOIN scraper_xiaohongshu_profiles p ON p.id = v.profile_id
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
-    if (!platform || platform === 'youtube') {
+    if ((!platform || platform === 'youtube') && inOwnerScope('youtube')) {
       // ScraperYoutubeShort không có date_posted riêng — dùng created_at (ngày cào về).
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`s.created_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`s.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`s.title`, null, q));
       conditions.push(...filterByKeyword(Prisma.sql`s.title`, Prisma.sql`s.hashtags`, Prisma.sql`p.title`));
-      conditions.push(...filterByChannel(Prisma.sql`p.channel_id`));
+      conditions.push(...filterByChannel(Prisma.sql`p.channel_id`, 'youtube'));
       branches.push(Prisma.sql`
         SELECT 'youtube' AS platform, s.video_id AS post_id, s.url, s.title AS description,
                COALESCE(NULLIF(s.thumbnail_drive_url, ''), s.thumbnail_url, '') AS thumbnail_url,
                NULL::double precision AS duration_seconds, s.view_count AS play_count,
                0::bigint AS likes_count, 0::bigint AS comments_count, s.created_at AS date_posted,
                COALESCE(p.title, '') AS author_name, COALESCE(p.avatar_url, '') AS author_avatar,
-               COALESCE(p.channel_id, '') AS author_username
+               COALESCE(p.channel_id, '') AS author_username, NULL::text AS video_url
         FROM scraper_youtube_shorts s
         JOIN scraper_youtube_profiles p ON p.id = s.profile_id
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
-    if (!platform || platform === 'facebook') {
+    if ((!platform || platform === 'facebook') && inOwnerScope('facebook')) {
       // video_management_ownedvideocontent dùng published_at, không phải date_posted.
       const conditions = [...dateCond(Prisma.sql`v.published_at`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`v.caption`, null, q));
       conditions.push(...filterByKeyword(Prisma.sql`v.caption`, undefined, Prisma.sql`mp.name`));
-      conditions.push(...filterByChannel(Prisma.sql`mp.page_id`));
+      conditions.push(...filterByChannel(Prisma.sql`mp.page_id`, 'facebook'));
+      if (fbClassifications) {
+        const theoPhanLoai = facebookClassificationFilter(
+          fbClassifications,
+          classificationId,
+          Prisma.sql`v.post_id`,
+          Prisma.sql`v.permalink_url`,
+        );
+        if (theoPhanLoai) conditions.push(theoPhanLoai);
+      }
       const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
       branches.push(Prisma.sql`
         SELECT 'facebook' AS platform, v.post_id, COALESCE(v.permalink_url, '') AS url, COALESCE(v.caption, '') AS description,
@@ -520,14 +682,16 @@ export class ScraperAggregateReadService {
                v.published_at AS date_posted,
                COALESCE(mp.name, '') AS author_name,
                COALESCE(NULLIF(mp.avatar_drive_url, ''), mp.avatar_url, '') AS author_avatar,
-               COALESCE(mp.page_id, '') AS author_username
+               COALESCE(mp.page_id, '') AS author_username,
+               -- Link CDN có hạn (~vài tuần) — FE hỏng thì lùi về trình phát nhúng của Facebook.
+               NULLIF(v.video_url, '') AS video_url
         FROM video_management_ownedvideocontent v
         JOIN video_management_managedfacebookpage mp ON mp.id = v.managed_page_id AND mp.is_active = true
         ${where}
       `);
     }
 
-    if (!platform || platform === 'threads') {
+    if ((!platform || platform === 'threads') && inOwnerScope('threads')) {
       const conditions = [Prisma.sql`p.is_owned = true`, ...dateCond(Prisma.sql`tp.date_posted`)];
       if (minPlays !== undefined) conditions.push(Prisma.sql`tp.views_count >= ${BigInt(minPlays)}`);
       if (q) conditions.push(searchCondition(Prisma.sql`tp.text`, null, q));
@@ -538,7 +702,7 @@ export class ScraperAggregateReadService {
           Prisma.sql`COALESCE(NULLIF(p.name, ''), p.username)`,
         ),
       );
-      conditions.push(...filterByChannel(Prisma.sql`p.username`));
+      conditions.push(...filterByChannel(Prisma.sql`p.username`, 'threads'));
       branches.push(Prisma.sql`
         SELECT 'threads' AS platform, tp.post_id, tp.url, tp.text AS description,
                COALESCE(NULLIF(tp.thumbnail_drive_url, ''), tp.thumbnail_url, '') AS thumbnail_url,
@@ -546,15 +710,19 @@ export class ScraperAggregateReadService {
                tp.likes_count, tp.replies_count AS comments_count, tp.date_posted,
                COALESCE(NULLIF(p.name, ''), p.username) AS author_name,
                COALESCE(NULLIF(p.avatar_drive_url, ''), p.avatar_url, '') AS author_avatar,
-               p.username AS author_username
+               p.username AS author_username, NULL::text AS video_url
         FROM scraper_threads_posts tp
         JOIN scraper_threads_profiles p ON p.id = tp.profile_id
         WHERE ${Prisma.join(conditions, ' AND ')}
       `);
     }
 
+    // Chỉ trả khi có lọc người cầm / team — FE dùng để nói rõ "người này chưa được ghép kênh
+    // nào" thay vì một danh sách rỗng khó hiểu.
+    const ownerChannels = ownerScope ? { scope_channels: ownerScope.channels } : {};
+
     if (branches.length === 0) {
-      return { status: 'ok', count: 0, page: pageNum, page_size: pageSize, total_pages: 1, videos: [] };
+      return { status: 'ok', count: 0, page: pageNum, page_size: pageSize, total_pages: 1, videos: [], ...ownerChannels };
     }
 
     const combined = Prisma.sql`(${Prisma.join(branches, ' UNION ALL ')})`;
@@ -566,7 +734,7 @@ export class ScraperAggregateReadService {
     const totalPages = Math.max(1, Math.ceil(totalNum / pageSize));
     const offset = (pageNum - 1) * pageSize;
 
-    const rows = await this.prisma.$queryRaw<Omit<UnifiedRow, 'author_id'>[]>`
+    const rows = await this.prisma.$queryRaw<(Omit<UnifiedRow, 'author_id'> & { video_url: string | null })[]>`
       SELECT * FROM ${combined} AS combined
       ORDER BY ${sortExpr(sort)}
       LIMIT ${pageSize} OFFSET ${offset}
@@ -580,9 +748,46 @@ export class ScraperAggregateReadService {
       total_pages: totalPages,
       videos: rows.map((r) => {
         const { author_id, ...rest } = toUnifiedItem({ ...r, author_id: '' });
-        return rest;
+        return {
+          ...rest,
+          video_url: r.video_url ?? null,
+          ...(fbClassifications
+            ? {
+                content_classification:
+                  r.platform === 'facebook' ? facebookVideoClassification(fbClassifications, r.post_id, r.url) : null,
+              }
+            : {}),
+        };
       }),
+      ...ownerChannels,
     };
+  }
+
+  /** Kênh nội bộ của một người cầm / một team, theo từng nền tảng — xem channelScope(). */
+  private async loadChannelScope(scope: { ownerId?: string; teamId?: string }): Promise<ChannelScope> {
+    const [profiles, channels] = await Promise.all([
+      this.prisma.$queryRaw<OwnedProfile[]>`
+        SELECT 'facebook' AS platform, mp.page_id AS key, mp.name, mp.username
+        FROM video_management_managedfacebookpage mp WHERE mp.is_active = true
+        UNION ALL
+        SELECT 'instagram', p.username, COALESCE(NULLIF(p.full_name, ''), p.username), p.username
+        FROM scraper_instagram_profiles p WHERE p.is_owned
+        UNION ALL
+        SELECT 'threads', p.username, COALESCE(NULLIF(p.name, ''), p.username), p.username
+        FROM scraper_threads_profiles p WHERE p.is_owned
+        UNION ALL
+        SELECT 'tiktok', p.username, COALESCE(NULLIF(p.nickname, ''), p.username), p.username
+        FROM scraper_tiktok_profiles p WHERE p.is_owned
+        UNION ALL
+        SELECT 'youtube', p.channel_id, COALESCE(NULLIF(p.title, ''), p.channel_id), NULL
+        FROM scraper_youtube_profiles p WHERE p.is_owned
+      `,
+      this.prisma.channel.findMany({
+        where: { OR: [{ team_id: { not: null } }, { owner_id: { not: null } }] },
+        select: { platform: true, name: true, channel_id: true, link_channel: true, team_id: true, owner_id: true },
+      }),
+    ]);
+    return channelScope(scope, profiles, channels);
   }
 
   /**

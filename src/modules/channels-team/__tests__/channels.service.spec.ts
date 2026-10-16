@@ -146,4 +146,80 @@ describe("ChannelsService", () => {
       );
     });
   });
+
+  /**
+   * Tạo kênh: mặc định team/owner = người tạo; ADMIN/MANAGER được chọn team + người cầm kênh
+   * (phải là thành viên team). owner/team_traffic (string cũ) phải khớp theo lựa chọn vì báo cáo
+   * traffic đọc 2 field này.
+   */
+  describe("create", () => {
+    const TEAM_ID = "11111111-1111-4111-8111-111111111111";
+    const OWNER_ID = "22222222-2222-4222-8222-222222222222";
+
+    beforeEach(() => {
+      prisma.team.findFirst = jest.fn().mockResolvedValue({ id: "own-team-id" });
+      prisma.team.findUnique = jest.fn().mockResolvedValue({ id: TEAM_ID, name: "Global - Mỹ" });
+      prisma.teamMember = { findFirst: jest.fn().mockResolvedValue({ id: "tm-1" }) };
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ full_name: "Bùi Anh Tú" });
+      prisma.channel.create = jest.fn().mockImplementation(({ data }) => data);
+    });
+
+    it("ADMIN chọn team + người cầm kênh → ghi đúng FK và field string", async () => {
+      const admin = { id: "admin-1", roles: [UserRole.ADMIN], team: null, full_name: "Admin" };
+
+      const data = await service.create(
+        { name: "Kênh mới", platform: "tiktok", team_id: TEAM_ID, owner_id: OWNER_ID },
+        admin,
+      );
+
+      expect(prisma.teamMember.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { team_id: TEAM_ID, user_id: OWNER_ID } }),
+      );
+      expect(data).toMatchObject({
+        name: "Kênh mới",
+        team_id: TEAM_ID,
+        team_traffic: "Global - Mỹ",
+        owner_id: OWNER_ID,
+        owner: "Bùi Anh Tú",
+      });
+    });
+
+    it("ADMIN chọn người cầm kênh không thuộc team → 403, không tạo kênh", async () => {
+      prisma.teamMember.findFirst.mockResolvedValue(null);
+      const admin = { id: "admin-1", roles: [UserRole.ADMIN], team: null, full_name: "Admin" };
+
+      await expect(
+        service.create({ name: "Kênh mới", team_id: TEAM_ID, owner_id: OWNER_ID }, admin),
+      ).rejects.toThrow("Owner phải là thành viên trong team của kênh");
+      expect(prisma.channel.create).not.toHaveBeenCalled();
+    });
+
+    it("ADMIN chọn team không tồn tại → 404", async () => {
+      prisma.team.findUnique.mockResolvedValue(null);
+      const admin = { id: "admin-1", roles: [UserRole.MANAGER], team: null, full_name: "Admin" };
+
+      await expect(
+        service.create({ name: "Kênh mới", team_id: TEAM_ID, owner_id: OWNER_ID }, admin),
+      ).rejects.toThrow(`Team ${TEAM_ID} not found`);
+      expect(prisma.channel.create).not.toHaveBeenCalled();
+    });
+
+    it("role khác ADMIN/MANAGER truyền team/owner → bị bỏ qua, gán theo người tạo", async () => {
+      const leader = { id: "leader-1", roles: [UserRole.LEADER], team: "Media Team", full_name: "Leader A" };
+
+      const data = await service.create(
+        { name: "Kênh mới", team_id: TEAM_ID, owner_id: OWNER_ID },
+        leader,
+      );
+
+      expect(prisma.team.findUnique).not.toHaveBeenCalled();
+      expect(prisma.teamMember.findFirst).not.toHaveBeenCalled();
+      expect(data).toMatchObject({
+        team_id: "own-team-id",
+        team_traffic: "Media Team",
+        owner_id: "leader-1",
+        owner: "Leader A",
+      });
+    });
+  });
 });

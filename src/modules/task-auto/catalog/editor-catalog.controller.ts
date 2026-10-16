@@ -159,6 +159,17 @@ export class TaskAutoEditorCatalogController {
     return this.catalog.findAllEditorContents(userId, q);
   }
 
+  @Get("editors/:userId/contents/linked-products")
+  @ApiOperation({ summary: "Sản phẩm đã gắn với content kho cá nhân (qua task) — option bộ lọc sản phẩm" })
+  async listEditorContentLinkedProducts(
+    @Param("userId") userId: string,
+    @Request() req: any,
+    @Query("brand_type") brandType?: string,
+  ) {
+    await this.assertCanView(userId, req);
+    return this.catalog.listEditorContentLinkedProducts(userId, brandType);
+  }
+
   @Post("editors/:userId/contents")
   @ApiOperation({
     summary:

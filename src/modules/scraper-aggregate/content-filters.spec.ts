@@ -1,11 +1,16 @@
 import { Prisma } from '@prisma/client';
+import { ResolverChannel } from '../facebook-owned-pages/page-channel-resolver';
 import {
   chuanHoaHashtag,
   hashtagFilter,
   channelFilter,
+  channelInFilter,
+  channelScope,
+  OwnedProfile,
   CONTENT_LINES,
   marketFilter,
   contentLineFilter,
+  contentLinesInText,
   laThiTruongHopLe,
   laTuyenHopLe,
 } from './content-filters';
@@ -111,6 +116,13 @@ describe('Bộ lọc tuyến nội dung A1–A5', () => {
     const hopLe = contentLineFilter(COT, 'A1')!;
     expect(chu(hopLe)).not.toContain('A1');     // mã nằm ở values, không nằm trong chữ SQL
   });
+
+  it('contentLinesInText: đọc tuyến từ hashtag trong caption, cùng ranh giới với bộ lọc SQL', () => {
+    expect(contentLinesInText('Nhẫn #a4 đẹp #A1 #A1\n#A1,#doda')).toEqual(['A1', 'A4']);
+    expect(contentLinesInText('#A54 #A10 #A1abc #A9 A1 không có dấu #')).toEqual([]);
+    expect(contentLinesInText('#A5_x #A2.')).toEqual(['A2', 'A5']);
+    expect(contentLinesInText(null)).toEqual([]);
+  });
 });
 
 
@@ -171,5 +183,55 @@ describe('Bộ lọc kênh', () => {
 
   it('bọc COALESCE — kênh chưa có định danh không được lọt vào bất kỳ bộ lọc nào', () => {
     expect(chu(channelFilter(COT, 'x')!)).toContain('COALESCE');
+  });
+});
+
+describe('Lọc theo tập kênh của người cầm / team (picker gắn link bài đăng vào task)', () => {
+  const kenh = (p: Partial<ResolverChannel>): ResolverChannel => ({
+    platform: 'facebook', name: '', channel_id: null, link_channel: null, team_id: null, owner_id: null, ...p,
+  });
+  const profile = (p: Partial<OwnedProfile>): OwnedProfile => ({ platform: 'facebook', key: '', name: '', username: null, ...p });
+
+  it('tập rỗng là "không kênh nào" chứ không phải "không lọc"', () => {
+    expect(chu(channelInFilter(COT, []))).toBe('FALSE');
+  });
+
+  it('khoá được chuẩn hoá chữ thường, bỏ trùng và đi vào dưới dạng tham số', () => {
+    const s = channelInFilter(Prisma.sql`p.username`, ['HuyK.A', 'huyk.a', ' huyk.b ']);
+    expect(chu(s)).toContain(' IN (');
+    expect(value(s)).toEqual(['huyk.a', 'huyk.b']);
+  });
+
+  const channels = [
+    kenh({ platform: 'facebook', name: 'HuyK Vàng Bạc', link_channel: 'https://www.facebook.com/huykvangbac', team_id: 'K2', owner_id: 'an' }),
+    kenh({ platform: 'instagram', name: 'HuyK Trang sức chế tác', channel_id: '@huyk_trangsucchetac', team_id: 'K2', owner_id: 'van' }),
+    kenh({ platform: 'threads', name: 'HuyK Artisan', link_channel: 'https://www.threads.com/@huyk.artisan?xmt=abc', team_id: 'K4', owner_id: 'an' }),
+  ];
+  const profiles = [
+    profile({ platform: 'facebook', key: '111', name: 'Page khác tên', username: 'huykvangbac' }),
+    profile({ platform: 'instagram', key: 'huyk_trangsucchetac', name: 'HuyK Trang Sức Chế Tác', username: 'huyk_trangsucchetac' }),
+    profile({ platform: 'threads', key: 'huyk.artisan', name: 'huyk.artisan', username: 'huyk.artisan' }),
+    profile({ platform: 'instagram', key: 'mo_coi', name: 'Kênh chưa ghép', username: 'mo_coi' }),
+  ];
+
+  it('người cầm: gom kênh mọi nền tảng — kể cả handle viết kèm @ ở channel_id / link Threads', () => {
+    const scope = channelScope({ ownerId: 'an' }, profiles, channels);
+    expect(scope.keys.facebook).toEqual(['111']);
+    expect(scope.keys.threads).toEqual(['huyk.artisan']);
+    expect(scope.keys.instagram).toEqual([]);
+    expect(scope.channels.map((c) => c.platform)).toEqual(['facebook', 'threads']);
+  });
+
+  it('team: lấy kênh của mọi người trong team, bỏ kênh team khác', () => {
+    const scope = channelScope({ teamId: 'K2' }, profiles, channels);
+    expect(scope.keys.facebook).toEqual(['111']);
+    expect(scope.keys.instagram).toEqual(['huyk_trangsucchetac']);
+    expect(scope.keys.threads).toEqual([]);
+  });
+
+  it('người chưa được ghép kênh nào → mọi nền tảng rỗng', () => {
+    const scope = channelScope({ ownerId: 'nobody' }, profiles, channels);
+    expect(Object.values(scope.keys).every((k) => k.length === 0)).toBe(true);
+    expect(scope.channels).toEqual([]);
   });
 });

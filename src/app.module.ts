@@ -7,6 +7,7 @@ import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./common/prisma/prisma.module";
+import { ApiUsageModule } from "./common/api-usage/api-usage.module";
 import { PushModule } from "./common/push/push.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
@@ -80,6 +81,7 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     ]),
     ScheduleModule.forRoot(),
     PrismaModule,
+    ApiUsageModule,
     PushModule,
     AuthModule,
     UsersModule,

@@ -1,8 +1,9 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { TaskAutoCatalogService } from '../catalog.service';
+import { taskProductSkuWhere } from '../../../../common/utils/content-product-link.util';
 import {
   CreateContentDto,
   CreateTeamContentDto,
@@ -19,6 +20,7 @@ import {
  *  - listTeamPushRequests — editor_content select đủ field kịch bản
  *  - findOneContent/findOneEditorContent — select kèm _count.tasks
  *  - DTO tạo content — bắt buộc nhập tiêu đề
+ *  - findAllSources/findAllEditorSources — tìm source theo tên sản phẩm
  */
 
 /**
@@ -91,6 +93,71 @@ describe('TaskAutoCatalogService — sentinel __unassigned__ cho content_line_id
 
       expect(getWhere().content_line_id).toBe('line-a1');
     });
+  });
+});
+
+describe('TaskAutoCatalogService — lọc content theo sản phẩm (SKU)', () => {
+  const ref = (sku: string | null, name: string | null = null) => ({ sku, name, image_url: null });
+  const row = (over: Record<string, any>) => ({
+    content_id: null, team_content_id: null, editor_content_id: null,
+    editor_product: null, team_product: null, product: null,
+    ...over,
+  });
+
+  function build(taskRows: any[] = []) {
+    const prisma: any = {
+      content: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
+      editorContent: { findMany: jest.fn(async () => []), count: jest.fn(async () => 0) },
+      task: { findMany: jest.fn(async () => taskRows) },
+    };
+    return { service: new TaskAutoCatalogService(prisma, {} as any, {} as any, {} as any), prisma };
+  }
+
+  it('findAllContents + product_sku → chỉ lấy content có task dùng SKU đó', async () => {
+    const { service, prisma } = build();
+
+    await service.findAllContents({ product_sku: 'D0031' } as any);
+
+    expect(prisma.content.findMany.mock.calls[0][0].where.tasks).toEqual({ some: taskProductSkuWhere('D0031') });
+  });
+
+  it('findAllEditorContents + product_sku → lọc trong kho của đúng người đó', async () => {
+    const { service, prisma } = build();
+
+    await service.findAllEditorContents('user-1', { product_sku: 'D0031' } as any);
+
+    const where = prisma.editorContent.findMany.mock.calls[0][0].where;
+    expect(where.user_id).toBe('user-1');
+    expect(where.tasks).toEqual({ some: taskProductSkuWhere('D0031') });
+  });
+
+  it('so SKU không phân biệt hoa/thường và đi xuyên bản gốc của TeamProduct/Product', () => {
+    const where = taskProductSkuWhere(' d0031 ');
+    const eq = { equals: 'd0031', mode: 'insensitive' };
+
+    expect(where.OR).toEqual(expect.arrayContaining([
+      { editor_product: { sku: eq } },
+      { team_product: { sku: null, source_editor_product: { sku: eq } } },
+      { product: { sku: null, source_team_product: { sku: null, source_editor_product: { sku: eq } } } },
+    ]));
+  });
+
+  it('listContentLinkedProducts gom theo SKU, đếm content không trùng, xếp nhiều content trước', async () => {
+    const { service, prisma } = build([
+      row({ content_id: 'c1', editor_product: ref('D0031', 'Dây chuyền') }),
+      row({ content_id: 'c1', editor_product: ref('d0031') }),
+      row({ content_id: 'c2', team_product: { ...ref(null), source_editor_product: ref('D0031') } }),
+      row({ content_id: 'c3', product: { ...ref(null), source_team_product: { ...ref('B0030', 'Bông tai'), source_editor_product: null } } }),
+      row({ content_id: 'c4', editor_product: ref(null) }),
+    ]);
+
+    const result = await service.listContentLinkedProducts('DO_DA');
+
+    expect(prisma.task.findMany.mock.calls[0][0].where.AND[0]).toEqual({ content: { is: { brand_type: 'DO_DA' } } });
+    expect(result).toEqual([
+      { sku: 'D0031', name: 'Dây chuyền', image_url: null, content_count: 2 },
+      { sku: 'B0030', name: 'Bông tai', image_url: null, content_count: 1 },
+    ]);
   });
 });
 
@@ -308,6 +375,24 @@ describe('TaskAutoCatalogService.listTeamPushRequests — editor_content select 
     expect(editorProductSelect).not.toHaveProperty('body');
     expect(editorProductSelect).not.toHaveProperty('script');
   });
+
+  it('teamId = "all" (ADMIN/MANAGER) → không lọc team_id, không tra team', async () => {
+    const { service, prisma, findManyCalls } = build();
+
+    await service.listTeamPushRequests('all', 'PENDING', 'admin-1', ['ADMIN']);
+
+    expect(prisma.team.findUnique).not.toHaveBeenCalled();
+    expect(findManyCalls[0].where).toEqual({ status: 'PENDING' });
+  });
+
+  it('teamId = "all" với LEADER → ForbiddenException', async () => {
+    const { service, findManyCalls } = build();
+
+    await expect(
+      service.listTeamPushRequests('all', undefined, 'leader-1', ['LEADER']),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(findManyCalls).toHaveLength(0);
+  });
 });
 
 // findOneContent + findOneEditorContent phải select kèm `_count: { tasks: true }`.
@@ -387,5 +472,160 @@ describe('DTO tạo content — bắt buộc nhập tiêu đề', () => {
       const dto = plainToInstance(Dto, { brand_type: 'DO_DA', title: 'Kịch bản A' });
       expect(await errorsOn(dto, 'title')).toBe(false);
     });
+  });
+});
+
+/** Đổi tuyến content → kéo tuyến mới sang task đã tạo từ content đó (syncTaskContentLine). */
+describe('TaskAutoCatalogService — đổi tuyến content đồng bộ sang task', () => {
+  function build(opts: { oldLine?: string | null } = {}) {
+    const oldLine = opts.oldLine ?? null;
+    const taskUpdateMany = jest.fn(async () => ({ count: 1 }));
+    const tx: any = {
+      task: { updateMany: taskUpdateMany },
+      editorContent: {
+        update: jest.fn(async ({ data }: any) => ({
+          id: 'ec-1',
+          content_line_id: 'content_line_id' in data ? data.content_line_id : oldLine,
+        })),
+      },
+      content: {
+        findUnique: jest.fn(async () => ({ content_line_id: oldLine })),
+        update: jest.fn(async ({ data }: any) => ({
+          id: 'c-1',
+          content_line_id: 'content_line_id' in data ? data.content_line_id : oldLine,
+        })),
+      },
+    };
+    const prisma: any = {
+      editorContent: {
+        findUnique: jest.fn(async () => ({ user_id: 'u-1', status: 'AVAILABLE', content_line_id: oldLine })),
+      },
+      content: { findUnique: jest.fn(async () => null) },
+      $transaction: jest.fn(async (fn: any) => fn(tx)),
+    };
+    const service = new TaskAutoCatalogService(prisma, {} as any, {} as any, {} as any);
+    return { service, taskUpdateMany };
+  }
+
+  describe('updateEditorContent (kho cá nhân)', () => {
+    it('content chưa có tuyến → gán A1: task từ content đó đang null được gán A1', async () => {
+      const { service, taskUpdateMany } = build({ oldLine: null });
+
+      await service.updateEditorContent('ec-1', { content_line_id: 'line-a1' } as any, 'u-1', []);
+
+      expect(taskUpdateMany).toHaveBeenCalledWith({
+        where: { editor_content_id: 'ec-1', OR: [{ content_line_id: null }] },
+        data: { content_line_id: 'line-a1' },
+      });
+    });
+
+    it('đổi A1 → A2: chỉ task đang null hoặc đang A1 đi theo, task đặt tuyến riêng giữ nguyên', async () => {
+      const { service, taskUpdateMany } = build({ oldLine: 'line-a1' });
+
+      await service.updateEditorContent('ec-1', { content_line_id: 'line-a2' } as any, 'u-1', []);
+
+      expect(taskUpdateMany).toHaveBeenCalledWith({
+        where: {
+          editor_content_id: 'ec-1',
+          OR: [{ content_line_id: null }, { content_line_id: 'line-a1' }],
+        },
+        data: { content_line_id: 'line-a2' },
+      });
+    });
+
+    it('bỏ tuyến content (null) → không đụng task (giữ số liệu cũ)', async () => {
+      const { service, taskUpdateMany } = build({ oldLine: 'line-a1' });
+
+      await service.updateEditorContent('ec-1', { content_line_id: null } as any, 'u-1', []);
+
+      expect(taskUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it('giữ nguyên tuyến / không gửi content_line_id → không đụng task', async () => {
+      const same = build({ oldLine: 'line-a1' });
+      await same.service.updateEditorContent('ec-1', { content_line_id: 'line-a1' } as any, 'u-1', []);
+      expect(same.taskUpdateMany).not.toHaveBeenCalled();
+
+      const titleOnly = build({ oldLine: null });
+      await titleOnly.service.updateEditorContent('ec-1', { title: 'Mới' } as any, 'u-1', []);
+      expect(titleOnly.taskUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateContent (kho tổng)', () => {
+    it('gán tuyến cho content → task theo content_id đang null được gán tuyến', async () => {
+      const { service, taskUpdateMany } = build({ oldLine: null });
+
+      await service.updateContent('c-1', { content_line_id: 'line-a3' } as any);
+
+      expect(taskUpdateMany).toHaveBeenCalledWith({
+        where: { content_id: 'c-1', OR: [{ content_line_id: null }] },
+        data: { content_line_id: 'line-a3' },
+      });
+    });
+
+    it('không gửi content_line_id → không đụng task', async () => {
+      const { service, taskUpdateMany } = build({ oldLine: null });
+
+      await service.updateContent('c-1', { title: 'Mới' } as any);
+
+      expect(taskUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/** Ô tìm kiếm source lọc bằng raw SQL bỏ dấu (xem source-search.util) rồi ghép id vào `where`. */
+describe('TaskAutoCatalogService — tìm source theo tên sản phẩm', () => {
+  function build() {
+    const findManyCalls: any[] = [];
+    const model = {
+      findMany: jest.fn(async (args: any) => {
+        findManyCalls.push(args);
+        return [];
+      }),
+      count: jest.fn(async () => 0),
+    };
+    const queryRaw = jest.fn(async () => [{ id: 's-1' }, { id: 's-2' }]);
+    const prisma: any = { source: model, editorSource: model, $queryRaw: queryRaw };
+    const service = new TaskAutoCatalogService(prisma, {} as any, {} as any, {} as any);
+    const getSql = () => (queryRaw.mock.calls[0] as any[])[0] as Prisma.Sql;
+    return { service, queryRaw, getSql, getWhere: () => findManyCalls[0]?.where };
+  }
+
+  it('findAllSources (kho tổng) → lọc theo id khớp, SQL join products + bỏ dấu', async () => {
+    const { service, getSql, getWhere } = build();
+
+    await service.findAllSources({ search: '  nhẫn   hành tinh ' } as any);
+
+    expect(getWhere().id).toEqual({ in: ['s-1', 's-2'] });
+    expect(getWhere().OR).toBeUndefined();
+    const sql = getSql();
+    expect(sql.sql).toContain('FROM sources s LEFT JOIN products p');
+    expect(sql.sql).toContain('immutable_unaccent');
+    expect(sql.sql).toContain('p.name');
+    expect(sql.values).toEqual(['nhẫn hành tinh']);
+  });
+
+  it('findAllEditorSources (kho cá nhân) → join editor_products + giới hạn đúng user', async () => {
+    const { service, getSql, getWhere } = build();
+
+    await service.findAllEditorSources('user-1', { search: 'ví da' } as any);
+
+    expect(getWhere().user_id).toBe('user-1');
+    expect(getWhere().id).toEqual({ in: ['s-1', 's-2'] });
+    const sql = getSql();
+    expect(sql.sql).toContain('LEFT JOIN editor_products ep');
+    expect(sql.sql).toContain('ep.name');
+    expect(sql.sql).toContain('s.user_id =');
+    expect(sql.values).toEqual(['ví da', 'user-1']);
+  });
+
+  it('search rỗng/chỉ khoảng trắng → không query raw, không lọc id', async () => {
+    const { service, queryRaw, getWhere } = build();
+
+    await service.findAllSources({ search: '   ' } as any);
+
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(getWhere().id).toBeUndefined();
   });
 });

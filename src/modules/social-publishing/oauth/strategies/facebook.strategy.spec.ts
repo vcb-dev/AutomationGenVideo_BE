@@ -29,6 +29,10 @@ describe('FacebookOAuthStrategy — scope OAuth', () => {
     expect(scopeOf(authUrl())).toContain('instagram_manage_insights');
   });
 
+  it('xin pages_read_user_content — thiếu nó thì cào /feed và kéo chỉ số page đều lỗi (#10)', () => {
+    expect(scopeOf(authUrl())).toContain('pages_read_user_content');
+  });
+
   it('giữ nguyên các quyền đang dùng, không đánh rơi quyền nào', () => {
     const scope = scopeOf(authUrl());
     for (const quyen of [
