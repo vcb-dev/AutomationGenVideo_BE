@@ -39,6 +39,14 @@ export class TaskCompliancePayrollSyncQueryDto {
   user_id?: string;
 
   @ApiPropertyOptional({
+    description:
+      "ID nhân sự bên HRM (users.hrm_employee_id) — hệ thống lương dùng thay cho user_id. Chưa tài khoản nào gắn id này thì trả rỗng kèm warning HRM_EMPLOYEE_NOT_LINKED",
+  })
+  @IsUUID("all", { message: "hrm_employee_id phải là UUID hợp lệ" })
+  @IsOptional()
+  hrm_employee_id?: string;
+
+  @ApiPropertyOptional({
     enum: PAYROLL_GROUP_BY,
     default: "line",
     description:

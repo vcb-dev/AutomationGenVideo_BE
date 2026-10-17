@@ -143,7 +143,9 @@ describe("PerformanceGoalsService", () => {
   it("payroll trả actual cuối và tiến độ đã cap, không chứa cấu hình thưởng", async () => {
     const prisma = makePrisma({
       team: {
-        findUnique: jest.fn().mockResolvedValue({ id: baseGoal.team_id, name: "Team K2" }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: baseGoal.team_id, name: "Team K2", hrm_project_id: null }),
       },
       performanceGoal: {
         findMany: jest.fn().mockResolvedValue([
@@ -155,6 +157,7 @@ describe("PerformanceGoalsService", () => {
               full_name: "Editor A",
               email: "a@example.com",
               employee_id: "K2_07",
+              hrm_employee_id: null,
             },
             team: { id: baseGoal.team_id, name: "Team K2", leader_id: "leader-1" },
             set_by: { id: "manager-1", full_name: "Manager" },
@@ -179,5 +182,44 @@ describe("PerformanceGoalsService", () => {
     expect(result.contract_version).toBe("2.0");
     expect(result.records[0]).not.toHaveProperty("bonus_amount");
     expect(result.records[0]).not.toHaveProperty("bonus_earned");
+  });
+
+  it("payroll gọi được bằng id dự án HRM và trả kèm id HRM của team + nhân sự", async () => {
+    const hrmProjectId = "55555555-5555-4555-8555-555555555555";
+    const hrmEmployeeId = "66666666-6666-4666-8666-666666666666";
+    const findFirst = jest.fn().mockResolvedValue({
+      id: baseGoal.team_id,
+      name: "ĐVKD 2 - Ngọc Lục Bảo",
+      hrm_project_id: hrmProjectId,
+    });
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        ...baseGoal,
+        user: {
+          id: baseGoal.user_id,
+          full_name: "Editor A",
+          email: "a@example.com",
+          employee_id: null,
+          hrm_employee_id: hrmEmployeeId,
+        },
+        team: { id: baseGoal.team_id, name: "ĐVKD 2 - Ngọc Lục Bảo", leader_id: null },
+        set_by: { id: "manager-1", full_name: "Manager" },
+      },
+    ]);
+    const prisma = makePrisma({ team: { findFirst }, performanceGoal: { findMany } });
+
+    const result = await new PerformanceGoalsService(prisma).payrollSync(hrmProjectId, "2026-09");
+
+    expect(findFirst.mock.calls[0][0].where).toEqual({
+      OR: [{ id: hrmProjectId }, { hrm_project_id: hrmProjectId }],
+    });
+    // Dữ liệu đọc theo id team AGV thật, không phải id dự án được truyền vào.
+    expect(findMany.mock.calls[0][0].where).toMatchObject({ team_id: baseGoal.team_id });
+    expect(result.team).toEqual({
+      id: baseGoal.team_id,
+      name: "ĐVKD 2 - Ngọc Lục Bảo",
+      hrm_project_id: hrmProjectId,
+    });
+    expect(result.records[0]).toMatchObject({ hrm_employee_id: hrmEmployeeId, employee_id: null });
   });
 });

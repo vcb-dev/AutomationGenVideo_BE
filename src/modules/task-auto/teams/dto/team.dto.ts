@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsArray, IsEnum, IsUrl, Matches } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsArray, IsEnum, IsUrl, Matches, IsObject } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { BrandType, TeamKind } from '@prisma/client'
 
@@ -53,4 +53,12 @@ export class SetEditorDto {
 
 export class SetContentCreatorDto {
   @ApiProperty() @IsBoolean() is_content_creator: boolean
+}
+
+export class HrmSyncDto {
+  @ApiPropertyOptional({ description: 'project_id HRM → team_id | "NEW" | "SKIP" cho dự án chưa gắn team' })
+  @IsOptional() @IsObject() links?: Record<string, string>
+
+  @ApiPropertyOptional({ description: 'hrm_employee_id → user_id: dùng tài khoản AGV có sẵn thay vì tạo mới' })
+  @IsOptional() @IsObject() accounts?: Record<string, string>
 }

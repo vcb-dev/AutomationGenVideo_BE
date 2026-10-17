@@ -54,7 +54,7 @@ function fbLink(views: number) {
 }
 
 interface PrismaOpts {
-  team?: { id: string; name: string } | null;
+  team?: { id: string; name: string; hrm_project_id?: string | null } | null;
   editorKpis?: any[];
   creatorKpis?: any[];
   creatorMembers?: any[];
@@ -97,8 +97,8 @@ function buildPrisma(opts: PrismaOpts = {}) {
   const write = jest.fn();
   return {
     team: {
-      findUnique: jest.fn(async () =>
-        opts.team === undefined ? { id: TEAM_ID, name: "Team K2" } : opts.team,
+      findFirst: jest.fn(async (_args?: any) =>
+        opts.team === undefined ? { id: TEAM_ID, name: "Team K2", hrm_project_id: null } : opts.team,
       ),
     },
     editorKpi: { findMany: jest.fn(async (_args?: any) => opts.editorKpis ?? []), update: write, create: write, upsert: write, delete: write, deleteMany: write },
@@ -434,13 +434,54 @@ describe("TaskAutoKpiService.getTeamKpiPayrollSync", () => {
     const res = await service.getTeamKpiPayrollSync(TEAM_ID, MONTH);
 
     expect(res).toMatchObject({
-      contract_version: "1.2",
+      contract_version: "1.3",
       month: MONTH,
-      team: { id: TEAM_ID, name: "Team K2" },
+      team: { id: TEAM_ID, name: "Team K2", hrm_project_id: null },
       records: [],
       warnings: [],
     });
     expect(new Date(res.generated_at).toISOString()).toBe(res.generated_at);
+  });
+
+  it("gọi bằng id dự án HRM: tìm team theo hrm_project_id, đọc KPI theo id team AGV, trả kèm id HRM", async () => {
+    const hrmProjectId = "55555555-5555-4555-8555-555555555555";
+    const agvTeamId = "33333333-3333-4333-8333-333333333333";
+    const { service, prisma } = buildService({
+      team: { id: agvTeamId, name: "ĐVKD 2 - Ngọc Lục Bảo", hrm_project_id: hrmProjectId },
+      editorKpis: [
+        editorKpi({
+          total_target: 5,
+          user: { id: "editor-1", employee_id: "K2_07", hrm_employee_id: "hrm-editor-1" },
+        }),
+        editorKpi({
+          user_id: "editor-2",
+          total_target: 3,
+          user: { id: "editor-2", employee_id: null, hrm_employee_id: null },
+        }),
+      ],
+    });
+    const res = await service.getTeamKpiPayrollSync(hrmProjectId, MONTH);
+
+    expect(prisma.team.findFirst.mock.calls[0][0].where).toEqual({
+      OR: [{ id: hrmProjectId }, { hrm_project_id: hrmProjectId }],
+    });
+    expect(prisma.editorKpi.findMany.mock.calls[0][0].where).toEqual({
+      team_id: agvTeamId,
+      month: MONTH,
+    });
+    expect(res.team).toEqual({
+      id: agvTeamId,
+      name: "ĐVKD 2 - Ngọc Lục Bảo",
+      hrm_project_id: hrmProjectId,
+    });
+    expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO", "editor-1")).toMatchObject({
+      target: 5,
+      hrm_employee_id: "hrm-editor-1",
+    });
+    expect(recordFor(res.records, "VIDEO_PRODUCTION", "TOTAL_VIDEO", "editor-2")).toMatchObject({
+      target: 3,
+      hrm_employee_id: null,
+    });
   });
 
   it("không có EditorKpi tháng đó thì KHÔNG tự sinh record Editor toàn 0", async () => {

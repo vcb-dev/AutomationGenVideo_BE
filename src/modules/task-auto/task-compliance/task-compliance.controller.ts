@@ -78,7 +78,8 @@ export class TaskCompliancePayrollSyncController {
   })
   @ApiParam({
     name: "teamId",
-    description: "Team ID bên AutomationGenVideo (UUID)",
+    description:
+      "Team ID bên AutomationGenVideo hoặc id dự án HRM đã gắn với team (UUID)",
   })
   @ApiOperation({
     summary: "Snapshot lịch sử thiếu nhiệm vụ cho hệ thống lương",
