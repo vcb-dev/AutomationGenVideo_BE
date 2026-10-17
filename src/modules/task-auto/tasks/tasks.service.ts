@@ -2686,10 +2686,31 @@ export class TaskAutoTasksService {
       byKey.set(key, acc);
     }
 
-    const result = Array.from(byKey.values()).sort(
-      (a, b) =>
-        b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? ""),
-    );
+    // Báo cáo traffic chỉ lưu email: tra tài khoản theo email để hệ thống lương khớp người bằng id
+    // nhân sự HRM thay vì email/tên.
+    const reportEmails = [...new Set([...byKey.values()].flatMap((row) => row.email ?? []))];
+    const hrmIdByEmail = new Map<string, string>();
+    if (reportEmails.length) {
+      const users = await this.prisma.user.findMany({
+        where: {
+          email: { in: reportEmails, mode: "insensitive" },
+          deleted_at: null,
+          hrm_employee_id: { not: null },
+        },
+        select: { email: true, hrm_employee_id: true },
+      });
+      for (const u of users) hrmIdByEmail.set(u.email.toLowerCase().trim(), u.hrm_employee_id!);
+    }
+
+    const result = Array.from(byKey.values())
+      .map((row) => ({
+        ...row,
+        hrm_employee_id: row.email ? hrmIdByEmail.get(row.email) ?? null : null,
+      }))
+      .sort(
+        (a, b) =>
+          b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? ""),
+      );
 
     return { range: { from, to }, rows: result };
   }

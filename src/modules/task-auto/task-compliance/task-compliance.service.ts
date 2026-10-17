@@ -11,6 +11,10 @@ import { DateTime } from "luxon";
 import { PrismaService } from "../../../common/prisma/prisma.service";
 import { PushService } from "../../../common/push/push.service";
 import { asPublishedLinks } from "../../../common/utils/task-published-links.util";
+import {
+  PAYROLL_SYNC_TEAM_SELECT,
+  payrollSyncTeamWhere,
+} from "../../../common/utils/payroll-sync-team.util";
 import { dailyKpiDate } from "../../../utils/date.utils";
 import {
   QueryComplianceDayDto,
@@ -248,7 +252,7 @@ const PAYROLL_LINE_SELECT = {
   missing_count: true,
   deadline: true,
   evaluated_at: true,
-  user: { select: { full_name: true, employee_id: true } },
+  user: { select: { full_name: true, employee_id: true, hrm_employee_id: true } },
   content_line: { select: { id: true, name: true } },
 } satisfies Prisma.DailyTaskComplianceSelect;
 
@@ -261,6 +265,7 @@ function toPayrollRecord(row: PayrollLineRow, detail: LineTasks) {
     id: row.id,
     user_id: row.user_id,
     employee_id: row.user.employee_id,
+    hrm_employee_id: row.user.hrm_employee_id ?? null,
     user_name: row.user.full_name,
     team_id: row.team_id,
     work_date: toDateOnly(row.work_date),
@@ -916,7 +921,10 @@ export class TaskComplianceService {
    * chỉ phân trang các dòng thực sự thiếu task. Không gọi evaluatePastDays hay syncCounts ở đây để request
    * từ hệ thống ngoài không bao giờ tạo hoặc thay đổi dữ liệu nghiệp vụ — số liệu là của lần tính lại gần nhất.
    */
-  async payrollSync(teamId: string, query: TaskCompliancePayrollSyncQueryDto) {
+  async payrollSync(
+    teamIdOrHrmProjectId: string,
+    query: TaskCompliancePayrollSyncQueryDto,
+  ) {
     const from = DateTime.fromISO(query.from, { zone: VN_TZ }).startOf("day");
     const to = DateTime.fromISO(query.to, { zone: VN_TZ }).startOf("day");
     if (!from.isValid || !to.isValid) {
@@ -930,15 +938,36 @@ export class TaskComplianceService {
       throw new BadRequestException("Khoảng ngày không được vượt quá 366 ngày");
     }
 
-    const team = await this.prisma.team.findUnique({
-      where: { id: teamId },
-      select: { id: true, name: true },
-    });
+    const [team, hrmUser] = await Promise.all([
+      this.prisma.team.findFirst({
+        where: payrollSyncTeamWhere(teamIdOrHrmProjectId),
+        select: PAYROLL_SYNC_TEAM_SELECT,
+      }),
+      query.hrm_employee_id
+        ? this.prisma.user.findUnique({
+            where: { hrm_employee_id: query.hrm_employee_id },
+            select: { id: true },
+          })
+        : Promise.resolve(null),
+    ]);
     if (!team) throw new NotFoundException("Team không tồn tại");
 
+    // Lọc theo người: user_id và/hoặc hrm_employee_id. Id HRM chưa gắn tài khoản nào (hoặc lệch
+    // với user_id) thì lọc rỗng chứ không bỏ lọc, để không trả nhầm dữ liệu cả team.
+    const hrmUserLinked = !query.hrm_employee_id || !!hrmUser;
+    const userIds = [
+      ...new Set([query.user_id, hrmUser?.id].filter((id): id is string => !!id)),
+    ];
+    const userFilter: Prisma.DailyTaskComplianceWhereInput =
+      !hrmUserLinked || userIds.length > 1
+        ? { user_id: { in: [] } }
+        : userIds.length === 1
+          ? { user_id: userIds[0] }
+          : {};
+
     const baseWhere: Prisma.DailyTaskComplianceWhereInput = {
-      team_id: teamId,
-      ...(query.user_id ? { user_id: query.user_id } : {}),
+      team_id: team.id,
+      ...userFilter,
       work_date: {
         gte: dailyKpiDate(from.toFormat("yyyy-MM-dd")),
         lt: dailyKpiDate(to.plus({ days: 1 }).toFormat("yyyy-MM-dd")),
@@ -991,7 +1020,11 @@ export class TaskComplianceService {
       timezone: VN_TZ,
       range: { from: query.from, to: query.to },
       team,
-      filters: { user_id: query.user_id ?? null, group_by: groupBy },
+      filters: {
+        user_id: query.user_id ?? hrmUser?.id ?? null,
+        hrm_employee_id: query.hrm_employee_id ?? null,
+        group_by: groupBy,
+      },
       coverage: {
         snapshot_count: snapshotCount,
         evaluated_from: dateOnly(totals._min.work_date),
@@ -1017,8 +1050,17 @@ export class TaskComplianceService {
         total,
         total_pages: Math.ceil(total / limit),
       },
-      warnings:
-        snapshotCount === 0
+      warnings: [
+        ...(hrmUserLinked
+          ? []
+          : [
+              {
+                code: "HRM_EMPLOYEE_NOT_LINKED",
+                message:
+                  "Chưa có tài khoản VCBI nào gắn với nhân sự HRM này (xem Đồng bộ từ HRM bên VCBI).",
+              },
+            ]),
+        ...(snapshotCount === 0
           ? [
               {
                 code: "NO_COMPLIANCE_SNAPSHOT",
@@ -1026,7 +1068,8 @@ export class TaskComplianceService {
                   "Không có dữ liệu tuân thủ nhiệm vụ trong khoảng ngày đã chọn.",
               },
             ]
-          : [],
+          : []),
+      ],
     };
   }
 
@@ -1093,6 +1136,7 @@ export class TaskComplianceService {
           work_date: workDate,
           user_id: group.user_id,
           employee_id: lines[0].employee_id,
+          hrm_employee_id: lines[0].hrm_employee_id,
           user_name: lines[0].user_name,
           // Đúng bằng số trên dòng danh sách: chỉ cộng các tuyến thiếu.
           expected_count: shortfall.expected,

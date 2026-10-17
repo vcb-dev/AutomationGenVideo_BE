@@ -1,10 +1,9 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { DateTime } from "luxon";
 import { AssignmentRunStatus, BrandType, Prisma } from "@prisma/client";
 
 import {
-  isWeekend,
   monthKey,
   addCalendarDays,
   effectiveAssignmentDate,
@@ -26,7 +25,7 @@ import { DailyPlanRunSummary } from "../daily-plans/types";
 import { KpiRolloverResult, KpiRolloverService } from "../kpi/kpi-rollover.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { PushService } from "@/common/push/push.service";
-import { UpdateAutoAssignSettingDto } from "../settings/dto/settings.dto";
+import { UpdateAutoAssignSettingDto, UpdateMemberAutoAssignDto } from "../settings/dto/settings.dto";
 import {
   AUTO_ASSIGN_CONTENT_LINE_NAME,
   DEADLINE_CALENDAR_DAYS,
@@ -36,6 +35,38 @@ import {
   ScheduledAssignment,
   TeamResult,
 } from "./types";
+
+type Actor = { id: string; roles: string[] };
+
+const MEMBER_SCHEDULE_SELECT = {
+  id: true,
+  user_id: true,
+  auto_assign_enabled: true,
+  auto_assign_weekdays: true,
+  user: {
+    select: {
+      full_name: true,
+      email: true,
+      editor_approvals: { where: { status: "APPROVED" }, select: { id: true }, take: 1 },
+    },
+  },
+} satisfies Prisma.TeamMemberSelect;
+
+function toMemberSchedule(m: Prisma.TeamMemberGetPayload<{ select: typeof MEMBER_SCHEDULE_SELECT }>) {
+  return {
+    id: m.id,
+    user_id: m.user_id,
+    full_name: m.user.full_name,
+    email: m.user.email,
+    is_editor: m.user.editor_approvals.length > 0,
+    auto_assign_enabled: m.auto_assign_enabled,
+    auto_assign_weekdays: [...m.auto_assign_weekdays].sort((a, b) => a - b),
+  };
+}
+
+function isAdminOrManager(actor: Actor): boolean {
+  return actor.roles.includes("ADMIN") || actor.roles.includes("MANAGER");
+}
 
 @Injectable()
 export class TaskAutoAssignService {
@@ -66,6 +97,43 @@ export class TaskAutoAssignService {
     });
   }
 
+  async getMemberSchedules(actor: Actor) {
+    const teams = await this.prisma.team.findMany({
+      where: { is_active: true, ...(isAdminOrManager(actor) ? {} : { leader_id: actor.id }) },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        members: {
+          where: { user: { is_active: true } },
+          orderBy: { user: { full_name: "asc" } },
+          select: MEMBER_SCHEDULE_SELECT,
+        },
+      },
+    });
+    return teams.map((t) => ({ id: t.id, name: t.name, members: t.members.map(toMemberSchedule) }));
+  }
+
+  async updateMemberSchedule(memberId: string, dto: UpdateMemberAutoAssignDto, actor: Actor) {
+    const member = await this.prisma.teamMember.findUnique({
+      where: { id: memberId },
+      select: { team: { select: { leader_id: true } } },
+    });
+    if (!member) throw new NotFoundException("Không tìm thấy thành viên");
+    if (!isAdminOrManager(actor) && member.team.leader_id !== actor.id) {
+      throw new ForbiddenException("Chỉ leader của team này mới được đổi lịch chia task tự động");
+    }
+    const updated = await this.prisma.teamMember.update({
+      where: { id: memberId },
+      data: {
+        auto_assign_enabled: dto.auto_assign_enabled,
+        auto_assign_weekdays: dto.auto_assign_weekdays && [...dto.auto_assign_weekdays].sort((a, b) => a - b),
+      },
+      select: MEMBER_SCHEDULE_SELECT,
+    });
+    return toMemberSchedule(updated);
+  }
+
   async getRuns(limit = 50) {
     return this.prisma.assignmentRun.findMany({
       orderBy: { run_at: "desc" },
@@ -88,8 +156,6 @@ export class TaskAutoAssignService {
       if (!settings.is_active) return;
 
       const now = DateTime.now().setZone(settings.timezone || DEFAULT_TZ);
-      if (isWeekend(effectiveAssignmentDate(now)) && !settings.weekend_enabled) return;
-
       const [hh, mm] = (settings.schedule_time || "17:00")
         .split(":")
         .map(Number);
@@ -137,10 +203,6 @@ export class TaskAutoAssignService {
       where: { id: 1 },
     });
     if (!settings?.is_active) return { assigned: 0, skipped: 0, runId: "" };
-    // Lượt chạy chia việc cho NGÀY MAI — tắt cuối tuần nghĩa là không có việc cho T7/CN (lượt tối T6,
-    // T7 bỏ qua; lượt tối CN vẫn chạy cho T2), không xét theo ngày chạy.
-    if (isWeekend(effectiveAssignmentDate(now)) && !(settings.weekend_enabled ?? true))
-      return { assigned: 0, skipped: 0, runId: "" };
 
     if (!forceRun) {
       const dayStart = now.startOf("day").toJSDate();

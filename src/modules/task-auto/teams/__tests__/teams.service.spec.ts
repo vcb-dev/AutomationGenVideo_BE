@@ -7,6 +7,10 @@ import {
 import { Prisma } from '@prisma/client';
 import { TaskAutoTeamsService } from '../teams.service';
 import { taskProductSkuWhere } from '../../../../common/utils/content-product-link.util';
+import {
+  buildHrmSyncPlan, hrmMemberKind, HrmEmployee, HrmSyncInput, HrmTeamSyncService, SyncTeam, SyncUser,
+} from '../hrm-team-sync.service';
+import { recomputeUserTeamFieldsBatch } from '../../../../common/utils/team-membership.util';
 
 // create()/update() gọi seedEditorKpiForMembers + recomputeUserTeamFieldsBatch (qua
 // syncAffectedUsers) bằng chính transaction client — không liên quan gì tới việc lưu đúng
@@ -807,5 +811,222 @@ describe('TaskAutoTeamsService — lọc content kho team theo sản phẩm', ()
     await expect(service.listTeamContentLinkedProducts('all', undefined, ['LEADER']))
       .rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.task.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('Đồng bộ team + thành viên từ HRM', () => {
+  const P1 = '11111111-1111-4111-8111-111111111111';
+  const P2 = '22222222-2222-4222-8222-222222222222';
+  const TEAM_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const TEAM_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  const emp = (id: string, o: Partial<HrmEmployee> = {}): HrmEmployee => ({
+    id, email: `${id}@hrm.vn`, fullName: id, displayName: null, employeeCode: null, employeeIdentifier: null,
+    jobTitle: 'Video Editor', avatarUrl: null, teams: [{ name: 'Editor' }], projects: [{ id: P1 }], ...o,
+  });
+  const user = (id: string, o: Partial<SyncUser> = {}): SyncUser => ({
+    id, email: `${id}@agv.vn`, full_name: id, employee_id: null, hrm_employee_id: null,
+    is_active: true, deleted: false, editor_approved: true, ...o,
+  });
+  const team = (id: string, o: Partial<SyncTeam> = {}): SyncTeam => ({
+    id, name: id, is_active: true, hrm_project_id: null, leader_id: null, members: [], ...o,
+  });
+  const input = (o: Partial<HrmSyncInput>): HrmSyncInput => ({
+    projects: [{ id: P1, name: 'ĐVKD 1 - Hồng Ngọc', status: 'ACTIVE' }],
+    employees: [], teams: [], users: [], choices: {}, accountLinks: {}, suggestUnlinked: true, ...o,
+  });
+
+  it('nhận Content/Editor theo team HRM hoặc chức danh, bỏ sale/kho', () => {
+    expect(hrmMemberKind({ jobTitle: 'SALE online', teams: [{ name: 'Content' }] })).toBe('CONTENT');
+    expect(hrmMemberKind({ jobTitle: 'Content', teams: [{ name: 'Editor' }] })).toBe('CONTENT');
+    expect(hrmMemberKind({ jobTitle: 'Media', teams: [{ name: 'Nghiên Cứu Và Phát Triển Sản Phẩm' }] })).toBe('EDITOR');
+    expect(hrmMemberKind({ jobTitle: null, teams: [{ name: 'Editor' }] })).toBe('EDITOR');
+    expect(hrmMemberKind({ jobTitle: 'SALE online', teams: [{ name: 'SALE ONLINE' }] })).toBeNull();
+    expect(hrmMemberKind({ jobTitle: 'Logistic-Kho', teams: [] })).toBeNull();
+  });
+
+  it('team đã gắn: đổi tên theo dự án, thêm/bớt thành viên, giữ leader, cập nhật cờ content creator', () => {
+    const plan = buildHrmSyncPlan(input({
+      employees: [
+        emp('e-keep', { email: 'keep@agv.vn', jobTitle: 'Content', teams: [{ name: 'Content' }] }),
+        emp('e-add', { email: 'add@agv.vn' }),
+        emp('e-sale', { email: 'sale@agv.vn', jobTitle: 'SALE online', teams: [{ name: 'SALE ONLINE' }] }),
+      ],
+      users: [
+        user('u-keep', { email: 'keep@agv.vn' }), user('u-add', { email: 'add@agv.vn' }),
+        user('u-sale', { email: 'sale@agv.vn' }), user('u-gone'), user('u-leader'),
+      ],
+      teams: [team(TEAM_A, {
+        name: 'Team K3', hrm_project_id: P1, leader_id: 'u-leader',
+        members: ['u-keep', 'u-sale', 'u-gone', 'u-leader'].map((user_id) => ({ user_id, is_content_creator: false })),
+      })],
+    }));
+
+    const [p] = plan.projects;
+    expect(p).toMatchObject({ status: 'LINKED', team_id: TEAM_A, rename: true, rename_conflict: false });
+    expect(p.add.map((m) => m.user_id)).toEqual(['u-add']);
+    expect(p.keep.map((m) => [m.user_id, m.kind])).toEqual([['u-keep', 'CONTENT']]);
+    expect(p.remove.map((m) => m.user_id).sort()).toEqual(['u-gone', 'u-sale']);
+    expect(p.flag_updates).toEqual([{ user_id: 'u-keep', is_content_creator: true }]);
+    expect(plan.user_links).toEqual(expect.arrayContaining([
+      { user_id: 'u-keep', hrm_employee_id: 'e-keep' }, { user_id: 'u-add', hrm_employee_id: 'e-add' },
+    ]));
+  });
+
+  it('khớp tài khoản theo id HRM → email → mã NV → họ tên trùng duy nhất; tên trùng 2 người bên HRM thì tạo mới', () => {
+    const plan = buildHrmSyncPlan(input({
+      employees: [
+        emp('e-1', { email: 'moi@hrm.vn' }),
+        emp('e-2', { email: 'x@hrm.vn', employeeCode: 'A583' }),
+        emp('e-3', { email: 'y@hrm.vn', fullName: 'NGUYỄN TRUNG VŨ' }),
+        emp('e-4', { email: 'z@hrm.vn', fullName: 'Nguyễn Thùy Linh' }),
+        emp('e-5', { email: 'w@hrm.vn', fullName: 'NGUYỄN THUỲ LINH', projects: [] }),
+      ],
+      users: [
+        user('u-1', { hrm_employee_id: 'e-1' }),
+        user('u-2', { employee_id: 'a583' }),
+        user('u-3', { full_name: 'Nguyễn Trung Vũ' }),
+        user('u-4', { full_name: 'Nguyễn Thùy Linh' }),
+      ],
+      teams: [team(TEAM_A, { hrm_project_id: P1 })],
+    }));
+
+    expect(plan.projects[0].add.map((m) => m.user_id ?? m.email).sort()).toEqual(['u-1', 'u-2', 'u-3', 'z@hrm.vn']);
+    expect(plan.accounts_to_create).toEqual([expect.objectContaining({
+      email: 'z@hrm.vn', hrm_employee_id: 'e-4', kind: 'EDITOR',
+      possible_matches: [{ user_id: 'u-4', full_name: 'Nguyễn Thùy Linh', email: 'u-4@agv.vn' }],
+    })]);
+  });
+
+  it('chọn dùng tài khoản có sẵn thay vì tạo mới thì gắn id HRM vào tài khoản đó', () => {
+    const plan = buildHrmSyncPlan(input({
+      employees: [emp('e-1', { email: 'buituandung647@gmail.com', fullName: 'Bùi Tuấn Dũng' })],
+      users: [user('u-old', { full_name: 'Tuấn Dũng', editor_approved: false })],
+      teams: [team(TEAM_A, { hrm_project_id: P1, members: [{ user_id: 'u-old', is_content_creator: false }] })],
+      accountLinks: { 'e-1': 'u-old' },
+    }));
+
+    expect(plan.accounts_to_create).toEqual([]);
+    expect(plan.projects[0].keep.map((m) => m.user_id)).toEqual(['u-old']);
+    expect(plan.user_links).toEqual([{ user_id: 'u-old', hrm_employee_id: 'e-1' }]);
+    expect(plan.editor_approvals).toEqual(['u-old']);
+  });
+
+  it('tài khoản mới: tên viết hoa đổi về dạng thường; email đã bị xoá ở AGV hoặc HRM thiếu email thì bỏ qua', () => {
+    const plan = buildHrmSyncPlan(input({
+      employees: [
+        emp('e-1', { email: 'Moi@Gmail.com', fullName: 'BÙI ANH TÚ' }),
+        emp('e-2', { email: 'xoa@gmail.com' }),
+        emp('e-3', { email: null }),
+      ],
+      users: [user('u-del', { email: 'xoa@gmail.com', deleted: true })],
+      teams: [team(TEAM_A, { hrm_project_id: P1 })],
+    }));
+
+    expect(plan.accounts_to_create.map((a) => [a.email, a.full_name])).toEqual([['moi@gmail.com', 'Bùi Anh Tú']]);
+    expect(plan.skipped.map((s) => [s.hrm_employee_id, s.reason])).toEqual([
+      ['e-2', 'Tài khoản dùng email này đã bị xoá ở AGV'],
+      ['e-3', 'HRM chưa có email'],
+    ]);
+  });
+
+  it('dự án chưa gắn: gợi ý team có ≥2 thành viên trùng, hoà nhau thì tạo team mới; cron (không gợi ý) thì bỏ qua', () => {
+    const projects = [
+      { id: P1, name: 'ĐVKD 1 - Hồng Ngọc', status: 'ACTIVE' },
+      { id: P2, name: 'Tây Ban Nha', status: 'ACTIVE' },
+    ];
+    const employees = [
+      emp('e-1', { email: 'u-1@agv.vn' }), emp('e-2', { email: 'u-2@agv.vn' }),
+      emp('e-3', { email: 'u-3@agv.vn', projects: [{ id: P2 }] }), emp('e-4', { email: 'u-4@agv.vn', projects: [{ id: P2 }] }),
+    ];
+    const users = ['u-1', 'u-2', 'u-3', 'u-4'].map((id) => user(id));
+    const teams = [
+      team(TEAM_A, { name: 'Team K3', members: [{ user_id: 'u-1', is_content_creator: false }, { user_id: 'u-2', is_content_creator: false }, { user_id: 'u-3', is_content_creator: false }] }),
+      team(TEAM_B, { name: 'Global Thái Lan', members: [{ user_id: 'u-4', is_content_creator: false }] }),
+    ];
+
+    const preview = buildHrmSyncPlan(input({ projects, employees, users, teams }));
+    expect(preview.projects.map((p) => [p.project_name, p.status, p.team_id])).toEqual([
+      ['ĐVKD 1 - Hồng Ngọc', 'SUGGESTED', TEAM_A],
+      ['Tây Ban Nha', 'NEW', null],
+    ]);
+
+    const cron = buildHrmSyncPlan(input({ projects, employees, users, teams, suggestUnlinked: false }));
+    expect(cron.projects.every((p) => p.status === 'SKIP' && !p.add.length && !p.remove.length)).toBe(true);
+    expect(cron.accounts_to_create).toEqual([]);
+  });
+
+  it('báo lỗi khi chọn team đã gắn dự án khác hoặc tạo mới trùng tên team có sẵn', () => {
+    const plan = buildHrmSyncPlan(input({
+      projects: [
+        { id: P1, name: 'ĐVKD 1 - Hồng Ngọc', status: 'ACTIVE' },
+        { id: P2, name: 'Tây Ban Nha', status: 'ACTIVE' },
+      ],
+      teams: [team(TEAM_A, { hrm_project_id: P1 }), team(TEAM_B, { name: 'Tây Ban Nha' })],
+      choices: { [P2]: TEAM_A },
+      suggestUnlinked: false,
+    }));
+    expect(plan.errors).toHaveLength(1);
+    expect(plan.errors[0]).toContain('đã gắn với dự án khác');
+
+    const dup = buildHrmSyncPlan(input({
+      projects: [{ id: P2, name: 'Tây Ban Nha', status: 'ACTIVE' }],
+      teams: [team(TEAM_B, { name: 'Tây Ban Nha', hrm_project_id: P1 })],
+      choices: { [P2]: 'NEW' },
+      suggestUnlinked: false,
+    }));
+    expect(dup.errors[0]).toContain('Đã có team tên "Tây Ban Nha"');
+  });
+
+  it('apply: tạo tài khoản + team mới, gỡ/thêm thành viên, duyệt editor trong 1 transaction', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
+      const body = String(url).includes('/projects')
+        ? { data: [{ id: P1, name: 'ĐVKD 1 - Hồng Ngọc', status: 'ACTIVE' }, { id: P2, name: 'Tây Ban Nha', status: 'ACTIVE' }] }
+        : { data: [emp('e-new', { email: 'new@gmail.com' }), emp('e-2', { email: 'u-2@agv.vn', projects: [{ id: P2 }] })], total: 2 };
+      return { ok: true, status: 200, json: async () => body } as any;
+    });
+    const tx: any = {
+      user: { createMany: jest.fn(async () => ({ count: 1 })) },
+      team: {
+        create: jest.fn(async () => ({ id: TEAM_B })),
+        update: jest.fn(async () => ({ leader_id: null })),
+        findUnique: jest.fn(async () => ({ leader_id: null })),
+      },
+      teamMember: {
+        deleteMany: jest.fn(), createMany: jest.fn(), updateMany: jest.fn(),
+        findMany: jest.fn(async () => [{ user_id: 'u-leader' }]),
+      },
+      editorApproval: { findMany: jest.fn(async () => []), updateMany: jest.fn(), createMany: jest.fn() },
+      $executeRaw: jest.fn(),
+    };
+    const prisma: any = {
+      team: { findMany: jest.fn(async () => [team(TEAM_A, { name: 'Team K3', hrm_project_id: P1, members: [{ user_id: 'u-gone', is_content_creator: false }] })]) },
+      user: {
+        findMany: jest.fn(async () => [
+          { ...user('u-2', { email: 'u-2@agv.vn' }), deleted_at: null, editor_approvals: [{ id: 'x' }] },
+          { ...user('u-gone'), deleted_at: null, editor_approvals: [] },
+        ].map(({ deleted, editor_approved, ...u }) => u)),
+      },
+      $transaction: jest.fn(async (cb: any) => cb(tx)),
+    };
+    const config: any = { get: (k: string) => ({ VCB_HRM_BASE_URL: 'http://hrm/', VCB_HRM_API_KEY: 'tmk_x' } as any)[k] };
+    const service = new HrmTeamSyncService(prisma, config);
+
+    const result = await service.apply({ [P2]: 'NEW' }, {}, 'admin-1');
+
+    expect(fetchMock).toHaveBeenCalledWith('http://hrm/public/v1/projects?status=ACTIVE', expect.objectContaining({ headers: { 'X-API-Key': 'tmk_x' } }));
+    const newUserId = tx.user.createMany.mock.calls[0][0].data[0].id;
+    expect(tx.user.createMany.mock.calls[0][0].data[0]).toMatchObject({ email: 'new@gmail.com', roles: ['MEMBER'], hrm_employee_id: 'e-new' });
+    expect(tx.team.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: TEAM_A }, data: { name: 'ĐVKD 1 - Hồng Ngọc' } }));
+    expect(tx.team.create).toHaveBeenCalledWith({ data: { name: 'Tây Ban Nha', hrm_project_id: P2 } });
+    expect(tx.teamMember.deleteMany).toHaveBeenCalledWith({ where: { team_id: TEAM_A, user_id: { in: ['u-gone'] } } });
+    expect(tx.teamMember.createMany).toHaveBeenCalledWith({ data: [{ team_id: TEAM_A, user_id: newUserId, is_content_creator: false }], skipDuplicates: true });
+    expect(tx.teamMember.createMany).toHaveBeenCalledWith({ data: [{ team_id: TEAM_B, user_id: 'u-2', is_content_creator: false }], skipDuplicates: true });
+    expect(tx.editorApproval.createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({ user_id: newUserId, status: 'APPROVED', approved_by_id: 'admin-1' })] });
+    expect(result).toMatchObject({ teams_created: 1, teams_renamed: 1, members_added: 2, members_removed: 1, accounts_created: 1, editors_approved: 1 });
+    expect(jest.mocked(recomputeUserTeamFieldsBatch).mock.calls.at(-1)![1]).toEqual(
+      expect.arrayContaining(['u-leader', 'u-gone', 'u-2', newUserId]),
+    );
+    fetchMock.mockRestore();
   });
 });
