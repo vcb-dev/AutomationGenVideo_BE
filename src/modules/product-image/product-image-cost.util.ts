@@ -1,0 +1,371 @@
+import { InternalServerErrorException } from '@nestjs/common';
+
+/**
+ * Chi phí "Tạo ảnh sản phẩm": quy `usage` AI gửi về ra VNĐ và tổng hợp cho tab Chi phí (thuần logic, test được).
+ * Chỉ số chính: lượt tạo Gemini / ảnh đạt và tiền Gemini / ảnh đạt.
+ */
+
+export const PRODUCT_IMAGE_MODE = {
+  CUTOUT: 'CUTOUT',
+  HELD_PRODUCT: 'HELD_PRODUCT',
+  /** Gemini đặt SP vào ảnh cảnh — chế độ của tab "Tạo hàng loạt". */
+  SCENE_PLACEMENT: 'SCENE_PLACEMENT',
+  /** Tab "Chị Nhạm cầm SP" — đổi SP bằng model tự huấn luyện + SAM + LaMa trên AI service, 0đ (không có nút "Đạt"). */
+  HELD_SWAP: 'HELD_SWAP',
+} as const;
+export type ProductImageMode = (typeof PRODUCT_IMAGE_MODE)[keyof typeof PRODUCT_IMAGE_MODE];
+
+/** Các chế độ gọi Gemini (tính phí, có nút "Đạt"); còn lại là 0đ (tách nền, đổi SP bằng model tự huấn luyện). */
+export const GEMINI_MODES: readonly string[] = [PRODUCT_IMAGE_MODE.HELD_PRODUCT, PRODUCT_IMAGE_MODE.SCENE_PLACEMENT];
+
+export const GENERATION_STATUS = { SUCCESS: 'SUCCESS', FAILED: 'FAILED' } as const;
+export type GenerationStatus = (typeof GENERATION_STATUS)[keyof typeof GENERATION_STATUS];
+
+/** Cùng biến tỷ giá với tab Chi phí Bộ sưu tập — BẮT BUỘC, không có giá trị mặc định. */
+export const USD_VND_RATE_ENV = 'USD_VND_RATE';
+
+const MISSING_RATE_MESSAGE =
+  `Thiếu ${USD_VND_RATE_ENV} trong .env (tỷ giá quy đổi chi phí USD → VNĐ, số dương) — xem .env.example.`;
+
+/** Tab Chi phí không có tỷ giá thì không hiện được tiền VNĐ → báo lỗi nêu tên biến. */
+export function parseUsdVndRate(raw: string | undefined): number {
+  const rate = Number(raw);
+  if (!raw || !Number.isFinite(rate) || rate <= 0) {
+    throw new InternalServerErrorException(MISSING_RATE_MESSAGE);
+  }
+  return rate;
+}
+
+/** Sau một lượt tạo ảnh: thiếu tỷ giá KHÔNG được làm hỏng lượt đó — chỉ chưa quy ra VNĐ được. */
+export function tryParseUsdVndRate(raw: string | undefined): { rate: number | null; note: string | null } {
+  try {
+    return { rate: parseUsdVndRate(raw), note: null };
+  } catch {
+    return { rate: null, note: MISSING_RATE_MESSAGE };
+  }
+}
+
+/** Khối `usage` AI service gửi kèm phản hồi held-product (xem product_image_cost.py). */
+export interface AiUsage {
+  model?: string | null;
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_usd?: number | null;
+  cost_note?: string | null;
+}
+
+export interface GenerationCost {
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  /** null = chưa biết (thiếu đơn giá, hết thời gian chờ...) — lý do ở cost_note */
+  cost_usd: number | null;
+  cost_note: string | null;
+}
+
+const nonNegativeInt = (value: unknown) => Math.max(0, Math.round(Number(value) || 0));
+
+/** Khối usage → cột chi phí của một lượt; không có usage thì dùng `fallback`. */
+export function costFromAiUsage(
+  usage: AiUsage | null | undefined,
+  fallback: { cost_usd: number | null; cost_note: string },
+): GenerationCost {
+  if (!usage || typeof usage !== 'object') {
+    return { model: null, input_tokens: 0, output_tokens: 0, ...fallback };
+  }
+  const cost = usage.cost_usd === null || usage.cost_usd === undefined ? null : Number(usage.cost_usd);
+  const known = cost !== null && Number.isFinite(cost) && cost >= 0;
+  return {
+    model: typeof usage.model === 'string' && usage.model ? usage.model.slice(0, 100) : null,
+    input_tokens: nonNegativeInt(usage.input_tokens),
+    output_tokens: nonNegativeInt(usage.output_tokens),
+    cost_usd: known ? cost : null,
+    cost_note: typeof usage.cost_note === 'string' && usage.cost_note ? usage.cost_note.slice(0, 300) : null,
+  };
+}
+
+// ─── Lỗi DB ────────────────────────────────────────────────────────────────
+
+/** Mã lỗi Prisma "bảng không tồn tại" — gặp khi migration của bảng chưa được áp. */
+const PRISMA_TABLE_MISSING = 'P2021';
+
+/** Lỗi DB bảng product_image_generations → câu dễ hiểu; chi tiết Prisma chỉ ghi log. */
+export function generationsDbError(err: unknown): InternalServerErrorException {
+  if ((err as { code?: string } | null)?.code === PRISMA_TABLE_MISSING) {
+    return new InternalServerErrorException(
+      'DB chưa có bảng product_image_generations — migration 20260929150000_add_product_image_generations ' +
+        'chưa được áp (CI tự áp khi merge).',
+    );
+  }
+  return new InternalServerErrorException('Không đọc/ghi được dữ liệu chi phí tạo ảnh trong DB, vui lòng thử lại.');
+}
+
+// ─── Chi phí của lượt thất bại ─────────────────────────────────────────────
+
+const AI_USAGE = Symbol('productImageAiUsage');
+
+/** Gắn khối usage vào lỗi ném ra từ lượt gọi AI, để nơi bắt lỗi vẫn ghi được chi phí lượt hỏng. */
+export function attachAiUsage<E extends Error>(error: E, usage: AiUsage | null | undefined): E {
+  if (usage) (error as any)[AI_USAGE] = usage;
+  return error;
+}
+
+export function aiUsageOf(error: unknown): AiUsage | null {
+  return ((error as any)?.[AI_USAGE] as AiUsage | undefined) ?? null;
+}
+
+/** Usage của lượt lỗi axios: AI có kèm usage → dùng; BE hết giờ chờ → chưa biết tiền; không tới được AI → 0đ. */
+export function usageFromAxiosError(err: any): AiUsage | null {
+  const usage = err?.response?.data?.usage;
+  if (usage && typeof usage === 'object') return usage;
+  if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message ?? '')) {
+    return { cost_usd: null, cost_note: 'BE hết thời gian chờ AI service — không biết Gemini đã tính phí lượt này chưa.' };
+  }
+  if (!err?.response && ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(err?.code)) {
+    return { cost_usd: 0, cost_note: 'Không kết nối được AI service — chưa gọi Gemini, không tính phí.' };
+  }
+  return null;
+}
+
+/** Không có usage nào từ AI (lỗi lạ) — không khẳng định được lượt đó miễn phí. */
+export const UNKNOWN_COST = {
+  cost_usd: null,
+  cost_note: 'AI service không báo số token/chi phí của lượt này.',
+} as const;
+
+/** Tách nền hỏng mà AI không báo usage — tách nền luôn 0đ. */
+export const CUTOUT_FAILED_FREE = {
+  cost_usd: 0,
+  cost_note: 'Tách nền chạy trên AI service (rembg + model tự huấn luyện) — không tính phí.',
+} as const;
+
+/** Như CUTOUT_FAILED_FREE cho lượt đổi SP 0đ hỏng (HELD_SWAP): toàn bộ chạy trên AI service, không gọi dịch vụ tính phí. */
+export const HELD_SWAP_FAILED_FREE = {
+  cost_usd: 0,
+  cost_note: 'Đổi SP chạy trên AI service (model người cầm SP tự huấn luyện + SAM + LaMa) — không tính phí.',
+} as const;
+
+// ─── Ước tính giá một ảnh Gemini (hộp xác nhận của tab Tạo tự động) ─────────
+
+/** Số lượt Gemini gần nhất dùng để ước tính — đủ san bằng chênh lệch token giữa các ảnh. */
+export const GEMINI_ESTIMATE_SAMPLE = 20;
+
+/** Giá trung bình một lượt Gemini theo các lượt thật gần nhất (bỏ lượt 0đ bị từ chối); chưa có → null. */
+export function estimateGeminiImageCost(costsUsd: readonly number[], rate: number | null) {
+  const billed = costsUsd.filter((usd) => Number.isFinite(usd) && usd > 0);
+  if (!billed.length) return { per_image_usd: null, per_image_vnd: null, sample_size: 0 };
+  const usd = billed.reduce((sum, value) => sum + value, 0) / billed.length;
+  return {
+    per_image_usd: Math.round(usd * 1e6) / 1e6,
+    per_image_vnd: rate === null ? null : Math.round(usd * rate),
+    sample_size: billed.length,
+  };
+}
+
+// ─── Thống kê ──────────────────────────────────────────────────────────────
+
+export interface GenerationRow {
+  id: string;
+  user_id: string;
+  mode: string;
+  status: string;
+  product_name: string | null;
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  cost_note: string | null;
+  error_message: string | null;
+  approved_at: Date | null;
+  created_at: Date;
+}
+
+/** Lượt Gemini tính là "một lần tạo" khi có ảnh, đã tiêu token, hoặc chưa biết tiền — lượt từ chối ngay thì không. */
+export function isGeminiAttempt(row: GenerationRow): boolean {
+  if (!GEMINI_MODES.includes(row.mode)) return false;
+  return (
+    row.status === GENERATION_STATUS.SUCCESS ||
+    row.input_tokens > 0 ||
+    row.output_tokens > 0 ||
+    row.cost_usd === null ||
+    row.cost_usd > 0
+  );
+}
+
+/** "  Nhẫn  Kim Vũ " và "nhẫn kim vũ" là một sản phẩm. */
+export function productKey(name: string | null): string {
+  return (name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export const UNNAMED_PRODUCT_LABEL = '(không ghi tên)';
+
+export interface Money {
+  cost_usd: number;
+  cost_vnd: number;
+}
+
+interface Bucket {
+  attempts: number;
+  success: number;
+  approved: number;
+  cutouts: number;
+  /** Lượt đổi SP 0đ (HELD_SWAP) thành công — không phải "lượt tạo" Gemini, không vào chỉ số lượt/ảnh đạt. */
+  swaps: number;
+  /** Tổng tiền mọi lượt (Gemini tạo ảnh + Gemini nhận diện khi tách nền). */
+  usd: number;
+  /** Riêng tiền Gemini TẠO ẢNH — mẫu số của chi phí / lượt và chi phí / 1 ảnh đạt. */
+  generateUsd: number;
+}
+
+const emptyBucket = (): Bucket => ({ attempts: 0, success: 0, approved: 0, cutouts: 0, swaps: 0, usd: 0, generateUsd: 0 });
+
+export function buildCostStats(
+  rows: GenerationRow[],
+  opts: { rate: number; userNames: Map<string, string>; toDay: (d: Date) => string; recentLimit: number },
+) {
+  const money = (usd: number): Money => ({
+    cost_usd: Math.round(usd * 1e6) / 1e6,
+    cost_vnd: Math.round(usd * opts.rate),
+  });
+  const ratio = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) / 100 : null);
+
+  const total = emptyBucket();
+  let failed = 0;
+  let cutoutFailed = 0;
+  let swapFailed = 0;
+  let unpriced = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const byDay = new Map<string, Bucket>();
+  const byProduct = new Map<string, Bucket & { label: string }>();
+  const byUser = new Map<string, Bucket>();
+  const unpricedNotes = new Map<string, number>();
+
+  // rows đến theo created_at giảm dần → tên hiển thị của SP là tên gõ gần nhất.
+  for (const row of rows) {
+    const user = byUser.get(row.user_id) ?? emptyBucket();
+    byUser.set(row.user_id, user);
+
+    const usd = row.cost_usd ?? 0;
+    if (row.cost_usd === null) {
+      unpriced += 1;
+      const note = row.cost_note || 'Không rõ lý do';
+      unpricedNotes.set(note, (unpricedNotes.get(note) ?? 0) + 1);
+    }
+    inputTokens += row.input_tokens;
+    outputTokens += row.output_tokens;
+    const day = byDay.get(opts.toDay(row.created_at)) ?? emptyBucket();
+    byDay.set(opts.toDay(row.created_at), day);
+
+    // Tách nền: tiền vào tổng, không tính là "lượt tạo" (không có nút "Đạt").
+    if (row.mode === PRODUCT_IMAGE_MODE.CUTOUT) {
+      if (row.status === GENERATION_STATUS.SUCCESS) {
+        total.cutouts += 1;
+        user.cutouts += 1;
+      } else {
+        cutoutFailed += 1;
+      }
+      for (const bucket of [total, day, user]) bucket.usd += usd;
+      continue;
+    }
+    // Đổi SP 0đ: đếm riêng, không lẫn vào lượt tạo/ảnh đạt của Gemini (không có nút "Đạt").
+    if (row.mode === PRODUCT_IMAGE_MODE.HELD_SWAP) {
+      if (row.status === GENERATION_STATUS.SUCCESS) {
+        total.swaps += 1;
+        user.swaps += 1;
+      } else {
+        swapFailed += 1;
+      }
+      for (const bucket of [total, day, user]) bucket.usd += usd;
+      continue;
+    }
+
+    const attempt = isGeminiAttempt(row);
+    const success = row.status === GENERATION_STATUS.SUCCESS;
+    const approved = success && row.approved_at !== null;
+    if (!success) failed += 1;
+
+    const key = productKey(row.product_name);
+    const product = byProduct.get(key) ?? { ...emptyBucket(), label: row.product_name?.trim() || UNNAMED_PRODUCT_LABEL };
+    byProduct.set(key, product);
+
+    for (const bucket of [total, product, day, user]) {
+      if (attempt) bucket.attempts += 1;
+      if (success) bucket.success += 1;
+      if (approved) bucket.approved += 1;
+      bucket.usd += usd;
+      bucket.generateUsd += usd;
+    }
+  }
+
+  const perApproved = (b: Bucket) =>
+    b.approved > 0 ? { ...money(b.generateUsd / b.approved), attempts: ratio(b.attempts, b.approved) } : null;
+
+  return {
+    pricing: {
+      usd_vnd_rate: opts.rate,
+      note:
+        'Ước tính theo số token Gemini trả về × đơn giá model (GEMINI_IMAGE_PRICES_JSON trên AI service). ' +
+        'Tách nền: rembg chạy trên máy chủ công ty (0đ) + một lượt Gemini đọc ảnh để nhận diện đúng sản phẩm.',
+    },
+    totals: {
+      ...money(total.usd),
+      attempts: total.attempts,
+      success: total.success,
+      failed,
+      approved: total.approved,
+      unpriced,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cutouts: total.cutouts,
+      cutout_failed: cutoutFailed,
+      swaps: total.swaps,
+      swap_failed: swapFailed,
+      /** Tiền Gemini nhận diện SP của các lượt tách nền (nằm trong tổng ở trên). */
+      cutout_cost: money(total.usd - total.generateUsd),
+      per_attempt: total.attempts > 0 ? money(total.generateUsd / total.attempts) : null,
+      per_approved: perApproved(total),
+    },
+    by_day: [...byDay.entries()]
+      .map(([date, b]) => ({ date, ...money(b.usd), attempts: b.attempts, approved: b.approved }))
+      .sort((a, b) => a.date.localeCompare(b.date)),
+    by_product: [...byProduct.values()]
+      .map((b) => ({
+        product_name: b.label,
+        attempts: b.attempts,
+        success: b.success,
+        approved: b.approved,
+        ...money(b.usd),
+        per_approved: perApproved(b),
+      }))
+      .sort((a, b) => b.cost_usd - a.cost_usd || b.attempts - a.attempts),
+    by_user: [...byUser.entries()]
+      .map(([userId, b]) => ({
+        user_id: userId,
+        name: opts.userNames.get(userId) ?? 'Người dùng đã xoá',
+        attempts: b.attempts,
+        approved: b.approved,
+        cutouts: b.cutouts,
+        swaps: b.swaps,
+        ...money(b.usd),
+      }))
+      .sort((a, b) => b.cost_usd - a.cost_usd || b.attempts + b.cutouts + b.swaps - (a.attempts + a.cutouts + a.swaps)),
+    unpriced_notes: [...unpricedNotes.entries()].map(([note, count]) => ({ note, count })),
+    recent: rows.slice(0, opts.recentLimit).map((row) => ({
+      id: row.id,
+      created_at: row.created_at,
+      mode: row.mode,
+      status: row.status,
+      product_name: row.product_name,
+      user_name: opts.userNames.get(row.user_id) ?? 'Người dùng đã xoá',
+      model: row.model,
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      cost_usd: row.cost_usd,
+      cost_vnd: row.cost_usd === null ? null : Math.round(row.cost_usd * opts.rate),
+      cost_note: row.cost_note,
+      approved: row.approved_at !== null,
+      error_message: row.error_message,
+    })),
+  };
+}
