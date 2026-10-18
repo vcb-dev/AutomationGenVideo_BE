@@ -42,31 +42,58 @@ export class ThreadsScraperService {
     // ĐẶC BIỆT QUAN TRỌNG: Kênh khám phá bên ngoài PHẢI lưu is_owned = false
     // để không lẫn vào Kênh nội bộ công ty. Mặc định is_tracked = true cho kênh thêm trực tiếp,
     // nhưng là false khi tự động lưu tác giả từ bài viết tìm kiếm.
-    return this.prisma.scraperThreadsProfile.create({
-      data: {
-        username: cleanUsername,
-        name: cleanUsername,
-        url: `https://www.threads.net/@${cleanUsername}`,
-        is_owned: false,
-        is_tracked: initialData?.is_tracked !== undefined ? initialData.is_tracked : true,
-        is_bookmarked: initialData?.is_bookmarked ?? false,
-        scraping_status: 'idle',
-      },
-    });
+    // LƯU Ý: threads_user_id BẮT BUỘC gán null (không bỏ trống để tránh DB áp default '')
+    try {
+      return await this.prisma.scraperThreadsProfile.create({
+        data: {
+          username: cleanUsername,
+          name: cleanUsername,
+          url: `https://www.threads.net/@${cleanUsername}`,
+          threads_user_id: null,
+          is_owned: false,
+          is_tracked: initialData?.is_tracked !== undefined ? initialData.is_tracked : true,
+          is_bookmarked: initialData?.is_bookmarked ?? false,
+          scraping_status: 'idle',
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const fallback = await this.prisma.scraperThreadsProfile.findUnique({
+          where: { username: cleanUsername },
+        });
+        if (fallback) return fallback;
+      }
+      throw err;
+    }
   }
 
   async applyFullProfileUpdate(profileId: bigint, fp: ParsedThreadsFullProfile): Promise<void> {
+    const updateData: any = {
+      name: fp.name || undefined,
+      url: fp.url || undefined,
+      avatar_url: fp.avatar_url || undefined,
+      biography: fp.biography || undefined,
+      followers_count: BigInt(fp.followers_count || 0),
+      is_verified: fp.is_verified,
+    };
+
+    if (fp.threads_user_id && fp.threads_user_id.trim()) {
+      const cleanUserId = fp.threads_user_id.trim();
+      const conflicting = await this.prisma.scraperThreadsProfile.findUnique({
+        where: { threads_user_id: cleanUserId },
+      });
+      if (!conflicting || conflicting.id === profileId) {
+        updateData.threads_user_id = cleanUserId;
+      } else {
+        this.logger.warn(
+          `threads_user_id ${cleanUserId} đã tồn tại ở profile id ${conflicting.id} (@${conflicting.username}), bỏ qua gán cho profile id ${profileId}`,
+        );
+      }
+    }
+
     await this.prisma.scraperThreadsProfile.update({
       where: { id: profileId },
-      data: {
-        threads_user_id: fp.threads_user_id || undefined,
-        name: fp.name || undefined,
-        url: fp.url || undefined,
-        avatar_url: fp.avatar_url || undefined,
-        biography: fp.biography || undefined,
-        followers_count: BigInt(fp.followers_count || 0),
-        is_verified: fp.is_verified,
-      },
+      data: updateData,
     });
   }
 
@@ -360,6 +387,15 @@ export class ThreadsScraperService {
       const username = (p.author_username || 'anonymous').trim().replace(/^@/, '');
       // KHÔNG tự ý đánh dấu tác giả bài viết là 'Kênh chú ý' (is_tracked = false)
       const profile = await this.createOrGetProfile(username, { is_tracked: false });
+      if ((p.author_name && profile.name === profile.username) || (p.author_avatar && !profile.avatar_url)) {
+        await this.prisma.scraperThreadsProfile.update({
+          where: { id: profile.id },
+          data: {
+            name: (p.author_name && profile.name === profile.username) ? p.author_name : undefined,
+            avatar_url: (p.author_avatar && !profile.avatar_url) ? p.author_avatar : undefined,
+          },
+        }).catch(() => {});
+      }
       await this.upsertPost(profile.id, p);
       saved++;
     }
@@ -438,21 +474,38 @@ export class ThreadsScraperService {
     targetCount: number = DEFAULT_TARGET_COUNT,
     options?: { mode?: 'count' | 'days'; days?: number },
   ): Promise<{ results: any[]; total: number; succeeded: number; failed: number }> {
-    const results = [];
+    const cleanList = usernames
+      .map((u) => u.trim().replace(/^@/, ''))
+      .filter((u) => Boolean(u));
+
+    // Chạy song song có kiểm soát (tối đa 3 profiles cùng lúc để tăng tốc gấp 3 lần và tránh nghẽn)
+    const pLimit = 3;
+    const results: any[] = [];
     let succeeded = 0;
     let failed = 0;
-    for (const u of usernames) {
-      const clean = u.trim().replace(/^@/, '');
-      if (!clean) continue;
-      try {
-        const res = await this.scrapeByUsername(clean, targetCount, options);
-        results.push({ username: clean, success: true, profile: res.profile, items: res.items_returned });
-        succeeded++;
-      } catch (err: any) {
-        results.push({ username: clean, success: false, error: err.message });
-        failed++;
+
+    for (let i = 0; i < cleanList.length; i += pLimit) {
+      const chunk = cleanList.slice(i, i + pLimit);
+      const chunkResults = await Promise.allSettled(
+        chunk.map(async (clean) => {
+          const res = await this.scrapeByUsername(clean, targetCount, options);
+          return { username: clean, success: true, profile: res.profile, items: res.items_returned };
+        }),
+      );
+
+      for (let j = 0; j < chunkResults.length; j++) {
+        const r = chunkResults[j];
+        const clean = chunk[j];
+        if (r.status === 'fulfilled') {
+          results.push(r.value);
+          succeeded++;
+        } else {
+          results.push({ username: clean, success: false, error: r.reason?.message || 'Lỗi không xác định' });
+          failed++;
+        }
       }
     }
+
     return { results, total: results.length, succeeded, failed };
   }
 }

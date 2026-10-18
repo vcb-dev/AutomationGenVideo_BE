@@ -37,14 +37,15 @@ export function extractDouyinSecUserId(raw: string): string | null {
  * Xiaohongshu: Trích xuất `user_id` (chuỗi hex 24 ký tự).
  * Hỗ trợ:
  * - URL web/profile: https://www.xiaohongshu.com/user/profile/<hex_24>
+ * - URL domain quốc tế: https://www.rednote.com/user/profile/<hex_24>
  * - user_id thuần 24 ký tự hex (vd: 5b863d08e8cd0300018f8888)
  */
 export function extractXiaohongshuUserId(raw: string): string | null {
   const trimmed = (raw || '').trim();
   if (!trimmed) return null;
 
-  // 1. URL web / profile
-  const urlMatch = trimmed.match(/xiaohongshu\.com\/user\/profile\/([0-9a-f]{24})/i);
+  // 1. URL web / profile (hỗ trợ cả xiaohongshu.com và rednote.com)
+  const urlMatch = trimmed.match(/(?:xiaohongshu|rednote)\.com\/user\/profile\/([0-9a-f]{24})/i);
   if (urlMatch) return urlMatch[1];
 
   // 2. user_id thuần 24 ký tự hex
@@ -94,11 +95,36 @@ export function extractThreadsUsername(raw: string): string | null {
   }
 
   // 2. URL threads.net/@username hoặc threads.net/username (kết thúc bởi /, ? hoặc cuối chuỗi)
-  const urlMatch = trimmed.match(/threads\.(?:net|com)\/@?([A-Za-z0-9_.]+)(?:[/?#]|$)/i);
-  const username = (urlMatch ? urlMatch[1] : trimmed.replace(/^@/, '')).trim().toLowerCase();
+  let username: string | null = null;
+  const urlMatch = trimmed.match(/(?:threads\.(?:net|com)\/@?)([A-Za-z0-9_.]+)(?:[/?#]|$)/i);
+  if (urlMatch) {
+    username = urlMatch[1].toLowerCase();
+  } else {
+    const handleMatch = trimmed.match(/^@?([A-Za-z0-9_.]+)(?:[/?#]|$)/i);
+    if (handleMatch) {
+      username = handleMatch[1].toLowerCase();
+    }
+  }
+
+  if (!username) return null;
 
   // 3. Từ chối các path cố định của hệ thống Threads (không phải username người dùng)
-  const RESERVED = new Set(['t', 'post', 'login', 'settings', 'search', 'terms', 'privacy', 'explore', 'activity']);
+  const RESERVED = new Set([
+    't',
+    'post',
+    'login',
+    'settings',
+    'search',
+    'terms',
+    'privacy',
+    'explore',
+    'activity',
+    'threads',
+    'threads.net',
+    'threads.com',
+    'www.threads.net',
+    'www.threads.com',
+  ]);
   if (RESERVED.has(username)) {
     return null;
   }

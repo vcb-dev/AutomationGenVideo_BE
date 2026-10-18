@@ -105,7 +105,9 @@ export class TiktokScraperReadService {
     const sort = params.sort || 'scraped';
     const kwFilter = (params.search_keyword || '').trim();
 
-    const conditions: Prisma.Sql[] = [];
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`NOT EXISTS (SELECT 1 FROM scraper_hidden_videos h WHERE h.platform = 'tiktok' AND h.post_id = scraper_tiktok_videos.post_id)`,
+    ];
     if (minPlays !== undefined) conditions.push(Prisma.sql`play_count >= ${BigInt(minPlays)}`);
     if (dateFrom) conditions.push(Prisma.sql`date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
     if (dateTo) conditions.push(Prisma.sql`date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -326,7 +328,10 @@ export class TiktokScraperReadService {
     const q = (params.q || '').trim();
     const minPlays = parseIntOrDefault(params.min_plays);
 
-    const conditions: Prisma.Sql[] = [Prisma.sql`profile_id = ${profileId}`];
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`profile_id = ${profileId}`,
+      Prisma.sql`NOT EXISTS (SELECT 1 FROM scraper_hidden_videos h WHERE h.platform = 'tiktok' AND h.post_id = scraper_tiktok_profile_videos.video_id)`,
+    ];
     if (minPlays !== undefined) conditions.push(Prisma.sql`play_count >= ${BigInt(minPlays)}`);
     if (q) conditions.push(Prisma.sql`(${unaccentLike(Prisma.sql`description`, q)} OR ${hashtagLike(Prisma.sql`hashtags`, q)})`);
     const whereClause = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;

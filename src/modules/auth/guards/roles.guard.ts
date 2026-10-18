@@ -19,6 +19,16 @@ export class RolesGuard implements CanActivate {
 
     const { user } = context.switchToHttp().getRequest();
     if (!user) return false;
-    return requiredRoles.some((role) => user.roles?.includes(role));
+
+    // Trong hệ thống VCBI, ADMIN và MANAGER đều là một (cùng cấp quyền quản trị tối cao)
+    const effectiveRoles = new Set<UserRole>(user.roles || []);
+    if (effectiveRoles.has(UserRole.ADMIN)) {
+      effectiveRoles.add(UserRole.MANAGER);
+    }
+    if (effectiveRoles.has(UserRole.MANAGER)) {
+      effectiveRoles.add(UserRole.ADMIN);
+    }
+
+    return requiredRoles.some((role) => effectiveRoles.has(role));
   }
 }
