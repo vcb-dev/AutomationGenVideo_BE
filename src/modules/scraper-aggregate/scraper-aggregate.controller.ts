@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ScraperAggregateReadService } from './scraper-aggregate-read.service';
 import { OwnedStatsService } from './owned-stats.service';
@@ -10,6 +11,7 @@ import { TrafficInsightsService } from './traffic-insights.service';
 // Thay thế all_external_videos / owned_channel_videos bên AI (đã xóa) — route giữ
 // nguyên path cũ để FE (scraperService.ts) không cần đổi gì. Gom dữ liệu từ nhiều
 // module scraper khác nhau nên đặt ở module riêng, không thuộc platform cụ thể nào.
+@SkipThrottle({ long: true, short: true })
 @UseGuards(JwtAuthGuard)
 @Controller('scraper')
 export class ScraperAggregateController {
@@ -37,6 +39,16 @@ export class ScraperAggregateController {
   @Get('all-videos')
   async allVideos(@Query() query: Record<string, string>) {
     return this.readService.allExternalVideos(query);
+  }
+
+  @Post('videos/hide')
+  async hideVideo(@Body() body: { platform?: string; post_id?: string; reason?: string }, @Request() req: any) {
+    return this.readService.hideVideo(body?.platform || '', body?.post_id || '', req?.user?.id, body?.reason);
+  }
+
+  @Post('videos/restore')
+  async restoreVideo(@Body() body: { platform?: string; post_id?: string }) {
+    return this.readService.restoreVideo(body?.platform || '', body?.post_id || '');
   }
 
   /** Đổ vào ô chọn kênh — xem ownedChannels(). */

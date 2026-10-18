@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpException,
   HttpStatus,
@@ -10,6 +11,7 @@ import {
   Patch,
   Post,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -33,6 +35,13 @@ function parseBigIntParam(val: string, name = 'id'): bigint {
   }
 }
 
+function assertCanManageChannels(req: any): void {
+  const roles: string[] = req.user?.roles ?? [];
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER) && !roles.includes(UserRole.MANAGER)) {
+    throw new ForbiddenException('Chỉ leader/manager/admin được quản lý kênh chú ý');
+  }
+}
+
 @UseGuards(JwtAuthGuard)
 @Controller('scraper/threads')
 export class ThreadsScraperController {
@@ -45,7 +54,7 @@ export class ThreadsScraperController {
 
   @Post(['profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async syncAll(
     @Body()
     body?: {
@@ -67,6 +76,8 @@ export class ThreadsScraperController {
   }
 
   @Post('profiles/batch-scrape')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async batchScrape(
     @Body() body: { usernames: string[]; count?: number; mode?: 'count' | 'days'; days?: number },
   ) {
@@ -79,7 +90,8 @@ export class ThreadsScraperController {
   }
 
   @Post('profiles/scrape')
-
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async scrape(
     @Body() body: { username?: string; target_count?: number; count?: number; mode?: 'count' | 'days'; days?: number },
   ) {
@@ -99,6 +111,8 @@ export class ThreadsScraperController {
   }
 
   @Post('search/top')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async searchTop(
     @Body() body: { query?: string; count?: number; mode?: 'count' | 'days'; days?: number },
   ) {
@@ -111,6 +125,8 @@ export class ThreadsScraperController {
   }
 
   @Post('posts/ingest-hot')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async ingestHotPosts(
     @Body() body: { posts?: any[] },
   ) {
@@ -178,18 +194,41 @@ export class ThreadsScraperController {
   }
 
   @Patch('profiles/:id/toggle')
-  async toggle(
+  async togglePatch(
     @Param('id') id: string,
     @Body() body: { field: ThreadsToggleField; value: boolean },
+    @Request() req: any,
+  ) {
+    return this.toggle(id, body, req);
+  }
+
+  @Post('profiles/:id/toggle')
+  async togglePost(
+    @Param('id') id: string,
+    @Body() body: { field: ThreadsToggleField; value: boolean },
+    @Request() req: any,
+  ) {
+    return this.toggle(id, body, req);
+  }
+
+  async toggle(
+    id: string,
+    body: { field: ThreadsToggleField; value: boolean },
+    req: any,
   ) {
     const profileId = parseBigIntParam(id);
     if (!TOGGLE_FIELDS.includes(body.field)) {
       throw new HttpException(`Trường ${body.field} không hợp lệ`, HttpStatus.BAD_REQUEST);
     }
+    if (body.field === 'is_tracked') {
+      assertCanManageChannels(req);
+    }
     return this.service.toggle(profileId, body.field, Boolean(body.value));
   }
 
   @Delete('profiles/:id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async delete(@Param('id') id: string) {
     const profileId = parseBigIntParam(id);
     return this.service.deleteProfile(profileId);

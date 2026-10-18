@@ -14,8 +14,8 @@ import { InstagramScraperReadService } from './instagram-scraper-read.service';
 
 function assertCanManageChannels(req: any): void {
   const roles: string[] = req.user?.roles ?? [];
-  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
-    throw new ForbiddenException('Chỉ leader/admin được quản lý kênh chú ý');
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER) && !roles.includes(UserRole.MANAGER)) {
+    throw new ForbiddenException('Chỉ leader/manager/admin được quản lý kênh chú ý');
   }
 }
 
@@ -36,7 +36,7 @@ export class InstagramScraperController {
 
   @Post(['profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async syncAll(
     @Body()
     body?: {
@@ -98,7 +98,7 @@ export class InstagramScraperController {
 
   @Post('profiles/scrape')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async profileScrape(@Body() body: { username?: string; is_owned?: boolean; num_of_posts?: number }) {
     const raw = (body?.username || '').trim();
     if (!raw) throw new HttpException({ error: 'username is required' }, HttpStatus.BAD_REQUEST);
@@ -151,14 +151,14 @@ export class InstagramScraperController {
   // Chỉ ADMIN/LEADER, khớp phân quyền của mọi thao tác quản lý kênh khác.
   @Delete('profiles/:profileId')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async remove(@Param('profileId') profileId: string) {
     return this.service.deleteProfile(BigInt(profileId));
   }
 
   @Patch('profiles/:profileId/classification')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async updateClassification(
     @Param('profileId') profileId: string,
     @Body() body: { channel_type?: string; product_lines?: string[] },

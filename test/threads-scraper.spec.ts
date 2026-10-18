@@ -48,9 +48,45 @@ describe('ThreadsScraperService & ThreadsScraperReadService', () => {
         where: { username: 'tech_insider' },
       });
       expect(createdData.username).toBe('tech_insider');
+      expect(createdData.threads_user_id).toBeNull(); // BẮT BUỘC null để tránh đụng unique constraint default '' của Postgres
       expect(createdData.is_owned).toBe(false); // BẮT BUỘC false để không nhầm kênh nội bộ
       expect(createdData.is_tracked).toBe(true);
       expect(profile.id).toBe(100n);
+    });
+
+    it('createOrGetProfile xử lý an toàn lỗi P2002 (race condition / unique constraint) bằng cách fallback findUnique', async () => {
+      prismaMock.scraperThreadsProfile.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 101n, username: 'race_user', is_owned: false });
+
+      prismaMock.scraperThreadsProfile.create.mockRejectedValue({ code: 'P2002' });
+
+      const profile = await service.createOrGetProfile('race_user');
+      expect(profile.id).toBe(101n);
+    });
+
+    it('applyFullProfileUpdate bỏ qua gán threads_user_id nếu đã thuộc profile khác để tránh lỗi unique 500', async () => {
+      prismaMock.scraperThreadsProfile.findUnique.mockResolvedValue({
+        id: 999n,
+        username: 'another_profile',
+      });
+      prismaMock.scraperThreadsProfile.update.mockResolvedValue({});
+
+      await service.applyFullProfileUpdate(10n, {
+        threads_user_id: 'duplicate_user_id',
+        username: 'viet_creator',
+        name: 'Việt Creator',
+        url: 'https://threads.net/@viet_creator',
+        avatar_url: '',
+        biography: '',
+        followers_count: 100,
+        is_verified: false,
+      });
+
+      expect(prismaMock.scraperThreadsProfile.update).toHaveBeenCalledWith({
+        where: { id: 10n },
+        data: expect.not.objectContaining({ threads_user_id: 'duplicate_user_id' }),
+      });
     });
 
     it('createOrGetProfile tái sử dụng profile nếu đã tồn tại', async () => {
