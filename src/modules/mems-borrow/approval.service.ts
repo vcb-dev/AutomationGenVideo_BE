@@ -281,8 +281,24 @@ export class ApprovalService {
       };
     });
 
+    let parsedNote: string | null = request.note ?? null;
+    let requestPhotos: string[] = [];
+    if (request.note) {
+      try {
+        const parsed = JSON.parse(request.note);
+        if (parsed && typeof parsed === 'object') {
+          parsedNote = parsed.text ?? parsed.note ?? null;
+          requestPhotos = Array.isArray(parsed.photos) ? parsed.photos : [];
+        }
+      } catch {
+        parsedNote = request.note;
+      }
+    }
+
     return {
       ...request,
+      note: parsedNote,
+      photos: requestPhotos,
       owner_name: owner?.full_name ?? '—',
       owner_email: owner?.email ?? null,
       approvals: approvalsWithUser,

@@ -68,6 +68,17 @@ export class CreateBorrowRequestDto {
   @ValidateNested({ each: true })
   @Type(() => BorrowLineDto)
   lines: BorrowLineDto[];
+
+  @ApiPropertyOptional({ description: 'Ghi chú thêm của người mượn' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @ApiPropertyOptional({ description: 'Danh sách URL ảnh đính kèm của người mượn', type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  photos?: string[];
 }
 
 /** Toàn bộ giá trị của enum `MemsRequestStatus`. */

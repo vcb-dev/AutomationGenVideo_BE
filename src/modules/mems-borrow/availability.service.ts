@@ -191,9 +191,19 @@ export class AvailabilityService {
       select: { asset_id: true },
     });
 
+    const overdueOut = await this.prisma.memsHandoverLine.findMany({
+      where: {
+        asset: { model_id: args.modelId },
+        returnLines: { none: {} },
+        handover: { request: { to_time: { lt: new Date() } } },
+      },
+      select: { asset_id: true },
+    });
+
     const busy = new Set([
       ...pinned.map((p) => p.asset_id as string),
       ...busyMaintenance.map((m) => m.asset_id),
+      ...overdueOut.map((o) => o.asset_id),
     ]);
     return assets.filter((a) => !busy.has(a.id));
   }

@@ -57,10 +57,6 @@ export class MemsCatalogService {
       targetSerials = [dto.serialNumber.trim()];
     }
 
-    if (targetSerials.length === 0) {
-      throw new BadRequestException('Vui lòng nhập số serial cho thiết bị');
-    }
-
     const qty = Math.max(dto.quantity || 1, targetSerials.length, 1);
 
     // Nếu người dùng yêu cầu số lượng > 1 nhưng chỉ nhập 1 serial cơ sở (hoặc ít hơn qty)
@@ -70,7 +66,7 @@ export class MemsCatalogService {
         { length: qty },
         (_, i) => `${baseSerial}-${String(i + 1).padStart(2, '0')}`,
       );
-    } else if (targetSerials.length < qty) {
+    } else if (targetSerials.length > 0 && targetSerials.length < qty) {
       const baseSerial = targetSerials[0];
       const start = targetSerials.length;
       for (let i = start; i < qty; i++) {
@@ -106,6 +102,23 @@ export class MemsCatalogService {
     });
 
     const prefix = model.category.code;
+
+    // Nếu người dùng không nhập serial (ví dụ: chân máy, đèn, phụ kiện không có serial nhà sản xuất)
+    // Hệ thống tự động sinh mã serial duy nhất theo danh mục
+    if (targetSerials.length === 0) {
+      const randPart = Math.random().toString(36).slice(2, 6).toUpperCase();
+      const tsPart = Date.now().toString().slice(-4);
+      const baseSerial = `SN-${prefix}-${tsPart}${randPart}`;
+      if (qty === 1) {
+        targetSerials = [baseSerial];
+      } else {
+        targetSerials = Array.from(
+          { length: qty },
+          (_, i) => `${baseSerial}-${String(i + 1).padStart(2, '0')}`,
+        );
+      }
+    }
+
     // Tình trạng do người nhập khai, không ép cứng là Tốt: hàng đổi trả hay máy cũ mua lại
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';

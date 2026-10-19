@@ -222,4 +222,50 @@ export class AssetPhotoService {
       return { deleted: true, id: photoId };
     });
   }
+
+  /**
+   * Tải ảnh đính kèm của người mượn khi tạo phiếu mượn.
+   */
+  async uploadRequestAttachment(
+    uploaderId: string,
+    file: Express.Multer.File,
+    user: unknown,
+  ): Promise<{ url: string }> {
+    if (!file) throw new BadRequestException('Chưa chọn ảnh nào để tải lên');
+    if (file.size > MEMS_PHOTO_MAX_BYTES) {
+      throw new BadRequestException('Ảnh vượt quá 10MB, chụp lại ở kích thước nhỏ hơn');
+    }
+
+    const kind = sniffImageKind(file.buffer);
+    if (!kind) {
+      throw new BadRequestException(`Tệp không phải ảnh hợp lệ. Chỉ nhận ${SUPPORTED_IMAGE_LABEL}`);
+    }
+
+    const rand = Math.random().toString(36).slice(2, 8);
+    const filename = `REQ_${Date.now()}_${rand}${IMAGE_EXTENSION[kind]}`;
+    let url: string;
+
+    if (this.googleDrive.isAvailable()) {
+      const tmpPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(tmpPath, file.buffer);
+      try {
+        const result = await this.googleDrive.uploadFromPath(
+          tmpPath,
+          filename,
+          IMAGE_MIME[kind],
+          user,
+          { subfolder: 'mems' },
+        );
+        url = result.url;
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    } else {
+      if (!fs.existsSync(MEMS_PHOTO_DIR)) fs.mkdirSync(MEMS_PHOTO_DIR, { recursive: true });
+      fs.writeFileSync(path.join(MEMS_PHOTO_DIR, filename), file.buffer);
+      url = `/api/mems/photos/${filename}`;
+    }
+
+    return { url: this.photoUrls.sign(url) };
+  }
 }

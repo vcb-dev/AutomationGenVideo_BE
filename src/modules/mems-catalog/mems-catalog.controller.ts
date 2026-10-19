@@ -138,6 +138,18 @@ export class MemsCatalogController {
     return this.photos.remove(photoId);
   }
 
+  @Post('requests/upload-photo')
+  @ApiOperation({ summary: 'Tải ảnh đính kèm của người mượn khi tạo phiếu mượn' })
+  @ApiConsumes('multipart/form-data')
+  @UseFilters(MulterErrorFilter)
+  @UseInterceptors(FileInterceptor('photo', { limits: { fileSize: MEMS_PHOTO_MAX_BYTES } }))
+  uploadRequestPhoto(
+    @Request() req: any,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.photos.uploadRequestAttachment(req.user.id, file, req.user);
+  }
+
   /**
    * Công khai có chủ đích: thẻ <img> của trình duyệt không gửi được header Authorization,
    * nên để sau JwtAuthGuard thì ảnh không bao giờ hiện lên.

@@ -148,6 +148,15 @@ export class BorrowRequestService {
 
       const departmentId = await this.resolveDepartment(tx, ownerId);
       const requestCode = await this.nextRequestCode(tx, fromTime);
+
+      let noteValue: string | null = null;
+      if (dto.note?.trim() || (dto.photos && dto.photos.length > 0)) {
+        noteValue = JSON.stringify({
+          text: dto.note?.trim() || '',
+          photos: dto.photos || [],
+        });
+      }
+
       const request = await tx.memsBorrowRequest.create({
         data: {
           request_code: requestCode,
@@ -160,6 +169,7 @@ export class BorrowRequestService {
           from_time: fromTime,
           to_time: toTime,
           status: 'PENDING_APPROVAL',
+          note: noteValue,
         },
       });
 
@@ -213,10 +223,14 @@ export class BorrowRequestService {
       Date.UTC(fromTime.getUTCFullYear(), fromTime.getUTCMonth(), fromTime.getUTCDate()),
     );
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const ymd = dayStart.toISOString().slice(0, 10).replace(/-/g, '');
+    await tx.$executeRawUnsafe(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      `mems:request-code:${ymd}`,
+    );
     const used = await tx.memsBorrowRequest.count({
       where: { from_time: { gte: dayStart, lt: dayEnd } },
     });
-    const ymd = dayStart.toISOString().slice(0, 10).replace(/-/g, '');
     return `REQ-${ymd}-${String(used + 1).padStart(3, '0')}`;
   }
 
