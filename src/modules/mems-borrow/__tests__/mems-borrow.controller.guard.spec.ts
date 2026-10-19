@@ -50,6 +50,7 @@ describe('MemsBorrowController — cửa canh Team Media', () => {
         'assign',
         'assignable',
         'borrowHistoryLog',
+        'decideExtension',
         'handover',
         'handoverSheet',
         'pendingReturns',
@@ -61,7 +62,17 @@ describe('MemsBorrowController — cửa canh Team Media', () => {
 
   it('route đọc và route tạo phiếu KHÔNG bị canh — ai cũng phải mượn được máy', () => {
     // Canh nhầm vào đây là cả công ty mất quyền xin mượn thiết bị.
-    for (const method of ['check', 'create', 'listRequests', 'requestDetail', 'assetBorrowHistory']) {
+    for (const method of [
+      'check',
+      'create',
+      'listRequests',
+      'requestDetail',
+      'assetBorrowHistory',
+      'upcomingReturnsAlerts',
+      'reportIncident',
+      'requestIncidents',
+      'requestExtension',
+    ]) {
       expect(guardsOf(MemsBorrowController, method)).not.toContain(MemsMediaLeaderGuard);
       expect(rolesOf(MemsBorrowController, method)).toBeUndefined();
     }
