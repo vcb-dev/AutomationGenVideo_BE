@@ -21,8 +21,11 @@ import {
   CreateHandoverDto,
   CreateReturnDto,
   BorrowHistoryQueryDto,
+  DecideExtensionDto,
   ListRequestsQueryDto,
   RejectRequestDto,
+  ReportIncidentDto,
+  RequestExtensionDto,
 } from './dto';
 
 @ApiTags('MEMS — Mượn thiết bị')
@@ -178,4 +181,49 @@ export class MemsBorrowController {
   receiveReturn(@Request() req: any, @Param('id') id: string, @Body() dto: CreateReturnDto) {
     return this.returns.create(id, req.user.id, dto);
   }
+
+  @Get('requests/alerts/upcoming-returns')
+  @ApiOperation({ summary: 'Danh sách phiếu sắp hết hạn (< 2h) hoặc đang quá hạn trả' })
+  upcomingReturnsAlerts() {
+    return this.requests.getUpcomingReturnsAlerts();
+  }
+
+  @Post('requests/:id/incident')
+  @ApiOperation({ summary: 'Báo cáo sự cố hoặc hỏng hóc phát sinh tại hiện trường' })
+  reportIncident(@Request() req: any, @Param('id') id: string, @Body() dto: ReportIncidentDto) {
+    return this.requests.reportIncident(
+      id,
+      { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team },
+      dto,
+    );
+  }
+
+  @Get('requests/:id/incidents')
+  @ApiOperation({ summary: 'Lịch sử các sự cố đã báo cáo của phiếu mượn' })
+  requestIncidents(@Param('id') id: string) {
+    return this.requests.getIncidents(id);
+  }
+
+  @Post('requests/:id/extend')
+  @ApiOperation({ summary: 'Người mượn gửi yêu cầu xin gia hạn mượn thiết bị' })
+  requestExtension(@Request() req: any, @Param('id') id: string, @Body() dto: RequestExtensionDto) {
+    return this.requests.requestExtension(
+      id,
+      { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team },
+      dto,
+    );
+  }
+
+  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
+  @UseGuards(MemsMediaLeaderGuard)
+  @Post('requests/:id/decide-extension')
+  @ApiOperation({ summary: 'Quản lý kho duyệt hoặc từ chối yêu cầu gia hạn' })
+  decideExtension(@Request() req: any, @Param('id') id: string, @Body() dto: DecideExtensionDto) {
+    return this.requests.decideExtension(
+      id,
+      { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team },
+      dto,
+    );
+  }
 }
+

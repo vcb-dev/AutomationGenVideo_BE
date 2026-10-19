@@ -9,7 +9,12 @@ import { UserRole } from '@prisma/client';
 import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AvailabilityService } from './availability.service';
-import { CreateBorrowRequestDto } from './dto';
+import {
+  CreateBorrowRequestDto,
+  DecideExtensionDto,
+  ReportIncidentDto,
+  RequestExtensionDto,
+} from './dto';
 
 /**
  * Giai đoạn còn huỷ được phiếu — tất cả đều là trước khi máy rời kho.
@@ -296,4 +301,318 @@ export class BorrowRequestService {
       });
     });
   }
+
+  /**
+   * Báo cáo sự cố hoặc hỏng hóc phát sinh tại hiện trường.
+   */
+  async reportIncident(
+    requestId: string,
+    actor: { id: string; roles: (string | UserRole)[]; team?: string | null },
+    dto: ReportIncidentDto,
+  ) {
+    const request = await this.prisma.memsBorrowRequest.findUnique({
+      where: { id: requestId },
+    });
+
+    if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
+
+    const isKeeper = isMediaLeaderOrAdminUser(actor);
+    const isOwner = request.owner_id === actor.id;
+    if (!isKeeper && !isOwner) {
+      throw new ForbiddenException('Bạn không có quyền báo cáo sự cố cho phiếu này');
+    }
+
+    const asset = await this.prisma.memsAsset.findUnique({
+      where: { id: dto.assetId },
+      include: { model: true },
+    });
+    if (!asset) throw new NotFoundException(`Không tìm thấy thiết bị ${dto.assetId}`);
+
+    const incidentDescription =
+      dto.description +
+      (dto.photos && dto.photos.length > 0
+        ? `\n\nẢnh sự cố:\n${dto.photos.join('\n')}`
+        : '');
+
+    return this.prisma.$transaction(async (tx) => {
+      const incident = await tx.memsIncident.create({
+        data: {
+          asset_id: dto.assetId,
+          request_id: requestId,
+          responsible_id: request.owner_id,
+          kind: (dto.kind as any) ?? 'CONDITION_WORSENED',
+          description: incidentDescription,
+          status: 'OPEN',
+        },
+      });
+
+      await tx.memsAssetEvent.create({
+        data: {
+          asset_id: dto.assetId,
+          kind: 'CONDITION_CHANGED',
+          title: `Báo sự cố hiện trường: ${asset.asset_code}`,
+          detail: dto.description,
+          actor_id: actor.id,
+          request_id: requestId,
+        },
+      });
+
+      let currentNote: any = {};
+      if (request.note) {
+        try {
+          const parsed = JSON.parse(request.note);
+          if (parsed && typeof parsed === 'object') currentNote = parsed;
+          else currentNote = { text: request.note };
+        } catch {
+          currentNote = { text: request.note };
+        }
+      }
+      const incidentsList = Array.isArray(currentNote.incidents) ? currentNote.incidents : [];
+      incidentsList.push({
+        incident_id: incident.id,
+        asset_id: dto.assetId,
+        asset_code: asset.asset_code,
+        kind: dto.kind ?? 'CONDITION_WORSENED',
+        description: dto.description,
+        photos: dto.photos ?? [],
+        reported_at: new Date().toISOString(),
+        reported_by: actor.id,
+      });
+      currentNote.incidents = incidentsList;
+
+      await tx.memsBorrowRequest.update({
+        where: { id: requestId },
+        data: { note: JSON.stringify(currentNote) },
+      });
+
+      return incident;
+    });
+  }
+
+  /** Lấy danh sách sự cố của một phiếu */
+  async getIncidents(requestId: string) {
+    return this.prisma.memsIncident.findMany({
+      where: { request_id: requestId },
+      include: {
+        asset: {
+          include: { model: { include: { category: true } } },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
+  /**
+   * Xin gia hạn phiếu mượn (Extend Loan).
+   */
+  async requestExtension(
+    requestId: string,
+    actor: { id: string; roles: (string | UserRole)[]; team?: string | null },
+    dto: RequestExtensionDto,
+  ) {
+    const request = await this.prisma.memsBorrowRequest.findUnique({
+      where: { id: requestId },
+      include: { lines: { include: { model: true } } },
+    });
+
+    if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
+
+    const isKeeper = isMediaLeaderOrAdminUser(actor);
+    const isOwner = request.owner_id === actor.id;
+    if (!isKeeper && !isOwner) {
+      throw new ForbiddenException('Bạn không có quyền xin gia hạn phiếu này');
+    }
+
+    if (!['ON_LOAN', 'APPROVED', 'PREPARING'].includes(request.status)) {
+      throw new BadRequestException('Chỉ có thể xin gia hạn cho phiếu đang trong trạng thái mượn');
+    }
+
+    const newToTime = new Date(dto.newToTime);
+    if (isNaN(newToTime.getTime()) || newToTime <= request.to_time) {
+      throw new BadRequestException('Thời điểm trả mới phải sau thời điểm trả hiện tại');
+    }
+
+    for (const line of request.lines) {
+      const check = await this.availability.check({
+        modelId: line.model_id,
+        fromTime: request.to_time,
+        toTime: newToTime,
+        quantity: line.quantity,
+      });
+      if (!check.enough) {
+        throw new ConflictException(
+          `Không thể gia hạn: Model ${line.model.name} đã có người khác đặt lịch trong khung giờ này`,
+        );
+      }
+    }
+
+    let currentNote: any = {};
+    if (request.note) {
+      try {
+        const parsed = JSON.parse(request.note);
+        if (parsed && typeof parsed === 'object') currentNote = parsed;
+        else currentNote = { text: request.note };
+      } catch {
+        currentNote = { text: request.note };
+      }
+    }
+
+    currentNote.extension = {
+      requested_to_time: newToTime.toISOString(),
+      reason: dto.reason.trim(),
+      requested_by: actor.id,
+      requested_at: new Date().toISOString(),
+      status: 'PENDING',
+    };
+
+    return this.prisma.memsBorrowRequest.update({
+      where: { id: requestId },
+      data: { note: JSON.stringify(currentNote) },
+    });
+  }
+
+  /**
+   * Duyệt hoặc từ chối yêu cầu gia hạn phiếu mượn.
+   */
+  async decideExtension(
+    requestId: string,
+    actor: { id: string; roles: (string | UserRole)[]; team?: string | null },
+    dto: DecideExtensionDto,
+  ) {
+    if (!isMediaLeaderOrAdminUser(actor)) {
+      throw new ForbiddenException('Chỉ quản lý kho Media hoặc Admin mới có quyền duyệt gia hạn');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `mems:request:${requestId}`,
+      );
+
+      const request = await tx.memsBorrowRequest.findUnique({
+        where: { id: requestId },
+        include: { lines: true },
+      });
+      if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
+
+      let currentNote: any = {};
+      if (request.note) {
+        try {
+          const parsed = JSON.parse(request.note);
+          if (parsed && typeof parsed === 'object') currentNote = parsed;
+          else currentNote = { text: request.note };
+        } catch {
+          currentNote = { text: request.note };
+        }
+      }
+
+      if (!currentNote.extension || currentNote.extension.status !== 'PENDING') {
+        throw new BadRequestException('Phiếu này không có yêu cầu gia hạn nào đang chờ duyệt');
+      }
+
+      if (dto.decision === 'REJECTED') {
+        currentNote.extension.status = 'REJECTED';
+        currentNote.extension.decided_by = actor.id;
+        currentNote.extension.decided_at = new Date().toISOString();
+        currentNote.extension.reject_reason = dto.reason?.trim() || null;
+
+        return tx.memsBorrowRequest.update({
+          where: { id: requestId },
+          data: { note: JSON.stringify(currentNote) },
+        });
+      }
+
+      const newToTime = new Date(currentNote.extension.requested_to_time);
+      currentNote.extension.status = 'APPROVED';
+      currentNote.extension.decided_by = actor.id;
+      currentNote.extension.decided_at = new Date().toISOString();
+
+      await tx.memsReservation.updateMany({
+        where: {
+          request_line: { request_id: requestId },
+          status: { in: ['TENTATIVE', 'CONFIRMED'] },
+        },
+        data: {
+          to_time: newToTime,
+          buffer_to_time: newToTime,
+        },
+      });
+
+      return tx.memsBorrowRequest.update({
+        where: { id: requestId },
+        data: {
+          to_time: newToTime,
+          note: JSON.stringify(currentNote),
+        },
+      });
+    });
+  }
+
+  /**
+   * Cảnh báo các phiếu sắp hết hạn trả (< 2 tiếng) hoặc đang quá hạn trả.
+   */
+  async getUpcomingReturnsAlerts() {
+    const now = new Date();
+    const inTwoHours = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+
+    const onLoanRequests = await this.prisma.memsBorrowRequest.findMany({
+      where: {
+        status: { in: ['ON_LOAN', 'PARTIALLY_RETURNED'] },
+      },
+      include: {
+        lines: {
+          include: {
+            model: true,
+          },
+        },
+      },
+      orderBy: { to_time: 'asc' },
+    });
+
+    const userIds = Array.from(new Set(onLoanRequests.map((r) => r.owner_id)));
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, full_name: true, email: true },
+    });
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const overdue: any[] = [];
+    const expiringSoon: any[] = [];
+
+    for (const r of onLoanRequests) {
+      const owner = userMap.get(r.owner_id);
+      const item = {
+        id: r.id,
+        request_code: r.request_code,
+        project: r.project,
+        place: r.place,
+        from_time: r.from_time,
+        to_time: r.to_time,
+        owner_name: owner?.full_name ?? '—',
+        owner_email: owner?.email ?? null,
+        total_units: r.lines.reduce((s, l) => s + l.quantity, 0),
+        status: r.status,
+      };
+
+      if (r.to_time < now) {
+        overdue.push({
+          ...item,
+          overdue_hours: Math.round((now.getTime() - r.to_time.getTime()) / (1000 * 60 * 60)),
+        });
+      } else if (r.to_time <= inTwoHours) {
+        expiringSoon.push({
+          ...item,
+          minutes_left: Math.max(0, Math.round((r.to_time.getTime() - now.getTime()) / (1000 * 60))),
+        });
+      }
+    }
+
+    return {
+      overdueCount: overdue.length,
+      expiringSoonCount: expiringSoon.length,
+      overdue,
+      expiringSoon,
+    };
+  }
 }
+

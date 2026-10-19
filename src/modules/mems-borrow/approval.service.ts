@@ -283,12 +283,16 @@ export class ApprovalService {
 
     let parsedNote: string | null = request.note ?? null;
     let requestPhotos: string[] = [];
+    let extension: any = null;
+    let incidents: any[] = [];
     if (request.note) {
       try {
         const parsed = JSON.parse(request.note);
         if (parsed && typeof parsed === 'object') {
           parsedNote = parsed.text ?? parsed.note ?? null;
           requestPhotos = Array.isArray(parsed.photos) ? parsed.photos : [];
+          extension = parsed.extension ?? null;
+          incidents = Array.isArray(parsed.incidents) ? parsed.incidents : [];
         }
       } catch {
         parsedNote = request.note;
@@ -299,6 +303,8 @@ export class ApprovalService {
       ...request,
       note: parsedNote,
       photos: requestPhotos,
+      extension,
+      incidents,
       owner_name: owner?.full_name ?? '—',
       owner_email: owner?.email ?? null,
       approvals: approvalsWithUser,

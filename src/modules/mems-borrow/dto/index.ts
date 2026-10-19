@@ -317,3 +317,51 @@ export class CreateReturnDto {
   @IsString()
   note?: string;
 }
+
+export class ReportIncidentDto {
+  @ApiProperty({ description: 'ID thiết bị xảy ra sự cố' })
+  @IsUUID()
+  assetId: string;
+
+  @ApiPropertyOptional({
+    enum: ['CONDITION_WORSENED', 'MISSING_ACCESSORY', 'OVERDUE'],
+    default: 'CONDITION_WORSENED',
+  })
+  @IsOptional()
+  @IsIn(['CONDITION_WORSENED', 'MISSING_ACCESSORY', 'OVERDUE'])
+  kind?: 'CONDITION_WORSENED' | 'MISSING_ACCESSORY' | 'OVERDUE';
+
+  @ApiProperty({ description: 'Mô tả chi tiết sự cố hỏng hóc' })
+  @IsString()
+  @IsNotEmpty()
+  description: string;
+
+  @ApiPropertyOptional({ description: 'Ảnh hiện trường sự cố', type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  photos?: string[];
+}
+
+export class RequestExtensionDto {
+  @ApiProperty({ description: 'Thời điểm trả mới xin gia hạn' })
+  @IsISO8601()
+  newToTime: string;
+
+  @ApiProperty({ description: 'Lý do xin gia hạn' })
+  @IsString()
+  @IsNotEmpty()
+  reason: string;
+}
+
+export class DecideExtensionDto {
+  @ApiProperty({ enum: ['APPROVED', 'REJECTED'] })
+  @IsIn(['APPROVED', 'REJECTED'])
+  decision: 'APPROVED' | 'REJECTED';
+
+  @ApiPropertyOptional({ description: 'Lý do từ chối hoặc ghi chú' })
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
