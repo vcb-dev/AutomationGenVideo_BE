@@ -184,8 +184,16 @@ export class MemsBorrowController {
 
   @Get('requests/alerts/upcoming-returns')
   @ApiOperation({ summary: 'Danh sách phiếu sắp hết hạn (< 2h) hoặc đang quá hạn trả' })
-  upcomingReturnsAlerts() {
-    return this.requests.getUpcomingReturnsAlerts();
+  upcomingReturnsAlerts(@Request() req: any) {
+    return this.requests.getUpcomingReturnsAlerts(
+      req?.user
+        ? {
+            id: req.user.id,
+            roles: req.user.roles ?? [],
+            team: req.user.team,
+          }
+        : undefined,
+    );
   }
 
   @Post('requests/:id/incident')

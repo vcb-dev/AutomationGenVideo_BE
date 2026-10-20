@@ -259,5 +259,59 @@ describe('Multi-Agent MEMS Simulation — Giả lập 5 Agents chạy ồ ạt k
 
     jest.useRealTimers();
   });
+
+  it('Kịch bản 6: Phân quyền cảnh báo quá hạn chặt chẽ giữa các Agent — Member chỉ thấy phiếu của mình, Thủ kho thấy toàn công ty', async () => {
+    const now = new Date('2026-10-19T17:00:00Z');
+    jest.useFakeTimers().setSystemTime(now);
+
+    // Bảng ghi phiếu mượn thực tế
+    const mockDbRequests = [
+      {
+        id: 'req-102',
+        request_code: 'REQ-102',
+        owner_id: agent2_MemberB.id,
+        to_time: new Date('2026-10-19T15:00:00Z'), // Trễ 2h -> quá hạn của Member B
+        status: 'ON_LOAN',
+        lines: [{ quantity: 2 }],
+      },
+      {
+        id: 'req-103',
+        request_code: 'REQ-103',
+        owner_id: 'other-user',
+        to_time: new Date('2026-10-19T14:00:00Z'), // Trễ 3h -> quá hạn của người khác
+        status: 'ON_LOAN',
+        lines: [{ quantity: 1 }],
+      },
+    ];
+
+    prismaMock.memsBorrowRequest.findMany.mockImplementation(async (args: any) => {
+      let filtered = mockDbRequests;
+      if (args?.where?.owner_id) {
+        filtered = filtered.filter((r) => r.owner_id === args.where.owner_id);
+      }
+      return filtered;
+    });
+
+    // 1. Agent 1 (Member A): Không có phiếu nào quá hạn -> Nhận danh sách trống
+    const alertsMemberA = await borrowService.getUpcomingReturnsAlerts(agent1_MemberA);
+    expect(alertsMemberA.overdue.length).toBe(0);
+    expect(alertsMemberA.expiringSoon.length).toBe(0);
+
+    // 2. Agent 2 (Member B): Có phiếu REQ-102 quá hạn -> Chỉ nhận đúng REQ-102, KHÔNG thấy REQ-103 của người khác
+    const alertsMemberB = await borrowService.getUpcomingReturnsAlerts(agent2_MemberB);
+    expect(alertsMemberB.overdue.length).toBe(1);
+    expect(alertsMemberB.overdue[0].request_code).toBe('REQ-102');
+    expect(alertsMemberB.overdue[0].owner_id).toBe(agent2_MemberB.id);
+
+    // 3. Agent 4 (Thủ kho - Media Leader/Manager): Thấy toàn bộ phiếu quá hạn trong công ty
+    const alertsCustodian = await borrowService.getUpcomingReturnsAlerts(agent4_Custodian);
+    expect(alertsCustodian.overdue.length).toBe(2);
+
+    // 4. Agent 5 (Admin): Cũng thấy toàn bộ
+    const alertsAdmin = await borrowService.getUpcomingReturnsAlerts(agent5_Admin);
+    expect(alertsAdmin.overdue.length).toBe(2);
+
+    jest.useRealTimers();
+  });
 });
 

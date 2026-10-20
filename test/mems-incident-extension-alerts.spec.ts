@@ -211,7 +211,7 @@ describe('MEMS Improvements — Báo sự cố, Xin gia hạn & Cảnh báo tr�
   });
 
   describe('getUpcomingReturnsAlerts — Nhắc nhở và cảnh báo quá hạn', () => {
-    it('phân loại đúng phiếu quá hạn và phiếu sắp hết hạn trong 2 giờ', async () => {
+    it('phân loại đúng phiếu quá hạn và phiếu sắp hết hạn trong 2 giờ cho Leader/Admin', async () => {
       const now = Date.now();
       const pastTime = new Date(now - 3 * 3600 * 1000); // quá hạn 3h
       const soonTime = new Date(now + 60 * 60 * 1000);  // còn 1h
@@ -246,7 +246,11 @@ describe('MEMS Improvements — Báo sự cố, Xin gia hạn & Cảnh báo tr�
         { id: 'u-2', full_name: 'Trần Văn B', email: 'b@vcb.com' },
       ]);
 
-      const alerts = await service.getUpcomingReturnsAlerts();
+      const alerts = await service.getUpcomingReturnsAlerts({
+        id: 'admin-id',
+        roles: ['ADMIN'],
+        team: 'MEDIA',
+      });
 
       expect(alerts.overdueCount).toBe(1);
       expect(alerts.expiringSoonCount).toBe(1);
@@ -254,6 +258,24 @@ describe('MEMS Improvements — Báo sự cố, Xin gia hạn & Cảnh báo tr�
       expect(alerts.overdue[0].owner_name).toBe('Nguyễn Văn A');
       expect(alerts.expiringSoon[0].id).toBe('req-soon');
       expect(alerts.expiringSoon[0].owner_name).toBe('Trần Văn B');
+    });
+
+    it('thành viên thường (Member) chỉ nhận cảnh báo cho các phiếu mượn của chính mình', async () => {
+      prismaMock.memsBorrowRequest.findMany.mockImplementation(async ({ where }: any) => {
+        expect(where.owner_id).toBe('member-123');
+        return [];
+      });
+
+      const alerts = await service.getUpcomingReturnsAlerts({
+        id: 'member-123',
+        roles: ['MEMBER'],
+        team: 'CREATIVE',
+      });
+
+      expect(alerts.overdueCount).toBe(0);
+      expect(alerts.expiringSoonCount).toBe(0);
+      expect(alerts.overdue).toEqual([]);
+      expect(alerts.expiringSoon).toEqual([]);
     });
   });
 });

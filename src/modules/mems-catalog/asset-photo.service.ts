@@ -21,7 +21,7 @@ export const MEMS_PHOTO_DIR = path.join(process.cwd(), 'uploads', 'mems');
  * Kiểm ở tầng service là quá muộn: lúc đó Multer đã nạp trọn file vào RAM rồi, nên một video
  * tải nhầm vẫn đủ hạ máy chủ trước khi dòng kiểm tra nào chạy tới.
  */
-export const MEMS_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+export const MEMS_PHOTO_MAX_BYTES = 25 * 1024 * 1024; // 25MB trần tối đa cho ảnh thiết bị
 
 /**
  * Ảnh này chụp để làm gì.

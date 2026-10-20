@@ -62,6 +62,37 @@ export class HandoverService {
         throw new BadRequestException('Biên bản bàn giao phải có ít nhất một máy');
       }
 
+      // Tự động kế thừa ảnh từ người mượn nếu dòng thiết bị chưa có ảnh riêng
+      let requestPhotos: string[] = [];
+      if (request.note) {
+        try {
+          const parsed = JSON.parse(request.note);
+          if (parsed && Array.isArray(parsed.photos)) {
+            requestPhotos = parsed.photos.filter((p: any) => typeof p === 'string' && p.trim());
+          }
+        } catch {}
+      }
+
+      for (const unit of dto.units) {
+        if (!unit.photoKeys) unit.photoKeys = [];
+        // Nếu không có ảnh nhưng phiếu mượn có sẵn ảnh từ người mượn -> tự động kế thừa
+        if (unit.photoKeys.length === 0 && requestPhotos.length > 0) {
+          for (const photoUrl of requestPhotos) {
+            const assetPhoto = await tx.memsAssetPhoto.create({
+              data: {
+                asset_id: unit.assetId,
+                url: photoUrl,
+                purpose: 'HANDOVER',
+                caption: `Ảnh bàn giao kế thừa từ người mượn (phiếu ${request.request_code})`,
+                storage: photoUrl.startsWith('http') ? 'remote' : 'local',
+                uploaded_by: handedById,
+              },
+            });
+            unit.photoKeys.push(assetPhoto.id);
+          }
+        }
+      }
+
       const withoutPhoto = dto.units.filter((u) => (u.photoKeys?.length ?? 0) === 0);
       if (withoutPhoto.length > 0) {
         throw new BadRequestException(
@@ -112,7 +143,10 @@ export class HandoverService {
       //
       // Đếm số ảnh ở trên là chưa đủ: `photoKeys` do client gửi nên phép đếm không nói được tấm
       // nào có thật. Kiểm bằng chính `tx` để thấy cả ảnh vừa tải lên trong cùng luồng.
-      await assertPhotoEvidence(tx, dto.units);
+      await assertPhotoEvidence(
+        tx,
+        dto.units.map((u) => ({ assetId: u.assetId, photoKeys: u.photoKeys || [] })),
+      );
 
       const handover = await tx.memsHandover.create({
         data: {
@@ -134,7 +168,7 @@ export class HandoverService {
         });
 
         await tx.memsHandoverPhoto.createMany({
-          data: unit.photoKeys.map((key) => ({
+          data: (unit.photoKeys || []).map((key) => ({
             handover_line_id: line.id,
             storage_key: key,
           })),

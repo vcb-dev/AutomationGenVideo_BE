@@ -550,14 +550,20 @@ export class BorrowRequestService {
 
   /**
    * Cảnh báo các phiếu sắp hết hạn trả (< 2 tiếng) hoặc đang quá hạn trả.
+   * Thành viên thường (Member) chỉ nhận cảnh báo cho các phiếu của chính họ.
+   * Leader Media và Admin nhận cảnh báo toàn kho để đôn đốc thu hồi.
    */
-  async getUpcomingReturnsAlerts() {
+  async getUpcomingReturnsAlerts(viewer?: { id: string; roles: (UserRole | string)[]; team?: string | null }) {
+    const isManager = viewer ? isMediaLeaderOrAdminUser(viewer) : true;
+    const ownerScope = isManager ? {} : { owner_id: viewer!.id };
+
     const now = new Date();
     const inTwoHours = new Date(now.getTime() + 2 * 60 * 60 * 1000);
 
     const onLoanRequests = await this.prisma.memsBorrowRequest.findMany({
       where: {
         status: { in: ['ON_LOAN', 'PARTIALLY_RETURNED'] },
+        ...ownerScope,
       },
       include: {
         lines: {
@@ -584,6 +590,7 @@ export class BorrowRequestService {
       const item = {
         id: r.id,
         request_code: r.request_code,
+        owner_id: r.owner_id,
         project: r.project,
         place: r.place,
         from_time: r.from_time,
