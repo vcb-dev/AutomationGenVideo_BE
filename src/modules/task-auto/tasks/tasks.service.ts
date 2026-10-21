@@ -99,6 +99,9 @@ function parseVNDeadline(value: string): Date {
   return new Date(`${withSeconds}+07:00`);
 }
 
+const AUTO_TASK_CONTENT_REQUIRED =
+  "Task tự động phải chọn content trước khi bắt đầu làm hoặc nộp";
+
 // Các field sản phẩm/nguồn — chỉ task sáng tạo (EXTRA) mới được sửa. Content (content_id,
 // editor_content_id, team_content_id) sửa được ở mọi task: task AUTO tạo ra chưa gắn content,
 // editor tự chọn sau.
@@ -1167,6 +1170,16 @@ export class TaskAutoTasksService {
           `Cannot move from ${task.status} to ${dto.status}`,
         );
       }
+      if (
+        task.task_type === "AUTO" &&
+        (dto.status === "IN_PROGRESS" || dto.status === "SUBMITTED")
+      ) {
+        const pick = (k: "content_id" | "editor_content_id" | "team_content_id") =>
+          dto[k] !== undefined ? dto[k] : task[k];
+        if (!pick("content_id") && !pick("editor_content_id") && !pick("team_content_id")) {
+          throw new BadRequestException(AUTO_TASK_CONTENT_REQUIRED);
+        }
+      }
     }
 
     if (
@@ -1332,13 +1345,22 @@ export class TaskAutoTasksService {
   async submit(id: string, dto: SubmitTaskDto, userId: string) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      select: { assignee_id: true, status: true, result_url: true },
+      select: {
+        assignee_id: true, status: true, result_url: true, task_type: true,
+        content_id: true, editor_content_id: true, team_content_id: true,
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
     if (task.assignee_id !== userId)
       throw new ForbiddenException("Not your task");
     if (!["ASSIGNED", "IN_PROGRESS"].includes(task.status)) {
       throw new BadRequestException("Task is not in a submittable state");
+    }
+    if (
+      task.task_type === "AUTO" &&
+      !task.content_id && !task.editor_content_id && !task.team_content_id
+    ) {
+      throw new BadRequestException(AUTO_TASK_CONTENT_REQUIRED);
     }
     // Không cho nộp tay không: cần video (result_url từ Drive) hoặc link nhập tay.
     if (!dto.result_url && !task.result_url) {
