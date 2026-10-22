@@ -1,4 +1,5 @@
-export const KPI_PAYROLL_SYNC_CONTRACT_VERSION = "1.2";
+/** 1.3: thêm `team.hrm_project_id` và `records[].hrm_employee_id` để hệ thống lương khớp theo HRM. */
+export const KPI_PAYROLL_SYNC_CONTRACT_VERSION = "1.3";
 
 export const KPI_GROUP = {
   VIDEO_PRODUCTION: "VIDEO_PRODUCTION",
@@ -34,9 +35,11 @@ export interface KpiPayrollSyncRecord {
 export interface KpiPayrollSyncResponse {
   contract_version: string;
   month: string;
-  team: { id: string; name: string };
+  /** `hrm_project_id` null = team chưa gắn dự án HRM nên hệ thống lương không nhận ra team này. */
+  team: { id: string; name: string; hrm_project_id: string | null };
   generated_at: string;
-  records: KpiPayrollSyncRecord[];
+  /** `hrm_employee_id` null = tài khoản chưa gắn nhân sự HRM (xem đồng bộ team từ HRM). */
+  records: (KpiPayrollSyncRecord & { hrm_employee_id: string | null })[];
   warnings: KpiPayrollSyncWarning[];
 }
 

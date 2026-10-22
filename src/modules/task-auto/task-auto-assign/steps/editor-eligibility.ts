@@ -41,7 +41,8 @@ export function splitDailyTotal(
 
 /**
  * Chỉ tiêu ngày theo từng tuyến trong `contentLineIds` của các editor 1 team (thành viên đang hoạt động,
- * đã duyệt editor, có KPI tháng phân bổ cho tuyến đó > 0) — dùng chung cho chia task A4 và Kế hoạch ngày.
+ * đã duyệt editor, leader bật chia tự động cho thứ của ngày hiệu lực, có KPI tháng phân bổ cho tuyến đó
+ * > 0) — dùng chung cho chia task A4 và Kế hoạch ngày.
  * Số việc trong ngày = TỔNG KPI còn lại mọi tuyến / số ngày lịch còn lại (làm tròn lên), rồi chia cho các
  * tuyến theo splitDailyTotal — làm tròn lên riêng từng tuyến sẽ cộng lại vượt xa trung bình.
  * Task đã có đếm theo HẠN CHÓT (deadlineWindow), không theo assigned_at, kể cả task tạo tay.
@@ -54,9 +55,13 @@ export async function loadLineQuotas(
   month: string,
 ): Promise<LineQuota[]> {
   if (!contentLineIds.length) return [];
+  // Ngày hiệu lực = ngày mai (task giao hôm nay → làm ngày mai), tháng KPI = tháng của ngày mai.
+  const dayStart = effectiveAssignmentDate(now);
   const members = await prisma.teamMember.findMany({
     where: {
       team_id: teamId,
+      auto_assign_enabled: true,
+      auto_assign_weekdays: { has: dayStart.weekday },
       user: {
         is_active: true,
         editor_approvals: { some: { status: "APPROVED" } },
@@ -97,8 +102,6 @@ export async function loadLineQuotas(
   }
   if (!targetsByUser.size) return [];
 
-  // Ngày hiệu lực = ngày mai (task giao hôm nay → làm ngày mai), tháng KPI = tháng của ngày mai.
-  const dayStart = effectiveAssignmentDate(now);
   const dayEnd = dayStart.plus({ days: 1 });
   const monthStart = dayStart.startOf("month");
   const monthEnd = monthStart.plus({ months: 1 });

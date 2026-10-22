@@ -125,6 +125,9 @@ describe('Hiển thị báo cáo Checklist nộp hôm nay', () => {
         teamMember: {
           findMany: jest.fn().mockResolvedValue([]),
         },
+        team: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
         $queryRawUnsafe: jest.fn().mockResolvedValue([]),
       };
 

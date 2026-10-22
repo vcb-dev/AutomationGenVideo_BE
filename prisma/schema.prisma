@@ -41,6 +41,8 @@ model User {
   /// Bitable record id — quáđồng bộ nhân viên từ Lark (trước đây bảng lark_employees)
   lark_employee_record_id String?    @unique
   employee_id             String?    @unique
+  /// id nhân sự bên HRM — gắn khi đồng bộ team từ dự án HRM, khớp lại không cần email
+  hrm_employee_id         String?    @unique @db.Uuid
   image_url               String?
   employee_data           Json?
   /// Chức vụ từ Lark (Member / Leader, …)
@@ -2712,6 +2714,8 @@ model Team {
   market              String    @default("VIETNAM")
   /// PRODUCTION = team sản xuất video (mặc định), CONTENT = team chuyên sưu tầm/dịch content
   team_kind           TeamKind  @default(PRODUCTION)
+  /// Dự án HRM tương ứng — có giá trị thì tên + thành viên (content/editor) do đồng bộ HRM quyết định
+  hrm_project_id      String?   @unique @db.Uuid
   is_active           Boolean   @default(true)
   lark_webhook_url    String?
   lark_webhook_secret String?
@@ -2758,8 +2762,12 @@ model TeamMember {
   /// Đánh dấu thành viên này là content creator của team (bổ sung cạnh editor, không loại trừ
   /// lẫn nhau, không giới hạn số lượng — chỉ là quy ước nghiệp vụ/UI). Mặc định false cho mọi
   /// dòng hiện có, kể cả thành viên của team_kind=CONTENT.
-  is_content_creator Boolean  @default(false)
-  joined_at          DateTime @default(now())
+  is_content_creator   Boolean  @default(false)
+  /// Lượt chia task tự động (task A4 + Kế hoạch ngày) có tính người này ở team này không — leader bật/tắt
+  auto_assign_enabled  Boolean  @default(true)
+  /// Ngày trong tuần (ISO: 1 = Thứ 2 … 7 = Chủ nhật) được chia việc, xét theo ngày hiệu lực (ngày mai)
+  auto_assign_weekdays Int[]    @default([1, 2, 3, 4, 5, 6, 7])
+  joined_at            DateTime @default(now())
 
   team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
   user User @relation("TeamMembershipOf", fields: [user_id], references: [id], onDelete: Cascade)
@@ -3878,7 +3886,6 @@ model AutoAssignSetting {
   id                     Int      @id @default(1)
   schedule_time          String   @default("17:00")
   timezone               String   @default("Asia/Ho_Chi_Minh")
-  weekend_enabled        Boolean  @default(true)
   is_active              Boolean  @default(true)
   /// Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng
   default_cooldown_days  Int      @default(5)

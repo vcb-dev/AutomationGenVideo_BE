@@ -21,9 +21,15 @@ import {
   calculateGoalProgress,
   calculateUnweightedOverall,
 } from "../../../utils/task-auto/performance-goal.calculator";
+import {
+  PAYROLL_SYNC_TEAM_SELECT,
+  payrollSyncTeamWhere,
+} from "../../../common/utils/payroll-sync-team.util";
 
 const includeGoalRelations = {
-  user: { select: { id: true, full_name: true, email: true, employee_id: true } },
+  user: {
+    select: { id: true, full_name: true, email: true, employee_id: true, hrm_employee_id: true },
+  },
   team: { select: { id: true, name: true, leader_id: true } },
   set_by: { select: { id: true, full_name: true } },
   kpi_group: {
@@ -541,15 +547,15 @@ export class PerformanceGoalsService {
     });
   }
 
-  async payrollSync(teamId: string, month: string) {
-    const team = await this.prisma.team.findUnique({
-      where: { id: teamId },
-      select: { id: true, name: true },
+  async payrollSync(teamIdOrHrmProjectId: string, month: string) {
+    const team = await this.prisma.team.findFirst({
+      where: payrollSyncTeamWhere(teamIdOrHrmProjectId),
+      select: PAYROLL_SYNC_TEAM_SELECT,
     });
     if (!team) throw new NotFoundException("Team không tồn tại");
 
     const rows = await this.prisma.performanceGoal.findMany({
-      where: { team_id: teamId, month, status: "PUBLISHED" },
+      where: { team_id: team.id, month, status: "PUBLISHED" },
       include: includeGoalRelations,
       orderBy: [{ user_id: "asc" }, { type: "asc" }, { created_at: "asc" }],
     });
@@ -559,6 +565,7 @@ export class PerformanceGoalsService {
         external_item_id: item.id,
         revision: item.revision,
         employee_id: item.user.employee_id,
+        hrm_employee_id: row.user.hrm_employee_id ?? null,
         user_id: item.user_id,
         team_id: item.team_id,
         month: item.month,

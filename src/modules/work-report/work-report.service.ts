@@ -9,6 +9,7 @@ import { CacheService } from '../../common/cache/cache.service';
 import { Semaphore } from '../../common/utils/semaphore';
 import { dailyKpiDate } from '../../utils/date.utils';
 import { SapoIntegrationService } from '../sapo-integration/sapo-integration.service';
+import { deadlineWindow } from '../../utils/task-auto/deadline-window.util';
 
 /** Số đơn Sapo gom theo nền tảng và theo team, dùng cho dải KPI hiệu suất. */
 export interface SapoOrderStats {
@@ -79,6 +80,29 @@ export function isActiveEmployeeStatusValue(raw: unknown): boolean {
 
     const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
     return !words.some((w) => INACTIVE_STATUS_WORDS.includes(w));
+}
+
+// Số traffic nhập tay là luỹ kế tháng: traffic của kỳ = số của ngày báo cáo gần nhất trong kỳ, mỗi luồng người × team.
+// Luồng chỉ có báo cáo ngoài kỳ vẫn trả (value 0) để biết người đó đã báo cáo trong app.
+export function latestTrafficByStream(
+    rows: { person: string; team: string | null; day: string; value: number }[],
+    from: string,
+    to: string,
+): { person: string; team: string | null; value: number }[] {
+    const streams = new Map<string, { person: string; team: string | null; day: string; value: number }>();
+    for (const r of rows) {
+        const key = `${r.person}|${(r.team ?? '').trim().toLowerCase()}`;
+        const stream = streams.get(key) ?? { person: r.person, team: r.team, day: '', value: 0 };
+        if (r.day >= from && r.day <= to && r.day >= stream.day) {
+            if (r.day > stream.day) {
+                stream.day = r.day;
+                stream.value = 0;
+            }
+            stream.value += r.value;
+        }
+        streams.set(key, stream);
+    }
+    return [...streams.values()].map(({ person, team, value }) => ({ person, team, value }));
 }
 
 @Injectable()
@@ -1573,10 +1597,11 @@ export class WorkReportService implements OnModuleInit {
                             },
                         },
                     }),
+                    // Lọc trạng thái ở JS: ILIKE không gộp được 'Đ'/'đ' khi DB có ctype C.
                     this.prisma.channel.findMany({
-                        where: { status: { equals: 'Đang hoạt động', mode: 'insensitive' } },
-                        select: { owner: true, team_traffic: true }
-                    }),
+                        select: { owner: true, team_traffic: true, team_id: true, status: true }
+                    }).then((rows) => rows.filter((c) =>
+                        (c.status || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').toLowerCase().trim() === 'dang hoat dong')),
                     (this.prisma as any).reportKpi.findMany({
                         where: {
                             report_date: { gte: memberReportStart, lte: memberReportEnd },
@@ -1643,12 +1668,13 @@ export class WorkReportService implements OnModuleInit {
                 const goalMonthInfo = monthsInRange[0] || { monthNum: nowVnForGoal.m, year: nowVnForGoal.y };
                 const goalMonthStr = `${goalMonthInfo.year}-${String(goalMonthInfo.monthNum).padStart(2, '0')}`;
                 const goalMonthBounds = getVietnamMonthBounds(goalMonthInfo.year, goalMonthInfo.monthNum);
+                const rangeCalcFromStr = `${uiDayStartStr.slice(0, 7)}-01`;
 
                 const [
                     allTrafficInDb,
                     allRevenueInDb,
-                    allMonthlyTrafficInDb,
-                    allMonthlyRevenueInDb,
+                    rangeTrafficRows,
+                    rangeRevenueRows,
                     reportOutstandings,
                     totalKpiCount,
                     reportsUnfilteredCount,
@@ -1659,15 +1685,14 @@ export class WorkReportService implements OnModuleInit {
                     this.prisma.trafficReport.findMany({ where: inAppDateFilter }),
                     // revenueReport: cùng cơ chế lưu/đọc như trafficReport
                     this.prisma.revenueReport.findMany({ where: inAppDateFilter }),
-                    // Toàn bộ traffic trong tháng để tính traffic_range cho Summary Cards & Ranking
+                    // Từ ngày 1 của tháng chứa ngày đầu kỳ: cần luỹ kế trước kỳ để tính traffic_range/revenue_range.
                     this.prisma.trafficReport.findMany({
-                        where: { date: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
-                        select: { email: true, name: true, team: true, total_traffic: true }
+                        where: { date: { gte: getVietnamBounds(rangeCalcFromStr).start, lte: larkKpiEndOfDay } },
+                        select: { email: true, name: true, team: true, date: true, total_traffic: true }
                     }),
-                    // Toàn bộ doanh thu trong tháng để tính revenue_range cho Summary Cards & Ranking
                     this.prisma.revenueReport.findMany({
-                        where: { date: { gte: goalMonthBounds.start, lte: goalMonthBounds.end } },
-                        select: { email: true, name: true, team: true, total_revenue: true }
+                        where: { date: { gte: getVietnamBounds(rangeCalcFromStr).start, lte: larkKpiEndOfDay } },
+                        select: { email: true, name: true, team: true, date: true, total_revenue: true }
                     }),
                     this.prisma.$queryRawUnsafe(`
                         SELECT * FROM "report_outstanding"
@@ -1698,7 +1723,7 @@ export class WorkReportService implements OnModuleInit {
                     this.readSapoOrderStats(uiDayStartStr, uiDayEndStr, teamFilterNormalized || undefined),
                 ]);
 
-                const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows] = await Promise.all([
+                const [editorKpiRows, teamMemberships, taskDayCounts, taskMonthApprovedCounts, manualDailyKpiRows, allTaskTeams, approvedTasksByTeam, rangeEditorKpis] = await Promise.all([
                     this.prisma.editorKpi.findMany({
                         where: { month: goalMonthStr },
                         select: { user_id: true, team_id: true, total_target: true },
@@ -1738,6 +1763,20 @@ export class WorkReportService implements OnModuleInit {
                             target: { gt: 0 },
                         },
                         select: { user_id: true, team_id: true, target: true },
+                    }),
+                    this.prisma.team.findMany({ select: { id: true, name: true, market: true } }),
+                    // Thẻ "Video đóng góp": cùng cửa sổ ngày với trang Nhiệm vụ (deadline, chưa có thì ngày tạo).
+                    this.prisma.task.groupBy({
+                        by: ['team_id'],
+                        where: {
+                            status: 'APPROVED',
+                            ...deadlineWindow({ gte: larkKpiStartOfDay, lt: new Date(larkKpiEndOfDay.getTime() + 1) }),
+                        },
+                        _count: { id: true },
+                    }),
+                    this.prisma.editorKpi.findMany({
+                        where: { month: { in: monthsInRange.map((m) => `${m.year}-${String(m.monthNum).padStart(2, '0')}`) } },
+                        select: { team_id: true, total_target: true },
                     }),
                 ]);
 
@@ -1974,7 +2013,11 @@ export class WorkReportService implements OnModuleInit {
                     }
                 });
 
+                const taskTeamByKey = new Map(allTaskTeams.map((t) => [normalizeTeamKey(t.name), t]));
+                const taskTeamById = new Map(allTaskTeams.map((t) => [t.id, t]));
                 const getRegionInternal = (teamName: string) => {
+                    const market = taskTeamByKey.get(normalizeTeamKey(teamName))?.market;
+                    if (market) return market === 'VIETNAM' ? 'vn' : 'global';
                     const t = (teamName || '').toLowerCase();
                     if (t.includes('global') || t.includes('thái lan') || t.includes('đài loan') || t.includes('indo') || t.includes('jp')) return 'global';
                     return 'vn';
@@ -2024,7 +2067,8 @@ export class WorkReportService implements OnModuleInit {
                             );
                         }
                     }
-                    const teamNorm = (h.team_traffic || '').toLowerCase().trim();
+                    const channelTeamName = (h.team_id ? taskTeamById.get(h.team_id)?.name : null) || h.team_traffic || '';
+                    const teamNorm = channelTeamName.toLowerCase().trim();
                     let isMatch = false;
                     if (!currentTeamFilter) isMatch = true;
                     else if (currentTeamFilter === 'all global') isMatch = getRegionInternal(teamNorm) === 'global';
@@ -2032,11 +2076,11 @@ export class WorkReportService implements OnModuleInit {
                     else {
                         const normCurrent = normalizeTeamKey(currentTeamFilter);
                         const normTeam = normalizeTeamKey(teamNorm);
-                        isMatch = normTeam === normCurrent || normTeam.includes(normCurrent) || normCurrent.includes(normTeam);
+                        isMatch = !!normTeam && (normTeam === normCurrent || normTeam.includes(normCurrent) || normCurrent.includes(normTeam));
                     }
 
                     if (isMatch) {
-                        const region = getRegionInternal(h.team_traffic || '');
+                        const region = getRegionInternal(channelTeamName);
                         regionalChannelCounts[region]++;
                         totalChannelsMatchingFilter++;
                     }
@@ -2106,26 +2150,48 @@ export class WorkReportService implements OnModuleInit {
                     }
                 });
 
-                // Index monthly traffic & revenue by email/name for traffic_range & revenue_range
-                const monthlyTrafficByEmail = new Map<string, number>();
-                const monthlyTrafficByName = new Map<string, number>();
-                (allMonthlyTrafficInDb || []).forEach((tr: any) => {
-                    const emailKey = tr.email ? String(tr.email).toLowerCase().trim() : null;
-                    const nameKey = tr.name ? normName(tr.name) : null;
-                    const val = Number(tr.total_traffic || 0);
-                    if (emailKey) monthlyTrafficByEmail.set(emailKey, (monthlyTrafficByEmail.get(emailKey) || 0) + val);
-                    if (nameKey) monthlyTrafficByName.set(nameKey, (monthlyTrafficByName.get(nameKey) || 0) + val);
+                // traffic_range & revenue_range theo đúng kỳ lọc. Có trong map = đã báo cáo trong app (dù kỳ này = 0)
+                // → không rơi về số tháng của lark_kpi cũ.
+                const reportPerson = (r: { email: string | null; name: string | null }) =>
+                    (r.email ? String(r.email).toLowerCase().trim() : '') || `name:${normName(r.name)}`;
+                const trafficStreams = latestTrafficByStream(
+                    (rangeTrafficRows || []).filter((tr) => tr.date).map((tr) => ({
+                        person: reportPerson(tr),
+                        team: tr.team,
+                        day: toVietnamDateString(tr.date!),
+                        value: Number(tr.total_traffic || 0),
+                    })),
+                    uiDayStartStr,
+                    uiDayEndStr,
+                );
+                const trafficByPerson = new Map<string, number>();
+                trafficStreams.forEach((s) => trafficByPerson.set(s.person, (trafficByPerson.get(s.person) || 0) + s.value));
+                const revenueInRange: { person: string; team: string | null; value: number }[] = [];
+                const revenueByPerson = new Map<string, number>();
+                (rangeRevenueRows || []).forEach((rr) => {
+                    if (!rr.date) return;
+                    const day = toVietnamDateString(rr.date);
+                    const val = day >= uiDayStartStr && day <= uiDayEndStr ? Number(rr.total_revenue || 0) : 0;
+                    const person = reportPerson(rr);
+                    revenueByPerson.set(person, (revenueByPerson.get(person) || 0) + val);
+                    if (val) revenueInRange.push({ person, team: rr.team, value: val });
                 });
-
-                const monthlyRevenueByEmail = new Map<string, number>();
-                const monthlyRevenueByName = new Map<string, number>();
-                (allMonthlyRevenueInDb || []).forEach((rr: any) => {
-                    const emailKey = rr.email ? String(rr.email).toLowerCase().trim() : null;
-                    const nameKey = rr.name ? normName(rr.name) : null;
-                    const val = Number(rr.total_revenue || 0);
-                    if (emailKey) monthlyRevenueByEmail.set(emailKey, (monthlyRevenueByEmail.get(emailKey) || 0) + val);
-                    if (nameKey) monthlyRevenueByName.set(nameKey, (monthlyRevenueByName.get(nameKey) || 0) + val);
-                });
+                const indexByEmailAndName = (rows: { email: string | null; name: string | null }[], byPerson: Map<string, number>) => {
+                    const byEmail = new Map<string, number>();
+                    const byName = new Map<string, number>();
+                    const seen = new Set<string>();
+                    rows.forEach((r) => {
+                        const person = reportPerson(r);
+                        if (seen.has(person) || !byPerson.has(person)) return;
+                        seen.add(person);
+                        const val = byPerson.get(person)!;
+                        if (r.email) byEmail.set(String(r.email).toLowerCase().trim(), val);
+                        if (r.name) byName.set(normName(r.name), (byName.get(normName(r.name)) || 0) + val);
+                    });
+                    return { byEmail, byName };
+                };
+                const rangeTraffic = indexByEmailAndName(rangeTrafficRows || [], trafficByPerson);
+                const rangeRevenue = indexByEmailAndName(rangeRevenueRows || [], revenueByPerson);
 
                 // Build helper map for team resolution (same as DashboardAnalytics)
                 const nameToTeamMapLocal = new Map<string, string>();
@@ -2922,15 +2988,14 @@ export class WorkReportService implements OnModuleInit {
                         ? (taskApprovedMonthByUser.get(resolvedUserId) || 0)
                         : (Number(kpi.completed_month) || 0);
 
-                    const personMonthlyTraffic = (normalizedEmail ? monthlyTrafficByEmail.get(normalizedEmail) : null) ?? (nameKey ? monthlyTrafficByName.get(nameKey) : null) ?? 0;
-                    const personMonthlyRevenue = (normalizedEmail ? monthlyRevenueByEmail.get(normalizedEmail) : null) ?? (nameKey ? monthlyRevenueByName.get(nameKey) : null) ?? 0;
+                    const personRangeTraffic = (normalizedEmail ? rangeTraffic.byEmail.get(normalizedEmail) : undefined) ?? (nameKey ? rangeTraffic.byName.get(nameKey) : undefined);
+                    const personRangeRevenue = (normalizedEmail ? rangeRevenue.byEmail.get(normalizedEmail) : undefined) ?? (nameKey ? rangeRevenue.byName.get(nameKey) : undefined);
 
-                    const effectiveTrafficRange = personMonthlyTraffic > 0
-                        ? personMonthlyTraffic
-                        : ((monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic);
-                    const effectiveRevenueRange = personMonthlyRevenue > 0
-                        ? personMonthlyRevenue
-                        : ((monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue);
+                    // kpiMonthFallback: dòng lark_kpi là của tháng khác (bảng đã ngừng đồng bộ) → không mượn số traffic/doanh thu của tháng đó.
+                    const effectiveTrafficRange = personRangeTraffic ?? (kpiMonthFallback ? 0
+                        : (monthlyReportKpi ? Number(monthlyReportKpi.traffic_month || 0) : Number(kpi.traffic_month || 0)) + incrementalTraffic);
+                    const effectiveRevenueRange = personRangeRevenue ?? (kpiMonthFallback ? 0
+                        : (monthlyReportKpi ? Number(monthlyReportKpi.revenue_month || 0) : Number(kpi.revenue_month || 0)) + incrementalRevenue);
 
                     return {
                         id: kpi.id,
@@ -2978,8 +3043,8 @@ export class WorkReportService implements OnModuleInit {
                             task_new: isViewingToday ? 0 : (kpi.task_new || 0),
                             kpi_status: isViewingToday ? 'N/A' : (kpi.kpii_status || 'N/A')
                         },
-                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0), personMonthlyTraffic),
-                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0), personMonthlyRevenue),
+                        traffic_month: Math.max(Number(monthlyReportKpi?.traffic_month || 0), Number(kpi.traffic_month || 0), personRangeTraffic ?? 0),
+                        revenue_month: Math.max(Number(monthlyReportKpi?.revenue_month || 0), Number(kpi.revenue_month || 0), personRangeRevenue ?? 0),
                         trafficTarget: parseInt(kpi.target_traffic_month || '0') || 0,
                         revenueTarget: parseInt(kpi.target_revenue_month || '0') || 0,
                         monthlyProgress: monthlyVideoTarget > 0 ? Math.round((monthlyTaskDone / monthlyVideoTarget) * 100) : 0,
@@ -3152,8 +3217,8 @@ export class WorkReportService implements OnModuleInit {
                             kpi_month: 0,
                             completed_day: 0,
                             completed_month: 0,
-                            traffic_range: 0,
-                            revenue_range: 0,
+                            traffic_range: (rEmailKey ? rangeTraffic.byEmail.get(rEmailKey) : undefined) ?? (rNameKey ? rangeTraffic.byName.get(rNameKey) : undefined) ?? 0,
+                            revenue_range: (rEmailKey ? rangeRevenue.byEmail.get(rEmailKey) : undefined) ?? (rNameKey ? rangeRevenue.byName.get(rNameKey) : undefined) ?? 0,
                             revenueToday: personRevenue ? Number(personRevenue.total_revenue || 0) : 0,
                             task_progress: { task_auto: 0, task_new: 0, kpi_status: 'N/A' },
                             traffic_month: 0,
@@ -3409,57 +3474,76 @@ export class WorkReportService implements OnModuleInit {
                     taskVideosByGroup[region] += completedMonth;
                 });
 
+                // 4 thẻ Video/Traffic/Doanh thu đọc thẳng từ task trang Nhiệm vụ + báo cáo traffic/doanh thu, không qua
+                // danh sách nhân sự lark_kpi (thiếu người mới, trùng người nhiều team).
+                const teamsByEmail = new Map<string, { id: string; name: string }[]>();
+                allUsersForTeam.forEach((u) => {
+                    const memberTeams = teamsByUserId.get(u.id);
+                    if (u.email && memberTeams) teamsByEmail.set(u.email.toLowerCase().trim(), memberTeams);
+                });
+                const resolveReportTeam = (reportTeam: string | null, person: string) => {
+                    const key = normalizeTeamKey(reportTeam);
+                    const byName = key ? taskTeamByKey.get(key) || allTaskTeams.find((t) => normalizeTeamKey(t.name).endsWith(key)) : null;
+                    if (byName) return byName.name;
+                    const memberTeams = teamsByEmail.get(person) || [];
+                    return (memberTeams.find((t) => matchesTeamFilter([t.name], teamFilterNormalized)) || memberTeams[0])?.name || reportTeam || '';
+                };
+                const cardTotals = {
+                    vn: { videos: 0, videoTarget: 0, traffic: 0, revenue: 0 },
+                    global: { videos: 0, videoTarget: 0, traffic: 0, revenue: 0 },
+                };
+                const addToCard = (teamName: string, field: keyof typeof cardTotals.vn, value: number) => {
+                    if (!value || !matchesTeamFilter(teamName ? [teamName] : [], teamFilterNormalized)) return;
+                    cardTotals[getRegionInternal(teamName)][field] += value;
+                };
+                const rankingTotals = { traffic: new Map<string, number>(), revenue: new Map<string, number>() };
+                const addReport = (field: 'traffic' | 'revenue', item: { person: string; team: string | null; value: number }) => {
+                    const teamName = resolveReportTeam(item.team, item.person);
+                    if (!item.value || !matchesTeamFilter(teamName ? [teamName] : [], teamFilterNormalized)) return;
+                    addToCard(teamName, field, item.value);
+                    rankingTotals[field].set(item.person, (rankingTotals[field].get(item.person) || 0) + item.value);
+                };
+                trafficStreams.forEach((s) => addReport('traffic', s));
+                revenueInRange.forEach((r) => addReport('revenue', r));
+
+                approvedTasksByTeam.forEach((g) => addToCard(taskTeamById.get(g.team_id)?.name || '', 'videos', g._count.id));
+                // Mục tiêu video = KPI tháng (EditorKpi) của các tháng mà kỳ lọc chạm tới.
+                rangeEditorKpis.forEach((k) => addToCard((k.team_id && taskTeamById.get(k.team_id)?.name) || '', 'videoTarget', k.total_target));
+
+                aggregates.totalVideoCompleted = cardTotals.vn.videos + cardTotals.global.videos;
+                aggregates.totalVideoTarget = cardTotals.vn.videoTarget + cardTotals.global.videoTarget;
+                aggregates.totalTrafficCompleted = cardTotals.vn.traffic + cardTotals.global.traffic;
+                aggregates.totalRevenueCompleted = cardTotals.vn.revenue + cardTotals.global.revenue;
+                taskVideosByGroup.vn = cardTotals.vn.videos;
+                taskVideosByGroup.global = cardTotals.global.videos;
+
                 // Count reports for today separately
                 combinedResults.forEach(r => {
                     aggregates.totalReports++;
                     if (r.date) aggregates.reportedCount++;
                 });
 
-                // Calculate rankings using rankingList (which honors team filter for everyone)
-
-                const trafficRanking = rankingList
-                    .sort((a, b) => Number(b.traffic_range || 0) - Number(a.traffic_range || 0))
-                    .slice(0, 10)
-                    .map((kpi, index) => {
-                        const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
-                        const trimmedEmpId = kpi.employee_id?.trim();
-                        const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
-
-                        return {
-                            rank: index + 1,
-                            name: kpi.name,
-                            position: employee?.position || null,
-                            avatar:
-                                this.convertDriveUrl(employee?.image_url) ||
-                                this.convertDriveUrl((kpi.email ? userAvatarByEmail.get(String(kpi.email).toLowerCase().trim()) : null) || (nameKey ? userAvatarByName.get(nameKey) : null)) ||
-                                this.convertDriveUrl(kpi.link_image) ||
-                                this.convertDriveUrl(kpi.image_url) ||
-                                null,
-                            value: Number(kpi.traffic_range || 0).toLocaleString('vi-VN')
-                        };
-                    });
-
-                const revenueRanking = rankingList
-                    .sort((a, b) => Number(b.revenue_range || 0) - Number(a.revenue_range || 0))
-                    .slice(0, 10)
-                    .map((kpi, index) => {
-                        const nameKey = kpi.name?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim().replace(/\s+/g, ' ') || '';
-                        const trimmedEmpId = kpi.employee_id?.trim();
-                        const employee = employeeMap.get(nameKey) || (trimmedEmpId ? employeeMap.get(trimmedEmpId) : null);
-
-                        return {
-                            rank: index + 1,
-                            name: kpi.name,
-                            position: employee?.position || null,
-                            avatar:
-                                this.convertDriveUrl(employee?.image_url) ||
-                                this.convertDriveUrl((kpi.email ? userAvatarByEmail.get(String(kpi.email).toLowerCase().trim()) : null) || (nameKey ? userAvatarByName.get(nameKey) : null)) ||
-                                this.convertDriveUrl(kpi.link_image) ||
-                                this.convertDriveUrl(kpi.image_url) ||
-                                null,
-                            value: Number(kpi.revenue_range || 0).toLocaleString('vi-VN')
-                        };
-                    });
+                // BXH: mọi thành viên đang làm việc của các team trong phạm vi lọc (chưa báo cáo = 0) + người
+                // ngoài team có báo cáo; mỗi người 1 hạng, số gán team giống hệt các thẻ tổng.
+                const rankingUsers = allUsersForTeam.filter((u) => {
+                    const email = String(u.email || '').toLowerCase().trim();
+                    if (!email || !isActiveEmployeeStatusValue(u.employee_status)) return false;
+                    return (teamsByUserId.get(u.id) || []).some((t) => matchesTeamFilter([t.name], teamFilterNormalized))
+                        || rankingTotals.traffic.has(email)
+                        || rankingTotals.revenue.has(email);
+                });
+                const buildRanking = (totals: Map<string, number>) => rankingUsers
+                    .map((u) => ({ u, email: u.email!.toLowerCase().trim(), value: totals.get(u.email!.toLowerCase().trim()) || 0 }))
+                    .sort((a, b) => b.value - a.value || (a.u.full_name || '').localeCompare(b.u.full_name || '', 'vi'))
+                    .map(({ u, email, value }, index) => ({
+                        rank: index + 1,
+                        name: u.full_name,
+                        position: employeeMap.get(email)?.position || null,
+                        avatar: this.convertDriveUrl(u.image_url) || null,
+                        value: value.toLocaleString('vi-VN'),
+                    }));
+                const trafficRanking = buildRanking(rankingTotals.traffic);
+                const revenueRanking = buildRanking(rankingTotals.revenue);
 
                 // Calculate team-level contribution breakdown (Global Month Context)
                 // Use kpiData which is already filtered by current selected month and year
@@ -3543,22 +3627,12 @@ export class WorkReportService implements OnModuleInit {
                 groupTotals.global.videos = taskVideosByGroup.global;
                 groupTotals.vn.videos = taskVideosByGroup.vn;
 
-                // Still sum traffic and revenue from individual results
-                allValidResults.forEach(r => {
-                    const t = Number(r.traffic_range || 0);
-                    const re = Number(r.revenue_range || 0);
-
-                    const team = r.team || 'Khác';
-                    const region = getRegionInternal(team);
-
-                    if (region === 'global') {
-                        groupTotals.global.traffic += t;
-                        groupTotals.global.revenue += re;
-                    } else {
-                        groupTotals.vn.traffic += t;
-                        groupTotals.vn.revenue += re;
-                    }
-                });
+                groupTotals.global.traffic = cardTotals.global.traffic;
+                groupTotals.global.revenue = cardTotals.global.revenue;
+                groupTotals.vn.traffic = cardTotals.vn.traffic;
+                groupTotals.vn.revenue = cardTotals.vn.revenue;
+                globalTotals.traffic = aggregates.totalTrafficCompleted;
+                globalTotals.revenue = aggregates.totalRevenueCompleted;
 
                 // Update globalTotals.channels to be consistent with the sum of group channels
                 globalTotals.channels = groupTotals.global.channels + groupTotals.vn.channels;
@@ -3605,6 +3679,7 @@ export class WorkReportService implements OnModuleInit {
                         traffic: trafficRanking,
                         revenue: revenueRanking
                     },
+                    teamRegions: Object.fromEntries(allTaskTeams.map((t) => [t.name, getRegionInternal(t.name)])),
                     meta: {
                         // Use the GLOBAL count (all months) so the banner only shows when the table
                         // is truly empty, not when viewing a date whose data hasn't been entered yet.

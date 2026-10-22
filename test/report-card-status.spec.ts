@@ -98,6 +98,7 @@ describe('Trạng thái thẻ nhân sự trên bảng Hiệu suất', () => {
         const channels = Array.from({ length: opts.soKenh }, () => ({
             owner: NGUOI.full_name,
             team_traffic: NGUOI.team,
+            status: 'Đang hoạt động',
         }));
 
         const prisma: any = {
@@ -133,6 +134,7 @@ describe('Trạng thái thẻ nhân sự trên bảng Hiệu suất', () => {
             editorKpi: { findMany: jest.fn(async () => []) },
             editorDailyKpi: { findMany: jest.fn(async () => []) },
             teamMember: { findMany: jest.fn(async () => []) },
+            team: { findMany: jest.fn(async () => []) },
             $queryRawUnsafe: jest.fn(async () => []),
         };
 
