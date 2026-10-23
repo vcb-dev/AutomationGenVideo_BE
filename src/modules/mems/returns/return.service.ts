@@ -4,10 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { CreateReturnDto } from './dto';
-import { assertPhotoEvidence } from '../../utils/mems/photo-evidence.util';
-import { conditionWorsened, resolveReturnStatus } from '../../utils/mems/return-rules.util';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { CreateReturnDto } from './dto/return.dto';
+import { assertPhotoEvidence } from '../../../utils/mems/photo-evidence.util';
+import { conditionWorsened, resolveReturnStatus } from '../../../utils/mems/return-rules.util';
 
 @Injectable()
 export class ReturnService {

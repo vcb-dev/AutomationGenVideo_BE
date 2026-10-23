@@ -16,7 +16,6 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { EmptyStringToUndefined } from '../../../utils/mems/dto-transforms.util';
-import { AccessoryCheckDto } from '../../mems/handover/dto/handover.dto';
 
 /**
  * Lọc nhật ký mượn của cả kho.
@@ -58,47 +57,4 @@ export class BorrowHistoryQueryDto {
   @IsInt()
   @Min(1)
   pageSize?: number;
-}
-
-export class ReturnUnitDto {
-  @ApiProperty()
-  @IsUUID()
-  assetId: string;
-
-  @ApiProperty({ description: 'Tình trạng ghi nhận lúc nhận lại' })
-  @IsString()
-  @IsNotEmpty()
-  condition: string;
-
-  @ApiProperty({ type: [String], description: 'Ảnh khi trả, tối thiểu một' })
-  @IsArray()
-  @ArrayMinSize(1)
-  @IsString({ each: true })
-  photoKeys: string[];
-
-  @ApiPropertyOptional({ type: [AccessoryCheckDto] })
-  @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => AccessoryCheckDto)
-  accessories?: AccessoryCheckDto[];
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  note?: string;
-}
-
-export class CreateReturnDto {
-  @ApiProperty({ type: [ReturnUnitDto], description: 'Chỉ những máy mang tới hôm nay' })
-  @IsArray()
-  @ArrayMinSize(1)
-  @ValidateNested({ each: true })
-  @Type(() => ReturnUnitDto)
-  units: ReturnUnitDto[];
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  note?: string;
 }

@@ -4,6 +4,7 @@ import { MemsAssignmentModule } from './assignment/assignment.module';
 import { MemsAvailabilityModule } from './availability/availability.module';
 import { MemsBorrowRequestsModule } from './borrow-requests/borrow-requests.module';
 import { MemsHandoverModule } from './handover/handover.module';
+import { MemsReturnsModule } from './returns/returns.module';
 
 /** Gốc module quản lý thiết bị Media; mỗi chức năng là một module con. */
 @Module({
@@ -13,6 +14,7 @@ import { MemsHandoverModule } from './handover/handover.module';
     MemsBorrowRequestsModule,
     MemsAssignmentModule,
     MemsHandoverModule,
+    MemsReturnsModule,
   ],
 })
 export class MemsModule {}

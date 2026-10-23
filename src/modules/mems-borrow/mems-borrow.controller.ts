@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -7,11 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
-import { ReturnService } from './return.service';
-import {
-  CreateReturnDto,
-  BorrowHistoryQueryDto,
-} from './dto';
+import { BorrowHistoryQueryDto } from './dto';
 
 @ApiTags('MEMS — Mượn thiết bị')
 @ApiBearerAuth()
@@ -21,7 +17,6 @@ export class MemsBorrowController {
   constructor(
     private readonly borrowHistory: AssetBorrowHistoryService,
     private readonly historyLog: BorrowHistoryLogService,
-    private readonly returns: ReturnService,
   ) {}
 
   @Get('borrow-history')
@@ -42,21 +37,5 @@ export class MemsBorrowController {
   })
   assetBorrowHistory(@Param('id') id: string, @Request() req: any) {
     return this.borrowHistory.forAsset(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team });
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Get('requests/:id/pending-returns')
-  @ApiOperation({ summary: 'Những máy của phiếu còn đang ở ngoài (MH-13)' })
-  pendingReturns(@Param('id') id: string) {
-    return this.returns.pendingUnits(id);
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Post('requests/:id/return')
-  @ApiOperation({ summary: 'Tiếp nhận máy trả về, kết luận theo BR-42 (NV-13)' })
-  receiveReturn(@Request() req: any, @Param('id') id: string, @Body() dto: CreateReturnDto) {
-    return this.returns.create(id, req.user.id, dto);
   }
 }
