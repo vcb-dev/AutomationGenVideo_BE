@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MemsApprovalsModule } from './approvals/approvals.module';
 import { MemsAssignmentModule } from './assignment/assignment.module';
 import { MemsAvailabilityModule } from './availability/availability.module';
+import { MemsBorrowHistoryModule } from './borrow-history/borrow-history.module';
 import { MemsBorrowRequestsModule } from './borrow-requests/borrow-requests.module';
 import { MemsHandoverModule } from './handover/handover.module';
 import { MemsReturnsModule } from './returns/returns.module';
@@ -15,6 +16,7 @@ import { MemsReturnsModule } from './returns/returns.module';
     MemsAssignmentModule,
     MemsHandoverModule,
     MemsReturnsModule,
+    MemsBorrowHistoryModule,
   ],
 })
 export class MemsModule {}

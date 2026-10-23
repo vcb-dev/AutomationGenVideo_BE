@@ -1,21 +1,7 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  ArrayMinSize,
-  IsArray,
-  IsBoolean,
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Matches,
-  IsUUID,
-  Min,
-  ValidateNested,
-} from 'class-validator';
-import { EmptyStringToUndefined } from '../../../utils/mems/dto-transforms.util';
+import { IsIn, IsInt, IsISO8601, IsOptional, Min } from 'class-validator';
+import { EmptyStringToUndefined } from '../../../../utils/mems/dto-transforms.util';
 
 /**
  * Lọc nhật ký mượn của cả kho.

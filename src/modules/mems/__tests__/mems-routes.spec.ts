@@ -3,12 +3,11 @@ import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from '@nestjs/common/
 import { MemsMediaLeaderGuard } from '../../../common/guards/mems-media-leader.guard';
 import { IS_PUBLIC_KEY } from '../../auth/decorators/public.decorator';
 import { ROLES_KEY } from '../../auth/decorators/roles.decorator';
-import { MemsBorrowModule } from '../../mems-borrow/mems-borrow.module';
 import { MemsCatalogModule } from '../../mems-catalog/mems-catalog.module';
 import { MemsModule } from '../mems.module';
 
 /** Module chứa route MEMS; tách xong thì chỉ còn MemsModule. */
-const ROOT_MODULES: any[] = [MemsModule, MemsBorrowModule, MemsCatalogModule];
+const ROOT_MODULES: any[] = [MemsModule, MemsCatalogModule];
 
 /** Nest lưu danh sách guard của `@UseGuards` dưới khoá này. */
 const GUARDS_KEY = '__guards__';

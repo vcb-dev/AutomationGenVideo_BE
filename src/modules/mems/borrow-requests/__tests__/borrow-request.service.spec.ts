@@ -135,10 +135,6 @@ describe('Tạo phiếu mượn', () => {
    *
    * Nhìn từ phía NGƯỜI DÙNG KHÔNG BIẾT LUỒNG: khai thông tin, chọn thiết bị, gửi phiếu, kể cả khi
    * họ đặt ngày ngược, xin nhiều hơn số máy đang có, hay để trống những ô không bắt buộc.
-   *
-   * Hai chức năng tách riêng file theo quy chuẩn, xem:
-   *   - test/mems-borrow-duplicate-model-lines.spec.ts — chặn khai trùng model
-   *   - test/mems-borrow-default-department.spec.ts   — bộ phận mặc định
    */
 
   describe('Tạo phiếu mượn — khai thông tin chung', () => {

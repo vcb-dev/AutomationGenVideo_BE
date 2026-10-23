@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
+import { MemsBorrowHistoryController } from './borrow-history.controller';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
-import { MemsBorrowController } from './mems-borrow.controller';
 
 @Module({
-  controllers: [MemsBorrowController],
+  controllers: [MemsBorrowHistoryController],
   providers: [AssetBorrowHistoryService, BorrowHistoryLogService],
 })
-export class MemsBorrowModule {}
+export class MemsBorrowHistoryModule {}
