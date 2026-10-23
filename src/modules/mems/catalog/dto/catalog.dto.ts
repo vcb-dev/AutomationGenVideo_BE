@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
-import { EmptyStringToNull, EmptyStringToUndefined } from '../../../utils/mems/dto-transforms.util';
+import { EmptyStringToNull, EmptyStringToUndefined } from '../../../../utils/mems/dto-transforms.util';
 
 const ASSET_STATUSES = [
   'PENDING_INSPECTION',

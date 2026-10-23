@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
-import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
-import { intakeStatusFor } from '../../utils/mems/intake-rules.util';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { MemsPhotoUrlSigner } from '../../../common/mems/photo-url-signer.service';
+import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto/catalog.dto';
+import { intakeStatusFor } from '../../../utils/mems/intake-rules.util';
 
 /**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.

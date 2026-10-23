@@ -14,7 +14,6 @@ import { UsersModule } from "./modules/users/users.module";
 import { AiIntegrationModule } from "./modules/ai-integration/ai-integration.module";
 import { OmsIntegrationModule } from "./modules/oms-integration/oms-integration.module";
 import { SapoIntegrationModule } from './modules/sapo-integration/sapo-integration.module';
-import { MemsCatalogModule } from './modules/mems-catalog/mems-catalog.module';
 import { MemsModule } from './modules/mems/mems.module';
 import { OwnedVideoWeeklyReportModule } from './modules/owned-video-weekly-report/owned-video-weekly-report.module';
 import { ChannelEnrichmentModule } from "./modules/channel-enrichment/channel-enrichment.module";
@@ -89,7 +88,6 @@ import { ApiKeysModule } from './modules/api-keys/api-keys.module';
     AiIntegrationModule,
     SapoIntegrationModule,
     OmsIntegrationModule,
-    MemsCatalogModule,
     MemsModule,
     OwnedVideoWeeklyReportModule,
     ChannelEnrichmentModule,

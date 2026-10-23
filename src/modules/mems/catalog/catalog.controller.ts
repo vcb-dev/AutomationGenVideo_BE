@@ -11,10 +11,10 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
-import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../../auth/guards/roles.guard';
+import { Roles } from '../../auth/decorators/roles.decorator';
+import { MemsMediaLeaderGuard } from '../../../common/guards/mems-media-leader.guard';
 import {
   CreateAssetDto,
   CreateCategoryDto,
@@ -24,8 +24,8 @@ import {
   ListModelsQueryDto,
   UpdateAssetDto,
   UpdateLocationDto,
-} from './dto';
-import { MemsCatalogService } from './mems-catalog.service';
+} from './dto/catalog.dto';
+import { MemsCatalogService } from './catalog.service';
 
 @ApiTags('MEMS — Kho thiết bị')
 @ApiBearerAuth()
