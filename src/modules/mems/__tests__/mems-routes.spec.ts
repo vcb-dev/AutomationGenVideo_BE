@@ -5,9 +5,10 @@ import { IS_PUBLIC_KEY } from '../../auth/decorators/public.decorator';
 import { ROLES_KEY } from '../../auth/decorators/roles.decorator';
 import { MemsBorrowModule } from '../../mems-borrow/mems-borrow.module';
 import { MemsCatalogModule } from '../../mems-catalog/mems-catalog.module';
+import { MemsModule } from '../mems.module';
 
 /** Module chứa route MEMS; tách xong thì chỉ còn MemsModule. */
-const ROOT_MODULES: any[] = [MemsBorrowModule, MemsCatalogModule];
+const ROOT_MODULES: any[] = [MemsModule, MemsBorrowModule, MemsCatalogModule];
 
 /** Nest lưu danh sách guard của `@UseGuards` dưới khoá này. */
 const GUARDS_KEY = '__guards__';
