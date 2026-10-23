@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ApprovalService } from './approval.service';
+import { ApprovalService } from '../mems/approvals/approval.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { AssignmentService } from './assignment.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';

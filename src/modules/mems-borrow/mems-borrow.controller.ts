@@ -5,7 +5,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
-import { ApprovalService } from './approval.service';
+import { ApprovalService } from '../mems/approvals/approval.service';
 import { AssignmentService } from './assignment.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
@@ -13,14 +13,12 @@ import { BorrowRequestService } from './borrow-request.service';
 import { HandoverService } from './handover.service';
 import { ReturnService } from './return.service';
 import {
-  ApproveRequestDto,
   AssignSerialsDto,
   CreateBorrowRequestDto,
   CreateHandoverDto,
   CreateReturnDto,
   BorrowHistoryQueryDto,
   ListRequestsQueryDto,
-  RejectRequestDto,
 } from './dto';
 
 @ApiTags('MEMS — Mượn thiết bị')
@@ -82,22 +80,6 @@ export class MemsBorrowController {
   })
   requestDetail(@Request() req: any, @Param('id') id: string) {
     return this.approvals.detail(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team });
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Post('requests/:id/approve')
-  @ApiOperation({ summary: 'Duyệt một cấp (NV-09)' })
-  approve(@Request() req: any, @Param('id') id: string, @Body() dto: ApproveRequestDto) {
-    return this.approvals.approve(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team }, dto);
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Post('requests/:id/reject')
-  @ApiOperation({ summary: 'Từ chối phiếu, nhả giữ chỗ ngay (BR-32)' })
-  reject(@Request() req: any, @Param('id') id: string, @Body() dto: RejectRequestDto) {
-    return this.approvals.reject(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team }, dto);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
