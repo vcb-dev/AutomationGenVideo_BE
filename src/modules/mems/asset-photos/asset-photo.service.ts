@@ -7,6 +7,7 @@ import { MemsPhotoUrlSigner } from '../../../common/mems/photo-url-signer.servic
 import {
   IMAGE_EXTENSION,
   IMAGE_MIME,
+  ImageKind,
   SUPPORTED_IMAGE_LABEL,
   sniffImageKind,
 } from '../../../common/mems/image-file-type';
@@ -57,6 +58,62 @@ export class AssetPhotoService {
     return `${assetCode}_${Date.now()}_${rand}${extension}`;
   }
 
+  /** Kiểm có file, đúng trần dung lượng và đúng là ảnh theo nội dung. */
+  private assertImage(file: Express.Multer.File): ImageKind {
+    if (!file) throw new BadRequestException('Chưa chọn ảnh nào để tải lên');
+    if (file.size > MEMS_PHOTO_MAX_BYTES) {
+      throw new BadRequestException('Ảnh vượt quá 10MB, chụp lại ở kích thước nhỏ hơn');
+    }
+
+    // Loại file suy từ NỘI DUNG, không từ `file.mimetype` (client tự khai) hay đuôi trong
+    // `file.originalname` (người dùng tự gõ). Tin hai thứ đó là ghi được file bất kỳ xuống đĩa
+    // chỉ bằng cách đổi tên và đặt lại header.
+    const kind = sniffImageKind(file.buffer);
+    if (!kind) {
+      throw new BadRequestException(`Tệp không phải ảnh hợp lệ. Chỉ nhận ${SUPPORTED_IMAGE_LABEL}`);
+    }
+    return kind;
+  }
+
+  /** Ghi ảnh lên Google Drive nếu đã cấu hình, không thì ghi ra đĩa máy chủ. */
+  private async storeImage(
+    file: Express.Multer.File,
+    filename: string,
+    kind: ImageKind,
+    user: unknown,
+  ): Promise<{ url: string; storage: string }> {
+    if (this.googleDrive.isAvailable()) {
+      const tmpPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(tmpPath, file.buffer);
+      try {
+        const result = await this.googleDrive.uploadFromPath(
+          tmpPath,
+          filename,
+          IMAGE_MIME[kind],
+          user,
+          { subfolder: 'mems' },
+        );
+        return { url: result.url, storage: 'google_drive' };
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+    if (!fs.existsSync(MEMS_PHOTO_DIR)) fs.mkdirSync(MEMS_PHOTO_DIR, { recursive: true });
+    fs.writeFileSync(path.join(MEMS_PHOTO_DIR, filename), file.buffer);
+    // Đường dẫn tương đối: máy chủ đổi tên miền thì ảnh cũ vẫn mở được.
+    return { url: `/api/mems/photos/${filename}`, storage: 'local' };
+  }
+
+  /** Ảnh người mượn tải lên trước khi gửi phiếu hoặc báo sự cố; gắn vào phiếu ở bước sau. */
+  async uploadRequestPhoto(uploaderId: string, file: Express.Multer.File, user: unknown) {
+    const kind = this.assertImage(file);
+    const { url, storage } = await this.storeImage(file, this.buildFileName('REQ', IMAGE_EXTENSION[kind]), kind, user);
+    const created = await this.prisma.memsRequestPhoto.create({
+      data: { url, storage, uploaded_by: uploaderId },
+    });
+    return { id: created.id, url: this.photoUrls.sign(created.url) };
+  }
+
   async list(assetCode: string) {
     const asset = await this.prisma.memsAsset.findUnique({
       where: { asset_code: assetCode.toUpperCase() },
@@ -85,18 +142,7 @@ export class AssetPhotoService {
     user: unknown,
     purpose: PhotoPurpose = PHOTO_PURPOSE.CATALOG,
   ) {
-    if (!file) throw new BadRequestException('Chưa chọn ảnh nào để tải lên');
-    if (file.size > MEMS_PHOTO_MAX_BYTES) {
-      throw new BadRequestException('Ảnh vượt quá 10MB, chụp lại ở kích thước nhỏ hơn');
-    }
-
-    // Loại file suy từ NỘI DUNG, không từ `file.mimetype` (client tự khai) hay đuôi trong
-    // `file.originalname` (người dùng tự gõ). Tin hai thứ đó là ghi được file bất kỳ xuống đĩa
-    // chỉ bằng cách đổi tên và đặt lại header.
-    const kind = sniffImageKind(file.buffer);
-    if (!kind) {
-      throw new BadRequestException(`Tệp không phải ảnh hợp lệ. Chỉ nhận ${SUPPORTED_IMAGE_LABEL}`);
-    }
+    const kind = this.assertImage(file);
 
     const asset = await this.prisma.memsAsset.findUnique({
       where: { asset_code: assetCode.toUpperCase() },
@@ -104,33 +150,12 @@ export class AssetPhotoService {
     });
     if (!asset) throw new NotFoundException(`Không có thiết bị mã ${assetCode}`);
 
-    const filename = this.buildFileName(asset.asset_code, IMAGE_EXTENSION[kind]);
-    let url: string;
-    let storage: string;
-
-    if (this.googleDrive.isAvailable()) {
-      const tmpPath = path.join(os.tmpdir(), filename);
-      fs.writeFileSync(tmpPath, file.buffer);
-      try {
-        const result = await this.googleDrive.uploadFromPath(
-          tmpPath,
-          filename,
-          IMAGE_MIME[kind],
-          user,
-          { subfolder: 'mems' },
-        );
-        url = result.url;
-        storage = 'google_drive';
-      } finally {
-        fs.unlink(tmpPath, () => {});
-      }
-    } else {
-      if (!fs.existsSync(MEMS_PHOTO_DIR)) fs.mkdirSync(MEMS_PHOTO_DIR, { recursive: true });
-      fs.writeFileSync(path.join(MEMS_PHOTO_DIR, filename), file.buffer);
-      // Đường dẫn tương đối: máy chủ đổi tên miền thì ảnh cũ vẫn mở được.
-      url = `/api/mems/photos/${filename}`;
-      storage = 'local';
-    }
+    const { url, storage } = await this.storeImage(
+      file,
+      this.buildFileName(asset.asset_code, IMAGE_EXTENSION[kind]),
+      kind,
+      user,
+    );
 
     // Đếm trong CÙNG nhóm mục đích: ảnh biên bản không được đẩy `sort_order` của thư viện ảnh
     // hồ sơ, và ngược lại.

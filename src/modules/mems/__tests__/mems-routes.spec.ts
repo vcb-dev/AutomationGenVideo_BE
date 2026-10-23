@@ -45,6 +45,7 @@ const EXPECTED_ROUTES: [string, boolean][] = [
   ['DELETE mems/locations/:id deleteLocation', true],
   ['GET mems/assets/:assetCode/photos listPhotos', false],
   ['POST mems/assets/:assetCode/photos uploadPhoto', true],
+  ['POST mems/request-photos uploadRequestPhoto', false],
   ['POST mems/photos/:photoId/primary setPrimaryPhoto', true],
   ['DELETE mems/photos/:photoId removePhoto', true],
   ['GET mems/photos/:filename servePhoto', false],

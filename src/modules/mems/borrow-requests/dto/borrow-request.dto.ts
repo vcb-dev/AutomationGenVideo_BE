@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsIn,
@@ -11,6 +12,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -68,6 +70,19 @@ export class CreateBorrowRequestDto {
   @ValidateNested({ each: true })
   @Type(() => BorrowLineDto)
   lines: BorrowLineDto[];
+
+  @ApiPropertyOptional({ description: 'Ghi chú của người mượn' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+
+  @ApiPropertyOptional({ type: [String], description: 'ID ảnh đã tải qua POST /mems/request-photos, tối đa 5' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsUUID('4', { each: true })
+  photoIds?: string[];
 }
 
 /** Toàn bộ giá trị của enum `MemsRequestStatus`. */

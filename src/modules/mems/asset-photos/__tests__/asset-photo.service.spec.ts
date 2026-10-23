@@ -400,3 +400,46 @@ describe('AssetPhotoService — ảnh chứng cứ không được thành ảnh 
     expect(created.deleted).toHaveLength(0);
   });
 });
+
+describe('Tải ảnh người mượn (POST /mems/request-photos)', () => {
+  const asFile = (buffer: Buffer) =>
+    ({ buffer, size: buffer.length, originalname: 'a.jpg', mimetype: 'image/jpeg' }) as Express.Multer.File;
+
+  function buildRequestPhotoDeps() {
+    const prisma: any = {
+      memsRequestPhoto: { create: jest.fn(async ({ data }: any) => ({ id: 'rp-1', ...data })) },
+    };
+    const drive: any = { isAvailable: () => false, uploadFromPath: jest.fn() };
+    return { service: new AssetPhotoService(prisma, drive, photoUrlSignerStub), prisma };
+  }
+
+  it('lưu ảnh chưa gắn phiếu, ghi người tải và trả về id cùng URL', async () => {
+    const { service, prisma } = buildRequestPhotoDeps();
+    const saved = await service.uploadRequestPhoto('user-1', asFile(JPEG_BYTES), {});
+    const data = prisma.memsRequestPhoto.create.mock.calls[0][0].data;
+    expect(data).toMatchObject({ uploaded_by: 'user-1', storage: 'local' });
+    expect(data.request_id).toBeUndefined();
+    expect(saved).toEqual({ id: 'rp-1', url: data.url });
+  });
+
+  it('tên file theo mẫu mà route phục vụ ảnh chấp nhận', async () => {
+    const { service, prisma } = buildRequestPhotoDeps();
+    await service.uploadRequestPhoto('user-1', asFile(JPEG_BYTES), {});
+    expect(prisma.memsRequestPhoto.create.mock.calls[0][0].data.url).toMatch(
+      /^\/api\/mems\/photos\/REQ_\d{10,}_[a-z0-9]+\.(jpg|jpeg)$/,
+    );
+  });
+
+  it('tệp không phải ảnh thì từ chối, không ghi gì', async () => {
+    const { service, prisma } = buildRequestPhotoDeps();
+    await expect(
+      service.uploadRequestPhoto('user-1', asFile(Buffer.from('day khong phai la anh')), {}),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.memsRequestPhoto.create).not.toHaveBeenCalled();
+  });
+
+  it('không chọn file thì báo lỗi rõ ràng', async () => {
+    const { service } = buildRequestPhotoDeps();
+    await expect(service.uploadRequestPhoto('user-1', undefined as any, {})).rejects.toThrow('Chưa chọn ảnh');
+  });
+});

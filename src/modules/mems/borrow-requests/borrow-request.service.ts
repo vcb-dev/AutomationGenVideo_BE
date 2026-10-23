@@ -9,6 +9,7 @@ import { UserRole } from '@prisma/client';
 import { isMediaLeaderOrAdminUser } from '../../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { AvailabilityService } from '../availability/availability.service';
+import { attachRequestPhotos } from '../../../utils/mems/request-photos.util';
 import { CreateBorrowRequestDto } from './dto/borrow-request.dto';
 
 /**
@@ -160,8 +161,13 @@ export class BorrowRequestService {
           from_time: fromTime,
           to_time: toTime,
           status: 'PENDING_APPROVAL',
+          note: dto.note?.trim() || null,
         },
       });
+
+      if (dto.photoIds?.length) {
+        await attachRequestPhotos(tx, { requestId: request.id, uploaderId: ownerId, photoIds: dto.photoIds });
+      }
 
       for (const line of dto.lines) {
         // Hỏi bằng chính `tx`: dòng sau phải thấy giữ chỗ mà dòng trước vừa ghi. Đọc bằng

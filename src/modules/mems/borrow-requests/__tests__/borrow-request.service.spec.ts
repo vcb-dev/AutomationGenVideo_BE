@@ -39,6 +39,8 @@ interface DepsOptions {
   fallbackDepartment?: { id: string } | null;
   /** Số phiếu đã có trong cùng ngày nhận, dùng cho số thứ tự của mã phiếu. */
   requestsToday?: number;
+  /** ID ảnh mà người gửi đã tải lên và chưa gắn phiếu nào. */
+  attachablePhotoIds?: string[];
 }
 
 /**
@@ -55,6 +57,7 @@ function buildCreateDeps(options: DepsOptions = {}) {
     departments = [],
     fallbackDepartment = null,
     requestsToday = 0,
+    attachablePhotoIds = [],
   } = options;
 
   const created: any = { request: null, lines: [], reservations: [], departments: [] };
@@ -98,6 +101,11 @@ function buildCreateDeps(options: DepsOptions = {}) {
         created.reservations.push(...data);
         return { count: data.length };
       }),
+    },
+    memsRequestPhoto: {
+      updateMany: jest.fn(async ({ where }: any) => ({
+        count: (where.id.in as string[]).filter((id) => attachablePhotoIds.includes(id)).length,
+      })),
     },
   };
 
@@ -788,5 +796,50 @@ describe('Huỷ phiếu', () => {
       expect(tx.$executeRawUnsafe.mock.calls[0][0]).toContain('pg_advisory_xact_lock');
       expect(String(tx.$executeRawUnsafe.mock.calls[0][1])).toContain('req-1');
     });
+  });
+});
+
+describe('Ghi chú và ảnh đính kèm khi tạo phiếu', () => {
+  const PHOTO_A = '11111111-1111-4111-8111-111111111111';
+  const PHOTO_B = '22222222-2222-4222-8222-222222222222';
+
+  it('ghi chú lưu dạng chữ thường, đã cắt khoảng trắng', async () => {
+    const { service, created } = buildCreateDeps();
+    await service.create('user-1', { ...oneLine(), note: '  Cần thêm pin dự phòng  ' });
+    expect(created.request.note).toBe('Cần thêm pin dự phòng');
+  });
+
+  it('không ghi chú thì lưu null', async () => {
+    const { service, created } = buildCreateDeps();
+    await service.create('user-1', oneLine());
+    expect(created.request.note).toBeNull();
+  });
+
+  it('gắn ảnh vào phiếu vừa tạo, chỉ ảnh của chính người gửi và chưa gắn ở đâu', async () => {
+    const { service, tx } = buildCreateDeps({ attachablePhotoIds: [PHOTO_A, PHOTO_B] });
+    await service.create('user-1', { ...oneLine(), photoIds: [PHOTO_A, PHOTO_B] });
+    expect(tx.memsRequestPhoto.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [PHOTO_A, PHOTO_B] }, uploaded_by: 'user-1', request_id: null },
+      data: { request_id: 'req-1', incident_id: null },
+    });
+  });
+
+  it('một ảnh không hợp lệ thì từ chối cả phiếu', async () => {
+    const { service } = buildCreateDeps({ attachablePhotoIds: [PHOTO_A] });
+    await expect(service.create('user-1', { ...oneLine(), photoIds: [PHOTO_A, PHOTO_B] })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('gửi trùng ID thì chỉ tính một lần', async () => {
+    const { service, tx } = buildCreateDeps({ attachablePhotoIds: [PHOTO_A] });
+    await service.create('user-1', { ...oneLine(), photoIds: [PHOTO_A, PHOTO_A] });
+    expect(tx.memsRequestPhoto.updateMany.mock.calls[0][0].where.id.in).toEqual([PHOTO_A]);
+  });
+
+  it('không gửi ảnh thì không đụng bảng ảnh', async () => {
+    const { service, tx } = buildCreateDeps();
+    await service.create('user-1', oneLine());
+    expect(tx.memsRequestPhoto.updateMany).not.toHaveBeenCalled();
   });
 });

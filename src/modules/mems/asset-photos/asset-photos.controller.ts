@@ -72,6 +72,16 @@ export class MemsAssetPhotosController {
     return this.photos.upload(assetCode, req.user.id, file, caption, req.user, safePurpose);
   }
 
+  /** Cố ý không có @Roles: người mượn nào cũng phải đính kèm được ảnh vào phiếu của mình. */
+  @Post('request-photos')
+  @ApiOperation({ summary: 'Tải ảnh người mượn đính kèm phiếu hoặc báo sự cố' })
+  @ApiConsumes('multipart/form-data')
+  @UseFilters(MulterErrorFilter)
+  @UseInterceptors(FileInterceptor('photo', { limits: { fileSize: MEMS_PHOTO_MAX_BYTES } }))
+  uploadRequestPhoto(@Request() req: any, @UploadedFile() file: Express.Multer.File) {
+    return this.photos.uploadRequestPhoto(req.user.id, file, req.user);
+  }
+
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
   @UseGuards(MemsMediaLeaderGuard)
   @Post('photos/:photoId/primary')
