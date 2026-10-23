@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MemsApprovalsModule } from './approvals/approvals.module';
+import { MemsAssetPhotosModule } from './asset-photos/asset-photos.module';
 import { MemsAssignmentModule } from './assignment/assignment.module';
 import { MemsAvailabilityModule } from './availability/availability.module';
 import { MemsBorrowHistoryModule } from './borrow-history/borrow-history.module';
@@ -17,6 +18,7 @@ import { MemsReturnsModule } from './returns/returns.module';
     MemsHandoverModule,
     MemsReturnsModule,
     MemsBorrowHistoryModule,
+    MemsAssetPhotosModule,
   ],
 })
 export class MemsModule {}

@@ -2,15 +2,15 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { MemsPhotoUrlSigner } from '../../../common/mems/photo-url-signer.service';
 import {
   IMAGE_EXTENSION,
   IMAGE_MIME,
   SUPPORTED_IMAGE_LABEL,
   sniffImageKind,
-} from '../../common/mems/image-file-type';
-import { GoogleDriveStorageService } from '../social-publishing/upload/google-drive-storage.service';
+} from '../../../common/mems/image-file-type';
+import { GoogleDriveStorageService } from '../../social-publishing/upload/google-drive-storage.service';
 
 /** Thư mục dự phòng khi chưa cấu hình Google Drive — giống cách task-auto đang làm. */
 export const MEMS_PHOTO_DIR = path.join(process.cwd(), 'uploads', 'mems');

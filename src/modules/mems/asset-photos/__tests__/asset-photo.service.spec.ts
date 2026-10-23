@@ -1,6 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AssetPhotoService } from '../asset-photo.service';
-import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
+import { photoUrlSignerStub } from '../../../../common/mems/__tests__/photo-url-signer.stub';
 
 jest.mock('fs', () => ({
   existsSync: jest.fn(() => true),
