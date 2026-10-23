@@ -147,27 +147,6 @@ export class BorrowHistoryQueryDto {
   pageSize?: number;
 }
 
-export class CheckAvailabilityQueryDto {
-  @ApiProperty()
-  @IsUUID()
-  modelId: string;
-
-  @ApiProperty()
-  @IsISO8601()
-  fromTime: string;
-
-  @ApiProperty()
-  @IsISO8601()
-  toTime: string;
-
-  @ApiPropertyOptional({ default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  quantity?: number;
-}
-
 export class ApproveRequestDto {
   @ApiPropertyOptional({ description: 'Ghi chú của người duyệt, không bắt buộc' })
   @IsOptional()

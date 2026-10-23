@@ -3,7 +3,7 @@ import { ApprovalService } from './approval.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { AssignmentService } from './assignment.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
-import { AvailabilityService } from './availability.service';
+import { AvailabilityService } from '../mems/availability/availability.service';
 import { BorrowRequestService } from './borrow-request.service';
 import { HandoverService } from './handover.service';
 import { MemsBorrowController } from './mems-borrow.controller';

@@ -7,7 +7,6 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
 import { ApprovalService } from './approval.service';
 import { AssignmentService } from './assignment.service';
-import { AvailabilityService } from './availability.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
 import { BorrowRequestService } from './borrow-request.service';
@@ -16,7 +15,6 @@ import { ReturnService } from './return.service';
 import {
   ApproveRequestDto,
   AssignSerialsDto,
-  CheckAvailabilityQueryDto,
   CreateBorrowRequestDto,
   CreateHandoverDto,
   CreateReturnDto,
@@ -31,7 +29,6 @@ import {
 @Controller('mems')
 export class MemsBorrowController {
   constructor(
-    private readonly availability: AvailabilityService,
     private readonly requests: BorrowRequestService,
     private readonly borrowHistory: AssetBorrowHistoryService,
     private readonly historyLog: BorrowHistoryLogService,
@@ -40,17 +37,6 @@ export class MemsBorrowController {
     private readonly handovers: HandoverService,
     private readonly returns: ReturnService,
   ) {}
-
-  @Get('availability')
-  @ApiOperation({ summary: 'Kiểm tra khả dụng theo khoảng thời gian (NV-07)' })
-  check(@Query() query: CheckAvailabilityQueryDto) {
-    return this.availability.check({
-      modelId: query.modelId,
-      fromTime: new Date(query.fromTime),
-      toTime: new Date(query.toTime),
-      quantity: query.quantity ?? 1,
-    });
-  }
 
   @Post('requests')
   @ApiOperation({ summary: 'Tạo phiếu mượn (NV-06)' })

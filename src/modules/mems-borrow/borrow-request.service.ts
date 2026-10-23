@@ -8,7 +8,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { AvailabilityService } from './availability.service';
+import { AvailabilityService } from '../mems/availability/availability.service';
 import { CreateBorrowRequestDto } from './dto';
 
 /**
