@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateHandoverDto } from './dto';
-import { assertPhotoEvidence } from './photo-evidence';
+import { assertPhotoEvidence } from '../../utils/mems/photo-evidence.util';
 
 @Injectable()
 export class HandoverService {

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
-import { borrowDuration } from './borrow-duration';
+import { borrowDuration } from '../../utils/mems/borrow-duration.util';
 
 /**
  * Lịch sử "máy này từng ai mượn".

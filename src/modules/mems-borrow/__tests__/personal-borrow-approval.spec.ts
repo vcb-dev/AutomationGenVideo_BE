@@ -1,5 +1,5 @@
 import { ForbiddenException } from '@nestjs/common';
-import { canSign, planApprovals } from '../approval-rules';
+import { canSign, planApprovals } from '../../../utils/mems/approval-rules.util';
 import { ApprovalService } from '../approval.service';
 import { BorrowRequestService } from '../borrow-request.service';
 

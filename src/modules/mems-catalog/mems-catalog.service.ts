@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
 import { CreateAssetDto, CreateCategoryDto, CreateLocationDto, CreateModelDto, UpdateAssetDto, UpdateLocationDto } from './dto';
-import { intakeStatusFor } from './intake-rules';
+import { intakeStatusFor } from '../../utils/mems/intake-rules.util';
 
 /**
  * Trạng thái chỉ quy trình mới sinh ra được, không đặt tay.

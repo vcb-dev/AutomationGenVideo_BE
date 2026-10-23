@@ -1,4 +1,4 @@
-import { intakeStatusFor } from '../intake-rules';
+import { intakeStatusFor } from '../../../utils/mems/intake-rules.util';
 import { ConflictException } from '@nestjs/common';
 import { MemsCatalogService } from '../mems-catalog.service';
 import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';

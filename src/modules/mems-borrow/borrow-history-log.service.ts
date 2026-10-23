@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { borrowDuration } from './borrow-duration';
+import { borrowDuration } from '../../utils/mems/borrow-duration.util';
 
 /**
  * Nhật ký toàn bộ lượt mượn của cả kho.

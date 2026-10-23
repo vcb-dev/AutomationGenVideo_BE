@@ -1,4 +1,4 @@
-import { borrowDuration } from '../borrow-duration';
+import { borrowDuration } from '../borrow-duration.util';
 
 /**
  * Chức năng: tính một lượt mượn kéo dài bao lâu và có trễ hạn không.

@@ -1,4 +1,4 @@
-import { computeAvailability, overlaps } from '../availability';
+import { computeAvailability, overlaps } from '../availability.util';
 
 const d = (iso: string) => new Date(iso);
 

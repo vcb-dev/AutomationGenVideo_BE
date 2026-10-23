@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { AvailabilityResult, computeAvailability } from './availability';
+import { AvailabilityResult, computeAvailability } from '../../utils/mems/availability.util';
 
 export interface CheckAvailabilityArgs {
   modelId: string;

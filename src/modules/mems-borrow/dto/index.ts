@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform, Type } from 'class-transformer';
+import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
@@ -15,6 +15,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { EmptyStringToUndefined } from '../../../utils/mems/dto-transforms.util';
 
 export class BorrowLineDto {
   @ApiProperty()
@@ -82,10 +83,6 @@ const REQUEST_STATUSES = [
   'CLOSED',
   'CANCELLED',
 ];
-
-/** Ô lọc để trống gửi lên chuỗi rỗng — coi như không lọc, đừng ném 400 vào mặt người bấm bỏ lọc. */
-const EmptyStringToUndefined = () =>
-  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
 
 /**
  * Lọc danh sách phiếu. Nhận một hoặc nhiều trạng thái ngăn bằng dấu phẩy — màn Nhận trả gọi kèm

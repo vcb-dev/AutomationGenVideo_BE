@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ApprovalService } from '../src/modules/mems-borrow/approval.service';
 import { BorrowRequestService } from '../src/modules/mems-borrow/borrow-request.service';
-import { canSign, planApprovals } from '../src/modules/mems-borrow/approval-rules';
+import { canSign, planApprovals } from '../src/utils/mems/approval-rules.util';
 import { isMediaLeaderOrAdminUser } from '../src/common/guards/mems-media-leader.guard';
 
 /**

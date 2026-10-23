@@ -1,19 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
-
-/**
- * Ô select rỗng gửi lên chuỗi rỗng, không phải `null`.
- *
- * `@IsOptional()` chỉ bỏ qua `undefined` và `null`, nên chuỗi rỗng vẫn rơi vào `@IsUUID()` và
- * ăn 400 — người dùng bấm "Chưa xếp chỗ" để gỡ máy khỏi vị trí thì không lưu được, mà đó lại
- * là cách duy nhất để dọn một vị trí trước khi xoá nó.
- *
- * Đổi về `null` để `@IsOptional()` nhận, đồng thời tầng service phân biệt được "không gửi"
- * (`undefined`, giữ nguyên giá trị cũ) với "gửi rỗng" (`null`, xoá giá trị).
- */
-const EmptyStringToNull = () =>
-  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value));
+import { EmptyStringToNull, EmptyStringToUndefined } from '../../../utils/mems/dto-transforms.util';
 
 const ASSET_STATUSES = [
   'PENDING_INSPECTION',
@@ -25,15 +12,6 @@ const ASSET_STATUSES = [
   'LOST',
   'DISPOSED',
 ];
-
-/**
- * Ô lọc để trống gửi lên chuỗi rỗng, không phải vắng mặt.
- *
- * Giao diện gửi `?status=&categoryId=` khi người dùng chọn lại "Mọi trạng thái". Nếu để chuỗi
- * rỗng rơi vào `@IsIn`/`@IsUUID` thì bấm bỏ lọc là ăn 400.
- */
-const EmptyStringToUndefined = () =>
-  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
 
 /**
  * Tham số lọc của màn Danh sách kho.
