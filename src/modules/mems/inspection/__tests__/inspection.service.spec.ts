@@ -1,6 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { InspectionService } from '../inspection.service';
-import { photoUrlSignerStub } from '../../../common/mems/__tests__/photo-url-signer.stub';
+import { photoUrlSignerStub } from '../../../../common/mems/__tests__/photo-url-signer.stub';
 
 function buildDeps(over: Partial<any> = {}) {
   const asset = {

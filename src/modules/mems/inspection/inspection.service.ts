@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { InspectAssetDto } from './dto';
-import { MemsPhotoUrlSigner } from '../../common/mems/photo-url-signer.service';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { InspectAssetDto } from './dto/inspection.dto';
+import { MemsPhotoUrlSigner } from '../../../common/mems/photo-url-signer.service';
 
 /**
  * Chỉ máy đang nằm ở bàn kiểm tra mới có gì để kết luận. Máy đang mượn hay đã sẵn sàng thì

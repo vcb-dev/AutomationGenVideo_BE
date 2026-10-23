@@ -7,7 +7,6 @@ import {
   Patch,
   Post,
   Query,
-  Request,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -21,13 +20,11 @@ import {
   CreateCategoryDto,
   CreateLocationDto,
   CreateModelDto,
-  InspectAssetDto,
   ListAssetsQueryDto,
   ListModelsQueryDto,
   UpdateAssetDto,
   UpdateLocationDto,
 } from './dto';
-import { InspectionService } from './inspection.service';
 import { MemsCatalogService } from './mems-catalog.service';
 
 @ApiTags('MEMS — Kho thiết bị')
@@ -35,10 +32,7 @@ import { MemsCatalogService } from './mems-catalog.service';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('mems')
 export class MemsCatalogController {
-  constructor(
-    private readonly service: MemsCatalogService,
-    private readonly inspection: InspectionService,
-  ) {}
+  constructor(private readonly service: MemsCatalogService) {}
 
   @Get('assets')
   @ApiOperation({ summary: 'Danh sách thiết bị trong kho (MH-02)' })
@@ -66,26 +60,6 @@ export class MemsCatalogController {
   @ApiOperation({ summary: 'Xóa thiết bị khỏi kho' })
   deleteAsset(@Param('assetCode') assetCode: string) {
     return this.service.deleteAsset(assetCode);
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Get('pending-inspection')
-  @ApiOperation({ summary: 'Máy đang chờ kết luận kiểm tra (NV-14)' })
-  pendingInspection() {
-    return this.inspection.listPending();
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Post('assets/:assetCode/inspect')
-  @ApiOperation({ summary: 'Kết luận kiểm tra, đưa máy ra khỏi bàn nhận (NV-14)' })
-  inspect(
-    @Request() req: any,
-    @Param('assetCode') assetCode: string,
-    @Body() dto: InspectAssetDto,
-  ) {
-    return this.inspection.inspect(assetCode, req.user.id, dto);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
