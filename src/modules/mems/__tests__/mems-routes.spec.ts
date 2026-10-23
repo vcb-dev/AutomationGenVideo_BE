@@ -52,6 +52,8 @@ const EXPECTED_ROUTES: [string, boolean][] = [
   ['GET mems/pending-inspection pendingInspection', true],
   ['POST mems/assets/:assetCode/inspect inspect', true],
   ['GET mems/return-alerts returnAlerts', false],
+  ['POST mems/requests/:id/extensions requestExtension', false],
+  ['POST mems/requests/:id/extensions/decision decideExtension', true],
 ];
 
 /** Gom controller của module và mọi module con nó import. */
