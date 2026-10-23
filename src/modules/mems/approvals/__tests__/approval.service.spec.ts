@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ApprovalService } from '../approval.service';
 import { canSign, planApprovals } from '../../../../utils/mems/approval-rules.util';
-import { BorrowRequestService } from '../../../mems-borrow/borrow-request.service';
+import { BorrowRequestService } from '../../borrow-requests/borrow-request.service';
 import { isMediaLeaderOrAdminUser } from '../../../../common/guards/mems-media-leader.guard';
 
 describe('Duyệt và từ chối phiếu', () => {

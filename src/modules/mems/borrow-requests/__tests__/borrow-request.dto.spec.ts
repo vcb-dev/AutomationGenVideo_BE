@@ -1,6 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { BorrowHistoryQueryDto, ListRequestsQueryDto } from '../dto';
+import { BorrowHistoryQueryDto } from '../../../mems-borrow/dto';
+import { ListRequestsQueryDto } from '../dto/borrow-request.dto';
 
 /**
  * Chức năng: kiểm tham số lọc của màn Duyệt phiếu và màn Nhật ký mượn TRƯỚC khi chạm Prisma.

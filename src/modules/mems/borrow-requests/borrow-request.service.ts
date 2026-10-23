@@ -6,10 +6,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { isMediaLeaderOrAdminUser } from '../../common/guards/mems-media-leader.guard';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { AvailabilityService } from '../mems/availability/availability.service';
-import { CreateBorrowRequestDto } from './dto';
+import { isMediaLeaderOrAdminUser } from '../../../common/guards/mems-media-leader.guard';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { AvailabilityService } from '../availability/availability.service';
+import { CreateBorrowRequestDto } from './dto/borrow-request.dto';
 
 /**
  * Giai đoạn còn huỷ được phiếu — tất cả đều là trước khi máy rời kho.
