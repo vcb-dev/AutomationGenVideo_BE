@@ -54,6 +54,7 @@ const EXPECTED_ROUTES: [string, boolean][] = [
   ['GET mems/return-alerts returnAlerts', false],
   ['POST mems/requests/:id/extensions requestExtension', false],
   ['POST mems/requests/:id/extensions/decision decideExtension', true],
+  ['POST mems/requests/:id/incidents reportIncident', false],
 ];
 
 /** Gom controller của module và mọi module con nó import. */

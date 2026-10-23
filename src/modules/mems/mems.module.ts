@@ -7,6 +7,7 @@ import { MemsBorrowHistoryModule } from './borrow-history/borrow-history.module'
 import { MemsBorrowRequestsModule } from './borrow-requests/borrow-requests.module';
 import { MemsCatalogModule } from './catalog/catalog.module';
 import { MemsHandoverModule } from './handover/handover.module';
+import { MemsIncidentsModule } from './incidents/incidents.module';
 import { MemsInspectionModule } from './inspection/inspection.module';
 import { MemsLoanExtensionsModule } from './loan-extensions/loan-extensions.module';
 import { MemsReturnAlertsModule } from './return-alerts/return-alerts.module';
@@ -27,6 +28,7 @@ import { MemsReturnsModule } from './returns/returns.module';
     MemsBorrowHistoryModule,
     MemsReturnAlertsModule,
     MemsLoanExtensionsModule,
+    MemsIncidentsModule,
   ],
 })
 export class MemsModule {}
