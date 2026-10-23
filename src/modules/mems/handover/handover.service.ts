@@ -4,9 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { CreateHandoverDto } from './dto';
-import { assertPhotoEvidence } from '../../utils/mems/photo-evidence.util';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { CreateHandoverDto } from './dto/handover.dto';
+import { assertPhotoEvidence } from '../../../utils/mems/photo-evidence.util';
 
 @Injectable()
 export class HandoverService {
