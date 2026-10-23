@@ -7,6 +7,8 @@ export interface CheckAvailabilityArgs {
   fromTime: Date;
   toTime: Date;
   quantity: number;
+  /** Bỏ qua giữ chỗ của chính phiếu này — dùng khi tính dời hạn trả. */
+  excludeRequestId?: string;
 }
 
 export interface CheckAvailabilityOutput extends AvailabilityResult {
@@ -104,6 +106,7 @@ export class AvailabilityService {
         status: { in: ['TENTATIVE', 'CONFIRMED'] as any },
         from_time: { lt: bufferedTo },
         buffer_to_time: { gt: args.fromTime },
+        ...(args.excludeRequestId ? { request_line: { request_id: { not: args.excludeRequestId } } } : {}),
       },
       select: { from_time: true, buffer_to_time: true },
     });
@@ -191,9 +194,20 @@ export class AvailabilityService {
       select: { asset_id: true },
     });
 
+    // Máy quá hạn chưa trả vẫn ON_LOAN mà giữ chỗ cũ đã hết; không ẩn thì kho chọn trúng rồi mới bị assign chặn
+    const overdueOut = await this.prisma.memsHandoverLine.findMany({
+      where: {
+        asset: { model_id: args.modelId },
+        returnLines: { none: {} },
+        handover: { request: { to_time: { lt: new Date() } } },
+      },
+      select: { asset_id: true },
+    });
+
     const busy = new Set([
       ...pinned.map((p) => p.asset_id as string),
       ...busyMaintenance.map((m) => m.asset_id),
+      ...overdueOut.map((o) => o.asset_id),
     ]);
     return assets.filter((a) => !busy.has(a.id));
   }

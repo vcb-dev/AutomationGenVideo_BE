@@ -207,3 +207,61 @@ describe('AvailabilityService — model không tồn tại', () => {
     ).rejects.toThrow(NotFoundException);
   });
 });
+
+describe('check() — bỏ qua giữ chỗ của chính phiếu', () => {
+  function buildPrisma() {
+    return {
+      memsAssetModel: { findUnique: jest.fn(async () => ({ id: 'm-1', category: { buffer_minutes: 60 } })) },
+      memsAsset: { count: jest.fn(async () => 1) },
+      memsReservation: { findMany: jest.fn(async () => []) },
+      memsMaintenance: { findMany: jest.fn(async () => []) },
+    } as any;
+  }
+  const ARGS = {
+    modelId: 'm-1',
+    fromTime: new Date('2026-10-19T18:00:00Z'),
+    toTime: new Date('2026-10-20T10:00:00Z'),
+    quantity: 1,
+  };
+
+  it('mặc định đếm mọi giữ chỗ giao nhau như cũ', async () => {
+    const prisma = buildPrisma();
+    await new AvailabilityService(prisma).check(ARGS);
+    expect(prisma.memsReservation.findMany.mock.calls[0][0].where.request_line).toBeUndefined();
+  });
+
+  it('khi dời hạn trả thì không tính giữ chỗ của chính phiếu đó', async () => {
+    const prisma = buildPrisma();
+    await new AvailabilityService(prisma).check({ ...ARGS, excludeRequestId: 'req-1' });
+    expect(prisma.memsReservation.findMany.mock.calls[0][0].where.request_line).toEqual({
+      request_id: { not: 'req-1' },
+    });
+  });
+});
+
+describe('freeAssets() — máy quá hạn chưa trả', () => {
+  function buildPrisma() {
+    return {
+      memsAssetModel: { findUnique: jest.fn(async () => ({ id: 'm-1', category: { buffer_minutes: 0 } })) },
+      memsAsset: { findMany: jest.fn(async () => [{ id: 'a-1' }, { id: 'a-2' }]) },
+      memsReservation: { findMany: jest.fn(async () => []) },
+      memsMaintenance: { findMany: jest.fn(async () => []) },
+      memsHandoverLine: { findMany: jest.fn(async () => [{ asset_id: 'a-2' }]) },
+    } as any;
+  }
+  const ARGS = { modelId: 'm-1', fromTime: new Date('2026-10-25T02:00:00Z'), toTime: new Date('2026-10-26T02:00:00Z') };
+
+  it('ẩn máy quá hạn chưa trả khỏi danh sách', async () => {
+    const free = await new AvailabilityService(buildPrisma()).freeAssets(ARGS);
+    expect(free.map((a: any) => a.id)).toEqual(['a-1']);
+  });
+
+  it('chỉ xét lượt giao chưa có biên bản nhận trả và đã quá hạn', async () => {
+    const prisma = buildPrisma();
+    await new AvailabilityService(prisma).freeAssets(ARGS);
+    const where = prisma.memsHandoverLine.findMany.mock.calls[0][0].where;
+    expect(where.asset).toEqual({ model_id: 'm-1' });
+    expect(where.returnLines).toEqual({ none: {} });
+    expect(where.handover.request.to_time.lt).toBeInstanceOf(Date);
+  });
+});
