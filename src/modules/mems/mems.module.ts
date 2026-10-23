@@ -8,6 +8,7 @@ import { MemsBorrowRequestsModule } from './borrow-requests/borrow-requests.modu
 import { MemsCatalogModule } from './catalog/catalog.module';
 import { MemsHandoverModule } from './handover/handover.module';
 import { MemsInspectionModule } from './inspection/inspection.module';
+import { MemsReturnAlertsModule } from './return-alerts/return-alerts.module';
 import { MemsReturnsModule } from './returns/returns.module';
 
 /** Gốc module quản lý thiết bị Media; mỗi chức năng là một module con. */
@@ -23,6 +24,7 @@ import { MemsReturnsModule } from './returns/returns.module';
     MemsHandoverModule,
     MemsReturnsModule,
     MemsBorrowHistoryModule,
+    MemsReturnAlertsModule,
   ],
 })
 export class MemsModule {}

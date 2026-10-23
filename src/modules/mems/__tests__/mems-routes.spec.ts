@@ -51,6 +51,7 @@ const EXPECTED_ROUTES: [string, boolean][] = [
   ['GET mems/photos/:filename servePhoto', false],
   ['GET mems/pending-inspection pendingInspection', true],
   ['POST mems/assets/:assetCode/inspect inspect', true],
+  ['GET mems/return-alerts returnAlerts', false],
 ];
 
 /** Gom controller của module và mọi module con nó import. */
