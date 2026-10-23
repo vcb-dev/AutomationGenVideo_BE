@@ -4,9 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { AvailabilityService, NOT_USABLE_STATUSES } from '../mems/availability/availability.service';
-import { AssignSerialsDto } from './dto';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { AvailabilityService, NOT_USABLE_STATUSES } from '../availability/availability.service';
+import { AssignSerialsDto } from './dto/assignment.dto';
 
 /** Tình trạng còn đem giao cho người mượn được. Máy ngoài hai mức này phải qua kiểm tra trước. */
 const ASSIGNABLE_CONDITIONS = ['GOOD', 'USED'];

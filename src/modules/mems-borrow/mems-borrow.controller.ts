@@ -5,13 +5,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MemsMediaLeaderGuard } from '../../common/guards/mems-media-leader.guard';
-import { AssignmentService } from './assignment.service';
 import { AssetBorrowHistoryService } from './asset-borrow-history.service';
 import { BorrowHistoryLogService } from './borrow-history-log.service';
 import { HandoverService } from './handover.service';
 import { ReturnService } from './return.service';
 import {
-  AssignSerialsDto,
   CreateHandoverDto,
   CreateReturnDto,
   BorrowHistoryQueryDto,
@@ -25,7 +23,6 @@ export class MemsBorrowController {
   constructor(
     private readonly borrowHistory: AssetBorrowHistoryService,
     private readonly historyLog: BorrowHistoryLogService,
-    private readonly assignment: AssignmentService,
     private readonly handovers: HandoverService,
     private readonly returns: ReturnService,
   ) {}
@@ -48,22 +45,6 @@ export class MemsBorrowController {
   })
   assetBorrowHistory(@Param('id') id: string, @Request() req: any) {
     return this.borrowHistory.forAsset(id, { id: req.user.id, roles: req.user.roles ?? [], team: req.user.team });
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Get('request-lines/:lineId/assignable-assets')
-  @ApiOperation({ summary: 'Máy hợp lệ để gán cho một dòng phiếu (BR-25)' })
-  assignable(@Param('lineId') lineId: string) {
-    return this.assignment.assignableUnits(lineId);
-  }
-
-  @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
-  @UseGuards(MemsMediaLeaderGuard)
-  @Post('requests/:id/assign')
-  @ApiOperation({ summary: 'Gán máy cụ thể cho phiếu đã duyệt (NV-10)' })
-  assign(@Param('id') id: string, @Body() dto: AssignSerialsDto) {
-    return this.assignment.assign(id, dto);
   }
 
   @Roles(UserRole.LEADER, UserRole.MANAGER, UserRole.ADMIN)
