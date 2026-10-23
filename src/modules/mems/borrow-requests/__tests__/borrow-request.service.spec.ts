@@ -843,3 +843,23 @@ describe('Ghi chú và ảnh đính kèm khi tạo phiếu', () => {
     expect(tx.memsRequestPhoto.updateMany).not.toHaveBeenCalled();
   });
 });
+
+describe('Khoá sinh mã phiếu theo ngày', () => {
+  const DAY_LOCK = 'mems:request-code:20260915';
+
+  it('khoá theo ngày nhận TRƯỚC khi đếm số phiếu trong ngày', async () => {
+    const { service, tx, lockKeys } = buildCreateDeps();
+    await service.create('user-1', oneLine());
+    const lockIndex = lockKeys.indexOf(DAY_LOCK);
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(tx.$executeRawUnsafe.mock.invocationCallOrder[lockIndex]).toBeLessThan(
+      tx.memsBorrowRequest.count.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('khoá mã phiếu đến SAU khoá model, cùng chiều với các luồng khác', async () => {
+    const { service, lockKeys } = buildCreateDeps();
+    await service.create('user-1', oneLine('model-1'));
+    expect(lockKeys.indexOf('mems:model:model-1')).toBeLessThan(lockKeys.indexOf(DAY_LOCK));
+  });
+});

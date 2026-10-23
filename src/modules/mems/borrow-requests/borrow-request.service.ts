@@ -219,10 +219,12 @@ export class BorrowRequestService {
       Date.UTC(fromTime.getUTCFullYear(), fromTime.getUTCMonth(), fromTime.getUTCDate()),
     );
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const ymd = dayStart.toISOString().slice(0, 10).replace(/-/g, '');
+    // Khoá theo ngày: hai phiếu khác model không chung khoá model nên sẽ cùng đếm ra một số
+    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, `mems:request-code:${ymd}`);
     const used = await tx.memsBorrowRequest.count({
       where: { from_time: { gte: dayStart, lt: dayEnd } },
     });
-    const ymd = dayStart.toISOString().slice(0, 10).replace(/-/g, '');
     return `REQ-${ymd}-${String(used + 1).padStart(3, '0')}`;
   }
 
