@@ -1277,3 +1277,51 @@ describe('Xoá danh mục và model', () => {
     });
   });
 });
+
+describe('Nhập kho không serial — tự sinh serial từ mã máy', () => {
+  function buildAutoSerialPrisma(existingCount = 2) {
+    const prisma: any = {
+      memsAssetModel: { findUniqueOrThrow: jest.fn(async () => ({ id: 'model-1', category: { code: 'CAM' } })) },
+      memsAsset: {
+        findUnique: jest.fn(async () => null),
+        count: jest.fn(async () => existingCount),
+        create: jest.fn(async ({ data }: any) => ({ id: `asset-${data.asset_code}`, ...data })),
+      },
+      memsAssetEvent: { create: jest.fn(async ({ data }: any) => data) },
+      $executeRawUnsafe: jest.fn(async () => 1),
+    };
+    prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
+    return prisma;
+  }
+
+  it('serial = NOSN-<mã máy>', async () => {
+    const prisma = buildAutoSerialPrisma(2);
+    const asset: any = await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({ modelId: 'model-1' });
+    expect(asset.serial_number).toBe('NOSN-CAM-003');
+  });
+
+  it('nhập lô 3 chiếc không serial thì mỗi chiếc một serial theo mã của nó', async () => {
+    const prisma = buildAutoSerialPrisma(2);
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({ modelId: 'model-1', quantity: 3 });
+    expect(prisma.memsAsset.create.mock.calls.map((c: any) => c[0].data.serial_number)).toEqual([
+      'NOSN-CAM-003',
+      'NOSN-CAM-004',
+      'NOSN-CAM-005',
+    ]);
+  });
+
+  it('tự sinh thì không tra trùng serial', async () => {
+    const prisma = buildAutoSerialPrisma();
+    await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({ modelId: 'model-1' });
+    expect(prisma.memsAsset.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('có serial thì giữ nguyên serial người nhập', async () => {
+    const prisma = buildAutoSerialPrisma();
+    const asset: any = await new MemsCatalogService(prisma, photoUrlSignerStub).createAsset({
+      modelId: 'model-1',
+      serialNumber: 'SN-999',
+    });
+    expect(asset.serial_number).toBe('SN-999');
+  });
+});

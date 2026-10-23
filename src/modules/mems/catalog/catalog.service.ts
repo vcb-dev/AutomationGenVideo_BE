@@ -57,9 +57,8 @@ export class MemsCatalogService {
       targetSerials = [dto.serialNumber.trim()];
     }
 
-    if (targetSerials.length === 0) {
-      throw new BadRequestException('Vui lòng nhập số serial cho thiết bị');
-    }
+    // Thiết bị không có serial nhà sản xuất (chân máy, đèn…) thì lấy mã máy làm serial
+    const autoSerial = targetSerials.length === 0;
 
     const qty = Math.max(dto.quantity || 1, targetSerials.length, 1);
 
@@ -70,7 +69,7 @@ export class MemsCatalogService {
         { length: qty },
         (_, i) => `${baseSerial}-${String(i + 1).padStart(2, '0')}`,
       );
-    } else if (targetSerials.length < qty) {
+    } else if (!autoSerial && targetSerials.length < qty) {
       const baseSerial = targetSerials[0];
       const start = targetSerials.length;
       for (let i = start; i < qty; i++) {
@@ -110,6 +109,7 @@ export class MemsCatalogService {
     // thường đã có vết, ghi sai ngay từ đầu thì mọi lần đối chiếu về sau đều lệch.
     const condition = dto.condition ?? 'GOOD';
     const status = intakeStatusFor(condition);
+    const unitCount = autoSerial ? qty : targetSerials.length;
 
     return this.prisma.$transaction(async (tx) => {
       // Đếm và ghi phải nằm trong cùng giao dịch có khoá, nếu không hai người cùng nhập kho sẽ
@@ -134,9 +134,9 @@ export class MemsCatalogService {
       });
 
       const createdAssets = [];
-      for (let i = 0; i < targetSerials.length; i++) {
-        const sn = targetSerials[i];
+      for (let i = 0; i < unitCount; i++) {
         const assetCode = `${prefix}-${String(existing + 1 + i).padStart(3, '0')}`;
+        const sn = autoSerial ? `NOSN-${assetCode}` : targetSerials[i];
 
         const asset = await tx.memsAsset.create({
           data: {
@@ -162,7 +162,7 @@ export class MemsCatalogService {
             detail: [
               `tình trạng khi nhập ${condition}`,
               dto.intakeNote?.trim() || null,
-              targetSerials.length > 1 ? `(Nhập lô ${i + 1}/${targetSerials.length})` : null,
+              unitCount > 1 ? `(Nhập lô ${i + 1}/${unitCount})` : null,
             ]
               .filter(Boolean)
               .join(' · '),
