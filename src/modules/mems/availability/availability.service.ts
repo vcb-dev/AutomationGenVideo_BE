@@ -194,7 +194,7 @@ export class AvailabilityService {
       select: { asset_id: true },
     });
 
-    // Máy quá hạn chưa trả vẫn ON_LOAN mà giữ chỗ cũ đã hết; không ẩn thì kho chọn trúng rồi mới bị assign chặn
+    // Máy quá hạn chưa trả vẫn ON_LOAN nhưng giữ chỗ đã hết, phải ẩn kẻo kho chọn trúng
     const overdueOut = await this.prisma.memsHandoverLine.findMany({
       where: {
         asset: { model_id: args.modelId },
