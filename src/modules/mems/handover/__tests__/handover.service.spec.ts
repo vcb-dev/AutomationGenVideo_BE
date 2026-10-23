@@ -262,3 +262,91 @@ describe('HandoverService.create — trùng mã máy trong biên bản', () => {
     expect(tx.memsHandover.create).not.toHaveBeenCalled();
   });
 });
+
+describe('Bàn giao — dùng ảnh người mượn', () => {
+  const OWN_PHOTO = '11111111-1111-4111-8111-111111111111';
+  const BORROWER = [{ url: '/api/mems/photos/REQ_1_aaaa.jpg', storage: 'local' }];
+  const unit = (photoKeys?: string[]) => ({ assetId: 'asset-1', condition: 'GOOD', photoKeys });
+
+  function buildBorrowerDeps(borrowerPhotos: { url: string; storage: string }[]) {
+    const request = {
+      id: 'req-1',
+      request_code: 'REQ-20261019-001',
+      status: 'PREPARING',
+      lines: [{ id: 'line-1', reservations: [{ asset_id: 'asset-1' }] }],
+      photos: borrowerPhotos,
+    };
+    const store: { id: string; asset_id: string }[] = [{ id: OWN_PHOTO, asset_id: 'asset-1' }];
+    const handoverPhotos: any[] = [];
+    const tx: any = {
+      memsBorrowRequest: {
+        findUnique: jest.fn(async () => request),
+        update: jest.fn(async ({ data }: any) => ({ ...request, ...data })),
+      },
+      memsAssetPhoto: {
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: `00000000-0000-4000-8000-00000000000${store.length}`, ...data };
+          store.push(row);
+          return row;
+        }),
+        findMany: jest.fn(async ({ where }: any) => store.filter((p) => (where.id.in as string[]).includes(p.id))),
+      },
+      memsHandover: {
+        create: jest.fn(async ({ data }: any) => ({ id: 'ho-1', ...data })),
+        findUniqueOrThrow: jest.fn(async () => ({ id: 'ho-1' })),
+      },
+      memsHandoverLine: { create: jest.fn(async ({ data }: any) => ({ id: 'hl-1', ...data })) },
+      memsHandoverPhoto: {
+        createMany: jest.fn(async ({ data }: any) => {
+          handoverPhotos.push(...data);
+          return { count: data.length };
+        }),
+      },
+      memsHandoverAccessory: { createMany: jest.fn(async () => ({ count: 0 })) },
+      memsAsset: { update: jest.fn(async () => ({})), findMany: jest.fn(async () => []) },
+      memsAssetEvent: { create: jest.fn(async ({ data }: any) => data) },
+      memsRequestLine: { updateMany: jest.fn(async () => ({ count: 1 })) },
+    };
+    const prisma: any = { $transaction: jest.fn(async (fn: any) => fn(tx)) };
+    return { service: new HandoverService(prisma), tx, handoverPhotos };
+  }
+
+  it('máy không có ảnh riêng thì chép ảnh người mượn thành ảnh bàn giao của máy đó', async () => {
+    const { service, tx, handoverPhotos } = buildBorrowerDeps(BORROWER);
+    await service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit()] });
+    expect(tx.memsAssetPhoto.create).toHaveBeenCalledWith({
+      data: {
+        asset_id: 'asset-1',
+        url: '/api/mems/photos/REQ_1_aaaa.jpg',
+        storage: 'local',
+        purpose: 'HANDOVER',
+        caption: 'Ảnh người mượn đính kèm phiếu REQ-20261019-001',
+        uploaded_by: 'keeper-1',
+      },
+    });
+    expect(handoverPhotos).toEqual([{ handover_line_id: 'hl-1', storage_key: '00000000-0000-4000-8000-000000000001' }]);
+  });
+
+  it('máy đã có ảnh riêng thì không chép ảnh người mượn', async () => {
+    const { service, tx } = buildBorrowerDeps(BORROWER);
+    await service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit([OWN_PHOTO])] });
+    expect(tx.memsAssetPhoto.create).not.toHaveBeenCalled();
+  });
+
+  it('phiếu không có ảnh người mượn và máy không có ảnh thì vẫn chặn (BR-26)', async () => {
+    const { service, tx } = buildBorrowerDeps([]);
+    await expect(service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit([])] })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(tx.memsHandover.create).not.toHaveBeenCalled();
+  });
+
+  it('đọc ảnh người mượn ngay khi đọc phiếu, không lấy ảnh sự cố', async () => {
+    const { service, tx } = buildBorrowerDeps(BORROWER);
+    await service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit()] });
+    expect(tx.memsBorrowRequest.findUnique.mock.calls[0][0].include.photos).toEqual({
+      where: { incident_id: null },
+      orderBy: { created_at: 'asc' },
+    });
+  });
+});

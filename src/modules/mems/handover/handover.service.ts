@@ -5,8 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
-import { CreateHandoverDto } from './dto/handover.dto';
+import { CreateHandoverDto, HandoverUnitDto } from './dto/handover.dto';
 import { assertPhotoEvidence } from '../../../utils/mems/photo-evidence.util';
+import { PHOTO_PURPOSE } from '../asset-photos/asset-photo.service';
 
 @Injectable()
 export class HandoverService {
@@ -50,7 +51,10 @@ export class HandoverService {
     return this.prisma.$transaction(async (tx) => {
       const request = await tx.memsBorrowRequest.findUnique({
         where: { id: requestId },
-        include: { lines: { include: { reservations: true } } },
+        include: {
+          lines: { include: { reservations: true } },
+          photos: { where: { incident_id: null }, orderBy: { created_at: 'asc' } },
+        },
       });
       if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
       if (request.status !== 'PREPARING') {
@@ -62,7 +66,9 @@ export class HandoverService {
         throw new BadRequestException('Biên bản bàn giao phải có ít nhất một máy');
       }
 
-      const withoutPhoto = dto.units.filter((u) => (u.photoKeys?.length ?? 0) === 0);
+      // Máy chưa có ảnh riêng thì dùng ảnh người mượn đính kèm phiếu làm chứng cứ bàn giao
+      const borrowerPhotos = request.photos ?? [];
+      const withoutPhoto = dto.units.filter((u) => (u.photoKeys?.length ?? 0) === 0 && borrowerPhotos.length === 0);
       if (withoutPhoto.length > 0) {
         throw new BadRequestException(
           `Chưa có ảnh tình trạng cho ${withoutPhoto.length} máy, chưa bàn giao được`,
@@ -112,7 +118,30 @@ export class HandoverService {
       //
       // Đếm số ảnh ở trên là chưa đủ: `photoKeys` do client gửi nên phép đếm không nói được tấm
       // nào có thật. Kiểm bằng chính `tx` để thấy cả ảnh vừa tải lên trong cùng luồng.
-      await assertPhotoEvidence(tx, dto.units);
+      const units: (HandoverUnitDto & { photoKeys: string[] })[] = [];
+      for (const unit of dto.units) {
+        if (unit.photoKeys?.length) {
+          units.push({ ...unit, photoKeys: unit.photoKeys });
+          continue;
+        }
+        const photoKeys: string[] = [];
+        for (const photo of borrowerPhotos) {
+          const copy = await tx.memsAssetPhoto.create({
+            data: {
+              asset_id: unit.assetId,
+              url: photo.url,
+              storage: photo.storage,
+              purpose: PHOTO_PURPOSE.HANDOVER,
+              caption: `Ảnh người mượn đính kèm phiếu ${request.request_code}`,
+              uploaded_by: handedById,
+            },
+          });
+          photoKeys.push(copy.id);
+        }
+        units.push({ ...unit, photoKeys });
+      }
+
+      await assertPhotoEvidence(tx, units);
 
       const handover = await tx.memsHandover.create({
         data: {
@@ -123,7 +152,7 @@ export class HandoverService {
         },
       });
 
-      for (const unit of dto.units) {
+      for (const unit of units) {
         const line = await tx.memsHandoverLine.create({
           data: {
             handover_id: handover.id,

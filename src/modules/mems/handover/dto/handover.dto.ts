@@ -22,11 +22,14 @@ export class HandoverUnitDto {
   @IsNotEmpty()
   condition: string;
 
-  @ApiProperty({ type: [String], description: 'BR-26: tối thiểu một ảnh' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'BR-26: ID ảnh đã tải lên; để trống thì dùng ảnh người mượn đính kèm phiếu',
+  })
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @IsString({ each: true })
-  photoKeys: string[];
+  photoKeys?: string[];
 
   @ApiPropertyOptional({ type: [AccessoryCheckDto] })
   @IsOptional()
