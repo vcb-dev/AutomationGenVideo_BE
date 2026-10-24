@@ -969,7 +969,6 @@ export class TaskAutoCatalogService {
           market: dto.market ?? src.market,
           price_segment: dto.price_segment ?? src.price_segment,
           priority_score: dto.priority_score ?? src.priority_score,
-          cooldown_days: dto.cooldown_days ?? src.cooldown_days,
           material_id: dto.material_id ?? src.material_id,
           product_line_id: dto.product_line_id ?? src.product_line_id,
           classification_id: dto.classification_id ?? src.classification_id,
@@ -996,7 +995,6 @@ export class TaskAutoCatalogService {
         market: dto.market,
         price_segment: dto.price_segment,
         priority_score: dto.priority_score ?? 0,
-        cooldown_days: dto.cooldown_days ?? null,
         material_id: dto.material_id,
         product_line_id: dto.product_line_id,
         classification_id: dto.classification_id,
@@ -1521,7 +1519,6 @@ export class TaskAutoCatalogService {
       id: string;
       brand_type: any;
       priority_score: number;
-      cooldown_days: number | null;
       is_active: boolean;
       product_line_id: string | null;
       classification_id: string | null;
@@ -1539,7 +1536,6 @@ export class TaskAutoCatalogService {
           source_editor_product_id: ep.id,
           brand_type: ep.brand_type,
           priority_score: ep.priority_score,
-          cooldown_days: ep.cooldown_days,
           is_active: ep.is_active,
           product_line_id: ep.product_line_id,
           classification_id: ep.classification_id,
@@ -1610,7 +1606,6 @@ export class TaskAutoCatalogService {
           name: true,
           brand_type: true,
           priority_score: true,
-          cooldown_days: true,
           is_active: true,
           product_line_id: true,
           classification_id: true,
@@ -1771,7 +1766,6 @@ export class TaskAutoCatalogService {
         name: true,
         brand_type: true,
         priority_score: true,
-        cooldown_days: true,
         is_active: true,
         product_line_id: true,
         classification_id: true,

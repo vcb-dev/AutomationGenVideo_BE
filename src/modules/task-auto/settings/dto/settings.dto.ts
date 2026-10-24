@@ -12,9 +12,6 @@ export class UpdateAutoAssignSettingDto {
   @ApiPropertyOptional()
   @IsBoolean() @IsOptional() is_active?: boolean
 
-  @ApiPropertyOptional({ description: 'Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng', example: 5 })
-  @IsInt() @Min(0) @IsOptional() @Type(() => Number) default_cooldown_days?: number
-
   @ApiPropertyOptional({ description: 'Lập Kế hoạch ngày (chỉ tiêu + gợi ý content, không tạo task) cùng lượt chia task' })
   @IsBoolean() @IsOptional() daily_plan_enabled?: boolean
 
@@ -23,6 +20,11 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional({ description: 'Job khớp video ↔ task hỏi AI cho ca heuristic bỏ trống, gắn link khi AI đủ tự tin' })
   @IsBoolean() @IsOptional() video_match_ai_enabled?: boolean
+}
+
+export class UpdateTeamAutoAssignSettingDto {
+  @ApiPropertyOptional({ description: 'Số ngày chờ trước khi giao lại cùng sản phẩm cho cùng editor', example: 5 })
+  @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number
 }
 
 export class UpdateMemberAutoAssignDto {
