@@ -9,6 +9,7 @@ import {
   IsArray,
   IsNotEmpty,
   ValidateIf,
+  Matches,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -45,12 +46,6 @@ export class CreateProductDto {
   @IsOptional()
   @Type(() => Number)
   priority_score?: number;
-  @ApiPropertyOptional()
-  @IsInt()
-  @Min(0)
-  @IsOptional()
-  @Type(() => Number)
-  cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -79,12 +74,6 @@ export class UpdateProductDto {
   @IsOptional()
   @Type(() => Number)
   priority_score?: number;
-  @ApiPropertyOptional()
-  @IsInt()
-  @Min(0)
-  @IsOptional()
-  @Type(() => Number)
-  cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -255,7 +244,6 @@ export class CreateTeamProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -271,11 +259,23 @@ export class UpdateTeamProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
   @ApiPropertyOptional() @IsBoolean() @IsOptional() is_active?: boolean;
+}
+
+export class UpdateTeamProductMonthlyTargetDto {
+  @ApiProperty({ example: "2026-10" })
+  @IsString()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: "month phải có định dạng YYYY-MM" })
+  month: string;
+
+  @ApiProperty({ description: "Số video cần làm trong tháng; 0 = không đặt quota, chia đều ở lane sau", example: 20 })
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  target_quantity: number;
 }
 
 // ─── Team Content (standalone) ───────────────────────────────────────────────
@@ -386,7 +386,6 @@ export class CreateEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;
@@ -402,7 +401,6 @@ export class UpdateEditorProductDto {
   @ApiPropertyOptional() @IsString() @IsOptional() market?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() price_segment?: string;
   @ApiPropertyOptional() @IsNumber() @Min(0) @IsOptional() @Type(() => Number) priority_score?: number;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() @Type(() => Number) cooldown_days?: number;
   @ApiPropertyOptional() @IsString() @IsOptional() material_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() product_line_id?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() classification_id?: string;

@@ -1400,27 +1400,27 @@ model ApprovedContent {
 }
 
 model VideoLibrary {
-  id              String         @id @default(uuid())
-  video_id        String         @db.VarChar(255)
-  platform        String         @db.VarChar(20)
-  title           String         @default("")
-  description     String         @default("")
-  video_url       String         @db.VarChar(2000)
-  author_username String         @db.VarChar(255)
-  author_name     String         @db.VarChar(255)
-  thumbnail_url   String?        @db.VarChar(2000)
-  views_count     BigInt         @default(0)
-  likes_count     BigInt         @default(0)
-  comments_count  BigInt         @default(0)
-  shares_count    BigInt         @default(0)
+  id              String             @id @default(uuid())
+  video_id        String             @db.VarChar(255)
+  platform        String             @db.VarChar(20)
+  title           String             @default("")
+  description     String             @default("")
+  video_url       String             @db.VarChar(2000)
+  author_username String             @db.VarChar(255)
+  author_name     String             @db.VarChar(255)
+  thumbnail_url   String?            @db.VarChar(2000)
+  views_count     BigInt             @default(0)
+  likes_count     BigInt             @default(0)
+  comments_count  BigInt             @default(0)
+  shares_count    BigInt             @default(0)
   collection_type CollectionType
   added_by_id     String
-  added_by_name   String         @default("")
+  added_by_name   String             @default("")
   added_by_role   UserRole
   notes           String?
-  sourcing_url    String?        @db.VarChar(4000)
-  created_at      DateTime       @default(now())
-  updated_at      DateTime       @updatedAt
+  sourcing_url    String?            @db.VarChar(4000)
+  created_at      DateTime           @default(now())
+  updated_at      DateTime           @updatedAt
   teams           VideoLibraryTeam[]
 
   @@unique([video_id, collection_type])
@@ -2741,6 +2741,7 @@ model Team {
   video_library_teams        VideoLibraryTeam[]
   performance_goals          PerformanceGoal[]
   performance_kpi_groups     PerformanceKpiGroup[]
+  auto_assign_setting        TeamAutoAssignSetting?
 
   // Content Report relations
   content_videos      ContentVideo[]
@@ -2756,9 +2757,9 @@ model Team {
 }
 
 model TeamMember {
-  id                 String   @id @default(uuid()) @db.Uuid
-  team_id            String   @db.Uuid
-  user_id            String   @db.Uuid
+  id                   String   @id @default(uuid()) @db.Uuid
+  team_id              String   @db.Uuid
+  user_id              String   @db.Uuid
   /// Đánh dấu thành viên này là content creator của team (bổ sung cạnh editor, không loại trừ
   /// lẫn nhau, không giới hạn số lượng — chỉ là quy ước nghiệp vụ/UI). Mặc định false cho mọi
   /// dòng hiện có, kể cả thành viên của team_kind=CONTENT.
@@ -2790,8 +2791,6 @@ model TeamProduct {
   market                   String?
   price_segment            String?
   priority_score           Int       @default(0)
-  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
-  cooldown_days            Int?
   material_id              String?
   product_line_id          String?
   classification_id        String?
@@ -2922,8 +2921,6 @@ model EditorProduct {
   market            String?
   price_segment     String?
   priority_score    Int       @default(0)
-  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
-  cooldown_days     Int?
   material_id       String?
   product_line_id   String?
   classification_id String?
@@ -3492,8 +3489,6 @@ model Product {
   market                 String?
   price_segment          String?
   priority_score         Int       @default(0)
-  /// Override số ngày cooldown riêng cho sản phẩm này (per editor); NULL = dùng AutoAssignSetting.default_cooldown_days
-  cooldown_days          Int?
   material_id            String?
   product_line_id        String?
   classification_id      String?
@@ -3887,8 +3882,6 @@ model AutoAssignSetting {
   schedule_time          String   @default("17:00")
   timezone               String   @default("Asia/Ho_Chi_Minh")
   is_active              Boolean  @default(true)
-  /// Số ngày cooldown mặc định (per editor+product) cho sản phẩm chưa tự set cooldown_days riêng
-  default_cooldown_days  Int      @default(5)
   /// Sinh Kế hoạch ngày (chỉ tiêu + gợi ý content, không tạo task) cùng lượt chia task — vẫn cần
   /// is_active bật
   daily_plan_enabled     Boolean  @default(true)
@@ -3901,6 +3894,18 @@ model AutoAssignSetting {
   updated_at             DateTime @updatedAt
 
   @@map("auto_assign_settings")
+}
+
+/// Cấu hình auto-assign riêng cho từng team. Leader chỉ được sửa cấu hình của team mình lead.
+model TeamAutoAssignSetting {
+  team_id       String   @id @db.Uuid
+  cooldown_days Int      @default(5)
+  updated_by    String?
+  updated_at    DateTime @updatedAt
+
+  team Team @relation(fields: [team_id], references: [id], onDelete: Cascade)
+
+  @@map("team_auto_assign_settings")
 }
 
 /// Kế hoạch ngày của 1 người ở 1 team cho 1 tuyến nội dung (mặc định A1/A2/A3/A5): số video cần
@@ -4334,8 +4339,9 @@ model SourceWarehouse {
 model TeamProductWarehouse {
   team_product_id String
   month           String
-  /// Số video cụ thể cần cho sản phẩm này trong tháng (dùng chung cho cả team)
-  target_quantity Int    @default(1)
+  /// Số video cụ thể cần cho sản phẩm này trong tháng (dùng chung cho cả team).
+  /// 0 = không đặt quota cụ thể, vẫn auto-assign và chia đều sau nhóm có quota.
+  target_quantity Int    @default(0)
 
   team_product TeamProduct @relation(fields: [team_product_id], references: [id], onDelete: Cascade)
 

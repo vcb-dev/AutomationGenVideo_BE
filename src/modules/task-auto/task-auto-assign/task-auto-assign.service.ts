@@ -11,6 +11,7 @@ import {
 import { loadA4Editors } from "./steps/editor-eligibility";
 import {
   loadLastAssignedByEditor,
+  loadMonthlyProductCounts,
   loadTeamProductPool,
   pickProductsForEditor,
 } from "./steps/product-picker";
@@ -19,13 +20,16 @@ import {
   buildEmptyWarehouseNotice,
   EmptyWarehouseNotice,
 } from "./steps/warehouse-empty-notice";
-import { MAX_COOLDOWN_LOOKBACK_DAYS } from "./steps/cooldown";
 import { DailyPlanBuilderService } from "../daily-plans/daily-plan-builder.service";
 import { DailyPlanRunSummary } from "../daily-plans/types";
 import { KpiRolloverResult, KpiRolloverService } from "../kpi/kpi-rollover.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { PushService } from "@/common/push/push.service";
-import { UpdateAutoAssignSettingDto, UpdateMemberAutoAssignDto } from "../settings/dto/settings.dto";
+import {
+  UpdateAutoAssignSettingDto,
+  UpdateMemberAutoAssignDto,
+  UpdateTeamAutoAssignSettingDto,
+} from "../settings/dto/settings.dto";
 import {
   AUTO_ASSIGN_CONTENT_LINE_NAME,
   DEADLINE_CALENDAR_DAYS,
@@ -95,6 +99,54 @@ export class TaskAutoAssignService {
       create: { id: 1, ...dto, updated_by: userId },
       update: { ...dto, updated_by: userId },
     });
+  }
+
+  async getTeamAutoAssignSettings(actor: Actor) {
+    const teams = await this.prisma.team.findMany({
+      where: { is_active: true, ...(isAdminOrManager(actor) ? {} : { leader_id: actor.id }) },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        leader_id: true,
+        auto_assign_setting: { select: { cooldown_days: true, updated_by: true, updated_at: true } },
+      },
+    });
+    return teams.map((team) => ({
+      team_id: team.id,
+      team_name: team.name,
+      cooldown_days: team.auto_assign_setting?.cooldown_days ?? DEFAULT_COOLDOWN_DAYS,
+      updated_by: team.auto_assign_setting?.updated_by ?? null,
+      updated_at: team.auto_assign_setting?.updated_at ?? null,
+    }));
+  }
+
+  async updateTeamAutoAssignSetting(
+    teamId: string,
+    dto: UpdateTeamAutoAssignSettingDto,
+    actor: Actor,
+  ) {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      select: { id: true, name: true, leader_id: true },
+    });
+    if (!team) throw new NotFoundException("Không tìm thấy team");
+    if (!isAdminOrManager(actor) && team.leader_id !== actor.id) {
+      throw new ForbiddenException("Chỉ leader của team này mới được đổi giãn cách giao lại sản phẩm");
+    }
+    const setting = await this.prisma.teamAutoAssignSetting.upsert({
+      where: { team_id: teamId },
+      create: {
+        team_id: teamId,
+        cooldown_days: dto.cooldown_days ?? DEFAULT_COOLDOWN_DAYS,
+        updated_by: actor.id,
+      },
+      update: {
+        ...(dto.cooldown_days !== undefined && { cooldown_days: dto.cooldown_days }),
+        updated_by: actor.id,
+      },
+    });
+    return { team_id: team.id, team_name: team.name, ...setting };
   }
 
   async getMemberSchedules(actor: Actor) {
@@ -232,6 +284,7 @@ export class TaskAutoAssignService {
       const contentLine = await this.findAutoAssignContentLine();
       const teams = await this.prisma.team.findMany({
         where: { is_active: true },
+        include: { auto_assign_setting: true },
       });
       let totalAssigned = 0;
       let totalSkipped = 0;
@@ -246,7 +299,7 @@ export class TaskAutoAssignService {
           month,
           run.id,
           deadline,
-          settings.default_cooldown_days ?? DEFAULT_COOLDOWN_DAYS,
+          team.auto_assign_setting?.cooldown_days ?? DEFAULT_COOLDOWN_DAYS,
         );
         totalAssigned += result.assigned;
         totalSkipped += result.skipped;
@@ -370,7 +423,7 @@ export class TaskAutoAssignService {
     month: string,
     runId: string,
     deadline: Date,
-    defaultCooldownDays: number,
+    cooldownDays: number,
   ): Promise<TeamResult> {
     const editors = await loadA4Editors(
       this.prisma,
@@ -382,7 +435,7 @@ export class TaskAutoAssignService {
     if (!editors.length) return { assigned: 0, skipped: 0 };
 
     const needed = editors.reduce((sum, e) => sum + e.remainingToday, 0);
-    const products = await loadTeamProductPool(this.prisma, teamId, teamBrandType);
+    const products = await loadTeamProductPool(this.prisma, teamId, teamBrandType, month);
     if (!products.length) {
       await this.createEmptyWarehouseNotifications(
         editors.map((e) =>
@@ -394,7 +447,7 @@ export class TaskAutoAssignService {
         ),
       );
       this.logger.log(
-        `Team ${teamId}: kho sản phẩm không có SP dòng GMV — ${editors.length} editor cần ${needed} task ${contentLine.name}, đã gửi thông báo`,
+        `Team ${teamId}: kho sản phẩm không có SP dòng GMV đủ điều kiện (đang bật, điểm ưu tiên > 0) — ${editors.length} editor cần ${needed} task ${contentLine.name}, đã gửi thông báo`,
       );
       return { assigned: 0, skipped: needed };
     }
@@ -403,7 +456,17 @@ export class TaskAutoAssignService {
       this.prisma,
       editors.map((e) => e.userId),
       products,
-      now.minus({ days: MAX_COOLDOWN_LOOKBACK_DAYS }).startOf("day").toJSDate(),
+      now.minus({ days: Math.max(cooldownDays, 1) }).startOf("day").toJSDate(),
+    );
+
+    const monthStart = DateTime.fromFormat(month, "yyyy-MM", { zone: now.zoneName })
+      .startOf("month");
+    const monthlyAssigned = await loadMonthlyProductCounts(
+      this.prisma,
+      teamId,
+      products,
+      monthStart.toJSDate(),
+      monthStart.plus({ months: 1 }).toJSDate(),
     );
 
     const pickedInRun = new Map<string, number>();
@@ -413,8 +476,9 @@ export class TaskAutoAssignService {
         pool: products,
         need: editor.remainingToday,
         lastAssigned: lastAssignedByEditor.get(editor.userId) ?? new Map(),
+        monthlyAssigned,
         pickedInRun,
-        defaultCooldownDays,
+        cooldownDays,
         today: now,
       });
       for (const product of picked) {
@@ -426,7 +490,7 @@ export class TaskAutoAssignService {
           `${picked.length}/${editor.remainingToday} task — ` +
           `tháng ${editor.assignedThisMonth}/${editor.monthlyTarget}, kho ${products.length} SP` +
           (picked.length < editor.remainingToday
-            ? ` — giao thiếu ${editor.remainingToday - picked.length}: kho không đủ SP ngoài cooldown`
+            ? ` — giao thiếu ${editor.remainingToday - picked.length}: không đủ SP ngoài cooldown hoặc còn quota`
             : ""),
       );
     }

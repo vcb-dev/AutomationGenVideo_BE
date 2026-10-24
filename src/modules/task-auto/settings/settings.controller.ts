@@ -21,6 +21,7 @@ import {
   UpdateAutoAssignSettingDto,
   UpdateLarkWebhookSettingDto,
   UpdateMemberAutoAssignDto,
+  UpdateTeamAutoAssignSettingDto,
 } from "./dto/settings.dto";
 
 @ApiTags("task-auto")
@@ -45,6 +46,30 @@ export class TaskAutoSettingsController {
   @ApiOperation({ summary: "Update auto-assign settings" })
   updateSettings(@Body() dto: UpdateAutoAssignSettingDto, @Request() req: any) {
     return this.assign.updateSettings(dto, req.user.id);
+  }
+
+  @Get("settings/teams")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Giãn cách giao lại sản phẩm theo team — LEADER chỉ thấy team mình lead" })
+  getTeamSettings(@Request() req: any) {
+    return this.assign.getTeamAutoAssignSettings({ id: req.user.id, roles: req.user.roles ?? [] });
+  }
+
+  @Patch("settings/teams/:teamId")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Cập nhật giãn cách giao lại sản phẩm của một team" })
+  updateTeamSetting(
+    @Param("teamId", ParseUUIDPipe) teamId: string,
+    @Body() dto: UpdateTeamAutoAssignSettingDto,
+    @Request() req: any,
+  ) {
+    return this.assign.updateTeamAutoAssignSetting(
+      teamId,
+      dto,
+      { id: req.user.id, roles: req.user.roles ?? [] },
+    );
   }
 
   @Get("settings/members")

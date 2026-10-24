@@ -26,6 +26,7 @@ import {
   UpdateTeamContentDto,
   CreateTeamSourceDto,
   UpdateTeamSourceDto,
+  UpdateTeamProductMonthlyTargetDto,
 } from "../catalog/dto/catalog.dto";
 
 @ApiTags("task-auto")
@@ -190,6 +191,25 @@ export class TaskAutoTeamsController {
     @Request() req: any,
   ) {
     return this.teams.updateTeamProduct(teamId, teamProductId, dto, req.user.id, req.user.roles ?? []);
+  }
+
+  @Put("teams/:id/products/:teamProductId/monthly-target")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER", "LEADER")
+  @ApiOperation({ summary: "Đặt số video cần làm của sản phẩm team trong một tháng; 0 = chia đều" })
+  updateTeamProductMonthlyTarget(
+    @Param("id") teamId: string,
+    @Param("teamProductId") teamProductId: string,
+    @Body() dto: UpdateTeamProductMonthlyTargetDto,
+    @Request() req: any,
+  ) {
+    return this.teams.updateTeamProductMonthlyTarget(
+      teamId,
+      teamProductId,
+      dto,
+      req.user.id,
+      req.user.roles ?? [],
+    );
   }
 
   @Patch("teams/:id/products/:teamProductId/refresh-from-oms")

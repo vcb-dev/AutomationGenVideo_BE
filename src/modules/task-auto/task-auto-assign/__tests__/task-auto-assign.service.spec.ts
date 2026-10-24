@@ -1,7 +1,7 @@
 import { DateTime } from 'luxon';
 import { TaskAutoAssignService } from '../task-auto-assign.service';
 import { loadA4Editors, loadLineQuotas, splitDailyTotal } from '../steps/editor-eligibility';
-import { loadLastAssignedByEditor, pickProductsForEditor } from '../steps/product-picker';
+import { loadLastAssignedByEditor, loadMonthlyProductCounts, pickProductsForEditor } from '../steps/product-picker';
 import { TeamProductCandidate } from '../types';
 
 const VN = 'Asia/Ho_Chi_Minh';
@@ -13,8 +13,8 @@ function product(id: string, extra: Partial<TeamProductCandidate> = {}): TeamPro
     id,
     name: id,
     product_line_id: null,
-    priority_score: 0,
-    cooldown_days: null,
+    priority_score: 1,
+    target_quantity: 0,
     source_product_id: null,
     sku: null,
     oms_variant_id: null,
@@ -38,8 +38,9 @@ describe('pickProductsForEditor — chọn SP kho team cho 1 editor', () => {
       pool: [],
       need: 0,
       lastAssigned: new Map(),
+      monthlyAssigned: new Map(),
       pickedInRun: new Map(),
-      defaultCooldownDays: 5,
+      cooldownDays: 5,
       today: RUN_AT,
       ...args,
     }).map((p) => p.id);
@@ -48,7 +49,7 @@ describe('pickProductsForEditor — chọn SP kho team cho 1 editor', () => {
     const ids = pick({
       pool: [product('p1'), product('p2'), product('p3')],
       need: 3,
-      defaultCooldownDays: 0,
+      cooldownDays: 0,
       lastAssigned: new Map([
         ['p1', new Date('2026-10-08T10:00:00Z')],
         ['p2', new Date('2026-09-20T10:00:00Z')],
@@ -75,12 +76,10 @@ describe('pickProductsForEditor — chọn SP kho team cho 1 editor', () => {
     expect(pick({ pool: [product('p1')], need: 1, lastAssigned: lateNight, today: RUN_AT })).toEqual([]);
   });
 
-  it('cooldown riêng của SP thắng mặc định', () => {
+  it('cooldown của team áp dụng đồng nhất cho mọi SP', () => {
     const lastAssigned = new Map([['p1', new Date('2026-10-08T10:00:00Z')]]);
-    expect(pick({ pool: [product('p1', { cooldown_days: 0 })], need: 1, lastAssigned })).toEqual(['p1']);
-    expect(
-      pick({ pool: [product('p1', { cooldown_days: 10 })], need: 1, lastAssigned: new Map([['p1', new Date('2026-10-01T10:00:00Z')]]) }),
-    ).toEqual([]);
+    expect(pick({ pool: [product('p1')], need: 1, lastAssigned, cooldownDays: 0 })).toEqual(['p1']);
+    expect(pick({ pool: [product('p1')], need: 1, lastAssigned, cooldownDays: 10 })).toEqual([]);
   });
 
   it('rải SP cho cả team: SP đã giao cho người khác trong lượt này xếp sau', () => {
@@ -94,6 +93,43 @@ describe('pickProductsForEditor — chọn SP kho team cho 1 editor', () => {
 
   it('cùng điều kiện thì priority_score cao hơn lên trước', () => {
     expect(pick({ pool: [product('p1'), product('p2', { priority_score: 3 })], need: 1 })).toEqual(['p2']);
+  });
+
+  it('SP có target lên trước nhóm target=0 và bám tỷ lệ hoàn thành quota', () => {
+    const ids = pick({
+      pool: [
+        product('equal', { priority_score: 10, target_quantity: 0 }),
+        product('target-a', { target_quantity: 20 }),
+        product('target-b', { target_quantity: 10 }),
+      ],
+      need: 2,
+      monthlyAssigned: new Map([['target-a', 2], ['target-b', 3], ['equal', 0]]),
+    });
+    expect(ids).toEqual(['target-a', 'target-b']);
+  });
+
+  it('SP target=0 vẫn được chia đều sau khi nhóm có quota đã đủ', () => {
+    const ids = pick({
+      pool: [
+        product('done', { target_quantity: 2 }),
+        product('equal-a', { target_quantity: 0 }),
+        product('equal-b', { target_quantity: 0 }),
+      ],
+      need: 2,
+      monthlyAssigned: new Map([['done', 2], ['equal-a', 4], ['equal-b', 1]]),
+    });
+    expect(ids).toEqual(['equal-b', 'equal-a']);
+  });
+
+  it('priority_score=0 không được chia dù target còn thiếu; target=0 nhưng điểm dương vẫn được chia', () => {
+    const ids = pick({
+      pool: [
+        product('disabled', { priority_score: 0, target_quantity: 20 }),
+        product('fallback', { priority_score: 1, target_quantity: 0 }),
+      ],
+      need: 2,
+    });
+    expect(ids).toEqual(['fallback']);
   });
 
   it('priority_score thắng "lâu chưa làm": SP điểm cao vừa làm (hết cooldown) vẫn đứng trước SP chưa từng làm', () => {
@@ -279,8 +315,8 @@ describe('splitDailyTotal — chia việc trong ngày cho các tuyến theo ph�
 
 function teamProductRow(id: string, extra: Record<string, any> = {}) {
   return {
-    id, name: `SP ${id}`, sku: null, oms_variant_id: null, product_line_id: 'pl-gmv', priority_score: 0,
-    cooldown_days: null, source_product_id: null, source_editor_product_id: null, source_editor_product: null,
+    id, name: `SP ${id}`, sku: null, oms_variant_id: null, product_line_id: 'pl-gmv', priority_score: 1,
+    source_product_id: null, source_editor_product_id: null, source_editor_product: null, warehouses: [],
     ...extra,
   };
 }
@@ -337,9 +373,42 @@ describe('loadLastAssignedByEditor — lịch sử giao SP theo người, khớp
   });
 });
 
+describe('loadMonthlyProductCounts — tiến độ quota SP trong tháng', () => {
+  it('đếm task chưa huỷ theo team và khớp cùng SP qua kho team/cá nhân/tổng', async () => {
+    const pool = [
+      product('tp1', { sku: 'SKU-1', source_product_id: 'global-1' }),
+      product('tp2', { source_editor_product_id: 'editor-origin' }),
+    ];
+    const prisma: any = {
+      task: {
+        findMany: jest.fn(async () => [
+          { team_product: teamProductRow('tp1', { sku: 'SKU-1' }), editor_product: null, product: null },
+          { team_product: null, editor_product: null, product: { id: 'global-1', sku: null, source_team_product_id: null } },
+          { team_product: null, editor_product: { id: 'editor-origin', sku: null, oms_variant_id: null, source_product_id: null }, product: null },
+          { team_product: null, editor_product: null, product: { id: 'other', sku: null, source_team_product_id: 'tp2' } },
+          { team_product: null, editor_product: { id: 'unmatched', sku: 'OTHER', oms_variant_id: null, source_product_id: null }, product: null },
+        ]),
+      },
+    };
+
+    const counts = await loadMonthlyProductCounts(
+      prisma,
+      'team-1',
+      pool,
+      new Date('2026-09-30T17:00:00Z'),
+      new Date('2026-10-31T17:00:00Z'),
+    );
+
+    expect(counts).toEqual(new Map([['tp1', 2], ['tp2', 2]]));
+    const where = prisma.task.findMany.mock.calls[0][0].where;
+    expect(where).toMatchObject({ team_id: 'team-1', status: { not: 'CANCELLED' } });
+    expect(where.OR).toHaveLength(2);
+  });
+});
+
 describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + kho sản phẩm team', () => {
   function buildService(opts: {
-    contentLine?: any; products?: any[]; history?: any[]; defaultCooldownDays?: number | null;
+    contentLine?: any; products?: any[]; history?: any[]; monthlyTasks?: any[]; teamCooldownDays?: number | null;
     settings?: Record<string, any>; dailyPlans?: () => Promise<any>; kpiRollover?: () => Promise<any>;
   } = {}) {
     const tx = {
@@ -351,7 +420,6 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
       autoAssignSetting: {
         findUnique: jest.fn(async () => ({
           is_active: true,
-          default_cooldown_days: opts.defaultCooldownDays === undefined ? 5 : opts.defaultCooldownDays,
           daily_plan_line_names: ['A1', 'A2', 'A3', 'A5'],
           ...opts.settings,
         })),
@@ -363,19 +431,28 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
       contentLine: {
         findFirst: jest.fn(async () => (opts.contentLine === undefined ? { id: 'cl-a4', name: 'A4' } : opts.contentLine)),
       },
-      team: { findMany: jest.fn(async () => [{ id: 'team-1', name: 'Team K4', brand_type: 'TRANG_SUC', market: 'VIETNAM' }]) },
+      team: { findMany: jest.fn(async () => [{
+        id: 'team-1', name: 'Team K4', brand_type: 'TRANG_SUC', market: 'VIETNAM',
+        auto_assign_setting: opts.teamCooldownDays === null
+          ? null
+          : { cooldown_days: opts.teamCooldownDays ?? 5 },
+      }]) },
       // KPI A4 tháng 10: u1 = 44 (2 task/ngày), u2 = 22 (1 task/ngày)
       teamMember: { findMany: jest.fn(async () => [member('u1', 44), member('u2', 22)]) },
       task: {
         // Cùng 1 hàm cho 2 query: đếm task A4 (lọc content_line_id) và lịch sử giao SP (cooldown)
-        findMany: jest.fn(async (args: any) => (args.where.content_line_id ? [] : opts.history ?? [])),
+        findMany: jest.fn(async (args: any) => {
+          if (args.where.content_line_id) return [];
+          if (args.where.assigned_at) return opts.history ?? [];
+          return opts.monthlyTasks ?? [];
+        }),
       },
       teamProduct: {
         findMany: jest.fn(async () =>
           opts.products ?? ['p1', 'p2', 'p3', 'p4'].map((id) => ({
             id, name: `SP ${id}`, sku: `SKU-${id}`, oms_variant_id: null, product_line_id: 'pl-gmv',
-            priority_score: 0, cooldown_days: null, source_product_id: null,
-            source_editor_product_id: null, source_editor_product: null,
+            priority_score: 1, source_product_id: null,
+            source_editor_product_id: null, source_editor_product: null, warehouses: [],
           })),
         ),
       },
@@ -431,6 +508,7 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
     const gmv = { name: { equals: 'GMV', mode: 'insensitive' } };
     expect(prisma.teamProduct.findMany.mock.calls[0][0].where).toEqual({
       team_id: 'team-1', is_active: true, brand_type: 'TRANG_SUC',
+      priority_score: { gt: 0 },
       OR: [
         { product_line: gmv },
         { product_line_id: null, source_editor_product: { product_line: gmv } },
@@ -459,9 +537,9 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
     expect(prisma.assignmentRun.update.mock.calls[0][0].data).toMatchObject({ total_assigned: 1, total_skipped: 2 });
   });
 
-  it('settings chưa có default_cooldown_days → mặc định giãn cách 5 ngày', async () => {
+  it('team chưa có cấu hình cooldown → mặc định giãn cách 5 ngày', async () => {
     const { service, tx } = buildService({
-      defaultCooldownDays: null,
+      teamCooldownDays: null,
       products: [teamProductRow('p1'), teamProductRow('p2')],
       // u1 làm p1 lượt 5/10 (cách 4 ngày → còn chặn), p2 lượt 4/10 (cách 5 ngày → giao lại được)
       history: [
@@ -654,5 +732,55 @@ describe('TaskAutoAssignService — lịch chia task từng thành viên (leader
     await expect(
       missing.service.updateMemberSchedule('m9', { auto_assign_enabled: false }, { id: 'admin-1', roles: ['ADMIN'] }),
     ).rejects.toThrow('Không tìm thấy');
+  });
+});
+
+describe('TaskAutoAssignService — giãn cách sản phẩm theo team', () => {
+  function buildService(leaderId = 'leader-1') {
+    const prisma: any = {
+      team: {
+        findMany: jest.fn(async () => [{
+          id: 'team-1', name: 'Team K3', leader_id: leaderId, auto_assign_setting: null,
+        }]),
+        findUnique: jest.fn(async () => ({ id: 'team-1', name: 'Team K3', leader_id: leaderId })),
+      },
+      teamAutoAssignSetting: {
+        upsert: jest.fn(async (args: any) => ({
+          team_id: 'team-1', cooldown_days: args.create.cooldown_days, updated_by: args.create.updated_by,
+          updated_at: new Date('2026-10-24T00:00:00Z'),
+        })),
+      },
+    };
+    return { service: new TaskAutoAssignService(prisma, {} as any, {} as any, {} as any), prisma };
+  }
+
+  it('leader chỉ thấy team mình lead; team chưa có cấu hình dùng mặc định 5 ngày', async () => {
+    const { service, prisma } = buildService();
+    const result = await service.getTeamAutoAssignSettings({ id: 'leader-1', roles: ['LEADER'] });
+
+    expect(prisma.team.findMany.mock.calls[0][0].where).toEqual({ is_active: true, leader_id: 'leader-1' });
+    expect(result).toEqual([expect.objectContaining({ team_id: 'team-1', cooldown_days: 5 })]);
+  });
+
+  it('leader đổi được team mình nhưng bị chặn với team khác; manager đổi được mọi team', async () => {
+    const own = buildService();
+    await own.service.updateTeamAutoAssignSetting(
+      'team-1', { cooldown_days: 7 }, { id: 'leader-1', roles: ['LEADER'] },
+    );
+    expect(own.prisma.teamAutoAssignSetting.upsert.mock.calls[0][0]).toMatchObject({
+      where: { team_id: 'team-1' },
+      create: { team_id: 'team-1', cooldown_days: 7, updated_by: 'leader-1' },
+    });
+
+    const other = buildService('leader-2');
+    await expect(other.service.updateTeamAutoAssignSetting(
+      'team-1', { cooldown_days: 3 }, { id: 'leader-1', roles: ['LEADER'] },
+    )).rejects.toThrow('leader');
+    expect(other.prisma.teamAutoAssignSetting.upsert).not.toHaveBeenCalled();
+
+    await other.service.updateTeamAutoAssignSetting(
+      'team-1', { cooldown_days: 3 }, { id: 'manager-1', roles: ['MANAGER'] },
+    );
+    expect(other.prisma.teamAutoAssignSetting.upsert).toHaveBeenCalled();
   });
 });

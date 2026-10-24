@@ -1,31 +1,17 @@
 import { DateTime } from "luxon";
-import { TeamProductCandidate } from "../types";
-
-// Trần cửa sổ lookback truy vấn lịch sử giao SP — chặn query quét quá xa nếu ai đó
-// lỡ set cooldown_days rất lớn (per-product override hoặc default_cooldown_days).
-export const MAX_COOLDOWN_LOOKBACK_DAYS = 60;
-
-export function effectiveCooldownDays(
-  override: number | null | undefined,
-  defaultDays: number,
-): number {
-  return override ?? defaultDays;
-}
 
 /**
  * true nếu sản phẩm đang trong thời gian cooldown của editor này — tức đã được giao
- * cho editor trong vòng chưa đủ `effectiveCooldownDays` NGÀY LỊCH kể từ lần giao gần nhất.
- * cooldown_days=1 nghĩa là "không giao lại ở ngày kế tiếp", tự do lại từ ngày thứ 3.
+ * cho editor khi chưa đủ `cooldownDays` NGÀY LỊCH kể từ lần giao gần nhất.
+ * Ví dụ cooldown_days=5: giao ngày 01 thì có thể giao lại từ ngày 06.
  */
 export function isOnCooldown(
-  product: Pick<TeamProductCandidate, "cooldown_days">,
   lastAssigned: Date | undefined,
-  defaultDays: number,
+  cooldownDays: number,
   today: DateTime,
 ): boolean {
-  const days = effectiveCooldownDays(product.cooldown_days, defaultDays);
-  if (days <= 0 || !lastAssigned) return false;
-  return calendarDaysSince(lastAssigned, today) < days;
+  if (cooldownDays <= 0 || !lastAssigned) return false;
+  return calendarDaysSince(lastAssigned, today) < cooldownDays;
 }
 
 /** Số NGÀY LỊCH (theo múi giờ của `today`) từ `last` tới `today` — cùng ngày = 0. */

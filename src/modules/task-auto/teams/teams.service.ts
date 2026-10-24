@@ -3,7 +3,7 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../../../common/prisma/prisma.service'
 import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto } from './dto/team.dto'
-import { CreateTeamProductDto, UpdateTeamProductDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/dto/catalog.dto'
+import { CreateTeamProductDto, UpdateTeamProductDto, UpdateTeamProductMonthlyTargetDto, CreateTeamContentDto, UpdateTeamContentDto, CreateTeamSourceDto, UpdateTeamSourceDto } from '../catalog/dto/catalog.dto'
 import { Prisma, UserRole } from '@prisma/client'
 import { recomputeUserTeamFieldsBatch, seedEditorKpiForMembers, TEAM_TX_OPTIONS, isPrivilegedSourceTeamMember, ALL_TEAMS_ID, assertCanViewAllTeams } from '../../../common/utils/team-membership.util'
 import { resolveProductSnapshot, resolveContentSnapshot } from '../../../common/utils/catalog-resolve.util'
@@ -13,6 +13,8 @@ import { runOrNotFound } from '../../../common/utils/prisma-not-found.util'
 import { syncTaskContentLine } from '../../../common/utils/task-content-line-sync.util'
 import { listLinkedProducts, taskProductSkuWhere } from '../../../common/utils/content-product-link.util'
 import { OmsIntegrationService } from '../../oms-integration/oms-integration.service'
+import { DateTime } from 'luxon'
+import { loadMonthlyProductCounts, toTeamProductCandidate } from '../task-auto-assign/steps/product-picker'
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -341,6 +343,7 @@ export class TaskAutoTeamsService {
         id: true, sku: true, name: true, image_url: true, image_urls: true,
         price: true, market: true, price_segment: true, priority_score: true,
         material_id: true, product_line_id: true, classification_id: true, brand_type: true, is_active: true,
+        oms_variant_id: true, source_product_id: true,
       },
     },
   }
@@ -423,12 +426,14 @@ export class TaskAutoTeamsService {
     opts?: { search?: string; page?: number; limit?: number; product_line_id?: string },
     userRoles?: string[],
   ) {
+    if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      throw new BadRequestException('month phải có định dạng YYYY-MM')
+    }
     const where: any = {
       ...await this.teamScope(teamId, userRoles),
       ...(brandType ? { brand_type: brandType } : {}),
       ...(classificationId ? { classification_id: classificationId } : {}),
       ...(opts?.product_line_id ? { product_line_id: opts.product_line_id } : {}),
-      ...this.teamMonthRange(month),
     }
     if (opts?.search) {
       const contains = { contains: opts.search, mode: 'insensitive' as const }
@@ -441,24 +446,77 @@ export class TaskAutoTeamsService {
     // `added_at` không unique — nhiều dòng import/tạo cùng lúc có thể trùng millisecond,
     // nên phải có tiebreaker ổn định để thứ tự không đổi giữa các lần fetch/sau khi update.
     const orderBy = [{ added_at: 'desc' as const }, { id: 'asc' as const }]
+    const include = month
+      ? { ...this.teamProductInclude, warehouses: { where: { month }, select: { target_quantity: true }, take: 1 } }
+      : this.teamProductInclude
 
     // Không truyền page → giữ nguyên hành vi cũ (trả mảng đầy đủ, không giới hạn) — nhiều nơi
     // gọi hàm này (dropdown chọn sản phẩm khi tạo task...) cần lấy hết, không
     // phân trang được. Chỉ khi caller chủ động truyền `page` mới chuyển sang chế độ phân trang.
     if (!opts?.page) {
-      return this.prisma.teamProduct.findMany({ where, include: this.teamProductInclude, orderBy })
+      const data = await this.prisma.teamProduct.findMany({ where, include, orderBy })
+      return this.enrichTeamProductsWithMonthlyTarget(data, month)
     }
 
     const page = opts.page
     const limit = opts.limit ?? 20
     const [data, total] = await Promise.all([
       this.prisma.teamProduct.findMany({
-        where, include: this.teamProductInclude, orderBy,
+        where, include, orderBy,
         skip: (page - 1) * limit, take: limit,
       }),
       this.prisma.teamProduct.count({ where }),
     ])
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) }
+    return {
+      data: await this.enrichTeamProductsWithMonthlyTarget(data, month),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    }
+  }
+
+  private async enrichTeamProductsWithMonthlyTarget(rows: any[], month?: string) {
+    if (!month || !rows.length) {
+      return rows.map((row) => ({
+        ...row,
+        monthly_target: row.warehouses?.[0]?.target_quantity ?? 0,
+        assigned_this_month: 0,
+        remaining_this_month: row.warehouses?.[0]?.target_quantity ?? 0,
+      }))
+    }
+    const monthStart = DateTime.fromFormat(month, 'yyyy-MM', { zone: 'Asia/Ho_Chi_Minh' }).startOf('month')
+    const countsByTeam = new Map<string, Map<string, number>>()
+    const groups = new Map<string, any[]>()
+    for (const row of rows) {
+      if (!groups.has(row.team_id)) groups.set(row.team_id, [])
+      groups.get(row.team_id)!.push(row)
+    }
+    await Promise.all([...groups].map(async ([rowTeamId, teamRows]) => {
+      const candidates = teamRows.map((row) =>
+        toTeamProductCandidate(row, row.warehouses?.[0]?.target_quantity ?? 0),
+      )
+      countsByTeam.set(
+        rowTeamId,
+        await loadMonthlyProductCounts(
+          this.prisma,
+          rowTeamId,
+          candidates,
+          monthStart.toJSDate(),
+          monthStart.plus({ months: 1 }).toJSDate(),
+        ),
+      )
+    }))
+    return rows.map((row) => {
+      const target = row.warehouses?.[0]?.target_quantity ?? 0
+      const assigned = countsByTeam.get(row.team_id)?.get(row.id) ?? 0
+      return {
+        ...row,
+        monthly_target: target,
+        assigned_this_month: assigned,
+        remaining_this_month: target > 0 ? Math.max(0, target - assigned) : null,
+      }
+    })
   }
 
   private async assertTeamProductSkuAvailable(teamId: string, sku?: string | null) {
@@ -497,7 +555,6 @@ export class TaskAutoTeamsService {
           market: dto.market,
           price_segment: dto.price_segment,
           priority_score: dto.priority_score ?? 0,
-          cooldown_days: dto.cooldown_days,
           material_id: dto.material_id,
           product_line_id: dto.product_line_id,
           classification_id: dto.classification_id,
@@ -520,7 +577,7 @@ export class TaskAutoTeamsService {
           team_id: teamId, source_product_id: source.id, sku: source.sku, name: source.name,
           brand_type: source.brand_type, image_url: source.image_url, image_urls: source.image_urls,
           price: source.price, market: source.market, price_segment: source.price_segment,
-          priority_score: source.priority_score, cooldown_days: source.cooldown_days,
+          priority_score: source.priority_score,
           material_id: source.material_id,
           product_line_id: source.product_line_id, classification_id: source.classification_id,
           is_active: source.is_active, added_by_id: userId,
@@ -541,7 +598,6 @@ export class TaskAutoTeamsService {
         team_id: teamId, sku, name: dto.name, brand_type: dto.brand_type,
         image_url: dto.image_url, image_urls: dto.image_urls ?? [], price: dto.price,
         market: dto.market, price_segment: dto.price_segment, priority_score: dto.priority_score ?? 0,
-        cooldown_days: dto.cooldown_days ?? null,
         material_id: dto.material_id, product_line_id: dto.product_line_id,
         classification_id: dto.classification_id, is_active: dto.is_active ?? true,
         added_by_id: userId,
@@ -553,7 +609,7 @@ export class TaskAutoTeamsService {
   }
 
   /** Cập nhật lại sku/tên/giá/ảnh của 1 TeamProduct theo dữ liệu mới nhất từ OMS — giữ nguyên
-   *  field nghiệp vụ (material/classification/priority/cooldown...) đã được leader điền. */
+   *  các field nghiệp vụ (material/classification/priority...) đã được leader điền. */
   async refreshTeamProductFromOms(teamId: string, teamProductId: string, userId: string, userRoles: string[]) {
     const team = await this.findOneForAuth(teamId)
     this.assertCanManageProduct(team, userId, userRoles, 'edit')
@@ -600,7 +656,6 @@ export class TaskAutoTeamsService {
         ...(dto.market !== undefined          && { market: dto.market }),
         ...(dto.price_segment !== undefined   && { price_segment: dto.price_segment }),
         ...(dto.priority_score !== undefined  && { priority_score: dto.priority_score }),
-        ...(dto.cooldown_days !== undefined   && { cooldown_days: dto.cooldown_days }),
         ...(dto.material_id !== undefined     && { material_id: dto.material_id }),
         ...(dto.product_line_id !== undefined && { product_line_id: dto.product_line_id }),
         ...(dto.classification_id !== undefined && { classification_id: dto.classification_id }),
@@ -608,6 +663,36 @@ export class TaskAutoTeamsService {
       },
       include: this.teamProductInclude,
     })
+  }
+
+  async updateTeamProductMonthlyTarget(
+    teamId: string,
+    teamProductId: string,
+    dto: UpdateTeamProductMonthlyTargetDto,
+    userId: string,
+    userRoles: string[],
+  ) {
+    const team = await this.findOneForAuth(teamId)
+    this.assertCanManageProduct(team, userId, userRoles, 'edit')
+    const product = await this.prisma.teamProduct.findFirst({
+      where: { id: teamProductId, team_id: teamId },
+      select: { id: true },
+    })
+    if (!product) throw new NotFoundException('Sản phẩm không có trong kho team')
+    const target = await this.prisma.teamProductWarehouse.upsert({
+      where: { team_product_id_month: { team_product_id: teamProductId, month: dto.month } },
+      create: {
+        team_product_id: teamProductId,
+        month: dto.month,
+        target_quantity: dto.target_quantity,
+      },
+      update: { target_quantity: dto.target_quantity },
+    })
+    return {
+      team_product_id: teamProductId,
+      month: target.month,
+      target_quantity: target.target_quantity,
+    }
   }
 
   async removeTeamProduct(teamId: string, teamProductId: string, userId: string, userRoles: string[]) {
