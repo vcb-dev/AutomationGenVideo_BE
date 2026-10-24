@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   marketFilter,
@@ -206,6 +206,14 @@ function sortExpr(sort: string): Prisma.Sql {
   return Prisma.sql`date_posted DESC, post_id DESC`;
 }
 
+function hiddenCondition(platform: string, postCol: Prisma.Sql, isHidden: boolean): Prisma.Sql {
+  if (isHidden) {
+    return Prisma.sql`EXISTS (SELECT 1 FROM scraper_hidden_videos h WHERE h.platform = ${platform} AND h.post_id = ${postCol}::text)`;
+  } else {
+    return Prisma.sql`NOT EXISTS (SELECT 1 FROM scraper_hidden_videos h WHERE h.platform = ${platform} AND h.post_id = ${postCol}::text)`;
+  }
+}
+
 // Port từ scraper_views.py::all_external_videos/owned_channel_videos (AI đã xóa) —
 // gom video từ nhiều bảng khác nhau, chỉ đọc, không ghi.
 @Injectable()
@@ -214,12 +222,13 @@ export class ScraperAggregateReadService {
 
   async allExternalVideos(params: {
     page?: string; page_size?: string; q?: string; sort?: string; platform?: string;
-    min_plays?: string; date_from?: string; date_to?: string;
+    min_plays?: string; date_from?: string; date_to?: string; hidden?: string;
   }) {
     const pageNum = Math.max(1, parseIntOrDefault(params.page, 1)!);
     const pageSize = Math.min(100, Math.max(1, parseIntOrDefault(params.page_size, 24)!));
     const q = (params.q || '').trim();
     const sort = params.sort || 'date';
+    const isHidden = params.hidden === 'true' || params.hidden === '1';
     // 'all' (và chuỗi rỗng) đều nghĩa là KHÔNG lọc nền tảng. Không nhận 'all' thì nó không
     // khớp nhánh nào và API trả về danh sách rỗng — rất khó lần ra vì vẫn HTTP 200.
     const rawPlatform = (params.platform || '').trim().toLowerCase();
@@ -237,6 +246,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'facebook') {
       const conditions: Prisma.Sql[] = [
         Prisma.sql`(f.is_visible_on_ui = true OR f.is_visible_on_ui IS NULL)`,
+        hiddenCondition('facebook', Prisma.sql`r.post_id`, isHidden),
       ];
       if (dateFrom) conditions.push(Prisma.sql`r.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`r.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -260,6 +270,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'tiktok') {
       const conditions: Prisma.Sql[] = [
         Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+        hiddenCondition('tiktok', Prisma.sql`v.video_id`, isHidden),
       ];
       if (dateFrom) conditions.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -281,6 +292,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'instagram') {
       const conditions: Prisma.Sql[] = [
         Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+        hiddenCondition('instagram', Prisma.sql`r.post_id`, isHidden),
       ];
       if (dateFrom) conditions.push(Prisma.sql`r.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) conditions.push(Prisma.sql`r.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -314,6 +326,7 @@ export class ScraperAggregateReadService {
       const c: Prisma.Sql[] = [
         Prisma.sql`v.author_username NOT IN (SELECT dp.username FROM scraper_douyin_profiles dp WHERE dp.is_owned = true AND dp.username <> '')`,
         Prisma.sql`v.search_keyword NOT IN (SELECT '@' || dp.username FROM scraper_douyin_profiles dp WHERE dp.is_owned = true AND dp.username <> '')`,
+        hiddenCondition('douyin', Prisma.sql`v.post_id`, isHidden),
       ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -335,6 +348,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'xiaohongshu') {
       const c: Prisma.Sql[] = [
         Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+        hiddenCondition('xiaohongshu', Prisma.sql`v.note_id`, isHidden),
       ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -355,7 +369,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'kuaishou') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        hiddenCondition('kuaishou', Prisma.sql`v.post_id`, isHidden),
+      ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) c.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
@@ -374,7 +390,9 @@ export class ScraperAggregateReadService {
     }
 
     if (!platform || platform === 'bilibili') {
-      const c: Prisma.Sql[] = [];
+      const c: Prisma.Sql[] = [
+        hiddenCondition('bilibili', Prisma.sql`v.post_id`, isHidden),
+      ];
       if (dateFrom) c.push(Prisma.sql`v.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`v.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
       if (minPlays !== undefined) c.push(Prisma.sql`v.view_count >= ${BigInt(minPlays)}`);
@@ -396,6 +414,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'youtube') {
       const c: Prisma.Sql[] = [
         Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+        hiddenCondition('youtube', Prisma.sql`v.video_id`, isHidden),
       ];
       // Bảng YouTube Shorts KHÔNG có ngày đăng — dùng thời điểm cào (created_at) thay thế,
       // nên lọc/sắp theo ngày với YouTube là theo ngày cào chứ không phải ngày đăng.
@@ -419,6 +438,7 @@ export class ScraperAggregateReadService {
     if (!platform || platform === 'threads') {
       const c: Prisma.Sql[] = [
         Prisma.sql`(p.is_owned = false OR p.is_owned IS NULL)`,
+        hiddenCondition('threads', Prisma.sql`tp.post_id`, isHidden),
       ];
       if (dateFrom) c.push(Prisma.sql`tp.date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
       if (dateTo) c.push(Prisma.sql`tp.date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);
@@ -444,19 +464,21 @@ export class ScraperAggregateReadService {
     }
 
     const combined = Prisma.sql`(${Prisma.join(branches, ' UNION ALL ')})`;
-
-    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
-      SELECT COUNT(*) AS total FROM ${combined} AS combined
-    `;
-    const totalNum = Number(total);
-    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
     const offset = (pageNum - 1) * pageSize;
 
-    const rows = await this.prisma.$queryRaw<UnifiedRow[]>`
-      SELECT * FROM ${combined} AS combined
-      ORDER BY ${sortExpr(sort)}
-      LIMIT ${pageSize} OFFSET ${offset}
-    `;
+    const [[{ total }], rows] = await Promise.all([
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM ${combined} AS combined
+      `,
+      this.prisma.$queryRaw<UnifiedRow[]>`
+        SELECT * FROM ${combined} AS combined
+        ORDER BY ${sortExpr(sort)}
+        LIMIT ${pageSize} OFFSET ${offset}
+      `,
+    ]);
+
+    const totalNum = Number(total);
+    const totalPages = totalNum > 0 ? Math.ceil(totalNum / pageSize) : 1;
 
     return {
       status: 'ok',
@@ -726,19 +748,21 @@ export class ScraperAggregateReadService {
     }
 
     const combined = Prisma.sql`(${Prisma.join(branches, ' UNION ALL ')})`;
-
-    const [{ total }] = await this.prisma.$queryRaw<{ total: bigint }[]>`
-      SELECT COUNT(*) AS total FROM ${combined} AS combined
-    `;
-    const totalNum = Number(total);
-    const totalPages = Math.max(1, Math.ceil(totalNum / pageSize));
     const offset = (pageNum - 1) * pageSize;
 
-    const rows = await this.prisma.$queryRaw<(Omit<UnifiedRow, 'author_id'> & { video_url: string | null })[]>`
-      SELECT * FROM ${combined} AS combined
-      ORDER BY ${sortExpr(sort)}
-      LIMIT ${pageSize} OFFSET ${offset}
-    `;
+    const [[{ total }], rows] = await Promise.all([
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(*) AS total FROM ${combined} AS combined
+      `,
+      this.prisma.$queryRaw<(Omit<UnifiedRow, 'author_id'> & { video_url: string | null })[]>`
+        SELECT * FROM ${combined} AS combined
+        ORDER BY ${sortExpr(sort)}
+        LIMIT ${pageSize} OFFSET ${offset}
+      `,
+    ]);
+
+    const totalNum = Number(total);
+    const totalPages = Math.max(1, Math.ceil(totalNum / pageSize));
 
     return {
       status: 'ok',
@@ -849,5 +873,38 @@ export class ScraperAggregateReadService {
       LIMIT ${gioiHan}
     `;
     return { hashtags: rows };
+  }
+
+  /**
+   * Ẩn video không phù hợp (Soft Delete / Blacklist) để không hiển thị trên feed
+   * và chống cào trùng lặp ở các đợt quét sau.
+   */
+  async hideVideo(platform: string, postId: string, userId?: string, reason?: string) {
+    const plat = (platform || '').trim().toLowerCase();
+    const pid = (postId || '').trim();
+    if (!plat || !pid) {
+      throw new HttpException({ error: 'platform và post_id là bắt buộc' }, HttpStatus.BAD_REQUEST);
+    }
+    await this.prisma.scraperHiddenVideo.upsert({
+      where: { platform_post_id: { platform: plat, post_id: pid } },
+      create: { platform: plat, post_id: pid, user_id: userId, reason: reason || '' },
+      update: { reason: reason || '', user_id: userId },
+    });
+    return { status: 'ok', hidden: true, platform: plat, post_id: pid };
+  }
+
+  /**
+   * Khôi phục video đã ẩn (Restore từ thùng rác / Undo)
+   */
+  async restoreVideo(platform: string, postId: string) {
+    const plat = (platform || '').trim().toLowerCase();
+    const pid = (postId || '').trim();
+    if (!plat || !pid) {
+      throw new HttpException({ error: 'platform và post_id là bắt buộc' }, HttpStatus.BAD_REQUEST);
+    }
+    await this.prisma.scraperHiddenVideo.deleteMany({
+      where: { platform: plat, post_id: pid },
+    });
+    return { status: 'ok', restored: true, platform: plat, post_id: pid };
   }
 }

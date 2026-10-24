@@ -1041,10 +1041,16 @@ describe('TaskAutoTasksService — traffic_month lấy đúng ngày báo cáo g�
 });
 
 describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng nền tảng', () => {
-  function build(trafficRows: any[], opts: { self?: any; teamsLed?: any[] } = {}) {
+  function build(
+    trafficRows: any[],
+    opts: { self?: any; teamsLed?: any[]; hrmUsers?: { email: string; hrm_employee_id: string }[] } = {},
+  ) {
     const prisma: any = {
       trafficReport: { findMany: jest.fn(async () => trafficRows) },
-      user: { findUnique: jest.fn(async () => opts.self ?? null) },
+      user: {
+        findUnique: jest.fn(async () => opts.self ?? null),
+        findMany: jest.fn(async (_args?: any) => opts.hrmUsers ?? []),
+      },
       team: { findMany: jest.fn(async () => opts.teamsLed ?? []) },
     };
     const service = new TaskAutoTasksService(prisma, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
@@ -1161,6 +1167,32 @@ describe('TaskAutoTasksService.getTrafficReportsForRole — traffic theo từng 
     expect(where.email.in).toEqual(['nguoi@x.com']);
     expect(where.team).toEqual({ equals: 'Team A', mode: 'insensitive' });
     expect(asAdmin.prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('mỗi dòng kèm hrm_employee_id tra theo email (1 query cho cả kỳ); chưa gắn HRM → null', async () => {
+    const { service, prisma } = build(
+      [
+        { date: new Date('2026-08-31T05:00:00Z'), email: 'A@x.com', name: 'A', traffic_fb: 10n, total_traffic: 10n },
+        { date: new Date('2026-08-30T05:00:00Z'), email: 'a@x.com', name: 'A', traffic_fb: 5n, total_traffic: 5n },
+        { date: new Date('2026-08-31T05:00:00Z'), email: 'b@x.com', name: 'B', traffic_ig: 3n, total_traffic: 3n },
+        { date: new Date('2026-08-31T05:00:00Z'), email: null, name: 'Không email', traffic_ig: 1n, total_traffic: 1n },
+      ],
+      { hrmUsers: [{ email: 'A@X.com', hrm_employee_id: 'hrm-a' }] },
+    );
+
+    const res: any = await service.getTrafficReportsForRole('admin-1', ['ADMIN'], '2026-08-01', '2026-08-31');
+
+    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findMany.mock.calls[0][0].where.email).toEqual({
+      in: ['a@x.com', 'b@x.com'],
+      mode: 'insensitive',
+    });
+    const hrmOf = (name: string, date: string) =>
+      res.rows.find((r: any) => r.name === name && r.date === date).hrm_employee_id;
+    expect(hrmOf('A', '2026-08-31')).toBe('hrm-a');
+    expect(hrmOf('A', '2026-08-30')).toBe('hrm-a');
+    expect(hrmOf('B', '2026-08-31')).toBeNull();
+    expect(hrmOf('Không email', '2026-08-31')).toBeNull();
   });
 });
 

@@ -54,8 +54,13 @@ function build() {
   };
   const prisma: any = {
     team: {
-      findUnique: jest.fn(async () => ({ id: TEAM_UUID, name: "Team K2" })),
+      findFirst: jest.fn(async (_args?: any) => ({
+        id: TEAM_UUID,
+        name: "Team K2",
+        hrm_project_id: null,
+      })),
     },
+    user: { findUnique: jest.fn(async (_args?: any): Promise<any> => null) },
     dailyLinePlan: {
       findMany: jest.fn(async () => [
         {
@@ -856,7 +861,7 @@ describe("TaskComplianceService.payrollSync", () => {
       timezone: "Asia/Ho_Chi_Minh",
       range: { from: "2026-09-01", to: "2026-09-30" },
       team: { id: TEAM_UUID, name: "Team K2" },
-      filters: { user_id: null, group_by: "line" },
+      filters: { user_id: null, hrm_employee_id: null, group_by: "line" },
       coverage: {
         snapshot_count: 6,
         evaluated_from: "2026-09-28",
@@ -1058,16 +1063,71 @@ describe("TaskComplianceService.payrollSync", () => {
         to: "2026-01-02",
       }),
     ).rejects.toThrow("Khoảng ngày không được vượt quá 366 ngày");
-    expect(prisma.team.findUnique).not.toHaveBeenCalled();
+    expect(prisma.team.findFirst).not.toHaveBeenCalled();
   });
 
   it("trả 404 khi team không tồn tại", async () => {
     const { service, prisma } = build();
-    prisma.team.findUnique.mockResolvedValueOnce(null);
+    prisma.team.findFirst.mockResolvedValueOnce(null);
 
     await expect(service.payrollSync(TEAM_UUID, query)).rejects.toThrow(
       "Team không tồn tại",
     );
+  });
+
+  it("gọi bằng id dự án HRM + hrm_employee_id: lọc đúng team AGV và tài khoản đã gắn HRM", async () => {
+    const hrmProjectId = "55555555-5555-4555-8555-555555555555";
+    const hrmEmployeeId = "66666666-6666-4666-8666-666666666666";
+    const { service, prisma } = build();
+    fakeComplianceTable(
+      prisma,
+      DATA.map((row) => ({
+        ...row,
+        user: { ...row.user, hrm_employee_id: row.user_id === userA.id ? hrmEmployeeId : null },
+      })),
+    );
+    prisma.task.findMany.mockReset().mockResolvedValue(TASKS);
+    prisma.team.findFirst.mockResolvedValueOnce({ ...team, hrm_project_id: hrmProjectId });
+    prisma.user.findUnique.mockResolvedValueOnce({ id: userA.id });
+
+    const result = await service.payrollSync(hrmProjectId, {
+      ...query,
+      hrm_employee_id: hrmEmployeeId,
+      group_by: "person_day",
+    });
+
+    expect(prisma.team.findFirst.mock.calls[0][0].where).toEqual({
+      OR: [{ id: hrmProjectId }, { hrm_project_id: hrmProjectId }],
+    });
+    expect(prisma.user.findUnique.mock.calls[0][0].where).toEqual({
+      hrm_employee_id: hrmEmployeeId,
+    });
+    expect(result.team).toEqual({ ...team, hrm_project_id: hrmProjectId });
+    expect(result.filters).toEqual({
+      user_id: userA.id,
+      hrm_employee_id: hrmEmployeeId,
+      group_by: "person_day",
+    });
+    expect(new Set(result.records.map((r) => r.user_id))).toEqual(new Set([userA.id]));
+    expect(result.records[0].hrm_employee_id).toBe(hrmEmployeeId);
+    expect(result.days![0].hrm_employee_id).toBe(hrmEmployeeId);
+  });
+
+  it("hrm_employee_id chưa gắn tài khoản nào: trả rỗng kèm HRM_EMPLOYEE_NOT_LINKED, không trả cả team", async () => {
+    const { service, prisma } = setup();
+    prisma.user.findUnique.mockResolvedValueOnce(null);
+
+    const result = await service.payrollSync(TEAM_UUID, {
+      ...query,
+      hrm_employee_id: "66666666-6666-4666-8666-666666666666",
+    });
+
+    expect(result.records).toEqual([]);
+    expect(result.summary.expected).toBe(0);
+    expect(result.warnings.map((w) => w.code)).toEqual([
+      "HRM_EMPLOYEE_NOT_LINKED",
+      "NO_COMPLIANCE_SNAPSHOT",
+    ]);
   });
 });
 

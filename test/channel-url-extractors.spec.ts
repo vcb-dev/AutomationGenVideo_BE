@@ -51,6 +51,11 @@ describe('Channel URL Extractors & Scraper Controllers', () => {
       expect(extractXiaohongshuUserId(url)).toBe(SAMPLE_XHS_ID);
     });
 
+    it('bóc tách đúng từ URL profile domain quốc tế rednote.com/user/profile/<hex>', () => {
+      const url = `https://www.rednote.com/user/profile/${SAMPLE_XHS_ID}?xsec_token=ABc123xyz`;
+      expect(extractXiaohongshuUserId(url)).toBe(SAMPLE_XHS_ID);
+    });
+
     it('chấp nhận user_id thuần 24 ký tự hex', () => {
       expect(extractXiaohongshuUserId(SAMPLE_XHS_ID)).toBe(SAMPLE_XHS_ID);
     });
@@ -85,20 +90,26 @@ describe('Channel URL Extractors & Scraper Controllers', () => {
   });
 
   describe('extractThreadsUsername', () => {
-    it('bóc tách đúng từ link threads.net/@username', () => {
+    it('bóc tách đúng từ link threads.net/@username có hoặc không có protocol https://', () => {
       expect(extractThreadsUsername('https://www.threads.net/@zuck')).toBe('zuck');
+      expect(extractThreadsUsername('threads.net/@zuck')).toBe('zuck');
+      expect(extractThreadsUsername('www.threads.net/@zuck')).toBe('zuck');
+      expect(extractThreadsUsername('threads.com/@zuck')).toBe('zuck');
     });
 
     it('bóc tách đúng từ link threads.net/username không có @', () => {
       expect(extractThreadsUsername('https://threads.net/zuck?hl=vi')).toBe('zuck');
+      expect(extractThreadsUsername('threads.net/zuck')).toBe('zuck');
     });
 
     it('bóc tách đúng từ handle có @', () => {
       expect(extractThreadsUsername('@zuck_official.1')).toBe('zuck_official.1');
+      expect(extractThreadsUsername('@daquycothy')).toBe('daquycothy');
     });
 
     it('chấp nhận username thuần hợp lệ', () => {
       expect(extractThreadsUsername('zuck')).toBe('zuck');
+      expect(extractThreadsUsername('daquycothy')).toBe('daquycothy');
     });
 
     it('từ chối URL bài viết Threads (/post/ hoặc /t/)', () => {
@@ -106,10 +117,13 @@ describe('Channel URL Extractors & Scraper Controllers', () => {
       expect(extractThreadsUsername('https://www.threads.net/t/C_xyz123')).toBeNull();
     });
 
-    it('từ chối path hệ thống Threads cố định', () => {
+    it('từ chối path hệ thống Threads cố định và tên miền Threads trần', () => {
       expect(extractThreadsUsername('https://www.threads.net/login')).toBeNull();
       expect(extractThreadsUsername('https://www.threads.net/search')).toBeNull();
       expect(extractThreadsUsername('t')).toBeNull();
+      expect(extractThreadsUsername('threads.net')).toBeNull();
+      expect(extractThreadsUsername('www.threads.net')).toBeNull();
+      expect(extractThreadsUsername('threads.com')).toBeNull();
     });
 
     it('từ chối URL hoặc username có ký tự đặc biệt không hợp lệ', () => {

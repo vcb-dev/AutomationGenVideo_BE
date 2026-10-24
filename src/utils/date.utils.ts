@@ -1,9 +1,5 @@
 import { DateTime } from "luxon";
 
-export function isWeekend(d: DateTime): boolean {
-  return d.weekday >= 6;
-}
-
 export function monthKey(d: DateTime): string {
   return d.toFormat("yyyy-MM");
 }

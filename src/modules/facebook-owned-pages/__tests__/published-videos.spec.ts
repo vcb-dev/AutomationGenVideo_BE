@@ -600,6 +600,7 @@ describe("FacebookOwnedPagesController — ép scope cho API đọc video", () =
     readService as any,
     {} as any,
     refreshService as any,
+    {} as any,
   );
 
   beforeEach(() => jest.clearAllMocks());

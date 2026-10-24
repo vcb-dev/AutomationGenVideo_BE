@@ -327,7 +327,7 @@ export class TaskAutoKpiController {
       "`NO_ACTUAL_SOURCE` — khác hẳn với `actual: 0` (đo được và bằng 0).\n\n" +
       "Tháng không có KPI thì vẫn 200 với `records: []`, không phải 404.",
   })
-  @ApiParam({ name: "id", description: "Team ID (UUID)" })
+  @ApiParam({ name: "id", description: "Team ID hoặc id dự án HRM đã gắn với team (UUID)" })
   @ApiQuery({ name: "month", required: true, example: "2026-09", description: "Tháng YYYY-MM" })
   @ApiHeader({
     name: "X-API-Key",

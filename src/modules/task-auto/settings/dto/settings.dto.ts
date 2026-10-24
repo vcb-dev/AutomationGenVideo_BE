@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsInt, IsUrl, Min, IsArray } from 'class-validator'
+import { IsString, IsOptional, IsBoolean, IsInt, IsUrl, Min, Max, IsArray, ArrayUnique } from 'class-validator'
 import { Type } from 'class-transformer'
 import { ApiPropertyOptional } from '@nestjs/swagger'
 
@@ -8,9 +8,6 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional({ example: 'Asia/Ho_Chi_Minh' })
   @IsString() @IsOptional() timezone?: string
-
-  @ApiPropertyOptional()
-  @IsBoolean() @IsOptional() weekend_enabled?: boolean
 
   @ApiPropertyOptional()
   @IsBoolean() @IsOptional() is_active?: boolean
@@ -26,6 +23,15 @@ export class UpdateAutoAssignSettingDto {
 
   @ApiPropertyOptional({ description: 'Job khớp video ↔ task hỏi AI cho ca heuristic bỏ trống, gắn link khi AI đủ tự tin' })
   @IsBoolean() @IsOptional() video_match_ai_enabled?: boolean
+}
+
+export class UpdateMemberAutoAssignDto {
+  @ApiPropertyOptional({ description: 'Lượt chia task tự động (task A4 + Kế hoạch ngày) có tính thành viên này không' })
+  @IsBoolean() @IsOptional() auto_assign_enabled?: boolean
+
+  @ApiPropertyOptional({ description: 'Ngày được chia việc, ISO 1 = Thứ 2 … 7 = Chủ nhật', example: [1, 2, 3, 4, 5] })
+  @IsArray() @ArrayUnique() @IsInt({ each: true }) @Min(1, { each: true }) @Max(7, { each: true }) @IsOptional()
+  auto_assign_weekdays?: number[]
 }
 
 export class UpdateLarkWebhookSettingDto {

@@ -465,6 +465,26 @@ describe('TaskAutoTasksService.update — task AUTO chỉ cho đổi content', (
     ).rejects.toThrow('chỉ cho phép đổi content');
     expect(prisma.task.update).not.toHaveBeenCalled();
   });
+
+  it('task AUTO chưa có content → không cho Bắt đầu làm / Nộp', async () => {
+    const { service, prisma } = buildService();
+
+    await expect(
+      service.update('task-1', { status: 'IN_PROGRESS' } as any, 'member-1', ['MEMBER']),
+    ).rejects.toThrow('phải chọn content');
+    await expect(
+      service.update('task-1', { status: 'SUBMITTED' } as any, 'leader-1', ['LEADER']),
+    ).rejects.toThrow('phải chọn content');
+    expect(prisma.task.update).not.toHaveBeenCalled();
+  });
+
+  it('task AUTO chọn content cùng lúc Bắt đầu làm → cho qua', async () => {
+    const { service, prisma } = buildService();
+
+    await service.update('task-1', { status: 'IN_PROGRESS', team_content_id: 'tc-1' } as any, 'member-1', ['MEMBER']);
+
+    expect(prisma.task.update.mock.calls[0][0].data.status).toBe('IN_PROGRESS');
+  });
 });
 
 describe('TaskAutoTasksService.update — đổi content', () => {
@@ -1078,6 +1098,21 @@ describe('TaskAutoTasksService.submit — bắt buộc có video trước khi n�
     await service.submit('task-1', {}, 'user-1');
 
     expect(prisma.task.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('task AUTO chưa chọn content → BadRequest dù đã có video', async () => {
+    const { service, prisma } = build({
+      task_type: 'AUTO',
+      assignee_id: 'user-1',
+      status: 'IN_PROGRESS',
+      result_url: 'https://drive.google.com/file/d/xyz',
+      content_id: null,
+      editor_content_id: null,
+      team_content_id: null,
+    });
+
+    await expect(service.submit('task-1', {}, 'user-1')).rejects.toThrow('phải chọn content');
+    expect(prisma.task.update).not.toHaveBeenCalled();
   });
 });
 

@@ -10,8 +10,8 @@ import { BilibiliScraperReadService } from './bilibili-scraper-read.service';
 
 function assertCanManageChannels(req: any): void {
   const roles: string[] = req.user?.roles ?? [];
-  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
-    throw new ForbiddenException('Chỉ leader/admin được quản lý kênh chú ý');
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER) && !roles.includes(UserRole.MANAGER)) {
+    throw new ForbiddenException('Chỉ leader/manager/admin được quản lý kênh chú ý');
   }
 }
 
@@ -30,7 +30,7 @@ export class BilibiliScraperController {
 
   @Post(['profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async syncAll(
     @Body()
     body?: {
@@ -63,7 +63,7 @@ export class BilibiliScraperController {
 
   @Post('search')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async search(@Body() body: { keyword?: string; num_of_posts?: number; display_keyword?: string }) {
     const keyword = (body?.keyword || '').trim();
     if (!keyword) throw new HttpException({ error: 'keyword is required' }, HttpStatus.BAD_REQUEST);
@@ -109,7 +109,7 @@ export class BilibiliScraperController {
 
   @Post('profiles/scrape')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async profileScrape(@Body() body: { mid?: string; num_of_posts?: number }) {
     const input = (body?.mid || '').trim();
     if (!input) throw new HttpException({ error: 'mid is required' }, HttpStatus.BAD_REQUEST);
@@ -156,14 +156,14 @@ export class BilibiliScraperController {
   // Chỉ ADMIN/LEADER, khớp phân quyền của mọi thao tác quản lý kênh khác.
   @Delete('profiles/:profileId')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async remove(@Param('profileId') profileId: string) {
     return this.service.deleteProfile(BigInt(profileId));
   }
 
   @Patch('profiles/:profileId/classification')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async updateClassification(
     @Param('profileId') profileId: string,
     @Body() body: { channel_type: string; product_lines?: string[] },

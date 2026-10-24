@@ -351,7 +351,6 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
       autoAssignSetting: {
         findUnique: jest.fn(async () => ({
           is_active: true,
-          weekend_enabled: true,
           default_cooldown_days: opts.defaultCooldownDays === undefined ? 5 : opts.defaultCooldownDays,
           daily_plan_line_names: ['A1', 'A2', 'A3', 'A5'],
           ...opts.settings,
@@ -574,13 +573,86 @@ describe('TaskAutoAssignService.runDailyAssignment — chia task A4 theo KPI + k
     expect(prisma.assignmentRun.update.mock.calls[0][0].data.details).not.toHaveProperty('_kpi_rollover');
   });
 
-  it('tắt cuối tuần: xét theo NGÀY ĐƯỢC CHIA (ngày mai) — tối T6 bỏ qua, tối CN vẫn chạy cho T2', async () => {
-    const friday = buildService({ settings: { weekend_enabled: false } });
-    expect(await friday.service.runDailyAssignment(RUN_AT, true)).toEqual({ assigned: 0, skipped: 0, runId: '' });
-    expect(friday.prisma.assignmentRun.create).not.toHaveBeenCalled();
+  it('chỉ lấy thành viên bật chia tự động có thứ của NGÀY ĐƯỢC CHIA (ngày mai) — tối T6 xét Thứ 7', async () => {
+    const { service, prisma } = buildService();
 
-    const sunday = buildService({ settings: { weekend_enabled: false } });
-    const sundayRun = DateTime.fromISO('2026-10-11T17:00:00', { zone: VN });
-    expect((await sunday.service.runDailyAssignment(sundayRun, true)).runId).toBe('run-1');
+    await service.runDailyAssignment(RUN_AT, true);
+
+    expect(prisma.teamMember.findMany.mock.calls[0][0].where).toMatchObject({
+      team_id: 'team-1',
+      auto_assign_enabled: true,
+      auto_assign_weekdays: { has: 6 },
+    });
+  });
+});
+
+describe('TaskAutoAssignService — lịch chia task từng thành viên (leader quản lý)', () => {
+  const memberRow = (id: string, extra: Record<string, any> = {}) => ({
+    id,
+    user_id: `user-${id}`,
+    auto_assign_enabled: true,
+    auto_assign_weekdays: [5, 1, 3],
+    user: { full_name: `Người ${id}`, email: `${id}@vcb.vn`, editor_approvals: [{ id: 'ap-1' }] },
+    ...extra,
+  });
+
+  function buildService(team: { leader_id: string | null } | null = { leader_id: 'leader-1' }) {
+    const prisma: any = {
+      team: { findMany: jest.fn(async () => [{ id: 'team-1', name: 'Team K3', members: [memberRow('m1')] }]) },
+      teamMember: {
+        findUnique: jest.fn(async () => team && { team }),
+        update: jest.fn(async (args: any) => memberRow('m1', {
+          ...Object.fromEntries(Object.entries(args.data).filter(([, v]) => v !== undefined)),
+          user: { ...memberRow('m1').user, editor_approvals: [] },
+        })),
+      },
+    };
+    return { service: new TaskAutoAssignService(prisma, {} as any, {} as any, {} as any), prisma };
+  }
+
+  it('LEADER chỉ thấy team mình lead, ADMIN/MANAGER thấy mọi team đang hoạt động', async () => {
+    const { service, prisma } = buildService();
+
+    const teams = await service.getMemberSchedules({ id: 'leader-1', roles: ['LEADER'] });
+    expect(prisma.team.findMany.mock.calls[0][0].where).toEqual({ is_active: true, leader_id: 'leader-1' });
+    expect(teams).toEqual([{
+      id: 'team-1',
+      name: 'Team K3',
+      members: [{
+        id: 'm1', user_id: 'user-m1', full_name: 'Người m1', email: 'm1@vcb.vn',
+        is_editor: true, auto_assign_enabled: true, auto_assign_weekdays: [1, 3, 5],
+      }],
+    }]);
+
+    await service.getMemberSchedules({ id: 'manager-1', roles: ['MANAGER'] });
+    expect(prisma.team.findMany.mock.calls[1][0].where).toEqual({ is_active: true });
+  });
+
+  it('leader đổi lịch thành viên team mình: ngày được sắp lại, trường không gửi giữ nguyên', async () => {
+    const { service, prisma } = buildService();
+
+    const result = await service.updateMemberSchedule('m1', { auto_assign_weekdays: [7, 2, 1] }, { id: 'leader-1', roles: ['LEADER'] });
+
+    expect(prisma.teamMember.update.mock.calls[0][0]).toMatchObject({
+      where: { id: 'm1' },
+      data: { auto_assign_enabled: undefined, auto_assign_weekdays: [1, 2, 7] },
+    });
+    expect(result).toMatchObject({ auto_assign_weekdays: [1, 2, 7], is_editor: false });
+  });
+
+  it('LEADER team khác bị chặn; ADMIN đổi được mọi team; thành viên không tồn tại → 404', async () => {
+    const other = buildService({ leader_id: 'leader-2' });
+    await expect(
+      other.service.updateMemberSchedule('m1', { auto_assign_enabled: false }, { id: 'leader-1', roles: ['LEADER'] }),
+    ).rejects.toThrow('leader');
+    expect(other.prisma.teamMember.update).not.toHaveBeenCalled();
+
+    await other.service.updateMemberSchedule('m1', { auto_assign_enabled: false }, { id: 'admin-1', roles: ['ADMIN'] });
+    expect(other.prisma.teamMember.update).toHaveBeenCalled();
+
+    const missing = buildService(null);
+    await expect(
+      missing.service.updateMemberSchedule('m9', { auto_assign_enabled: false }, { id: 'admin-1', roles: ['ADMIN'] }),
+    ).rejects.toThrow('Không tìm thấy');
   });
 });

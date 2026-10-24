@@ -11,8 +11,8 @@ import { FacebookExternalScraperReadService } from './facebook-external-scraper-
 // is_periodic_crawl (không phải is_tracked như 6 platform kia).
 function assertCanManageChannels(req: any): void {
   const roles: string[] = req.user?.roles ?? [];
-  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER)) {
-    throw new ForbiddenException('Chỉ leader/admin được quản lý kênh chú ý');
+  if (!roles.includes(UserRole.ADMIN) && !roles.includes(UserRole.LEADER) && !roles.includes(UserRole.MANAGER)) {
+    throw new ForbiddenException('Chỉ leader/manager/admin được quản lý kênh chú ý');
   }
 }
 
@@ -44,7 +44,7 @@ export class FacebookExternalScraperController {
 
   @Post('tags')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async createTag(@Body() body: { name?: string; color?: string }) {
     if (!body?.name) throw new HttpException({ error: 'name is required' }, HttpStatus.BAD_REQUEST);
     return this.service.createTag(body.name, body.color);
@@ -61,14 +61,14 @@ export class FacebookExternalScraperController {
   // Chỉ ADMIN/LEADER, khớp phân quyền của scrape-reels và scrape-by-url.
   @Delete(':fanpage_id')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async remove(@Param('fanpage_id') fanpageId: string) {
     return this.service.deleteFanpage(BigInt(fanpageId));
   }
 
   @Patch(':fanpage_id/classification')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async updateClassification(
     @Param('fanpage_id') fanpageId: string,
     @Body() body: { channel_type?: string; product_lines?: string[] },
@@ -92,7 +92,7 @@ export class FacebookExternalScraperController {
 
   @Post('scrape-reels')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async scrapeReels(@Body() body: { fanpage_id?: number; num_of_posts?: number }) {
     if (!body?.fanpage_id) throw new HttpException({ error: 'fanpage_id is required' }, HttpStatus.BAD_REQUEST);
     return this.service.triggerScrapeReels(BigInt(body.fanpage_id), body?.num_of_posts);
@@ -100,7 +100,7 @@ export class FacebookExternalScraperController {
 
   @Post('scrape-by-url')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async scrapeByUrl(
     @Body() body: { url?: string; num_of_posts?: number; channel_type?: string; product_lines?: string[] },
   ) {
@@ -121,7 +121,7 @@ export class FacebookExternalScraperController {
 
   @Post('bulk-add')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async bulkAdd(
     @Body() body: { urls?: string[]; channel_type?: string; product_lines?: string[] },
   ) {
@@ -137,7 +137,7 @@ export class FacebookExternalScraperController {
 
   @Post(['sync-all', 'profiles/sync-all', 'periodic-refresh'])
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.LEADER)
+  @Roles(UserRole.ADMIN, UserRole.LEADER, UserRole.MANAGER)
   async syncAll(
     @Body()
     body?: {

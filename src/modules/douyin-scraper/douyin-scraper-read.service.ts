@@ -106,7 +106,9 @@ export class DouyinScraperReadService {
     const sort = params.sort || 'scraped';
     const kwFilter = (params.search_keyword || '').trim();
 
-    const conditions: Prisma.Sql[] = [];
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`NOT EXISTS (SELECT 1 FROM scraper_hidden_videos h WHERE h.platform = 'douyin' AND h.post_id = scraper_douyin_videos.post_id)`,
+    ];
     if (minDigg !== undefined) conditions.push(Prisma.sql`digg_count >= ${BigInt(minDigg)}`);
     if (dateFrom) conditions.push(Prisma.sql`date_posted >= ${new Date(`${dateFrom}T00:00:00.000Z`)}`);
     if (dateTo) conditions.push(Prisma.sql`date_posted <= ${new Date(`${dateTo}T23:59:59.999Z`)}`);

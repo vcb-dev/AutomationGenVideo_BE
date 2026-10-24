@@ -17,7 +17,8 @@ import { RolesGuard } from "../../auth/guards/roles.guard";
 import { Roles } from "../../auth/decorators/roles.decorator";
 import { TaskAutoTeamsService } from "./teams.service";
 import { TaskAutoTasksService } from "../tasks/tasks.service";
-import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto, SetContentCreatorDto } from "./dto/team.dto";
+import { CreateTeamDto, UpdateTeamDto, EditorApprovalDto, SetEditorDto, SetContentCreatorDto, HrmSyncDto } from "./dto/team.dto";
+import { HrmTeamSyncService } from "./hrm-team-sync.service";
 import {
   CreateTeamProductDto,
   UpdateTeamProductDto,
@@ -35,6 +36,7 @@ export class TaskAutoTeamsController {
   constructor(
     private teams: TaskAutoTeamsService,
     private tasks: TaskAutoTasksService,
+    private hrmSync: HrmTeamSyncService,
   ) {}
 
   // ── Teams ─────────────────────────────────────────────────────────────────
@@ -43,6 +45,22 @@ export class TaskAutoTeamsController {
   @ApiOperation({ summary: "List all teams" })
   getTeams() {
     return this.teams.findAll();
+  }
+
+  @Post("hrm-sync/preview")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Xem trước thay đổi khi đồng bộ team (dự án) + thành viên content/editor từ HRM — không ghi gì" })
+  previewHrmSync(@Body() dto: HrmSyncDto) {
+    return this.hrmSync.preview(dto.links ?? {}, dto.accounts ?? {});
+  }
+
+  @Post("hrm-sync")
+  @UseGuards(RolesGuard)
+  @Roles("ADMIN", "MANAGER")
+  @ApiOperation({ summary: "Đồng bộ team + thành viên content/editor từ HRM. Dự án chưa gắn team phải có lựa chọn trong links, không có thì bỏ qua" })
+  applyHrmSync(@Body() dto: HrmSyncDto, @Request() req: any) {
+    return this.hrmSync.apply(dto.links ?? {}, dto.accounts ?? {}, req.user.id);
   }
 
   @Get("teams/:id")

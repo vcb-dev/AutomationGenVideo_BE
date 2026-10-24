@@ -62,6 +62,10 @@ import {
   type KpiPayrollSyncWarning,
   type MetricContribution,
 } from "./kpi-payroll-sync.mapper";
+import {
+  PAYROLL_SYNC_TEAM_SELECT,
+  payrollSyncTeamWhere,
+} from "../../../common/utils/payroll-sync-team.util";
 
 /** Phân loại content gắn task — đọc lúc query (không chụp lên task), sửa nhãn kho thì số đổi theo. */
 const CLASSIFICATION_SELECT = { select: { id: true, name: true } } as const;
@@ -1106,14 +1110,15 @@ export class TaskAutoKpiService {
   }
 
   async getTeamKpiPayrollSync(
-    teamId: string,
+    teamIdOrHrmProjectId: string,
     month: string,
   ): Promise<KpiPayrollSyncResponse> {
-    const team = await this.prisma.team.findUnique({
-      where: { id: teamId },
-      select: { id: true, name: true },
+    const team = await this.prisma.team.findFirst({
+      where: payrollSyncTeamWhere(teamIdOrHrmProjectId),
+      select: PAYROLL_SYNC_TEAM_SELECT,
     });
     if (!team) throw new NotFoundException("Team not found");
+    const teamId = team.id;
 
     const range = this.monthRangeVN(month);
 
@@ -1132,7 +1137,7 @@ export class TaskAutoKpiService {
           product_traffic: true,
           product_profit: true,
           product_collect_test_win: true,
-          user: { select: { id: true, employee_id: true } },
+          user: { select: { id: true, employee_id: true, hrm_employee_id: true } },
           allocations: {
             select: {
               type: true,
@@ -1149,20 +1154,26 @@ export class TaskAutoKpiService {
           user_id: true,
           content_target: true,
           translation_target: true,
-          user: { select: { id: true, employee_id: true } },
+          user: { select: { id: true, employee_id: true, hrm_employee_id: true } },
         },
         orderBy: { user_id: "asc" },
       }),
       this.prisma.teamMember.findMany({
         where: { team_id: teamId, is_content_creator: true },
-        select: { user_id: true, user: { select: { id: true, employee_id: true } } },
+        select: {
+          user_id: true,
+          user: { select: { id: true, employee_id: true, hrm_employee_id: true } },
+        },
         orderBy: { user_id: "asc" },
       }),
     ]);
 
     const employeeIds = new Map<string, string | null>();
-    for (const row of [...editorKpis, ...creatorKpis, ...creatorMembers])
+    const hrmEmployeeIds = new Map<string, string | null>();
+    for (const row of [...editorKpis, ...creatorKpis, ...creatorMembers]) {
       employeeIds.set(row.user_id, row.user?.employee_id ?? null);
+      hrmEmployeeIds.set(row.user_id, row.user?.hrm_employee_id ?? null);
+    }
 
     const creatorIds = Array.from(
       new Set([...creatorMembers.map((m) => m.user_id), ...creatorKpis.map((k) => k.user_id)]),
@@ -1317,9 +1328,12 @@ export class TaskAutoKpiService {
     return {
       contract_version: KPI_PAYROLL_SYNC_CONTRACT_VERSION,
       month,
-      team: { id: team.id, name: team.name },
+      team: { id: team.id, name: team.name, hrm_project_id: team.hrm_project_id },
       generated_at: new Date().toISOString(),
-      records,
+      records: records.map((record) => ({
+        ...record,
+        hrm_employee_id: hrmEmployeeIds.get(record.user_id) ?? null,
+      })),
       warnings,
     };
   }
