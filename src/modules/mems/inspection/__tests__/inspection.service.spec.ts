@@ -1,6 +1,10 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException, RequestMethod } from '@nestjs/common';
 import { InspectionService } from '../inspection.service';
 import { photoUrlSignerStub } from '../../../../common/mems/__tests__/photo-url-signer.stub';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsInspectionController } from '../inspection.controller';
 
 function buildDeps(over: Partial<any> = {}) {
   const asset = {
@@ -50,7 +54,9 @@ describe('InspectionService.inspect', () => {
 
   it('bỏ trống tình trạng thì giữ nguyên tình trạng cũ', async () => {
     const { prisma, created } = buildDeps();
-    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', { result: 'AVAILABLE' });
+    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', {
+      result: 'AVAILABLE',
+    });
 
     expect(created.updates[0]).toEqual({ status: 'AVAILABLE', condition: 'USED' });
   });
@@ -80,14 +86,18 @@ describe('InspectionService.inspect', () => {
 
   it('kết luận đạt thì KHÔNG sinh lệnh bảo trì', async () => {
     const { prisma, tx } = buildDeps();
-    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', { result: 'AVAILABLE' });
+    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', {
+      result: 'AVAILABLE',
+    });
 
     expect(tx.memsMaintenance.create).not.toHaveBeenCalled();
   });
 
   it('máy vừa nhập kho cũng kiểm tra được', async () => {
     const { prisma, created } = buildDeps({ status: 'PENDING_INSPECTION', condition: 'GOOD' });
-    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', { result: 'AVAILABLE' });
+    await new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', {
+      result: 'AVAILABLE',
+    });
 
     expect(created.updates[0].status).toBe('AVAILABLE');
   });
@@ -96,21 +106,27 @@ describe('InspectionService.inspect', () => {
     // Đổi trạng thái từ đây là đi vòng qua nghiệp vụ tiếp nhận trả.
     const { prisma } = buildDeps({ status: 'ON_LOAN' });
     await expect(
-      new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', { result: 'AVAILABLE' }),
+      new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', {
+        result: 'AVAILABLE',
+      }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('máy đã sẵn sàng rồi thì cũng không kiểm tra lại', async () => {
     const { prisma } = buildDeps({ status: 'AVAILABLE' });
     await expect(
-      new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', { result: 'AVAILABLE' }),
+      new InspectionService(prisma, photoUrlSignerStub).inspect('CAM-001', 'thu-kho', {
+        result: 'AVAILABLE',
+      }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('mã máy không tồn tại thì báo không tìm thấy', async () => {
     const { prisma } = buildDeps({ missing: true });
     await expect(
-      new InspectionService(prisma, photoUrlSignerStub).inspect('KHONG-CO', 'thu-kho', { result: 'AVAILABLE' }),
+      new InspectionService(prisma, photoUrlSignerStub).inspect('KHONG-CO', 'thu-kho', {
+        result: 'AVAILABLE',
+      }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -130,7 +146,9 @@ describe('InspectionService.inspect', () => {
 
   it('tra máy theo mã viết thường vẫn ra', async () => {
     const { prisma, tx } = buildDeps();
-    await new InspectionService(prisma, photoUrlSignerStub).inspect('cam-001', 'thu-kho', { result: 'AVAILABLE' });
+    await new InspectionService(prisma, photoUrlSignerStub).inspect('cam-001', 'thu-kho', {
+      result: 'AVAILABLE',
+    });
 
     expect(tx.memsAsset.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { asset_code: 'CAM-001' } }),
@@ -169,12 +187,39 @@ describe('InspectionService.listPending — ảnh đối chiếu ở bàn kiểm
   it('URL ảnh trả về đã đi qua bộ ký', async () => {
     // Route phục vụ ảnh là công khai, nó chỉ nhận đường dẫn có token còn hạn. Quên ký thì ảnh
     // hỏng hết trên màn mà không có lỗi nào trong console.
-    const signer = { signAll: jest.fn((photos: any[]) => photos.map((x) => ({ ...x, url: x.url + '?t=k' }))) } as any;
+    const signer = {
+      signAll: jest.fn((photos: any[]) => photos.map((x) => ({ ...x, url: x.url + '?t=k' }))),
+    } as any;
     const prisma = buildPrisma([{ id: 'p1', url: '/api/mems/photos/x.jpg' }]);
 
     const rows = await new InspectionService(prisma, signer).listPending();
 
     expect(signer.signAll).toHaveBeenCalled();
     expect(rows[0].photos[0].url).toBe('/api/mems/photos/x.jpg?t=k');
+  });
+});
+
+describe('MemsInspectionController — route & auth', () => {
+  const proto = MemsInspectionController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['pendingInspection', 'GET mems/pending-inspection', true],
+    ['inspect', 'POST mems/assets/:assetCode/inspect', true],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsInspectionController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

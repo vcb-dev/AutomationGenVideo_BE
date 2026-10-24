@@ -1,4 +1,12 @@
 import { BorrowHistoryLogService } from '../borrow-history-log.service';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+import { BorrowHistoryQueryDto } from '../dto/borrow-history.dto';
+import { RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsBorrowHistoryController } from '../borrow-history.controller';
 
 /**
  * Chức năng: nhật ký toàn bộ lượt mượn của cả kho, có lọc và phân trang.
@@ -33,9 +41,7 @@ function line(over: {
         to_time: over.dueAt === null ? null : new Date(over.dueAt ?? '2026-08-07T09:00:00Z'),
       },
     },
-    returnLines: over.returnedAt
-      ? [{ returnRecord: { returned_at: new Date(over.returnedAt) } }]
-      : [],
+    returnLines: over.returnedAt ? [{ returnRecord: { returned_at: new Date(over.returnedAt) } }] : [],
   };
 }
 
@@ -160,5 +166,74 @@ describe('BorrowHistoryLogService.list', () => {
 
     expect(res.rows).toEqual([]);
     expect(res.total).toBe(0);
+  });
+});
+
+/** Kiểm tham số lọc của màn Nhật ký mượn trước khi chạm Prisma. */
+const errorsFor = (cls: any, payload: object) => validateSync(plainToInstance(cls, payload) as object);
+
+describe('BorrowHistoryQueryDto — nhật ký mượn của cả kho', () => {
+  it('không lọc thì hợp lệ', () => {
+    expect(errorsFor(BorrowHistoryQueryDto, {})).toHaveLength(0);
+  });
+
+  it('ba trạng thái của một lượt mượn đều qua', () => {
+    for (const status of ['HOLDING', 'OVERDUE', 'RETURNED']) {
+      expect(errorsFor(BorrowHistoryQueryDto, { status })).toHaveLength(0);
+    }
+  });
+
+  it('trạng thái lạ bị chặn', () => {
+    // `PENDING_APPROVAL` là trạng thái của PHIẾU, không phải của một lượt mượn — gửi nhầm sang
+    // đây thì bảng trả về rỗng một cách khó hiểu chứ không báo gì.
+    expect(errorsFor(BorrowHistoryQueryDto, { status: 'PENDING_APPROVAL' }).length).toBeGreaterThan(0);
+  });
+
+  it('ngày phải đúng định dạng', () => {
+    expect(errorsFor(BorrowHistoryQueryDto, { from: '2026-08-01' })).toHaveLength(0);
+    expect(errorsFor(BorrowHistoryQueryDto, { from: 'hôm qua' }).length).toBeGreaterThan(0);
+    expect(errorsFor(BorrowHistoryQueryDto, { to: '32/13/2026' }).length).toBeGreaterThan(0);
+  });
+
+  it('số trang chuyển thành số và không nhận giá trị vô lý', () => {
+    const dto = plainToInstance(BorrowHistoryQueryDto, { page: '2', pageSize: '50' });
+
+    expect(validateSync(dto as object)).toHaveLength(0);
+    expect(dto.page).toBe(2);
+    expect(dto.pageSize).toBe(50);
+    expect(errorsFor(BorrowHistoryQueryDto, { page: '0' }).length).toBeGreaterThan(0);
+    expect(errorsFor(BorrowHistoryQueryDto, { page: 'ba' }).length).toBeGreaterThan(0);
+  });
+
+  it('ô lọc để trống vẫn tính là không lọc', () => {
+    const dto = plainToInstance(BorrowHistoryQueryDto, { status: '', from: '', to: '' });
+
+    expect(validateSync(dto as object)).toHaveLength(0);
+    expect(dto.status).toBeUndefined();
+  });
+});
+
+describe('MemsBorrowHistoryController — route & auth', () => {
+  const proto = MemsBorrowHistoryController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['borrowHistoryLog', 'GET mems/borrow-history', true],
+    ['assetBorrowHistory', 'GET mems/assets/:id/borrow-history', false],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsBorrowHistoryController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

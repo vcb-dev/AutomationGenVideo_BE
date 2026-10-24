@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ApprovalService } from './approval.service';
+import { ApprovalService } from './approvals.service';
 import { MemsApprovalsController } from './approvals.controller';
 
 @Module({

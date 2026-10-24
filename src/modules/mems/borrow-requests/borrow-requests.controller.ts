@@ -2,8 +2,8 @@ import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
-import { ApprovalService } from '../approvals/approval.service';
-import { BorrowRequestService } from './borrow-request.service';
+import { ApprovalService } from '../approvals/approvals.service';
+import { BorrowRequestService } from './borrow-requests.service';
 import { CreateBorrowRequestDto, ListRequestsQueryDto } from './dto/borrow-request.dto';
 import { RequestExtrasService } from './request-extras.service';
 

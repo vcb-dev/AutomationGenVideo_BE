@@ -1,4 +1,4 @@
-import { canSign, nextStep, planApprovals } from '../approval-rules.util';
+import { canSign, nextStep, planApprovals } from '../../../../utils/mems/approval-rules.util';
 
 const base = {
   totalValue: 10_000_000,

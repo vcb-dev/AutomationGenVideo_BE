@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ReturnService } from './return.service';
+import { ReturnService } from './returns.service';
 import { MemsReturnsController } from './returns.controller';
 
 @Module({

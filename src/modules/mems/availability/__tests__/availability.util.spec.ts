@@ -1,4 +1,4 @@
-import { computeAvailability, overlaps } from '../availability.util';
+import { computeAvailability, overlaps } from '../../../../utils/mems/availability.util';
 
 const d = (iso: string) => new Date(iso);
 
@@ -56,9 +56,7 @@ describe('computeAvailability', () => {
     const r = computeAvailability({
       ...base,
       totalUsableAssets: 2,
-      reservations: [
-        { fromTime: d('2026-08-20T09:00:00Z'), toTime: d('2026-08-21T09:00:00Z') },
-      ],
+      reservations: [{ fromTime: d('2026-08-20T09:00:00Z'), toTime: d('2026-08-21T09:00:00Z') }],
       maintenances: [],
     });
     expect(r.available).toBe(2);
@@ -69,9 +67,7 @@ describe('computeAvailability', () => {
       ...base,
       totalUsableAssets: 3,
       reservations: [],
-      maintenances: [
-        { fromTime: d('2026-08-09T00:00:00Z'), toTime: d('2026-08-15T00:00:00Z') },
-      ],
+      maintenances: [{ fromTime: d('2026-08-09T00:00:00Z'), toTime: d('2026-08-15T00:00:00Z') }],
     });
     expect(r.available).toBe(2);
     expect(r.busyByMaintenance).toBe(1);

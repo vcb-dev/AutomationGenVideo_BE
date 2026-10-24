@@ -27,7 +27,7 @@ import { Public } from '../../auth/decorators/public.decorator';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
-import { AssetPhotoService, MEMS_PHOTO_DIR, MEMS_PHOTO_MAX_BYTES, PHOTO_PURPOSE } from './asset-photo.service';
+import { AssetPhotoService, MEMS_PHOTO_DIR, MEMS_PHOTO_MAX_BYTES, PHOTO_PURPOSE } from './asset-photos.service';
 
 @ApiTags('MEMS — Kho thiết bị')
 @ApiBearerAuth()

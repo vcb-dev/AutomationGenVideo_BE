@@ -1,4 +1,4 @@
-import { conditionWorsened, resolveReturnStatus } from '../return-rules.util';
+import { conditionWorsened, resolveReturnStatus } from '../../../../utils/mems/return-rules.util';
 
 describe('conditionWorsened', () => {
   it('nhận ra máy tệ đi theo thang tình trạng', () => {

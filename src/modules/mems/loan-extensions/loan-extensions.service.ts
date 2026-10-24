@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { isMediaLeaderOrAdminUser } from '../../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { HOLDING_STATUSES } from '../../../utils/mems/return-alerts.util';
-import { RequestViewer } from '../approvals/approval.service';
+import { RequestViewer } from '../approvals/approvals.service';
 import { AvailabilityService } from '../availability/availability.service';
 import { DecideExtensionDto, RequestExtensionDto } from './dto/loan-extension.dto';
 

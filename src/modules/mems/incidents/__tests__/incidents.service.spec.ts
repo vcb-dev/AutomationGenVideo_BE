@@ -1,16 +1,32 @@
-import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, RequestMethod } from '@nestjs/common';
 import { MemsIncidentsService } from '../incidents.service';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsIncidentsController } from '../incidents.controller';
 
 const OWNER = { id: 'owner-1', roles: ['USER'] };
 const PHOTO = '33333333-3333-4333-8333-333333333333';
-const DTO = { assetId: 'asset-1', kind: 'CONDITION_WORSENED' as const, description: '  Rơi máy, nứt màn hình  ' };
+const DTO = {
+  assetId: 'asset-1',
+  kind: 'CONDITION_WORSENED' as const,
+  description: '  Rơi máy, nứt màn hình  ',
+};
 
 function buildDeps(over: { request?: any; notHandedOver?: boolean; photoCount?: number } = {}) {
-  const request = { id: 'req-1', request_code: 'REQ-1', owner_id: 'owner-1', status: 'ON_LOAN', ...over.request };
+  const request = {
+    id: 'req-1',
+    request_code: 'REQ-1',
+    owner_id: 'owner-1',
+    status: 'ON_LOAN',
+    ...over.request,
+  };
   const tx: any = {
     memsBorrowRequest: { findUnique: jest.fn(async () => request) },
     memsHandoverLine: {
-      findFirst: jest.fn(async () => (over.notHandedOver ? null : { id: 'hl-1', asset: { asset_code: 'CAM-001' } })),
+      findFirst: jest.fn(async () =>
+        over.notHandedOver ? null : { id: 'hl-1', asset: { asset_code: 'CAM-001' } },
+      ),
     },
     memsIncident: { create: jest.fn(async ({ data }: any) => ({ id: 'inc-1', ...data })) },
     memsRequestPhoto: {
@@ -57,7 +73,9 @@ describe('Báo sự cố khi đang mượn', () => {
 
   it('người ngoài bị chặn', async () => {
     const { service } = buildDeps();
-    await expect(service.report('req-1', { id: 'x', roles: ['USER'] }, DTO)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.report('req-1', { id: 'x', roles: ['USER'] }, DTO)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 
   it('phiếu không còn đang mượn thì không báo được', async () => {
@@ -76,12 +94,39 @@ describe('Báo sự cố khi đang mượn', () => {
 
   it('ảnh không hợp lệ thì từ chối cả lần báo', async () => {
     const { service } = buildDeps({ photoCount: 0 });
-    await expect(service.report('req-1', OWNER, { ...DTO, photoIds: [PHOTO] })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.report('req-1', OWNER, { ...DTO, photoIds: [PHOTO] })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('ghi nhật ký vòng đời máy loại INCIDENT', async () => {
     const { service, tx } = buildDeps();
     await service.report('req-1', OWNER, DTO);
-    expect(tx.memsAssetEvent.create.mock.calls[0][0].data).toMatchObject({ asset_id: 'asset-1', kind: 'INCIDENT' });
+    expect(tx.memsAssetEvent.create.mock.calls[0][0].data).toMatchObject({
+      asset_id: 'asset-1',
+      kind: 'INCIDENT',
+    });
+  });
+});
+
+describe('MemsIncidentsController — route & auth', () => {
+  const proto = MemsIncidentsController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [['reportIncident', 'POST mems/requests/:id/incidents', false]];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsIncidentsController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

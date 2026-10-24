@@ -3,7 +3,7 @@ import { isMediaLeaderOrAdminUser } from '../../../common/guards/mems-media-lead
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { attachRequestPhotos } from '../../../utils/mems/request-photos.util';
 import { HOLDING_STATUSES } from '../../../utils/mems/return-alerts.util';
-import { RequestViewer } from '../approvals/approval.service';
+import { RequestViewer } from '../approvals/approvals.service';
 import { ReportIncidentDto } from './dto/incident.dto';
 
 @Injectable()

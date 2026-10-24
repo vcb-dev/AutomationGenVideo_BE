@@ -1,5 +1,9 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
-import { ReturnService } from '../return.service';
+import { BadRequestException, ConflictException, RequestMethod } from '@nestjs/common';
+import { ReturnService } from '../returns.service';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsReturnsController } from '../returns.controller';
 
 /**
  * Giống bên bàn giao: `photoKeys` là ID bản ghi ảnh do máy chủ sinh, không phải tên file client
@@ -192,9 +196,7 @@ describe('ReturnService.create', () => {
 
   it('máy đã nhận lại trước đó thì không nhận lại lần hai', async () => {
     const { prisma } = buildDeps({
-      handoverLines: [
-        { id: 'hl-1', asset_id: 'asset-1', condition: 'GOOD', returnLines: [{ id: 'rl-cũ' }] },
-      ],
+      handoverLines: [{ id: 'hl-1', asset_id: 'asset-1', condition: 'GOOD', returnLines: [{ id: 'rl-cũ' }] }],
     });
     await expect(
       new ReturnService(prisma).create('req-1', 'user-1', { units: [unit()] }),
@@ -249,5 +251,30 @@ describe('ReturnService.create — trùng mã máy trong biên bản', () => {
     ).rejects.toThrow(/hai lần|trùng/i);
 
     expect(tx.memsReturn.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('MemsReturnsController — route & auth', () => {
+  const proto = MemsReturnsController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['pendingReturns', 'GET mems/requests/:id/pending-returns', true],
+    ['receiveReturn', 'POST mems/requests/:id/return', true],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsReturnsController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

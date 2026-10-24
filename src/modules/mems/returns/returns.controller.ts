@@ -6,7 +6,7 @@ import { Roles } from '../../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { CreateReturnDto } from './dto/return.dto';
-import { ReturnService } from './return.service';
+import { ReturnService } from './returns.service';
 
 @ApiTags('MEMS — Mượn thiết bị')
 @ApiBearerAuth()

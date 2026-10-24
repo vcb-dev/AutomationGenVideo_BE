@@ -1,5 +1,9 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException, RequestMethod } from '@nestjs/common';
 import { AssignmentService } from '../assignment.service';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsAssignmentController } from '../assignment.controller';
 
 describe('Gán máy cho phiếu', () => {
   function buildDeps(over: Partial<any> = {}) {
@@ -592,5 +596,30 @@ describe('Danh sách máy gán được', () => {
 
       expect(await service.assignableUnits('line-1')).toEqual([]);
     });
+  });
+});
+
+describe('MemsAssignmentController — route & auth', () => {
+  const proto = MemsAssignmentController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['assignable', 'GET mems/request-lines/:lineId/assignable-assets', true],
+    ['assign', 'POST mems/requests/:id/assign', true],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsAssignmentController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

@@ -1,4 +1,9 @@
 import { ReturnAlertsService } from '../return-alerts.service';
+import { RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsReturnAlertsController } from '../return-alerts.controller';
 
 const NOW = new Date('2026-10-19T14:00:00Z');
 
@@ -36,5 +41,27 @@ describe('ReturnAlertsService.list', () => {
     ]);
     const { overdue } = await new ReturnAlertsService(prisma).list({ id: 'admin-1', roles: ['ADMIN'] }, NOW);
     expect(overdue[0]).toMatchObject({ owner_name: 'Nguyễn Văn A', overdue_minutes: 120 });
+  });
+});
+
+describe('MemsReturnAlertsController — route & auth', () => {
+  const proto = MemsReturnAlertsController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [['returnAlerts', 'GET mems/return-alerts', false]];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsReturnAlertsController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

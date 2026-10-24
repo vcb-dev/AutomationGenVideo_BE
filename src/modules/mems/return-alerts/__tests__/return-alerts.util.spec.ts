@@ -1,11 +1,14 @@
-import { classifyReturnAlerts } from '../return-alerts.util';
+import { classifyReturnAlerts } from '../../../../utils/mems/return-alerts.util';
 
 const NOW = new Date('2026-10-19T14:00:00Z');
 const at = (iso: string) => new Date(iso);
 
 describe('classifyReturnAlerts', () => {
   it('quá hạn thì tính số phút trễ', () => {
-    const { overdue, expiringSoon } = classifyReturnAlerts([{ id: 'a', to_time: at('2026-10-19T12:30:00Z') }], NOW);
+    const { overdue, expiringSoon } = classifyReturnAlerts(
+      [{ id: 'a', to_time: at('2026-10-19T12:30:00Z') }],
+      NOW,
+    );
     expect(overdue).toEqual([{ id: 'a', to_time: at('2026-10-19T12:30:00Z'), overdue_minutes: 90 }]);
     expect(expiringSoon).toEqual([]);
   });

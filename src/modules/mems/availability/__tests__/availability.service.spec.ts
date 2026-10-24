@@ -1,5 +1,9 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, RequestMethod } from '@nestjs/common';
 import { AvailabilityService } from '../availability.service';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsAvailabilityController } from '../availability.controller';
 
 const d = (iso: string) => new Date(iso);
 
@@ -64,13 +68,7 @@ describe('AvailabilityService.check', () => {
     const where = prisma.memsAsset.count.mock.calls[0][0].where;
     expect(where.is_disabled).toBe(false);
     expect(where.status.notIn).toEqual(
-      expect.arrayContaining([
-        'PENDING_INSPECTION',
-        'POST_RETURN_CHECK',
-        'BROKEN',
-        'LOST',
-        'DISPOSED',
-      ]),
+      expect.arrayContaining(['PENDING_INSPECTION', 'POST_RETURN_CHECK', 'BROKEN', 'LOST', 'DISPOSED']),
     );
   });
 
@@ -93,9 +91,7 @@ describe('AvailabilityService.check', () => {
       quantity: 1,
     });
 
-    expect(prisma.memsAsset.count.mock.calls[0][0].where.status.notIn).toContain(
-      'POST_RETURN_CHECK',
-    );
+    expect(prisma.memsAsset.count.mock.calls[0][0].where.status.notIn).toContain('POST_RETURN_CHECK');
   });
 
   it('máy đang bảo trì KHÔNG bị loại bằng cột trạng thái, để không trừ hai lần', async () => {
@@ -115,9 +111,7 @@ describe('AvailabilityService.check', () => {
       quantity: 1,
     });
 
-    expect(prisma.memsAsset.count.mock.calls[0][0].where.status.notIn).not.toContain(
-      'UNDER_MAINTENANCE',
-    );
+    expect(prisma.memsAsset.count.mock.calls[0][0].where.status.notIn).not.toContain('UNDER_MAINTENANCE');
   });
 
   it('không đếm bản ghi giữ chỗ đã nhả', async () => {
@@ -144,9 +138,7 @@ describe('AvailabilityService.check', () => {
     const prisma = buildPrisma({
       bufferMinutes: 0,
       assetCount: 2,
-      reservations: [
-        { from_time: d('2026-08-10T08:00:00Z'), buffer_to_time: d('2026-08-10T18:00:00Z') },
-      ],
+      reservations: [{ from_time: d('2026-08-10T08:00:00Z'), buffer_to_time: d('2026-08-10T18:00:00Z') }],
       maintenances: [],
     });
     const service = new AvailabilityService(prisma);
@@ -249,7 +241,11 @@ describe('freeAssets() — máy quá hạn chưa trả', () => {
       memsHandoverLine: { findMany: jest.fn(async () => [{ asset_id: 'a-2' }]) },
     } as any;
   }
-  const ARGS = { modelId: 'm-1', fromTime: new Date('2026-10-25T02:00:00Z'), toTime: new Date('2026-10-26T02:00:00Z') };
+  const ARGS = {
+    modelId: 'm-1',
+    fromTime: new Date('2026-10-25T02:00:00Z'),
+    toTime: new Date('2026-10-26T02:00:00Z'),
+  };
 
   it('ẩn máy quá hạn chưa trả khỏi danh sách', async () => {
     const free = await new AvailabilityService(buildPrisma()).freeAssets(ARGS);
@@ -263,5 +259,27 @@ describe('freeAssets() — máy quá hạn chưa trả', () => {
     expect(where.asset).toEqual({ model_id: 'm-1' });
     expect(where.returnLines).toEqual({ none: {} });
     expect(where.handover.request.to_time.lt).toBeInstanceOf(Date);
+  });
+});
+
+describe('MemsAvailabilityController — route & auth', () => {
+  const proto = MemsAvailabilityController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [['check', 'GET mems/availability', false]];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsAvailabilityController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

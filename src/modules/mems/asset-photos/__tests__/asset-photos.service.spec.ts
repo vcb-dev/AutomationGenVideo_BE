@@ -1,6 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { AssetPhotoService } from '../asset-photo.service';
+import { BadRequestException, NotFoundException, RequestMethod } from '@nestjs/common';
+import { AssetPhotoService } from '../asset-photos.service';
 import { photoUrlSignerStub } from '../../../../common/mems/__tests__/photo-url-signer.stub';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { IS_PUBLIC_KEY } from '../../../auth/decorators/public.decorator';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsAssetPhotosController } from '../asset-photos.controller';
 
 jest.mock('fs', () => ({
   existsSync: jest.fn(() => true),
@@ -13,9 +18,7 @@ function buildDeps(over: Partial<any> = {}) {
   const created: any = { photos: [], updates: [], deleted: [] };
   const prisma: any = {
     memsAsset: {
-      findUnique: jest.fn(async () =>
-        over.assetMissing ? null : { id: 'asset-1', asset_code: 'CAM-001' },
-      ),
+      findUnique: jest.fn(async () => (over.assetMissing ? null : { id: 'asset-1', asset_code: 'CAM-001' })),
     },
     memsAssetPhoto: {
       count: jest.fn(async () => over.existingCount ?? 0),
@@ -71,21 +74,39 @@ describe('AssetPhotoService.upload', () => {
   it('ảnh đầu tiên của máy tự thành ảnh đại diện', async () => {
     // Không bắt người dùng bấm thêm một nút nữa chỉ để nói điều hiển nhiên.
     const { prisma, drive, created } = buildDeps();
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0]).toMatchObject({ is_primary: true, sort_order: 0 });
   });
 
   it('ảnh thứ hai trở đi không giành cờ đại diện', async () => {
     const { prisma, drive, created } = buildDeps({ existingCount: 3 });
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0]).toMatchObject({ is_primary: false, sort_order: 3 });
   });
 
   it('tên file mang theo mã máy để tra ngược được', async () => {
     const { prisma, drive, created } = buildDeps();
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0].url).toContain('CAM-001_');
     expect(created.photos[0].url.endsWith('.jpg')).toBe(true);
@@ -93,7 +114,13 @@ describe('AssetPhotoService.upload', () => {
 
   it('chưa cấu hình Google Drive thì lưu đĩa và ghi rõ nơi lưu', async () => {
     const { prisma, drive, created } = buildDeps({ driveAvailable: false });
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0].storage).toBe('local');
     expect(created.photos[0].url.startsWith('/api/mems/photos/')).toBe(true);
@@ -102,7 +129,13 @@ describe('AssetPhotoService.upload', () => {
   it('có Google Drive thì đẩy lên đó', async () => {
     const { prisma, drive, created } = buildDeps({ driveAvailable: true });
     drive.uploadFromPath = jest.fn(async () => ({ url: 'https://drive/abc' }));
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0]).toMatchObject({ url: 'https://drive/abc', storage: 'google_drive' });
   });
@@ -174,20 +207,38 @@ describe('AssetPhotoService.upload', () => {
   it('không chọn file thì báo lỗi thay vì nổ', async () => {
     const { prisma, drive } = buildDeps();
     await expect(
-      new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', undefined as any, undefined, {}),
+      new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+        'CAM-001',
+        'nguoi-tai',
+        undefined as any,
+        undefined,
+        {},
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('mã máy không tồn tại thì báo không tìm thấy', async () => {
     const { prisma, drive } = buildDeps({ assetMissing: true });
     await expect(
-      new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('KHONG-CO', 'nguoi-tai', file(), undefined, {}),
+      new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+        'KHONG-CO',
+        'nguoi-tai',
+        file(),
+        undefined,
+        {},
+      ),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('chú thích toàn khoảng trắng lưu thành null, không lưu chuỗi rỗng', async () => {
     const { prisma, drive, created } = buildDeps();
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), '   ', {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      '   ',
+      {},
+    );
 
     expect(created.photos[0].caption).toBeNull();
   });
@@ -210,7 +261,14 @@ describe('AssetPhotoService.remove', () => {
   it('xoá ảnh đại diện thì ảnh còn lại lên thay', async () => {
     // Không có bước này thì bảng kho mất hình mà người dùng không hiểu vì sao.
     const { prisma, drive, created } = buildDeps({
-      photo: { id: 'photo-1', asset_id: 'asset-1', is_primary: true, storage: 'local', url: '/api/mems/photos/a.jpg', purpose: 'CATALOG' },
+      photo: {
+        id: 'photo-1',
+        asset_id: 'asset-1',
+        is_primary: true,
+        storage: 'local',
+        url: '/api/mems/photos/a.jpg',
+        purpose: 'CATALOG',
+      },
       nextPhoto: { id: 'photo-2' },
     });
     await new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('photo-1');
@@ -221,7 +279,14 @@ describe('AssetPhotoService.remove', () => {
 
   it('xoá ảnh thường thì không đụng tới ảnh đại diện', async () => {
     const { prisma, drive, created } = buildDeps({
-      photo: { id: 'photo-5', asset_id: 'asset-1', is_primary: false, storage: 'local', url: '/x/a.jpg', purpose: 'CATALOG' },
+      photo: {
+        id: 'photo-5',
+        asset_id: 'asset-1',
+        is_primary: false,
+        storage: 'local',
+        url: '/x/a.jpg',
+        purpose: 'CATALOG',
+      },
     });
     await new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('photo-5');
 
@@ -230,9 +295,9 @@ describe('AssetPhotoService.remove', () => {
 
   it('ảnh không tồn tại thì báo không tìm thấy', async () => {
     const { prisma, drive } = buildDeps({ photo: null });
-    await expect(new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('khong-co')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('khong-co'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 
@@ -246,7 +311,13 @@ describe('AssetPhotoService.remove', () => {
 describe('AssetPhotoService.upload — tách ảnh chứng cứ khỏi ảnh hồ sơ', () => {
   it('mặc định là ảnh hồ sơ của máy', async () => {
     const { prisma, drive, created } = buildDeps();
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0].purpose).toBe('CATALOG');
   });
@@ -284,7 +355,13 @@ describe('AssetPhotoService.upload — tách ảnh chứng cứ khỏi ảnh h�
 
   it('ảnh hồ sơ đầu tiên vẫn tự thành ảnh đại diện như cũ', async () => {
     const { prisma, drive, created } = buildDeps({ existingCount: 0 });
-    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload('CAM-001', 'nguoi-tai', file(), undefined, {});
+    await new AssetPhotoService(prisma, drive, photoUrlSignerStub).upload(
+      'CAM-001',
+      'nguoi-tai',
+      file(),
+      undefined,
+      {},
+    );
 
     expect(created.photos[0].is_primary).toBe(true);
   });
@@ -354,7 +431,14 @@ describe('AssetPhotoService — ký URL trước khi trả ra ngoài', () => {
 describe('AssetPhotoService — ảnh chứng cứ không được thành ảnh đại diện', () => {
   it('xoá ảnh đại diện thì chỉ ảnh HỒ SƠ mới được lên thay', async () => {
     const { prisma, drive } = buildDeps({
-      photo: { id: 'p1', asset_id: 'asset-1', is_primary: true, storage: 'local', url: '/x/a.jpg', purpose: 'CATALOG' },
+      photo: {
+        id: 'p1',
+        asset_id: 'asset-1',
+        is_primary: true,
+        storage: 'local',
+        url: '/x/a.jpg',
+        purpose: 'CATALOG',
+      },
       nextPhoto: { id: 'p2' },
     });
 
@@ -371,9 +455,9 @@ describe('AssetPhotoService — ảnh chứng cứ không được thành ảnh 
       photo: { id: 'p9', asset_id: 'asset-1', is_primary: false, purpose: 'HANDOVER', url: '/x/a.jpg' },
     });
 
-    await expect(
-      new AssetPhotoService(prisma, drive, photoUrlSignerStub).setPrimary('p9'),
-    ).rejects.toThrow(/ảnh hồ sơ|biên bản/i);
+    await expect(new AssetPhotoService(prisma, drive, photoUrlSignerStub).setPrimary('p9')).rejects.toThrow(
+      /ảnh hồ sơ|biên bản/i,
+    );
   });
 
   it('vẫn đặt được ảnh hồ sơ làm ảnh đại diện như cũ', async () => {
@@ -393,9 +477,9 @@ describe('AssetPhotoService — ảnh chứng cứ không được thành ảnh 
       photo: { id: 'p9', asset_id: 'asset-1', is_primary: false, purpose: 'RETURN', url: '/x/c.jpg' },
     });
 
-    await expect(
-      new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('p9'),
-    ).rejects.toThrow(/biên bản/i);
+    await expect(new AssetPhotoService(prisma, drive, photoUrlSignerStub).remove('p9')).rejects.toThrow(
+      /biên bản/i,
+    );
 
     expect(created.deleted).toHaveLength(0);
   });
@@ -441,5 +525,38 @@ describe('Tải ảnh người mượn (POST /mems/request-photos)', () => {
   it('không chọn file thì báo lỗi rõ ràng', async () => {
     const { service } = buildRequestPhotoDeps();
     await expect(service.uploadRequestPhoto('user-1', undefined as any, {})).rejects.toThrow('Chưa chọn ảnh');
+  });
+});
+
+describe('MemsAssetPhotosController — route & auth', () => {
+  const proto = MemsAssetPhotosController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['listPhotos', 'GET mems/assets/:assetCode/photos', false],
+    ['uploadPhoto', 'POST mems/assets/:assetCode/photos', true],
+    ['uploadRequestPhoto', 'POST mems/request-photos', false],
+    ['setPrimaryPhoto', 'POST mems/photos/:photoId/primary', true],
+    ['removePhoto', 'DELETE mems/photos/:photoId', true],
+    ['servePhoto', 'GET mems/photos/:filename', false],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsAssetPhotosController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
+  });
+
+  it('servePhoto vẫn công khai — thẻ img không gửi được header xác thực', () => {
+    expect(Reflect.getMetadata(IS_PUBLIC_KEY, proto.servePhoto)).toBe(true);
   });
 });

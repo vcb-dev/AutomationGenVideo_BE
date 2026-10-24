@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CreateHandoverDto, HandoverUnitDto } from './dto/handover.dto';
 import { assertPhotoEvidence } from '../../../utils/mems/photo-evidence.util';
-import { PHOTO_PURPOSE } from '../asset-photos/asset-photo.service';
+import { PHOTO_PURPOSE } from '../asset-photos/asset-photos.service';
 
 @Injectable()
 export class HandoverService {

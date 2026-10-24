@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { isMediaLeaderOrAdminUser } from '../../../common/guards/mems-media-leader.guard';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { classifyReturnAlerts, EXPIRING_SOON_MINUTES, HOLDING_STATUSES } from '../../../utils/mems/return-alerts.util';
-import { RequestViewer } from '../approvals/approval.service';
+import { RequestViewer } from '../approvals/approvals.service';
 
 @Injectable()
 export class ReturnAlertsService {

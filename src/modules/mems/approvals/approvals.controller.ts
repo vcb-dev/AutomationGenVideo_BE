@@ -5,7 +5,7 @@ import { MemsMediaLeaderGuard } from '../../../common/guards/mems-media-leader.g
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
-import { ApprovalService } from './approval.service';
+import { ApprovalService } from './approvals.service';
 import { ApproveRequestDto, RejectRequestDto } from './dto/approval.dto';
 
 @ApiTags('MEMS — Mượn thiết bị')

@@ -3,11 +3,18 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  RequestMethod,
 } from '@nestjs/common';
-import { ApprovalService } from '../approval.service';
+import { ApprovalService } from '../approvals.service';
 import { canSign, planApprovals } from '../../../../utils/mems/approval-rules.util';
-import { BorrowRequestService } from '../../borrow-requests/borrow-request.service';
-import { isMediaLeaderOrAdminUser } from '../../../../common/guards/mems-media-leader.guard';
+import { BorrowRequestService } from '../../borrow-requests/borrow-requests.service';
+import {
+  isMediaLeaderOrAdminUser,
+  MemsMediaLeaderGuard,
+} from '../../../../common/guards/mems-media-leader.guard';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsApprovalsController } from '../approvals.controller';
 
 describe('Duyệt và từ chối phiếu', () => {
   // Kho thiết bị là tài sản của bộ phận Media, nên người ký cấp leader phải thuộc team đó.
@@ -1249,5 +1256,30 @@ describe('Vai trò và team', () => {
       expect(created.request.owner_id).toBe(u.id);
       expect(created.request.department_id).toBe('dept-mac-dinh');
     });
+  });
+});
+
+describe('MemsApprovalsController — route & auth', () => {
+  const proto = MemsApprovalsController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['approve', 'POST mems/requests/:id/approve', true],
+    ['reject', 'POST mems/requests/:id/reject', true],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsApprovalsController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

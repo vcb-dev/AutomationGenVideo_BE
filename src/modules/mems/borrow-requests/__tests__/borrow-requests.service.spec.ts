@@ -1,10 +1,18 @@
-import { BorrowRequestService } from '../borrow-request.service';
+import { BorrowRequestService } from '../borrow-requests.service';
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  RequestMethod,
 } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+import { ListRequestsQueryDto } from '../dto/borrow-request.dto';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsBorrowRequestsController } from '../borrow-requests.controller';
 
 /** Bộ giả lập dùng chung cho các describe về tạo phiếu bên dưới. */
 
@@ -826,9 +834,9 @@ describe('Ghi chú và ảnh đính kèm khi tạo phiếu', () => {
 
   it('một ảnh không hợp lệ thì từ chối cả phiếu', async () => {
     const { service } = buildCreateDeps({ attachablePhotoIds: [PHOTO_A] });
-    await expect(service.create('user-1', { ...oneLine(), photoIds: [PHOTO_A, PHOTO_B] })).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(
+      service.create('user-1', { ...oneLine(), photoIds: [PHOTO_A, PHOTO_B] }),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('gửi trùng ID thì chỉ tính một lần', async () => {
@@ -861,5 +869,63 @@ describe('Khoá sinh mã phiếu theo ngày', () => {
     const { service, lockKeys } = buildCreateDeps();
     await service.create('user-1', oneLine('model-1'));
     expect(lockKeys.indexOf('mems:model:model-1')).toBeLessThan(lockKeys.indexOf(DAY_LOCK));
+  });
+});
+
+/**
+ * Chức năng: kiểm tham số lọc của màn Duyệt phiếu TRƯỚC khi chạm Prisma.
+ *
+ * Vì sao đáng một file test riêng: endpoint từng nhận `@Query('...')` rời rồi ép thẳng
+ * xuống Prisma — `status as any`, và `new Date(query.from)` không kiểm. Gõ `?from=hôm-qua` cho ra
+ * `Invalid Date`, Prisma ném lỗi, bộ lọc toàn cục xếp vào 500 và trả nguyên thông điệp Prisma về
+ * client. Sai mã lỗi và lộ hình dạng truy vấn cùng lúc.
+ */
+const errorsFor = (cls: any, payload: object) => validateSync(plainToInstance(cls, payload) as object);
+
+describe('ListRequestsQueryDto — lọc phiếu theo trạng thái', () => {
+  it('không lọc thì hợp lệ', () => {
+    expect(errorsFor(ListRequestsQueryDto, {})).toHaveLength(0);
+  });
+
+  it('một trạng thái có thật thì qua', () => {
+    expect(errorsFor(ListRequestsQueryDto, { status: 'PENDING_APPROVAL' })).toHaveLength(0);
+  });
+
+  it('nhiều trạng thái ngăn bằng dấu phẩy vẫn qua', () => {
+    // Màn Nhận trả gọi kèm `ON_LOAN,PARTIALLY_RETURNED`; chặn dạng này là hỏng màn đó.
+    expect(errorsFor(ListRequestsQueryDto, { status: 'ON_LOAN,PARTIALLY_RETURNED' })).toHaveLength(0);
+    expect(errorsFor(ListRequestsQueryDto, { status: 'ON_LOAN, PREPARING' })).toHaveLength(0);
+  });
+
+  it('trạng thái lạ thì bị chặn, kể cả khi lẫn trong danh sách hợp lệ', () => {
+    expect(errorsFor(ListRequestsQueryDto, { status: 'foo' }).length).toBeGreaterThan(0);
+    expect(errorsFor(ListRequestsQueryDto, { status: 'ON_LOAN,foo' }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('MemsBorrowRequestsController — route & auth', () => {
+  const proto = MemsBorrowRequestsController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['create', 'POST mems/requests', false],
+    ['listRequests', 'GET mems/requests', false],
+    ['requestDetail', 'GET mems/requests/:id', false],
+    ['cancel', 'POST mems/requests/:id/cancel', false],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsBorrowRequestsController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });

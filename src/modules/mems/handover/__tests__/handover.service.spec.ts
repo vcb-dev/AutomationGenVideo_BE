@@ -1,5 +1,9 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, RequestMethod } from '@nestjs/common';
 import { HandoverService } from '../handover.service';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { MemsMediaLeaderGuard } from '../../../../common/guards/mems-media-leader.guard';
+import { ROLES_KEY } from '../../../auth/decorators/roles.decorator';
+import { MemsHandoverController } from '../handover.controller';
 
 /**
  * Ảnh đã thật sự nằm trong kho ảnh của máy.
@@ -160,9 +164,9 @@ describe('HandoverService.create', () => {
 
   it('phiếu chưa qua bước chuẩn bị thì chưa bàn giao được', async () => {
     const { prisma } = buildDeps({ status: 'APPROVED' });
-    await expect(
-      new HandoverService(prisma).create('req-1', 'user-1', DTO),
-    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(new HandoverService(prisma).create('req-1', 'user-1', DTO)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
 
   it('ghi nhật ký vòng đời cho từng máy', async () => {
@@ -289,7 +293,9 @@ describe('Bàn giao — dùng ảnh người mượn', () => {
           store.push(row);
           return row;
         }),
-        findMany: jest.fn(async ({ where }: any) => store.filter((p) => (where.id.in as string[]).includes(p.id))),
+        findMany: jest.fn(async ({ where }: any) =>
+          store.filter((p) => (where.id.in as string[]).includes(p.id)),
+        ),
       },
       memsHandover: {
         create: jest.fn(async ({ data }: any) => ({ id: 'ho-1', ...data })),
@@ -324,7 +330,9 @@ describe('Bàn giao — dùng ảnh người mượn', () => {
         uploaded_by: 'keeper-1',
       },
     });
-    expect(handoverPhotos).toEqual([{ handover_line_id: 'hl-1', storage_key: '00000000-0000-4000-8000-000000000001' }]);
+    expect(handoverPhotos).toEqual([
+      { handover_line_id: 'hl-1', storage_key: '00000000-0000-4000-8000-000000000001' },
+    ]);
   });
 
   it('máy đã có ảnh riêng thì không chép ảnh người mượn', async () => {
@@ -335,9 +343,9 @@ describe('Bàn giao — dùng ảnh người mượn', () => {
 
   it('phiếu không có ảnh người mượn và máy không có ảnh thì vẫn chặn (BR-26)', async () => {
     const { service, tx } = buildBorrowerDeps([]);
-    await expect(service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit([])] })).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(
+      service.create('req-1', 'keeper-1', { receivedBy: 'Nguyễn A', units: [unit([])] }),
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.memsHandover.create).not.toHaveBeenCalled();
   });
 
@@ -348,5 +356,30 @@ describe('Bàn giao — dùng ảnh người mượn', () => {
       where: { incident_id: null },
       orderBy: { created_at: 'asc' },
     });
+  });
+});
+
+describe('MemsHandoverController — route & auth', () => {
+  const proto = MemsHandoverController.prototype as any;
+  // [handler, method đường-dẫn, có canh Team Media (kèm @Roles) hay không]
+  const ROUTES: [string, string, boolean][] = [
+    ['handoverSheet', 'GET mems/requests/:id/handover-sheet', true],
+    ['handover', 'POST mems/requests/:id/handover', true],
+  ];
+
+  it('không có route ngoài bảng', () => {
+    const handlers = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && Reflect.hasMetadata(METHOD_METADATA, proto[name]),
+    );
+    expect(handlers.sort()).toEqual(ROUTES.map(([name]) => name).sort());
+  });
+
+  it.each(ROUTES)('%s: %s, canh Team Media = %s', (name, route, guarded) => {
+    const handler = proto[name];
+    const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)];
+    const base = Reflect.getMetadata(PATH_METADATA, MemsHandoverController);
+    expect(`${method} ${base}/${Reflect.getMetadata(PATH_METADATA, handler)}`).toBe(route);
+    expect((Reflect.getMetadata('__guards__', handler) ?? []).includes(MemsMediaLeaderGuard)).toBe(guarded);
+    expect(Reflect.getMetadata(ROLES_KEY, handler) !== undefined).toBe(guarded);
   });
 });
