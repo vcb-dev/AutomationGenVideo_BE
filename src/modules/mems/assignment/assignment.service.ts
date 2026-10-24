@@ -1,0 +1,249 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { AvailabilityService, NOT_USABLE_STATUSES } from '../availability/availability.service';
+import { AssignSerialsDto } from './dto/assignment.dto';
+
+/** Tình trạng còn đem giao cho người mượn được. Máy ngoài hai mức này phải qua kiểm tra trước. */
+const ASSIGNABLE_CONDITIONS = ['GOOD', 'USED'];
+
+@Injectable()
+export class AssignmentService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly availability: AvailabilityService,
+  ) {}
+
+  /**
+   * BR-25: danh sách máy được phép gán cho một dòng phiếu.
+   *
+   * Lọc hai tầng: rảnh trong khoảng của phiếu, VÀ tình trạng còn đạt. Bỏ tầng thứ hai thì kho
+   * sẽ gán nhầm chiếc đang chờ kiểm tra — nó rảnh lịch nhưng chưa ai xác nhận nó dùng được.
+   *
+   * Xếp máy tình trạng tốt lên trước, sau đó tới máy ít vòng quay nhất, để kho không phải tự cân.
+   */
+  async assignableUnits(lineId: string) {
+    const line = await this.prisma.memsRequestLine.findUnique({
+      where: { id: lineId },
+      include: { request: true },
+    });
+    if (!line) throw new NotFoundException(`Không có dòng phiếu ${lineId}`);
+
+    const free = await this.availability.freeAssets({
+      modelId: line.model_id,
+      fromTime: line.request.from_time,
+      toTime: line.request.to_time,
+    });
+
+    const usable = free.filter((a) => ASSIGNABLE_CONDITIONS.includes(a.condition));
+    const loanCounts = await this.prisma.memsHandoverLine.groupBy({
+      by: ['asset_id'],
+      where: { asset_id: { in: usable.map((a) => a.id) } },
+      _count: { asset_id: true },
+    });
+    const timesLoaned = new Map(loanCounts.map((c) => [c.asset_id, c._count.asset_id]));
+
+    return usable.sort(
+      (a, b) =>
+        ASSIGNABLE_CONDITIONS.indexOf(a.condition) - ASSIGNABLE_CONDITIONS.indexOf(b.condition) ||
+        (timesLoaned.get(a.id) ?? 0) - (timesLoaned.get(b.id) ?? 0) ||
+        a.asset_code.localeCompare(b.asset_code),
+    );
+  }
+
+  /**
+   * Ghim máy cụ thể vào phiếu đã duyệt (QĐ-01).
+   *
+   * Toàn bộ nằm trong một giao dịch có khoá theo model: hai thủ kho cùng chuẩn bị hai phiếu
+   * dùng chung một model sẽ cùng đọc thấy chiếc cuối là rảnh nếu không khoá.
+   */
+  async assign(requestId: string, dto: AssignSerialsDto, now: Date = new Date()) {
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.memsBorrowRequest.findUnique({
+        where: { id: requestId },
+        include: { lines: { include: { reservations: true } } },
+      });
+      if (!request) throw new NotFoundException(`Không có phiếu ${requestId}`);
+      if (!['APPROVED', 'PREPARING'].includes(request.status)) {
+        throw new ConflictException(
+          `Phiếu ${request.request_code} đang ở trạng thái ${request.status}, chưa tới bước gán serial`,
+        );
+      }
+
+      // Một máy chỉ được gán cho một dòng trong cùng phiếu — trùng là kho đếm thừa lúc soạn hàng.
+      const assetIds = dto.lines.flatMap((l) => l.assetIds);
+      if (new Set(assetIds).size !== assetIds.length) {
+        throw new BadRequestException('Một máy được gán cho nhiều dòng trong cùng phiếu');
+      }
+
+      // Chốt dòng nào thuộc phiếu TRƯỚC, rồi lấy hết khoá một lượt theo thứ tự đã sắp.
+      //
+      // Bản trước xin khoá ngay giữa vòng lặp, theo đúng thứ tự mảng client gửi. Hai thủ kho
+      // chuẩn bị hai phiếu dùng chung hai model, gửi hai thứ tự ngược nhau, là ôm chéo khoá:
+      // Postgres phát hiện deadlock, giết một giao dịch và người đó ăn 500 giữa lúc soạn hàng.
+      // Sắp trước thì mọi giao dịch đi cùng một chiều nên chỉ xếp hàng. Lọc trùng để hai dòng
+      // cùng model không xin khoá hai lần.
+      const inputsWithLine = dto.lines.map((input) => {
+        const line = request.lines.find((l) => l.id === input.lineId);
+        if (!line) throw new BadRequestException(`Dòng ${input.lineId} không thuộc phiếu này`);
+        if (input.assetIds.length !== line.quantity) {
+          throw new BadRequestException(
+            `Dòng cần ${line.quantity} máy nhưng gán ${input.assetIds.length}`,
+          );
+        }
+        return { input, line };
+      });
+
+      const modelIdsToLock = [...new Set(inputsWithLine.map(({ line }) => line.model_id))].sort();
+      for (const modelId of modelIdsToLock) {
+        await tx.$executeRawUnsafe(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          `mems:model:${modelId}`,
+        );
+      }
+
+      for (const { input, line } of inputsWithLine) {
+        const model = await tx.memsAssetModel.findUniqueOrThrow({
+          where: { id: line.model_id },
+          include: { category: true },
+        });
+        const bufferedTo = new Date(
+          request.to_time.getTime() + model.category.buffer_minutes * 60_000,
+        );
+
+        const assets = await tx.memsAsset.findMany({ where: { id: { in: input.assetIds } } });
+        if (assets.length !== new Set(input.assetIds).size) {
+          throw new BadRequestException('Có mã máy không tồn tại trong kho');
+        }
+        for (const asset of assets) {
+          if (asset.model_id !== line.model_id) {
+            throw new BadRequestException(
+              `Máy ${asset.asset_code} không thuộc model của dòng phiếu`,
+            );
+          }
+          if (!ASSIGNABLE_CONDITIONS.includes(asset.condition)) {
+            throw new BadRequestException(
+              `Máy ${asset.asset_code} đang ở tình trạng ${asset.condition}, chưa giao được`,
+            );
+          }
+          if (asset.is_disabled) {
+            throw new BadRequestException(`Máy ${asset.asset_code} đã ngừng sử dụng`);
+          }
+          if ((NOT_USABLE_STATUSES as readonly string[]).includes(asset.status)) {
+            throw new BadRequestException(
+              `Máy ${asset.asset_code} đang ở trạng thái ${asset.status}, chưa cho mượn được`,
+            );
+          }
+        }
+
+        // Đây mới là thứ cái khoá ở trên bảo vệ. Không đọc lại lịch trong giao dịch thì khoá chỉ
+        // xếp hàng hai thủ kho chứ không ngăn họ gán trùng: cả hai đã xem danh sách máy rảnh từ
+        // trước khi vào đây, và danh sách đó có thể cũ vài phút.
+        const clashing = await tx.memsReservation.findMany({
+          where: {
+            asset_id: { in: input.assetIds },
+            status: { in: ['TENTATIVE', 'CONFIRMED'] as any },
+            from_time: { lt: bufferedTo },
+            buffer_to_time: { gt: request.from_time },
+            // Giữ chỗ của chính phiếu này là thứ ta sắp ghim vào, không phải xung đột.
+            request_line: { request_id: { not: requestId } },
+          },
+          include: { asset: true, request_line: { include: { request: true } } },
+        });
+        if (clashing.length > 0) {
+          const first = clashing[0];
+          throw new ConflictException(
+            `Máy ${first.asset?.asset_code} đã được gán cho phiếu ${first.request_line.request.request_code} trong khoảng thời gian này`,
+          );
+        }
+
+        const underMaintenance = await tx.memsMaintenance.findMany({
+          where: {
+            asset_id: { in: input.assetIds },
+            from_time: { lt: bufferedTo },
+            OR: [{ to_time: null }, { to_time: { gt: request.from_time } }],
+          },
+          include: { asset: true },
+        });
+        if (underMaintenance.length > 0) {
+          throw new ConflictException(
+            `Máy ${underMaintenance[0].asset.asset_code} có lịch bảo trì trùng khoảng thời gian của phiếu`,
+          );
+        }
+
+        // Máy đang ở ngoài mà đã QUÁ HẠN thì không hứa cho ai được nữa.
+        //
+        // Giữ chỗ của lượt mượn cũ có `buffer_to_time` đã trôi qua nên không tính là xung đột
+        // với phiếu mới, còn `ON_LOAN` thì cố ý không nằm trong `NOT_USABLE_STATUSES` — máy
+        // đang mượn hôm nay vẫn phải đặt trước cho tuần sau được. Hai điều đó cộng lại để lọt
+        // đúng ca xấu nhất: chiếc máy lẽ ra phải về từ tuần trước, chưa ai thấy mặt, vẫn được
+        // gán cho phiếu kế tiếp — và kho chỉ phát hiện vào đúng lúc đứng ra bàn giao.
+        const overdueOut = await tx.memsHandoverLine.findMany({
+          where: {
+            asset_id: { in: input.assetIds },
+            returnLines: { none: {} },
+            handover: { request: { to_time: { lt: now } } },
+          },
+          include: {
+            asset: { select: { asset_code: true } },
+            handover: { include: { request: { select: { request_code: true, to_time: true } } } },
+          },
+        });
+        if (overdueOut.length > 0) {
+          const stuck = overdueOut[0];
+          throw new ConflictException(
+            `Máy ${stuck.asset.asset_code} chưa được trả về từ phiếu ${stuck.handover.request.request_code} (hạn trả ${stuck.handover.request.to_time.toISOString().slice(0, 10)}), chưa gán cho phiếu mới được`,
+          );
+        }
+
+        // Giữ chỗ của dòng này đã có sẵn từ lúc tạo phiếu, giờ chỉ ghim máy vào từng bản ghi.
+        const reservations = line.reservations.filter((r) => r.status !== 'RELEASED');
+
+        // Dòng "Chờ hàng" (QĐ-08) ra đời KHÔNG kèm giữ chỗ: lúc tạo phiếu kho không đủ máy.
+        // Trước đây tới đây là ném lỗi, nghĩa là phiếu chết cứng — không gán được, không có
+        // đường nào tính lại, kể cả sau khi máy đã về kho. Giờ bù đủ bản ghi còn thiếu.
+        //
+        // An toàn vì mỗi chiếc máy sắp ghim đều vừa đi qua ba cửa ở trên (không trùng lịch,
+        // không bảo trì, không kẹt ở lượt mượn quá hạn) — chặt hơn hẳn phép đếm số bản ghi mà
+        // đoạn này từng dựa vào.
+        const shortfall = input.assetIds.length - reservations.length;
+        if (shortfall > 0) {
+          const created = await Promise.all(
+            Array.from({ length: shortfall }, () =>
+              tx.memsReservation.create({
+                data: {
+                  request_line_id: line.id,
+                  model_id: line.model_id,
+                  from_time: request.from_time,
+                  to_time: request.to_time,
+                  buffer_to_time: bufferedTo,
+                  status: 'CONFIRMED',
+                },
+              }),
+            ),
+          );
+          reservations.push(...created);
+        }
+        for (const [index, assetId] of input.assetIds.entries()) {
+          await tx.memsReservation.update({
+            where: { id: reservations[index].id },
+            data: { asset_id: assetId, status: 'CONFIRMED' },
+          });
+        }
+        await tx.memsRequestLine.update({
+          where: { id: line.id },
+          data: { status: 'ALLOCATED' },
+        });
+      }
+
+      return tx.memsBorrowRequest.update({
+        where: { id: requestId },
+        data: { status: 'PREPARING' },
+      });
+    });
+  }
+}

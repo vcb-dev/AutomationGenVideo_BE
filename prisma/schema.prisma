@@ -5364,6 +5364,8 @@ model MemsBorrowRequest {
   approvals  MemsApproval[]
   handovers  MemsHandover[]
   returns    MemsReturn[]
+  photos     MemsRequestPhoto[]
+  extensions MemsLoanExtension[]
 
   @@index([owner_id, status])
   @@map("mems_borrow_requests")
@@ -5583,14 +5585,16 @@ model MemsIncident {
   return_line_id String?            @db.Uuid
   /// Người bị quy trách nhiệm — chính là người chịu trách nhiệm trên phiếu (QĐ-10)
   responsible_id String?            @db.Uuid
+  reported_by    String?            @db.Uuid // Null với sự cố do màn Nhận trả tự sinh
   kind           MemsIncidentKind
   description    String
   status         MemsIncidentStatus @default(OPEN)
   created_at     DateTime           @default(now())
   updated_at     DateTime           @updatedAt
 
-  asset      MemsAsset       @relation(fields: [asset_id], references: [id])
-  returnLine MemsReturnLine? @relation(fields: [return_line_id], references: [id])
+  asset      MemsAsset          @relation(fields: [asset_id], references: [id])
+  returnLine MemsReturnLine?    @relation(fields: [return_line_id], references: [id])
+  photos     MemsRequestPhoto[]
 
   @@index([asset_id, status])
   @@map("mems_incidents")
@@ -5640,4 +5644,47 @@ model MemsAssetPhoto {
   @@index([asset_id, sort_order])
   @@index([asset_id, purpose])
   @@map("mems_asset_photos")
+}
+
+enum MemsExtensionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Ảnh người mượn tải lên: đính kèm phiếu, hoặc làm bằng chứng khi báo sự cố
+model MemsRequestPhoto {
+  id          String   @id @default(uuid()) @db.Uuid
+  request_id  String?  @db.Uuid // Null khi đã tải lên nhưng chưa gắn vào phiếu
+  incident_id String?  @db.Uuid
+  url         String
+  storage     String   @default("local")
+  uploaded_by String   @db.Uuid
+  created_at  DateTime @default(now())
+
+  request  MemsBorrowRequest? @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  incident MemsIncident?      @relation(fields: [incident_id], references: [id], onDelete: SetNull)
+
+  @@index([request_id])
+  @@index([incident_id])
+  @@map("mems_request_photos")
+}
+
+/// Mỗi lần xin gia hạn một dòng, giữ cả lịch sử duyệt và từ chối
+model MemsLoanExtension {
+  id                String              @id @default(uuid()) @db.Uuid
+  request_id        String              @db.Uuid
+  requested_to_time DateTime
+  reason            String
+  status            MemsExtensionStatus @default(PENDING)
+  requested_by      String              @db.Uuid
+  requested_at      DateTime            @default(now())
+  decided_by        String?             @db.Uuid
+  decided_at        DateTime?
+  rejection_reason  String?
+
+  request MemsBorrowRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+
+  @@index([request_id, requested_at])
+  @@map("mems_loan_extensions")
 }
